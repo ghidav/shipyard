@@ -358,3 +358,42 @@ def test_an_image_chunk_is_a_run_of_image_tokens_in_the_ids() -> None:
     )
     assert ids_of(prompt) == (1, 2, IMAGE_TOKEN, IMAGE_TOKEN, IMAGE_TOKEN, 4)
     assert ids_of(tinker.ModelInput.from_ints([9])) == (9,)
+
+
+async def test_a_retry_of_the_turn_that_spent_the_budget_gets_its_reply() -> None:
+    sampler = FakeSampler("abcd")
+    recorder = Recorder(sampler, budget=4)
+    prompt = tinker.ModelInput.from_ints([1])
+    first = await under("t", recorder, prompt)
+    assert recorder.spoke == {"t": 4}, "the budget is spent to the last token"
+    token = exchange.set(Exchange(trial="t", retry=1))
+    try:
+        again = await recorder.sample_async(
+            prompt=prompt, num_samples=1, sampling_params=tinker.SamplingParams()
+        )
+    finally:
+        exchange.reset(token)
+    assert again is first and len(sampler.asked) == 1
+    assert [r.error for r in recorder.records_for("t")] == [None]
+
+
+async def test_samples_asked_together_share_the_budget() -> None:
+    sampler = FakeSampler("ab")
+    recorder = Recorder(sampler, max_tokens=100, budget=9)
+    token = exchange.set(Exchange(trial="t"))
+    try:
+        await recorder.sample_async(
+            prompt=tinker.ModelInput.from_ints([1]),
+            num_samples=4,
+            sampling_params=tinker.SamplingParams(),
+        )
+        assert sampler.asked[0].max_tokens == 2, "nine tokens left, four samples"
+        with pytest.raises(cookbook.private("_BadRequest"), match="spent its budget"):
+            await recorder.sample_async(
+                prompt=tinker.ModelInput.from_ints([1]),
+                num_samples=4,
+                sampling_params=tinker.SamplingParams(),
+            )
+    finally:
+        exchange.reset(token)
+    assert recorder.spoke == {"t": 8} and len(sampler.asked) == 1

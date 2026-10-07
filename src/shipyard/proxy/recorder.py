@@ -85,8 +85,6 @@ class Recorder:
         # trial's count moved would otherwise be cut differently and not match its reply.
         asked = json.dumps(_params_dict(pinned), sort_keys=True, default=str)
         keys: list[tuple[Any, ...]] = [(trial, prompt_ids, int(num_samples), asked)]
-        pinned = self._fitting(trial, prompt, prompt_ids, pinned)
-        params = _params_dict(pinned)
         if found is not None and found.idempotency_key:
             keys.append((trial, found.idempotency_key))
         # A retry replays by either key; a fresh request with an idempotency key replays
@@ -97,6 +95,9 @@ class Recorder:
             answered = await stored if stored is not None else None
             if answered is not None:
                 return answered  # the SDK sent this before: one reply, one record
+        # Fitted after the replay: a retry of the turn that spent the budget gets its reply.
+        pinned = self._fitting(trial, prompt, prompt_ids, pinned, int(num_samples))
+        params = _params_dict(pinned)
         pending: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
         for key in keys:
             self._replies[key] = pending
@@ -139,20 +140,24 @@ class Recorder:
             self.spoke[trial] = self.spoke.get(trial, 0) + len(tokens)
         return response
 
-    def _fitting(self, trial: str, prompt: Any, prompt_ids: tuple[int, ...], pinned: Any) -> Any:
+    def _fitting(
+        self, trial: str, prompt: Any, prompt_ids: tuple[int, ...], pinned: Any, num_samples: int
+    ) -> Any:
         """The params a request is served with, or the refusal: a trial past its budget is
         refused (the cookbook's 400, not an overflow), a turn beyond the budget is cut to
-        what is left, and a prompt with no room for its reply is refused as an overflow."""
+        its share of what is left per sample, and a prompt with no room for its reply is
+        refused as an overflow."""
         if self.budget:
             spent = self.spoke.get(trial, 0)
-            if spent >= self.budget:
+            share = (self.budget - spent) // max(1, num_samples)
+            if share <= 0:
                 self._refuse(trial, prompt_ids, pinned, "budget")
                 raise cookbook.refused(
                     f"This rollout has spent its budget: {spent} sampled tokens of "
                     f"{self.budget}, the model's context length. Nothing more is served to it."
                 )
-            if int(getattr(pinned, "max_tokens", 0) or 0) > self.budget - spent:
-                pinned = pinned.model_copy(update={"max_tokens": int(self.budget - spent)})
+            if int(getattr(pinned, "max_tokens", 0) or 0) > share:
+                pinned = pinned.model_copy(update={"max_tokens": int(share)})
         if not self.max_context:
             return pinned
         asked, wants = int(prompt.length), int(getattr(pinned, "max_tokens", 0) or 0)
