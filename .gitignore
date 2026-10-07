@@ -6,9 +6,9 @@ __pycache__/
 dist/
 build/
 *.egg-info/
-runs/
-jobs/
-tasks/
+/runs/
+/jobs/
+/tasks/
 .env
 .DS_Store
-site/
+/site/
