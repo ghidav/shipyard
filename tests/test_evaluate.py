@@ -137,7 +137,7 @@ async def test_a_served_model_runs_through_its_proxy_and_is_judged_by_its_record
     assert masked == {"timeout": 1, "env_error": 1}
     assert sum(job.get("turned_away", 0) for job in jobs) == 1
     assert "cut" not in jobs[0] and "cut" not in jobs[1]
-    assert sum(job["input_tokens"] for job in jobs) == 3 + (8 - 3) + 2 + 2 + 2
+    assert sum(job["input_tokens"] for job in jobs) == 3 + 8 + 2 + 2 + 2, "the whole prompt"
     assert sum(job["cache_tokens"] for job in jobs) == 3
     assert sum(job["output_tokens"] for job in jobs) == 2 + 4 + 2 + 2
     rows = list(record.read(opened.directory / record.REQUESTS))
@@ -145,7 +145,7 @@ async def test_a_served_model_runs_through_its_proxy_and_is_judged_by_its_record
     assert sum(row["error"] == BUDGET for row in rows) == 1
     costs = record.read_json(opened.directory / record.COSTS)
     assert costs["parties"] == {
-        "tinker": {"trials": 3, "input_tokens": 14, "cache_tokens": 3, "output_tokens": 10}
+        "tinker": {"trials": 3, "input_tokens": 17, "cache_tokens": 3, "output_tokens": 10}
     }
     note = Run.read(opened.directory)
     assert note["tinker_base_url"].startswith("https://") and note["failed"] is False

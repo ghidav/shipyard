@@ -36,5 +36,6 @@ def _machine_pinned(monkeypatch: pytest.MonkeyPatch) -> None:
     from shipyard import preflight
 
     monkeypatch.setattr(preflight, "extra_installed", lambda name: True)
+    monkeypatch.setattr(preflight, "extra_missing", lambda name: [])
     monkeypatch.setattr(preflight, "logged_in", lambda name, environ: True)
     monkeypatch.setattr(preflight, "docker_running", lambda: True)

@@ -18,9 +18,11 @@ Says whether a blueprint could run, before anything is spent.
 | `--verbose` | print the `ok` lines too |
 | `--json` | print one JSON object instead |
 
-It prints the blueprint with every default filled in, as TOML. For `dapo`, `dr-grpo` and `cispo` a comment line follows, saying what the recipe's name resolves to. Then come the findings, one per line: `blocked`, `warning`, and, under `--verbose`, `ok`. Every problem is listed at once.
+It prints the blueprint with every default filled in, as TOML. For a Tinker-served model with no `[rollout] renderer`, the `renderer` line names the one the proxy will load. For `dapo`, `dr-grpo`, `cispo` and `fst` a comment line follows, saying what the recipe's name resolves to. Then come the findings, one per line: `blocked`, `warning`, and, under `--verbose`, `ok`. Every problem is listed at once.
 
 For a Tinker-served model, `check` asks the backend whether it serves the model. That network call is made only when `TINKER_API_KEY` is set; without it, the line is a warning.
+
+For a sandbox elsewhere, `check` blocks when any package of Harbor's extra for it is missing. For a `gepa` or `fst` reflector, it warns when none of the API keys Harbor hands that harness is set.
 
 `check` exits 1 when any finding is `blocked`, else 0.
 

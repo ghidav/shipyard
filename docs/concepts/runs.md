@@ -77,7 +77,7 @@ and `ended` counts the exceptions Harbor recorded on trials, by type; each appea
 has something to count. The token and sandbox counts are explained in [Costs](costs.md).
 
 ```json
-{"at": "2026-10-07T20:57:50.871956+00:00", "job": "02-eval-tinker-docker__eTNXY25-0000", "purpose": "rollout", "trials": 2, "batch": 0, "tasks": 1, "graded": 2, "served": "tinker", "bridged": 2, "party": "tinker", "input_tokens": 1992, "cache_tokens": 4224, "output_tokens": 727, "sandbox": "docker", "sandbox_seconds": 131.392899}
+{"at": "2026-10-07T20:57:50.871956+00:00", "job": "02-eval-tinker-docker__eTNXY25-0000", "purpose": "rollout", "trials": 2, "batch": 0, "tasks": 1, "graded": 2, "served": "tinker", "bridged": 2, "party": "tinker", "input_tokens": 6216, "cache_tokens": 4224, "output_tokens": 727, "sandbox": "docker", "sandbox_seconds": 131.392899}
 ```
 
 A `requests.jsonl` row is one model call, in the order the trial made them:
@@ -99,7 +99,8 @@ closing row ([gepa](gepa.md)).
 
 `checkpoints.jsonl` has one row per save, each with `tag`, `state_path`, `sampler_path` and
 `ttl_hours`. The tag is `step-<n>` every `[checkpoints] every` steps, and `final` once the
-last step is done. The state path rebuilds a trainer; the sampler path only serves.
+last step is done. A `step-<n>` save expires after `[checkpoints] ttl_hours`; `final` is kept
+with no expiry. The state path rebuilds a trainer; the sampler path only serves.
 
 ## Four states
 

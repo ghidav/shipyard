@@ -107,7 +107,7 @@ of the text.
 | `modules` | `"modules"` | The seed directory, relative to the blueprint. |
 | `minibatch` | `3` | The number of tasks in each round's window. |
 | `budget` | 2 × tasks × `group_size` | The rollouts the search may spend. |
-| `patience` | `3` | How many rounds in a row may pass with no child to score before the search stops. |
+| `patience` | `3` | How many rounds in a row may pass with no child to score before the search stops, and never fewer than the number of components. |
 | `edits` | `"rewrite"` | Set to `"incremental"` to ask for small edits. |
 
 ## When it stops
@@ -118,12 +118,14 @@ finishes, including the full scoring of an accepted child.
 
 **Patience.** Patience counts rounds in a row that score no child. That happens when the reflector
 declines or fails, or returns a text already in the pool or one not accepted before. Any round that scores a
-child resets the count, whether the child is accepted or not.
+child resets the count, whether the child is accepted or not. With more components than `patience`,
+the search waits one quiet round per component instead, so every component is offered to the reflector
+before the search gives up.
 
 ## The winner
 
-The winner comes from the frontier. The candidate measured on the most tasks wins, and ties go to the
-higher mean. Coverage comes first because a child whose full scoring mostly failed has a mean over very
+The winner comes from the whole pool. The candidate measured on the most tasks wins, and ties go to
+the higher mean. Coverage comes first because a child whose full scoring mostly failed has a mean over very
 few tasks. The winner is written in the layout of a modules directory, so it can be the next run's seed,
 or a training run can carry it.
 

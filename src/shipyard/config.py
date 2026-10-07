@@ -96,7 +96,7 @@ class Rollout(_Table):
     max_tokens: int = Field(default=8192, ge=1)
     max_context: int = Field(default=0, ge=0)
     renderer: str = ""
-    cut_volatile: bool = False
+    cut_volatile: bool = True
     fill_context: bool = False
     check_turns: bool = False
     jobs_dir: str = "jobs"

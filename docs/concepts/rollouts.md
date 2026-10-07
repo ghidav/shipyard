@@ -113,7 +113,7 @@ speaks, and what it needs beyond the model connection. Four harnesses have one:
 | harness | dialect | what the profile adds |
 |---|---|---|
 | `pi` | OpenAI | the agent kwarg `model_api = "openai-completions"` |
-| `claude-code` | Anthropic | the base URL without `/v1`, which Claude Code appends itself; its per-request `<total_tokens>` system line, cut when `[rollout] cut_volatile = true`; `DISABLE_COMPACT=1` and `DISABLE_AUTO_COMPACT=1` when `[rollout] fill_context = true`; a turn counter: distinct request ids in its log |
+| `claude-code` | Anthropic | the base URL without `/v1`, which Claude Code appends itself; its per-request `<total_tokens>` system line, cut unless `[rollout] cut_volatile = false`; `DISABLE_COMPACT=1` and `DISABLE_AUTO_COMPACT=1` when `[rollout] fill_context = true`; a turn counter: distinct request ids in its log |
 | `opencode` | OpenAI | a turn counter: lines carrying `step-start` in its log |
 | `terminus-2` | OpenAI | nothing |
 

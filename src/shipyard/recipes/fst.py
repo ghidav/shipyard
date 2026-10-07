@@ -128,6 +128,9 @@ async def fast(
     tasks = list(dict.fromkeys(task for batch in lookahead for task in batch))
     tasks = tasks[: recipe.anchor] if recipe.anchor else tasks
 
+    # Measuring the population carried in is on top of the budget, past the first member.
+    carried = len({member.digest for member in population}) - 1
+
     async def score(candidate: Candidate, over: Sequence[Path], round_index: int) -> Any:
         rolled = await run.sample(list(over), rollouts=share, index=index, modules=candidate)
         return outcomes(rolled, over, share)
@@ -138,7 +141,7 @@ async def fast(
         write=write,
         score=score,
         minibatch=recipe.minibatch,
-        budget=recipe.budget or BUDGET_PASSES * len(tasks) * share,
+        budget=(recipe.budget or BUDGET_PASSES * len(tasks) * share) + carried * len(tasks) * share,
         patience=recipe.patience,
         rollouts=share,
         log=partial(run.log, cycle=cycle),

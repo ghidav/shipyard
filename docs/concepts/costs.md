@@ -13,7 +13,7 @@ This is the record of a run whose model was served through the proxy:
   "parties": {
     "tinker": {
       "trials": 2,
-      "input_tokens": 1992,
+      "input_tokens": 6216,
       "cache_tokens": 4224,
       "output_tokens": 727
     }
@@ -70,18 +70,15 @@ trials disagree. A reflection with neither is billed to `unknown`.
 ## Token counts
 
 `trials` counts the trials that left a result. `output_tokens` counts what the model wrote.
-`cache_tokens` counts prompt tokens the backend had cached. What `input_tokens` counts depends
-on who counted:
+`input_tokens` counts the whole prompt, and `cache_tokens` counts the part of it the backend
+had cached. Both parties count this way:
 
-- **A served model.** The proxy counts from its own records. `input_tokens` is the prompt
-  tokens *not* cached, so the prompt total is `input_tokens + cache_tokens`. Above,
-  1,992 + 4,224 = 6,216, the sum of `prompt_tokens` over the run's four `requests.jsonl` rows.
-- **A provider model.** The counts are what the harness reported to Harbor, and Harbor's
-  input count includes the cached tokens. Above, 30,901 input tokens of which 25,837 were
-  cached.
+- **A served model.** The proxy counts from its own records. Above, 6,216 is the sum of
+  `prompt_tokens` over the run's four `requests.jsonl` rows, 4,224 of them cached.
+- **A provider model.** The counts are what the harness reported to Harbor. Above, 30,901
+  input tokens of which 25,837 were cached.
 
-A job row's `served` field (`tinker` or `provider`) says which reading applies. A trial that
-reported nothing adds no tokens.
+A trial that reported nothing adds no tokens.
 
 ## Training counts
 
@@ -111,7 +108,7 @@ planned, where `costs.json` counts those that left a result. To split a run's co
 or to tell the reflector's tokens from the policy's, read the rows:
 
 ```json
-{"at": "2026-10-07T20:57:50.871956+00:00", "job": "02-eval-tinker-docker__eTNXY25-0000", "purpose": "rollout", "trials": 2, "batch": 0, "tasks": 1, "graded": 2, "served": "tinker", "bridged": 2, "party": "tinker", "input_tokens": 1992, "cache_tokens": 4224, "output_tokens": 727, "sandbox": "docker", "sandbox_seconds": 131.392899}
+{"at": "2026-10-07T20:57:50.871956+00:00", "job": "02-eval-tinker-docker__eTNXY25-0000", "purpose": "rollout", "trials": 2, "batch": 0, "tasks": 1, "graded": 2, "served": "tinker", "bridged": 2, "party": "tinker", "input_tokens": 6216, "cache_tokens": 4224, "output_tokens": 727, "sandbox": "docker", "sandbox_seconds": 131.392899}
 ```
 
 The training counts are elsewhere: `train_tokens` is on each step's row in `metrics.jsonl`,

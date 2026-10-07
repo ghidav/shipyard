@@ -154,13 +154,18 @@ def bridge(
 ) -> Bridged | None:
     """The prompt built from a quoted reply's tokens (the stored prompt and completion, its
     stop, the tail's ids), or None to render afresh: each `return None` below is one of
-    the five reasons, in order."""
+    the six reasons, in order."""
     digests = digests_of(messages) if digests is None else digests
     found = index.find(digests)
     if found is None:
         return None
     at, reply = found
     if at < 1 or not tail_extends(messages[at + 1 :]):
+        return None
+    # The template drops earlier thinking at a new user turn: render it the template's way.
+    if getattr(renderer, "strip_thinking_from_history", False) and any(
+        str(_field(message, "role") or "") == "user" for message in messages[at + 1 :]
+    ):
         return None
     stops = {int(s) for s in (renderer.get_stop_sequences() or []) if isinstance(s, int)}
     if not stops:

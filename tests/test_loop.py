@@ -173,17 +173,17 @@ async def test_a_two_step_dapo_run_publishes_points_samples_credits_steps_and_ch
             "loss_fn",
             "seconds",
         ]
-    # `every = 1`: a checkpoint per step, then `final`, both paths and the TTL on each row.
+    # `every = 1`: a checkpoint per step at the TTL, then `final`, kept with none.
     saved = _checkpoints(opened)
     assert [row["tag"] for row in saved] == ["step-1", "step-2", "final"]
     for row in saved:
         assert row["state_path"] == f"tinker://fake/weights/{row['tag']}"
         assert row["sampler_path"] == f"tinker://fake/sampler_weights/{row['tag']}"
-        assert row["ttl_hours"] == 168.0
+        assert row["ttl_hours"] == (None if row["tag"] == "final" else 168.0)
     assert [c for c in client.calls if c[0] == "save_state"] == [
         ("save_state", "step-1", 604800),
         ("save_state", "step-2", 604800),
-        ("save_state", "final", 604800),
+        ("save_state", "final", None),
     ]
     # The train and reference tokens on the tinker party, beside what sampling cost.
     costs = record.read_json(opened.directory / record.COSTS)

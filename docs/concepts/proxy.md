@@ -92,9 +92,9 @@ Claude Code's system prompt carries a per-request `<total_tokens>` line. A
 line that changes per request makes each prompt differ from the
 last at the system prompt: nothing is cached, and no call extends the one
 before, so every call forks (below).
-With `[rollout] cut_volatile = true`, the proxy cuts the profile's volatile
-lines from system messages before rendering. It is off by default; the job row
-counts the cuts as `cut`.
+The proxy cuts the profile's volatile lines from system messages before
+rendering, and the job row counts the cuts as `cut`.
+`[rollout] cut_volatile = false` keeps them.
 
 ## The token budget and the context
 
@@ -171,7 +171,10 @@ reply's tokens. Every rule must hold, or the call is rendered afresh:
    id. The longest such match wins.
 2. The reply is not the call's first message.
 3. After the reply come only tool results, optionally closed by one user
-   message. An empty tail is a resample, not an extension.
+   message. An empty tail is a resample, not an extension. The closing user
+   message is refused when the renderer drops thinking from earlier turns, as
+   Qwen3's does: the fresh render of that turn drops the reply's thinking,
+   and the bridge would keep it.
 4. The renderer has stop tokens that are token ids.
 5. **Exact token equality.** The fresh render of the messages before the reply
    equals, token for token, the fresh render of the earlier call's messages.

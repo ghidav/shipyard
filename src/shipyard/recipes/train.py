@@ -150,7 +150,7 @@ async def training(run: Run, preset: Preset) -> AsyncIterator[tuple[Trainer, Any
             )
         await serving.start()
         yield trainer, anchor
-        await run.checkpoint(trainer, "final")
+        await run.checkpoint(trainer, "final", keep=True)
     except BaseException as failed:
         status = "errored" if isinstance(failed, Exception) else "interrupted"
         await trainer.close(status, f"{type(failed).__name__}: {failed}")

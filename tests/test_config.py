@@ -248,6 +248,23 @@ def test_the_resolved_config_fills_every_table_and_leads_the_recipe_with_its_kin
     assert found["checkpoints"] == {"every": 1, "ttl_hours": 168.0}
 
 
+def test_the_resolved_config_names_the_renderer_a_served_model_loads() -> None:
+    loaded = load(BLUEPRINTS / "dapo")
+    assert (
+        loaded.rollout.renderer == ""
+        and resolved.resolved(loaded)["rollout"]["renderer"] == "qwen3"
+    )
+    named = loaded.model_copy(
+        update={"rollout": loaded.rollout.model_copy(update={"renderer": "x"})}
+    )
+    assert resolved.resolved(named)["rollout"]["renderer"] == "x"
+    hosted = loaded.model_copy(
+        update={"model": loaded.model.model_copy(update={"provider": "openrouter"})}
+    )
+    assert resolved.resolved(hosted)["rollout"]["renderer"] == ""
+    assert resolved.recommended_renderer("nobody/knows-this") == ""
+
+
 def test_the_resolved_toml_reads_back_as_the_resolved_config_without_its_nones() -> None:
     for kind in config.KINDS:
         found = resolved.resolved(load(BLUEPRINTS / kind))
@@ -345,7 +362,7 @@ def test_the_rollout_serving_keys_load_with_their_defaults(tmp_path: Path) -> No
     )
     assert (found.temperature, found.top_p, found.top_k) == (1.0, 1.0, -1)
     assert (found.max_tokens, found.max_context, found.renderer) == (8192, 0, "")
-    assert (found.cut_volatile, found.fill_context, found.check_turns) == (False, False, False)
+    assert (found.cut_volatile, found.fill_context, found.check_turns) == (True, False, False)
     text = MINIMAL.replace(
         "[rollout]",
         '[rollout]\nhost = "proxy.lan"\nbind = "127.0.0.1"\nbind_port = 8000\n'

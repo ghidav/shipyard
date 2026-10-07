@@ -55,7 +55,7 @@ The **For** column says when a key matters:
 | `max_tokens` | integer ≥ 1 | `8192` | served | The longest reply. A call asking for more, or naming no limit, gets this. |
 | `max_context` | integer ≥ 0 | `0` | served | The context window each call must fit, and the most tokens one trial may sample in all. `0` takes the model's from the backend. |
 | `renderer` | string | `""` | served | A tinker-cookbook renderer to use in place of the model's own. |
-| `cut_volatile` | boolean | `false` | served | Cut the lines the harness changes on every call from its system message, such as Claude Code's `<total_tokens>` line. |
+| `cut_volatile` | boolean | `true` | served | Cut the lines the harness changes on every call from its system message, such as Claude Code's `<total_tokens>` line. |
 | `fill_context` | boolean | `false` | served | A call that would overflow the context gets a shorter `max_tokens` instead of a refusal. Also switches the harness's own compaction off, where its profile knows how. |
 | `check_turns` | boolean | `false` | served | Count the calls the harness made in its own log, and mask a trial whose count is more than the proxy recorded. Claude Code and opencode only. |
 
@@ -123,7 +123,7 @@ See [gepa](../concepts/gepa.md).
 | `population` | integer ≥ 1 | `4` | Texts kept per cycle. It must divide `group_size`. |
 | `anchor` | integer ≥ 1 | unset | The fast phase evolves on the first `anchor` tasks of the lookahead; unset is all of them. |
 | `kl_coef` | float ≥ 0 | `0.001` | As above, with the paper's default. |
-| `budget` | integer ≥ 1 | unset | Rollouts each fast phase may spend. Unset is five passes: 5 × its tasks × `group_size / population`. |
+| `budget` | integer ≥ 1 | unset | Rollouts each fast phase may spend. Unset is five passes: 5 × its tasks × `group_size / population`. One more pass per text carried from the previous cycle, beyond the first, is added on top to score them. |
 | `edits` | `"rewrite"` or `"incremental"` | `"incremental"` | As for `gepa`, with the paper's default. |
 
 `reflection_harness` (required), `reflection_model`, `reflection_image`, `modules` (the seed, default
@@ -142,7 +142,7 @@ Optional. Only the gradient recipes save checkpoints.
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `every` | integer ≥ 1 | `1` | Save a checkpoint after every this many steps; a step that trained nothing saves none. A `final` one is saved once the last step is done, whatever `every` says. |
-| `ttl_hours` | float ≥ 1 | `168.0` | How long the backend keeps each checkpoint, in hours. The backend keeps one for an hour at least. |
+| `ttl_hours` | float ≥ 1 | `168.0` | How long the backend keeps each `step-<n>` checkpoint, in hours. The backend keeps one for an hour at least. `final` is kept with no expiry. |
 
 ## Not in the file
 

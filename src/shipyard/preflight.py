@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 from collections.abc import Mapping
+from importlib import metadata
 from pathlib import Path
 
 from dotenv.parser import parse_stream
@@ -59,7 +60,42 @@ def findings(cfg: Blueprint, environ: Mapping[str, str] | None = None) -> list[F
     """The sandbox's findings, then a served model's: problems only for the first, since
     the facts `check` states already name the sandbox."""
     environ = os.environ if environ is None else environ
-    return sandbox_findings(cfg, environ) + served_findings(cfg, environ)
+    found = sandbox_findings(cfg, environ)
+    if (reflector := getattr(cfg.recipe, "reflection_harness", "").strip()) and (
+        unkeyed := key_finding(reflector, cfg.recipe.reflection_model, environ)
+    ) is not None:
+        found.append(unkeyed)
+    return found + served_findings(cfg, environ)
+
+
+def key_finding(harness: str, model: str | None, environ: Mapping[str, str]) -> Finding | None:
+    """A warning when none of the keys Harbor hands `harness` for `model` is set: the
+    harness's own names in its `MODEL_CONNECTION`, then the provider's. Quiet for a harness
+    Harbor does not name, or one that declares no connection or no key."""
+    try:
+        from harbor.agents.factory import AgentFactory
+        from harbor.agents.model_connection import PROVIDERS, resolve_model_connection
+        from harbor.models.agent.name import AgentName
+
+        spec = AgentFactory.get_agent_class(AgentName(bare_name(harness))).MODEL_CONNECTION
+    except Exception:  # noqa: BLE001 - an unknown harness is the run's refusal to make
+        return None
+    if spec is None:
+        return None
+
+    def set_one(*names: str) -> tuple[str, str] | None:
+        return next(((name, environ[name]) for name in names if environ.get(name)), None)
+
+    connection = resolve_model_connection(model, spec, set_one)
+    provider = PROVIDERS.get(connection.provider or "")
+    names = (*spec.api_key_envs, *(provider.api_key_envs if provider else ()))
+    if not names or connection.api_key:
+        return None
+    return Finding(
+        "warning",
+        f"reflector {harness}: none of {', '.join(dict.fromkeys(names))} is set, the "
+        "keys Harbor hands it; its first call fails unless it signs in another way",
+    )
 
 
 def sandbox_findings(cfg: Blueprint, environ: Mapping[str, str]) -> list[Finding]:
@@ -107,12 +143,13 @@ def provider_findings(name: str, environ: Mapping[str, str]) -> list[Finding]:
     """Harbor's extra for the provider, and each credential variable that is unset when
     no login Harbor takes instead is there."""
     found = []
-    if not extra_installed(name):
+    missing = extra_missing(name)
+    if missing or not extra_installed(name):
+        lacks = f"lacks {', '.join(missing)}" if missing else "is not installed"
         found.append(
             Finding(
                 "blocked",
-                f"sandbox {name}: Harbor's {name} extra is not installed; "
-                f'run `uv add "harbor[{name}]"`',
+                f'sandbox {name}: Harbor\'s {name} extra {lacks}; run `uv add "harbor[{name}]"`',
             )
         )
     if not logged_in(name, environ):
@@ -132,6 +169,28 @@ def extra_installed(name: str) -> bool:
     except ImportError:
         return False
     return bool(getattr(module, f"_HAS_{name.upper()}", False))
+
+
+def extra_missing(name: str) -> list[str]:
+    """The packages Harbor's `name` extra requires that are not installed, off Harbor's own
+    metadata: the SDK is not the whole extra, and Harbor's environment imports the rest
+    (modal's `dockerfile-parse`) only when the first sandbox opens."""
+    try:
+        listed = metadata.requires("harbor") or []
+    except metadata.PackageNotFoundError:
+        return []
+    for_extra = re.compile(rf"""extra\s*==\s*['"]{re.escape(name)}['"]""")
+    missing = []
+    for line in listed:
+        spec, _, marker = line.partition(";")
+        package = re.match(r"[A-Za-z0-9._-]+", spec.strip())
+        if package is None or package[0] == "harbor" or not for_extra.search(marker):
+            continue
+        try:
+            metadata.distribution(package[0])
+        except metadata.PackageNotFoundError:
+            missing.append(package[0])
+    return missing
 
 
 def logged_in(name: str, environ: Mapping[str, str]) -> bool:

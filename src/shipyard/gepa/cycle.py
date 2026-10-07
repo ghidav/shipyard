@@ -85,7 +85,7 @@ async def evolve(
 
     for member in list(pool.values()):
         await measure(member, columns)
-    while spent < budget and quiet < patience:
+    while spent < budget and quiet < max(patience, len(names)):
         leads = tally(pool, seen).leads() or {seeds[0].digest: 1}
         parent = pool[chosen.choices(list(leads), weights=list(leads.values()))[0]]
         # The window walks per component, so each reflects over the whole list in turn.
@@ -125,10 +125,14 @@ async def evolve(
 
 
 def best(pool: dict[str, Candidate], fitness: Fitness) -> Candidate:
-    """The frontier member measured on the most tasks, then with the highest aggregate,
-    ties by digest: a child whose full evaluation mostly died is one lucky cell at 1.0,
-    not the winner. The first of the pool when nothing was measured."""
-    return _ranked(pool, fitness)[0]
+    """The candidate measured on the most tasks, then with the highest aggregate, ties by
+    digest, over the whole pool: GEPA's pick is the best aggregate, and the frontier is
+    for drawing parents. The first of the pool when nothing was measured."""
+    measured = [digest for digest in pool if fitness.coverage(digest)]
+    if not measured:
+        return next(iter(pool.values()))
+    key = lambda digest: (fitness.coverage(digest), fitness.aggregate(digest) or 0.0, digest)  # noqa: E731
+    return pool[max(measured, key=key)]
 
 
 def _ranked(pool: dict[str, Candidate], fitness: Fitness) -> list[Candidate]:

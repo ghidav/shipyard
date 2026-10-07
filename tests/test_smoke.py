@@ -115,7 +115,7 @@ def test_a_served_smoke_samples_one_trial_and_reports_it(
         "  sandbox     docker       proxy  http://host.docker.internal:8000  (local)",
         "  harness     pi@0.85.1    profile pi (model_api=openai-completions)",
         f"  trial       {trial}   records 2   served Qwen/Qwen3-8B   verdict 1.0",
-        "  sandbox seconds 12.5   tokens prompt 13 cached 2 sampled 8",
+        "  sandbox seconds 12.5   tokens prompt 15 cached 2 sampled 8",
     ]
     assert Run.read(directory)["smoke"] is True and Run.read(directory)["failed"] is False
     [job] = list(record.read(directory / record.JOBS))

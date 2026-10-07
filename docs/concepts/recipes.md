@@ -110,7 +110,7 @@ Each batch in the plan is one step, numbered from 0 (see [Datasets](datasets.md)
    Degenerate groups are dropped, then the advantages, μ and the KL term are computed.
 6. **Step.** `forward_backward` and `optim_step` run on Tinker, `substeps` times.
 7. **Log.** One row is appended to `metrics.jsonl`.
-8. **Checkpoint.** When `step + 1` is divisible by `[checkpoints] every`, `step-<step + 1>` is saved. After the last batch, `final` is saved.
+8. **Checkpoint.** When `step + 1` is divisible by `[checkpoints] every`, `step-<step + 1>` is saved. After the last batch, `final` is saved with no expiry.
 
 A checkpoint saves a state path, from which training can continue, and a sampler path, from which a
 policy can be sampled. Both are kept for `ttl_hours`, which is at least 1 hour. Each checkpoint appends a row
@@ -189,7 +189,8 @@ reflection_model = "anthropic/claude-sonnet-5"
 
 The defaults are the paper's: `slow = "cispo"` with the importance weight truncated above 4.0,
 `kl_coef = 0.001`, `cycle = 6`, `population = 4`, `edits = "incremental"`, and a gepa budget of five
-passes over the fast phase's tasks. `population` must divide `group_size`; `check` blocks the run
+passes over the fast phase's tasks. Scoring the texts carried from the previous cycle comes on top of
+that budget, so a full population does not spend the search's passes before it starts. `population` must divide `group_size`; `check` blocks the run
 otherwise.
 
 Each cycle's population is kept under `runs/<id>/modules/cycle-<n>/<rank>/`, and the last

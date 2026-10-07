@@ -60,6 +60,8 @@ class Endpoint:
     keepalive_every: float = KEEPALIVE_EVERY
     token: str = field(default_factory=new_token)
     control_token: str | None = None
+    #: The Tinker session's `user_metadata`: the run and recipe it samples for.
+    metadata: dict[str, str] | None = None
     #: A test's way of making sampling clients; None opens Tinker's service client.
     client_factory: ClientFactory | None = field(default=None, repr=False)
 
@@ -114,7 +116,7 @@ class Endpoint:
         if self.client_factory is None and self._service is None:
             import tinker
 
-            self._service = tinker.ServiceClient()
+            self._service = tinker.ServiceClient(user_metadata=self.metadata)
         self._client = await self._make(self.model_path)
         if self.max_context is None and self._service is not None:
             self.max_context = await context_of(self._service, self.base_model)

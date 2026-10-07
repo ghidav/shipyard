@@ -82,7 +82,7 @@ See [Recipes](../concepts/recipes.md) for `dr-grpo` and `cispo`.
 5. **Log** one row to `metrics.jsonl`.
 6. **Checkpoint** when `step + 1` is a multiple of `[checkpoints] every`, and only after a step that trained.
 
-After the last step the run always saves a checkpoint tagged `final`.
+After the last step the run always saves a checkpoint tagged `final`, which Tinker keeps with no expiry.
 
 ## The metrics row
 
@@ -124,7 +124,7 @@ Each checkpoint appends one row, and `shipyard show` prints them as its `checkpo
 | `tag` | `step-<n>` after n steps, or `final` |
 | `state_path` | a `tinker://` path to the weights and optimizer state: what a run continues from |
 | `sampler_path` | a `tinker://` path to the weights for sampling: what a run measures |
-| `ttl_hours` | how long Tinker keeps both; at least 1, 168 by default |
+| `ttl_hours` | how long Tinker keeps both; at least 1, 168 by default, and null on `final`, which is kept |
 
 ## Continue from a checkpoint
 

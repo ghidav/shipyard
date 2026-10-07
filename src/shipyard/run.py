@@ -179,11 +179,12 @@ class Run:
             raise NothingServed(f"job {rolled.job}: {why}", rolled)
         return rolled
 
-    async def checkpoint(self, trainer: Any, tag: str) -> Checkpoint:
-        """Save state and sampler weights under `tag` at `[checkpoints] ttl_hours`, and
-        append both paths to `checkpoints.jsonl`: a record naming only the sampler path
-        can be measured again but never continued."""
-        saved = await trainer.save(tag, ttl_hours=self.config.checkpoints.ttl_hours)
+    async def checkpoint(self, trainer: Any, tag: str, *, keep: bool = False) -> Checkpoint:
+        """Save state and sampler weights under `tag` at `[checkpoints] ttl_hours`, or with no
+        TTL when `keep` (the final weights outlive the run), and append both paths to
+        `checkpoints.jsonl`: a record naming only the sampler path can never be continued."""
+        ttl = None if keep else self.config.checkpoints.ttl_hours
+        saved = await trainer.save(tag, ttl_hours=ttl)
         named = ("tag", "state_path", "sampler_path", "ttl_hours")
         record.append(
             self.directory / record.CHECKPOINTS, {key: getattr(saved, key) for key in named}

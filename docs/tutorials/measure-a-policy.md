@@ -158,7 +158,7 @@ jobs  1 row
   served           tinker
   bridged          2
   party            tinker
-  input_tokens     1882
+  input_tokens     6106
   cache_tokens     4224
   output_tokens    525
   sandbox          docker
@@ -168,7 +168,7 @@ costs
     "parties": {
       "tinker": {
         "trials": 2,
-        "input_tokens": 1882,
+        "input_tokens": 6106,
         "cache_tokens": 4224,
         "output_tokens": 525
       }
@@ -201,7 +201,7 @@ A Tinker-served run also writes `requests.jsonl`: one row per model call the pro
 
 Each row also carries `at`, `job`, `stop_reason`, `sample_ms`, `served`, `request_id` and `error`. Here `served` is null because the base model answered, and `error` is null because no call was refused or failed.
 
-- The prompts add up to 6,106 tokens: the 1,882 uncached plus the 4,224 cached in `costs.json`. The completions add up to 525.
+- The prompts add up to 6,106 tokens, the `input_tokens` in `costs.json`, and 4,224 of them were cached. The completions add up to 525.
 - Pi's own counts in each trial's `result.json` add up to the same 6,106 and 525. The proxy saw every call.
 - Each trial's second call is `bridged`. Its prompt was built from the first reply's tokens, so the trial would train as one sequence.
 

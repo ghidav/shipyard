@@ -327,3 +327,30 @@ async def test_a_scorer_that_returns_nothing_still_spends() -> None:
     assert scorer.asked > len(TASKS) and result.spent == scorer.asked
     assert result.pool == {seed("hold").digest: seed("hold")} and result.best == seed("hold")
     assert result.fitness.frontier() == set()
+
+
+def test_the_winner_is_the_best_aggregate_of_the_pool_and_top_k_takes_the_frontier() -> None:
+    """GEPA picks the best aggregate over every candidate, so a balanced 0.6 beats two
+    specialists that each lead half the tasks; fst's top K stays the frontier's."""
+    left, right, even = seed("left"), seed("right"), seed("even")
+    pool = {member.digest: member for member in (left, right, even)}
+    cells = [(left, (1, 1, 0, 0)), (right, (0, 0, 1, 1)), (even, (0.6, 0.6, 0.6, 0.6))]
+    seen = {
+        member.digest: {
+            str(t): Outcome(str(t), float(v)) for t, v in zip(TASKS, values, strict=True)
+        }
+        for member, values in cells
+    }
+    scores = tally(pool, seen)
+    assert scores.frontier() == {left.digest, right.digest}, "even leads no task"
+    assert best(pool, scores) == even
+    found = Evolution(even, pool, scores, rounds=0, spent=0)
+    assert {member.digest for member in found.top(2)} == {left.digest, right.digest}
+
+
+async def test_patience_waits_for_every_component_to_be_tried_once() -> None:
+    world = World()
+    result = await run(
+        seed("", "a", "b", "c", "d"), TASKS, write=Scripted([None] * 8), score=world, patience=1
+    )
+    assert result.rounds == 4, "one quiet round per component, not one in all"

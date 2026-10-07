@@ -47,11 +47,25 @@ def report(blueprint: Path) -> Report:
 
 def resolved(loaded: Blueprint) -> dict[str, Any]:
     """Every table as plain data with the defaults in, in the schema's order; `kind`
-    leads the recipe table as it does in the file."""
+    leads the recipe table as it does in the file, and a served model's renderer is the
+    one the proxy will load."""
     dumped = loaded.model_dump(mode="json")
     recipe = dumped["recipe"]
     dumped["recipe"] = {"kind": recipe["kind"], **{k: v for k, v in recipe.items() if k != "kind"}}
+    if loaded.model.served and not loaded.rollout.renderer:
+        dumped["rollout"]["renderer"] = recommended_renderer(loaded.model.name)
     return dumped
+
+
+def recommended_renderer(model: str) -> str:
+    """The cookbook's renderer for `model`, read off its model table without the network;
+    "" for a model the table does not know, which the proxy refuses when it starts."""
+    from tinker_cookbook.model_info import get_recommended_renderer_name
+
+    try:
+        return get_recommended_renderer_name(model)
+    except Exception:  # noqa: BLE001 - the proxy's start is where an unknown model is refused
+        return ""
 
 
 def as_toml(config: Mapping[str, Any]) -> str:

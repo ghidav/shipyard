@@ -27,6 +27,7 @@ from shipyard.preflight import (
     PROVIDERS,
     docker_running,
     extra_installed,
+    extra_missing,
     logged_in,
 )
 from shipyard.proxy import tunnel
@@ -164,6 +165,40 @@ def test_a_missing_extra_names_the_command_that_installs_it(
     monkeypatch.setenv("COLUMNS", "200")
     shown = runner.invoke(app, ["check", str(blueprint(here, "e2b"))]).output
     assert 'run `uv add "harbor[e2b]"`' in shown
+
+
+def test_the_extra_is_every_package_harbor_lists_for_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    from importlib import metadata as installed
+
+    listed = [
+        "modal>=1.5.4 ; extra == 'modal'",
+        "dockerfile-parse>=2.0.1 ; extra == 'modal'",
+        "e2b>=2.25.0 ; extra == 'e2b'",
+        "harbor[modal] ; extra == 'cloud'",
+        "pydantic>=2",
+    ]
+    here = {"modal", "pydantic"}
+
+    def distribution(name: str) -> object:
+        if name not in here:
+            raise installed.PackageNotFoundError(name)
+        return object()
+
+    monkeypatch.setattr(installed, "requires", lambda name: listed)
+    monkeypatch.setattr(installed, "distribution", distribution)
+    assert extra_missing("modal") == ["dockerfile-parse"]
+    assert extra_missing("e2b") == ["e2b"]
+    assert extra_missing("cloud") == []
+    monkeypatch.setattr(preflight, "extra_missing", extra_missing)
+    assert preflight.provider_findings(
+        "modal", {"MODAL_TOKEN_ID": "a", "MODAL_TOKEN_SECRET": "b"}
+    ) == [
+        Finding(
+            "blocked",
+            "sandbox modal: Harbor's modal extra lacks dockerfile-parse; "
+            'run `uv add "harbor[modal]"`',
+        )
+    ]
 
 
 def test_a_short_setup_time_is_a_warning_for_a_sandbox_elsewhere_only(here: Path) -> None:

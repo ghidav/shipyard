@@ -242,3 +242,21 @@ def test_the_probe_asks_the_backend_only_under_a_key_and_names_it(
         "warning",
         "could not ask tinker@api.fireworks.ai whether it serves Qwen/Qwen3-8B: no route to host",
     )
+
+
+# ------------------------------------------------------------------ the reflector's key
+
+
+def test_a_claude_code_reflector_without_an_anthropic_key_is_warned_about() -> None:
+    unkeyed = preflight.key_finding("claude-code", "claude-sonnet-5-5", {})
+    assert unkeyed is not None and unkeyed.level == "warning"
+    assert "ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN" in unkeyed.text
+    assert preflight.key_finding("claude-code", None, {"ANTHROPIC_AUTH_TOKEN": "t"}) is None
+    assert preflight.key_finding("claude-code@2.1.0", None, {"ANTHROPIC_API_KEY": "k"}) is None
+
+
+def test_a_reflector_harness_with_no_key_names_or_no_harbor_name_is_quiet() -> None:
+    assert preflight.key_finding("pi@0.85.1", "Qwen/Qwen3-8B", {}) is None
+    assert preflight.key_finding("no-such-harness", "m", {}) is None
+    unkeyed = preflight.key_finding("pi@0.85.1", "anthropic/claude-sonnet-5-5", {})
+    assert unkeyed is not None and "ANTHROPIC_API_KEY" in unkeyed.text

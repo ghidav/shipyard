@@ -79,11 +79,13 @@ def start_weights(cfg: Blueprint) -> str | None:
     return None if cfg.trains else (cfg.model.from_checkpoint or None)
 
 
-def endpoint_settings(cfg: Blueprint) -> dict[str, Any]:
+def endpoint_settings(cfg: Blueprint, *, run: str | None = None) -> dict[str, Any]:
     """What `shipyard serve` is handed: the model and its checkpoint, the bind, the
-    renderer, and every `[rollout]` knob the endpoint pins; volatile lines only when
-    the run asked for the cut."""
+    renderer, and every `[rollout]` knob the endpoint pins; volatile lines unless the
+    run keeps them. Named, the run tags the proxy's Tinker session, as the trainer's is
+    tagged."""
     rollout, profile = cfg.rollout, profile_for(cfg.rollout.harness)
+    tagged = {"metadata": {"shipyard_run": run, "shipyard_recipe": cfg.recipe.kind}} if run else {}
     return {
         "model": cfg.model.name,
         "weights": start_weights(cfg),
@@ -97,6 +99,7 @@ def endpoint_settings(cfg: Blueprint) -> dict[str, Any]:
         "max_context": rollout.max_context or None,
         "fill_context": rollout.fill_context,
         "volatile": list(volatile_for(rollout, profile)),
+        **tagged,
     }
 
 
@@ -171,9 +174,12 @@ class Serving:
                     f"{cfg.rollout.endpoint_url} opened no control route to this run: set "
                     f"{CONTROL_TOKEN_ENV}, or start it with --weights"
                 )
+            else:
+                # Unpointed, it must still serve what this run measures: the base model.
+                self.told, self.pointed = None, True
             return self.proxy
         log = self._log(PROXY_LOG)
-        settings = endpoint_settings(cfg)
+        settings = endpoint_settings(cfg, run=self.directory.name)
         if where == "local":
             self.proxy = await Proxy.local(
                 settings, host=cfg.rollout.host, environ=self.environ, log=log
@@ -232,13 +238,21 @@ class Serving:
             noted["cut"] += int(counts.get("cut", 0))
             for item in records:
                 hit = min(int(item.cached_tokens or 0), len(item.prompt_token_ids))
-                counted["input_tokens"] += len(item.prompt_token_ids) - hit
+                counted["input_tokens"] += len(item.prompt_token_ids)
                 counted["cache_tokens"] += hit
                 counted["output_tokens"] += len(item.completion_token_ids)
                 noted["bridged"] += int(item.bridged)
                 record.append(self.directory / record.REQUESTS, _row(rolled.job, name, item, hit))
             if counter is not None:
                 turns = turns_asked(Path(trial), self.config.rollout.harness, counter)
+                if turns == 0 and records:
+                    logger.warning(
+                        "%s: the %s turn counter found no turns beside %d record(s); its log "
+                        "format may have moved, so this trial is not checked",
+                        name,
+                        bare_name(self.config.rollout.harness),
+                        len(records),
+                    )
                 if turns is not None:
                     asked[name] = turns
         counted["trials"] = sum(1 for _ in results(rolled))

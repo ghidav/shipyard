@@ -116,14 +116,22 @@ def test_the_endpoint_settings_are_the_rollout_knobs_and_the_checkpoint() -> Non
     bare = endpoint_settings(blueprint())
     assert bare["weights"] is None and bare["renderer"] is None and bare["max_context"] is None
     assert (bare["bind"], bare["bind_port"], bare["max_tokens"]) == ("0.0.0.0", 0, 8192)
+    assert "metadata" not in bare
 
 
-def test_volatile_lines_are_cut_only_when_asked_and_the_profiles_are_the_default() -> None:
+def test_the_proxys_tinker_session_is_tagged_with_the_run_and_its_recipe() -> None:
+    cfg = blueprint()
+    tagged = endpoint_settings(cfg, run="dapo-docker__abc")
+    assert tagged["metadata"] == {
+        "shipyard_run": "dapo-docker__abc",
+        "shipyard_recipe": cfg.recipe.kind,
+    }
+
+
+def test_volatile_lines_are_cut_by_default_and_the_profiles_say_which() -> None:
     claude = PROFILES["claude-code"]
-    assert volatile_for(blueprint(harness="claude-code").rollout, claude) == ()
-    assert volatile_for(blueprint(harness="claude-code", cut_volatile=True).rollout, claude) == (
-        claude.volatile
-    )
+    assert volatile_for(blueprint(harness="claude-code").rollout, claude) == claude.volatile
+    assert volatile_for(blueprint(harness="claude-code", cut_volatile=False).rollout, claude) == ()
     assert endpoint_settings(blueprint(harness="claude-code", cut_volatile=True))["volatile"] == [
         *claude.volatile
     ]
@@ -193,7 +201,7 @@ async def test_a_remote_proxy_without_a_control_token_serves_only_what_it_was_st
     environ = {PROXY_TOKEN_ENV: "t"}
     held = Serving(blueprint(endpoint_url="https://p.example"), tmp_path, environ=environ)
     await held.start()
-    assert fake.swapped == [] and held.pointed is False and held.told is None
+    assert fake.swapped == [] and held.pointed is True and held.told is None, "base, checked"
     with pytest.raises(RuntimeError, match="not started"):
         await Serving(blueprint(endpoint_url="https://p.example"), tmp_path).point(None)
     cfg = blueprint(endpoint_url="https://p.example", from_checkpoint="tinker://w/step-4")
@@ -241,7 +249,7 @@ async def test_harvest_writes_a_row_per_record_and_counts_the_tokens(
     # cached = 5, sampled = 2 + 4 + 0 + 2.
     assert harvested.counted == {
         "trials": 2,
-        "input_tokens": 10,
+        "input_tokens": 15,
         "cache_tokens": 5,
         "output_tokens": 8,
     }
@@ -308,14 +316,19 @@ async def test_a_batch_answered_by_other_weights_is_refused(
         answered_by_ours("j", {"t": [made(served="tinker://x/step-1")]}, None)
 
 
-async def test_a_remote_proxy_this_run_did_not_point_is_not_checked(
+async def test_a_remote_proxy_this_run_did_not_point_must_serve_the_base_model(
     fake: FakeProxy, tmp_path: Path
 ) -> None:
+    """With no control route the run cannot point it, so it measures the base model, and a
+    batch answered by any checkpoint is refused rather than filed as the base's."""
     fake.answers = {"alpha": [made(served="tinker://theirs/step-5")]}
     environ = {PROXY_TOKEN_ENV: "t"}
     held = Serving(blueprint(endpoint_url="https://p.example"), tmp_path, environ=environ)
     await held.start()
-    harvested = await held.harvest(rolled(tmp_path, ("alpha", {"reward": 1.0})))
+    with pytest.raises(ValueError, match="re-pointed"):
+        await held.harvest(rolled(tmp_path, ("alpha", {"reward": 1.0})))
+    fake.answers = {"beta": [made()]}
+    harvested = await held.harvest(rolled(tmp_path, ("beta", {"reward": 1.0})))
     assert harvested.counted["output_tokens"] == 2
 
 

@@ -203,9 +203,16 @@ def test_check_names_the_reflector_and_blocks_a_blank_one(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     home = _blueprint(tmp_path)
     found = check(home)
     assert all(f.level == "ok" for f in found)
+    monkeypatch.delenv("ANTHROPIC_API_KEY")
+    assert [f.text for f in check(home) if f.level == "warning"] == [
+        "reflector claude-code: none of ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN is set, the "
+        "keys Harbor hands it; its first call fails unless it signs in another way"
+    ]
     texts = [f.text for f in found]
     assert texts[5].startswith("modules: 1 component(s) under")
     assert texts[6] == (

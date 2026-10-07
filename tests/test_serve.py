@@ -130,6 +130,7 @@ def test_settings_carry_the_runs_other_keys_and_nothing_else() -> None:
     )
     assert (made.temperature, made.max_tokens, made.max_context) == (0.5, 64, 4096)
     assert made.fill_context is True and made.volatile == ("a", "b")
+    assert build(settings={"metadata": {"shipyard_run": "r"}}).metadata == {"shipyard_run": "r"}
     with pytest.raises(ValueError, match="graph_text"):
         build(settings={"graph_text": True})
     with pytest.raises(ValueError, match="bind"):
