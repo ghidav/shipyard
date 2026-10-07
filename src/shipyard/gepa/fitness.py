@@ -63,15 +63,30 @@ class Fitness:
                 seen.setdefault(task, None)
         return list(seen)
 
-    def frontier(self) -> set[str]:
-        """Every candidate that is best on at least one task, ties included: the parents
-        the next round draws from, and where the winner is looked for."""
-        best: set[str] = set()
+    def fronts(self) -> dict[str, set[str]]:
+        """Per task, the candidates holding its best score, ties included."""
+        found: dict[str, set[str]] = {}
         for task in self.tasks:
             column = {digest: row[task] for digest, row in self.scores.items() if task in row}
             top = max(column.values())
-            best |= {digest for digest, value in column.items() if value >= top}
-        return best
+            found[task] = {digest for digest, value in column.items() if value >= top}
+        return found
+
+    def leads(self) -> dict[str, int]:
+        """GEPA's Pareto selection: the candidates best on at least one task, less those
+        dominated (every task they lead is led by another kept candidate, weakest removed
+        first), each with how many tasks it leads, the weight a parent is drawn with."""
+        fronts = list(self.fronts().values())
+        kept = {digest for front in fronts for digest in front}
+        for digest in sorted(kept, key=lambda each: (self.aggregate(each) or 0.0, each)):
+            others = kept - {digest}
+            if others and all(front & others for front in fronts if digest in front):
+                kept = others
+        return {digest: sum(digest in front for front in fronts) for digest in sorted(kept)}
+
+    def frontier(self) -> set[str]:
+        """The Pareto frontier: the candidates `leads` keeps."""
+        return set(self.leads())
 
     def aggregate(self, digest: str, tasks: Sequence[str] | None = None) -> float | None:
         """The mean of a row, over `tasks` when given; None when it holds nothing of them."""

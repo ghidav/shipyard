@@ -132,10 +132,11 @@ async def test_the_recipe_runs_end_to_end_on_fakes(
     assert row["seq"] == 1 and row["round"] == 1 and row["component"] == "solving"
     assert (row["parent"], row["child"]) == (seeded.digest, winner.digest)
     assert (row["parent_mean"], row["child_mean"], row["accepted"]) == (0.0, 1.0, True)
-    assert (row["pool"], row["frontier"], row["spent"]) == (2, 2, 4)
+    # The winner ties the seed on beta and beats it on alpha: the seed is dominated.
+    assert (row["pool"], row["frontier"], row["spent"]) == (2, 1, 4)
     assert final["seq"] == 2 and final["evolution"] is True
     assert (final["rounds"], final["spent"], final["best"]) == (1, 4, winner.digest)
-    assert final["best_mean"] == 0.5 and final["frontier"] == 2 and final["pool"] == 2
+    assert final["best_mean"] == 0.5 and final["frontier"] == 1 and final["pool"] == 2
     assert final["moved"] is True
     costs = record.read_json(opened.directory / record.COSTS)
     assert costs["parties"]["anthropic"]["trials"] == 1

@@ -167,7 +167,8 @@ async def test_a_child_is_accepted_on_a_strict_minibatch_win_and_then_fully_eval
     assert result.spent == 4 + 2 + 2 and result.best == child
     assert log.rows[0]["accepted"] is True and log.rows[0]["child"] == child.digest
     assert (log.rows[0]["parent_mean"], log.rows[0]["child_mean"]) == (BASELINE, 1.0)
-    assert (log.rows[0]["pool"], log.rows[0]["frontier"], log.rows[0]["spent"]) == (2, 2, 8)
+    # The child leads t1 and t2 and ties the seed on the rest: the seed is dominated.
+    assert (log.rows[0]["pool"], log.rows[0]["frontier"], log.rows[0]["spent"]) == (2, 1, 8)
 
 
 async def test_a_child_that_did_not_beat_its_parent_costs_one_minibatch() -> None:

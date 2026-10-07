@@ -1,6 +1,7 @@
-"""The search: measure the seed on every task, then draw a parent off the frontier, ask
-for a rewrite of one component, judge the child on a minibatch, and give it the rest of
-the tasks only when it beat its parent there. The weights never move here."""
+"""The search (GEPA, Agrawal et al., arXiv 2507.19457): measure the seeds on every task, then
+draw a parent off the Pareto frontier in proportion to the tasks it leads, ask for a rewrite
+of one component, judge the child on a minibatch, and give it the rest of the tasks only when
+it beat its parent there. The weights never move here."""
 
 from __future__ import annotations
 
@@ -34,9 +35,15 @@ class Evolution:
     rounds: int
     spent: int
 
+    def top(self, k: int) -> list[Candidate]:
+        """The k candidates to carry on: the frontier ranked as `best` ranks it, then the
+        rest of the pool, the ranking repeated when the pool holds fewer than k."""
+        ranked = _ranked(self.pool, self.fitness)
+        return [ranked[at % len(ranked)] for at in range(k)]
+
 
 async def evolve(
-    seed: Candidate,
+    seed: Candidate | Sequence[Candidate],
     tasks: Sequence[Path],
     *,
     write: Proposer,
@@ -50,14 +57,16 @@ async def evolve(
 ) -> Evolution:
     """The loop, `budget` counted in rollouts at `rollouts` per task scored: a text is
     scored once per task and the measurement reused; `patience` rounds in a row with no
-    child to score end it, since those spend nothing. A scorer that raises is not caught."""
+    child to score end it, since those spend nothing. `seed` is one candidate or a
+    population, every member measured first. A scorer that raises is not caught."""
     chosen = random.Random() if rng is None else rng
     told = log if log is not None else _silent
     columns = tuple(dict.fromkeys(Path(task) for task in tasks))
-    names = tuple(seed.components)
+    seeds = [seed] if isinstance(seed, Candidate) else list(seed)
+    names = tuple(seeds[0].components) if seeds else ()
     if not columns or not names:
         raise ValueError(f"nothing to evolve: {len(columns)} task(s), {len(names)} component(s)")
-    pool: dict[str, Candidate] = {seed.digest: seed}
+    pool: dict[str, Candidate] = {member.digest: member for member in seeds}
     declined: set[str] = set()
     seen: dict[str, dict[str, Outcome]] = {}
     spent = rounds = quiet = 0
@@ -74,11 +83,11 @@ async def evolve(
                 row[outcome.task] = outcome
         return [row[str(task)] for task in over if str(task) in row]
 
-    await measure(seed, columns)
+    for member in list(pool.values()):
+        await measure(member, columns)
     while spent < budget and quiet < patience:
-        fitness = tally(pool, seen)
-        front = sorted(fitness.frontier()) or [seed.digest]
-        parent = pool[chosen.choice(front)]
+        leads = tally(pool, seen).leads() or {seeds[0].digest: 1}
+        parent = pool[chosen.choices(list(leads), weights=list(leads.values()))[0]]
         # The window walks per component, so each reflects over the whole list in turn.
         window = _minibatch(columns, rounds // len(names), minibatch)
         component = component_for(rounds, names)
@@ -119,19 +128,19 @@ def best(pool: dict[str, Candidate], fitness: Fitness) -> Candidate:
     """The frontier member measured on the most tasks, then with the highest aggregate,
     ties by digest: a child whose full evaluation mostly died is one lucky cell at 1.0,
     not the winner. The first of the pool when nothing was measured."""
-    front = sorted(fitness.frontier())
-    if not front:
-        return next(iter(pool.values()))
-    return pool[
-        max(
-            front,
-            key=lambda digest: (
-                fitness.coverage(digest),
-                fitness.aggregate(digest) or 0.0,
-                digest,
-            ),
-        )
-    ]
+    return _ranked(pool, fitness)[0]
+
+
+def _ranked(pool: dict[str, Candidate], fitness: Fitness) -> list[Candidate]:
+    """The frontier by (coverage, aggregate, digest), best first, then the rest of the pool
+    by (coverage, aggregate) in the order it joined."""
+
+    def key(digest: str) -> tuple[int, float]:
+        return fitness.coverage(digest), fitness.aggregate(digest) or 0.0
+
+    front = sorted(fitness.frontier(), key=lambda digest: (*key(digest), digest), reverse=True)
+    rest = sorted((digest for digest in pool if digest not in front), key=key, reverse=True)
+    return [pool[digest] for digest in front + rest]
 
 
 def _minibatch(tasks: Sequence[Path], window: int, size: int) -> list[Path]:

@@ -29,9 +29,12 @@ def test_the_frontier_keeps_a_candidate_that_wins_one_task() -> None:
 
 
 def test_a_tie_on_a_column_keeps_both_and_there_is_no_tolerance() -> None:
-    seen = _seen(a=[Outcome("t1", 0.6), Outcome("t2", 1.0)], b=[Outcome("t1", 0.6)])
+    seen = _seen(
+        a=[Outcome("t1", 0.6), Outcome("t2", 1.0)], b=[Outcome("t1", 0.6), Outcome("t3", 1.0)]
+    )
     scores = tally(["a", "b"], seen)
-    assert scores.frontier() == {"a", "b"}, "tied on t1"
+    assert scores.frontier() == {"a", "b"}, "tied on t1, and each leads a task of its own"
+    assert scores.leads() == {"a": 2, "b": 2}
     close = tally(["a", "b"], _seen(a=[Outcome("t1", 0.62)], b=[Outcome("t1", 0.60)]))
     assert close.frontier() == {"a"}, "lost by a hair is lost"
     with pytest.raises(TypeError):
@@ -77,3 +80,11 @@ def test_an_outcome_carries_what_the_reflector_is_shown() -> None:
     )
     assert outcome.count == 1
     assert not hasattr(outcome, "forks")
+
+
+def test_a_dominated_candidate_leaves_the_frontier() -> None:
+    """GEPA's selection: b leads only t1, which a leads too, so b is dominated."""
+    seen = _seen(a=[Outcome("t1", 0.6), Outcome("t2", 1.0)], b=[Outcome("t1", 0.6)])
+    scores = tally(["a", "b"], seen)
+    assert scores.fronts() == {"t1": {"a", "b"}, "t2": {"a"}}
+    assert scores.frontier() == {"a"} and scores.leads() == {"a": 2}
