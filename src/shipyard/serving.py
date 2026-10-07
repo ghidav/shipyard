@@ -72,6 +72,13 @@ def tinker_base_url(environ: Mapping[str, str] | None = None) -> str:
     return (environ.get("TINKER_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
 
 
+def start_weights(cfg: Blueprint) -> str | None:
+    """The checkpoint the proxy starts on: a sampling run's `from_checkpoint` (a sampler
+    path); none for a training run, whose `from_checkpoint` is a state path Tinker cannot
+    sample and whose first step points the proxy at the weights it publishes."""
+    return None if cfg.trains else (cfg.model.from_checkpoint or None)
+
+
 def endpoint_settings(cfg: Blueprint) -> dict[str, Any]:
     """What `shipyard serve` is handed: the model and its checkpoint, the bind, the
     renderer, and every `[rollout]` knob the endpoint pins; volatile lines only when
@@ -79,7 +86,7 @@ def endpoint_settings(cfg: Blueprint) -> dict[str, Any]:
     rollout, profile = cfg.rollout, profile_for(cfg.rollout.harness)
     return {
         "model": cfg.model.name,
-        "weights": cfg.model.from_checkpoint or None,
+        "weights": start_weights(cfg),
         "renderer": rollout.renderer or None,
         "bind": rollout.bind,
         "bind_port": rollout.bind_port,
@@ -146,7 +153,7 @@ class Serving:
         command line, remote pointed through its control route or left as it stands."""
         if self.proxy is not None:
             return self.proxy
-        cfg, weights = self.config, self.config.model.from_checkpoint or None
+        cfg, weights = self.config, start_weights(self.config)
         where = self.placement = placement(cfg.rollout)
         if where == "remote":
             self.proxy = Proxy.remote(

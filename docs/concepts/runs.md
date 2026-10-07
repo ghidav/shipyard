@@ -151,9 +151,9 @@ restore_optimizer = true
 The rest of the blueprint is as before. The new run has its own id and an empty record. Its
 batches start again from the first epoch, so change `[data] seed` for another order.
 
-The same path also goes to the proxy, which loads it as it starts, before the first step points
-it at newly published weights. With `kl_coef > 0` it is the anchor of the KL term too. So it
-must be a path the backend can both train from and sample from.
+The first step publishes the loaded weights for sampling and points the proxy at them. With
+`kl_coef > 0`, the anchor of the KL term samples those same starting weights. `check` blocks a
+training run whose `from_checkpoint` is a `sampler_path`.
 
 To measure a checkpoint without training, name its `sampler_path` in an `evaluate`
 blueprint's `from_checkpoint`.

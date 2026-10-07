@@ -142,10 +142,11 @@ async def training(run: Run, preset: Preset) -> AsyncIterator[tuple[Trainer, Any
     try:
         anchor = None
         if preset.kl_coef > 0:
-            # `from_checkpoint` is a sampler path here and for the proxy, a state path for
-            # `Trainer.create`: a blueprint names one both factories accept.
+            # The starting weights: the base model, or the loaded state published as
+            # sampler weights, since Tinker samples only a sampler path.
+            start = await trainer.publish("anchor") if model.from_checkpoint else None
             anchor = await service.create_sampling_client_async(
-                base_model=model.name, model_path=model.from_checkpoint or None
+                base_model=model.name, model_path=start
             )
         await serving.start()
         yield trainer, anchor

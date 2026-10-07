@@ -17,7 +17,7 @@ The **For** column says when a key matters:
 |---|---|---|---|---|
 | `name` | string | required | all | The model. For a served model, the base model as the backend lists it, such as `"Qwen/Qwen3-8B"`; otherwise the name the harness asks its provider for. |
 | `provider` | string | `"tinker"` | all | Who serves the weights. `"tinker"`: this run serves them through its proxy, from a Tinker-API backend. Anything else: the harness calls that provider itself. |
-| `from_checkpoint` | string | unset | served | A `tinker://` path to start from instead of the base model: a checkpoint's `state_path` to go on training, its `sampler_path` to measure it. The proxy loads it too, and so does the KL anchor when `kl_coef > 0`. |
+| `from_checkpoint` | string | unset | served | A `tinker://` path to start from instead of the base model: a checkpoint's `state_path` to go on training, its `sampler_path` to measure it. `check` blocks the other one. |
 | `lora_rank` | integer | unset (32) | gradient | The LoRA rank of a new training client. Not used with `from_checkpoint`. |
 | `restore_optimizer` | boolean | `false` | gradient | With `from_checkpoint`, load the optimizer state as well as the weights. |
 

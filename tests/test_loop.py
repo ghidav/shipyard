@@ -274,6 +274,27 @@ async def test_a_kl_anchor_is_a_sampling_client_on_the_starting_weights(
     assert tinker["anchor_tokens"] == 8 * SEQUENCE_TOKENS
 
 
+async def test_a_kl_anchor_from_a_checkpoint_samples_weights_published_from_its_state(
+    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
+) -> None:
+    """Tinker samples only a sampler path, and `from_checkpoint` of a training run is a state
+    path: the anchor gets the loaded state published, and the proxy starts on the base."""
+    proxy, service = fakes
+    state = "tinker://run:train:0/weights/final"
+    home = _blueprint(
+        tmp_path,
+        **{
+            "batch_size = 2": "batch_size = 4",
+            "learning_rate = 2e-5": "learning_rate = 2e-5\nkl_coef = 0.1",
+            "[model]\n": f'[model]\nfrom_checkpoint = "{state}"\n',
+        },
+    )
+    await _run(home, tmp_path, Alternating())
+    published = "tinker://fake/sampler_weights/anchor"
+    assert service.calls == [("from_state", state), ("sampling", MODEL, published)]
+    assert any(call[:2] == ("save_weights_for_sampler", "anchor") for call in service.client.calls)
+
+
 async def test_a_run_whose_model_is_not_served_is_refused_before_a_session_opens(
     tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
 ) -> None:

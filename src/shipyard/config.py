@@ -221,6 +221,11 @@ class Blueprint(_Table):
         return self._raw
 
     @property
+    def trains(self) -> bool:
+        """Whether the recipe moves the weights: the gradient recipes and fst."""
+        return isinstance(self.recipe, Gradient)
+
+    @property
     def home(self) -> Path:
         """The directory the blueprint was loaded from, which `[recipe] modules` is under."""
         return self._home
@@ -316,6 +321,8 @@ def findings(loaded: Blueprint) -> list[Finding]:
         Finding("ok", f"harness {rollout.harness}, sandbox {rollout.sandbox}"),
     ]
     found += [_dataset_finding(name) for name in loaded.datasets]
+    if (checkpoint := _checkpoint_finding(loaded)) is not None:
+        found.append(checkpoint)
     if (directory := modules_dir(loaded)) is not None:
         found.append(_modules_finding(directory))
     if isinstance(loaded.recipe, GepaRecipe | FstRecipe):
@@ -336,6 +343,25 @@ def findings(loaded: Blueprint) -> list[Finding]:
         found.append(Finding("blocked", f"[rollout] sandbox: {named}"))
     found += preflight_findings(loaded)
     return found
+
+
+def _checkpoint_finding(loaded: Blueprint) -> Finding | None:
+    """`blocked` when `from_checkpoint` is the other column of `checkpoints.jsonl`: a training
+    run resumes from a `state_path`, and anything that only samples needs a `sampler_path`."""
+    named = loaded.model.from_checkpoint or ""
+    if loaded.trains and "/sampler_weights/" in named:
+        return Finding(
+            "blocked",
+            "[model] from_checkpoint: a training run resumes from a checkpoint's state_path "
+            "(tinker://.../weights/...), not its sampler_path",
+        )
+    if not loaded.trains and "/weights/" in named and "/sampler_weights/" not in named:
+        return Finding(
+            "blocked",
+            f"[model] from_checkpoint: {loaded.recipe.kind} samples a checkpoint's sampler_path "
+            "(tinker://.../sampler_weights/...), not its state_path",
+        )
+    return None
 
 
 def _modules_finding(directory: Path) -> Finding:

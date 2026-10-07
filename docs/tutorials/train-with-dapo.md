@@ -137,7 +137,7 @@ from_checkpoint = "<the state_path of a checkpoints.jsonl row>"
 restore_optimizer = true
 ```
 
-The rest of the blueprint is as before. `from_checkpoint` loads the training client from that state, so `lora_rank` is not read. The proxy loads the same path as it starts, before the first step points it at new weights, and so does the KL anchor when `kl_coef > 0`; the path must be one the backend can both train from and sample from. `restore_optimizer = true` also loads the optimizer's state. Left `false`, the weights continue with a fresh optimizer. The continuation is a new run with its own id, and its steps count from 0 again.
+The rest of the blueprint is as before. `from_checkpoint` loads the training client from that state, so `lora_rank` is not read. The first step publishes those weights for sampling and points the proxy at them; with `kl_coef > 0` the KL anchor samples them too. `check` blocks a `sampler_path` here. `restore_optimizer = true` also loads the optimizer's state. Left `false`, the weights continue with a fresh optimizer. The continuation is a new run with its own id, and its steps count from 0 again.
 
 To measure a checkpoint instead, an `evaluate` blueprint names its `sampler_path` in `from_checkpoint`, and the proxy serves those weights.
 
