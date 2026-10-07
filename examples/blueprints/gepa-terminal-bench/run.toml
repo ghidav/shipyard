@@ -1,0 +1,21 @@
+# Evolve a skill for Inkling-Small on a Terminal-Bench sample; Claude Code writes the rewrites.
+[model]
+name = "thinkingmachines/Inkling-Small"
+
+[data]
+dataset = "terminal-bench-sample"
+batch_size = 10
+group_size = 2
+
+[rollout]
+harness = "pi@0.85.1"
+sandbox = "modal"
+concurrency = 16
+setup_timeout = 900
+max_tokens = 8192
+
+[recipe]
+kind = "gepa"
+reflection_harness = "claude-code"
+reflection_model = "claude-sonnet-5-5"
+edits = "incremental"

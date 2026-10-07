@@ -1,0 +1,23 @@
+# Train Inkling-Small with cispo on Reasoning Gym's easy split: 16 problems a step, 8 rollouts each.
+[model]
+name = "thinkingmachines/Inkling-Small"
+lora_rank = 32
+
+[data]
+dataset = "reasoning-gym-easy"
+batch_size = 16
+group_size = 8
+
+[rollout]
+harness = "pi@0.85.1"
+sandbox = "modal"
+concurrency = 32
+setup_timeout = 900
+max_tokens = 8192
+
+[recipe]
+kind = "cispo"
+learning_rate = 2e-5
+
+[checkpoints]
+every = 10
