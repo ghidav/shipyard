@@ -113,9 +113,9 @@ blocked  no dataset at tasks/hello-wrld: no valid Harbor task directory under it
 
 ```console
 $ shipyard run blueprints/01-eval-provider-docker
-01-eval-provider-docker__g9SJNBf  /path/to/workspace/runs/01-eval-provider-docker__g9SJNBf
+01-eval-provider-docker__8Y8Byb4  /path/to/workspace/runs/01-eval-provider-docker__8Y8Byb4
 ...
-01-eval-provider-docker__g9SJNBf  finished
+01-eval-provider-docker__8Y8Byb4  finished
 ```
 
 The first line names the run: the blueprint's directory, two underscores, seven random characters. Harbor's own logs, and a progress bar per job on a terminal, come in between. Run `blueprints/02-eval-tinker-docker` the same way.
@@ -125,20 +125,21 @@ The first line names the run: the blueprint's directory, two underscores, seven 
 `shipyard runs` lists the runs with their state (see [Commands](../reference/cli.md)). `shipyard show` prints one run, section by section:
 
 ```console
-$ shipyard show 02-eval-tinker-docker__eTNXY25
-02-eval-tinker-docker__eTNXY25
+$ shipyard show 02-eval-tinker-docker__9YEWVfo
+02-eval-tinker-docker__9YEWVfo
 process
   state      finished
-  pid        18425
-  started    2026-10-07T20:56:22.261688+00:00
-  finished   2026-10-07T20:57:52.361554+00:00
+  pid        78770
+  started    2026-10-07T22:33:37.769228+00:00
+  finished   2026-10-07T22:34:35.996552+00:00
   version    0.1.0
   kind       evaluate
   blueprint  /path/to/workspace/blueprints/02-eval-tinker-docker
-  directory  /path/to/workspace/runs/02-eval-tinker-docker__eTNXY25
+  directory  /path/to/workspace/runs/02-eval-tinker-docker__9YEWVfo
+  proxy      {"placement": "local", "origin": "http://host.docker.internal:58735"}
   backend    https://tinker.thinkingmachines.dev/services/tinker-prod
 metrics  2 rows
-  at          2026-10-07T20:57:50.873722+00:00
+  at          2026-10-07T22:34:34.999038+00:00
   seq         2
   evaluation  true
   batches     1
@@ -147,35 +148,45 @@ metrics  2 rows
   masked      0
   mean        1.0
 jobs  1 row
-  ...
+  at               2026-10-07T22:34:34
+  job              02-eval-tinker-docker__9YEWVfo-0000
+  purpose          rollout
+  trials           2
+  batch            0
+  tasks            1
+  graded           2
+  served           tinker
+  bridged          2
+  party            tinker
+  input_tokens     1882
+  cache_tokens     4224
+  output_tokens    525
+  sandbox          docker
+  sandbox_seconds  69.63496599999999
 costs
   {
     "parties": {
       "tinker": {
         "trials": 2,
-        "input_tokens": 1992,
+        "input_tokens": 1882,
         "cache_tokens": 4224,
-        "output_tokens": 727
+        "output_tokens": 525
       }
     },
     "sandbox": {
       "docker": {
         "trials": 2,
-        "seconds": 131.392899
+        "seconds": 69.63496599999999
       }
     }
   }
 ```
 
-`metrics.jsonl` holds a row per batch, then one row for the whole run, marked `evaluation`. Both trials were graded and both scored 1, so the mean is 1.0. A masked trial, one the run could not measure fairly, would be left out of the mean, never counted as 0 (see [Admission](../concepts/admission.md)). The run took 90 seconds; the two containers ran for 131 seconds between them.
+`process` says where the proxy ran (`local`, on this machine, reached from the containers as `host.docker.internal`) and which Tinker backend served the weights. `metrics.jsonl` holds a row per batch, then one row for the whole run, marked `evaluation`. Both trials were graded and both scored 1, so the mean is 1.0. A masked trial, one the run could not measure fairly, would be left out of the mean, never counted as 0 (see [Admission](../concepts/admission.md)). The run took 58 seconds; the two containers ran for 70 seconds between them.
 
-The jobs section, cut above, is a table of `jobs.jsonl`: one row per Harbor job. Here is the row as the file holds it:
+The jobs section holds `jobs.jsonl`, one row per Harbor job, printed as a block when it is wider than the terminal.
 
-```json title="runs/02-eval-tinker-docker__eTNXY25/jobs.jsonl"
-{"at": "2026-10-07T20:57:50.871956+00:00", "job": "02-eval-tinker-docker__eTNXY25-0000", "purpose": "rollout", "trials": 2, "batch": 0, "tasks": 1, "graded": 2, "served": "tinker", "bridged": 2, "party": "tinker", "input_tokens": 1992, "cache_tokens": 4224, "output_tokens": 727, "sandbox": "docker", "sandbox_seconds": 131.392899}
-```
-
-The provider-served run has the same files with its own counts: one trial, mean 1.0, party `anthropic`, 30,901 input tokens (25,837 cached) and 116 output tokens, 75 sandbox seconds. Those token counts are what Claude Code reported to Harbor.
+The provider-served run has the same files with its own counts: one trial, mean 1.0, party `anthropic`, 30,901 input tokens (25,837 cached) and 116 output tokens, 68 sandbox seconds. Those token counts are what Claude Code reported to Harbor.
 
 ## Read requests.jsonl
 
@@ -183,21 +194,21 @@ A Tinker-served run also writes `requests.jsonl`: one row per model call the pro
 
 | trial | seq | prompt_tokens | cached_tokens | completion_tokens | bridged |
 |---|---|---|---|---|---|
-| hello-world__csFTaNW | 1 | 1424 | 0 | 239 | false |
-| hello-world__csFTaNW | 2 | 1681 | 1408 | 128 | true |
-| hello-world__XdGKSa2 | 1 | 1424 | 1408 | 245 | false |
-| hello-world__XdGKSa2 | 2 | 1687 | 1408 | 115 | true |
+| hello-world__3a7jB84 | 1 | 1424 | 0 | 183 | false |
+| hello-world__3a7jB84 | 2 | 1625 | 1408 | 126 | true |
+| hello-world__3vQgSv9 | 1 | 1424 | 1408 | 191 | false |
+| hello-world__3vQgSv9 | 2 | 1633 | 1408 | 25 | true |
 
 Each row also carries `at`, `job`, `stop_reason`, `sample_ms`, `served`, `request_id` and `error`. Here `served` is null because the base model answered, and `error` is null because no call was refused or failed.
 
-- The prompts add up to 6,216 tokens: the 1,992 uncached plus the 4,224 cached in `costs.json`. The completions add up to 727.
-- Pi's own counts in each trial's `result.json` add up to the same 6,216 and 727. The proxy saw every call.
+- The prompts add up to 6,106 tokens: the 1,882 uncached plus the 4,224 cached in `costs.json`. The completions add up to 525.
+- Pi's own counts in each trial's `result.json` add up to the same 6,106 and 525. The proxy saw every call.
 - Each trial's second call is `bridged`. Its prompt was built from the first reply's tokens, so the trial would train as one sequence.
 
 `proxy.log` holds what the proxy printed, including where it served:
 
 ```
-serving Qwen/Qwen3-8B at http://host.docker.internal:56479 (control: on)
+serving Qwen/Qwen3-8B at http://host.docker.internal:58735 (control: on)
 ```
 
 A provider-served run has neither file.
