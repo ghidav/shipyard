@@ -1,0 +1,62 @@
+site_name: shipyard
+repo_url: https://github.com/ghidav/shipyard
+repo_name: ghidav/shipyard
+site_description: "Post-training on Harbor jobs: a blueprint is a config, a run is its record."
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - search.highlight
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Installation: getting-started/installation.md
+  - Concepts:
+      - Blueprints: concepts/blueprints.md
+      - Runs: concepts/runs.md
+      - Datasets: concepts/datasets.md
+      - Rollouts: concepts/rollouts.md
+      - The proxy: concepts/proxy.md
+      - Admission: concepts/admission.md
+      - Recipes: concepts/recipes.md
+      - Modules: concepts/modules.md
+      - gepa: concepts/gepa.md
+      - Costs: concepts/costs.md
+  - Tutorials:
+      - Measure a policy: tutorials/measure-a-policy.md
+      - Train with dapo: tutorials/train-with-dapo.md
+      - Evolve a skill: tutorials/evolve-a-skill.md
+  - Reference:
+      - Configuration: reference/configuration.md
+      - Commands: reference/cli.md
+  - Decisions: decisions.md

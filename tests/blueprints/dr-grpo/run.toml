@@ -1,0 +1,17 @@
+[model]
+name = "Qwen/Qwen3-8B"
+lora_rank = 32
+
+[data]
+dataset = "aime-train"
+batch_size = 2
+group_size = 4
+
+[rollout]
+harness = "pi@0.85.1"
+concurrency = 2
+
+[recipe]
+kind = "dr-grpo"
+learning_rate = 2e-5
+length_penalty = 0.2

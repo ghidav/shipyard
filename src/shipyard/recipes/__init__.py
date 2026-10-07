@@ -1,0 +1,37 @@
+"""The recipes: one module per `[recipe] kind`, each an `async def run(run: Run)`."""
+
+from __future__ import annotations
+
+import importlib
+from types import ModuleType
+from typing import TYPE_CHECKING, Any
+
+from shipyard.config import KINDS
+
+if TYPE_CHECKING:
+    from shipyard.run import Run
+
+__all__ = ["module_for", "resolution", "run_recipe"]
+
+#: The module each kind lives in: a hyphenated name imports under its underscore.
+MODULES = {kind: kind.replace("-", "_") for kind in KINDS}
+
+
+def module_for(kind: str) -> ModuleType:
+    return importlib.import_module(f"shipyard.recipes.{MODULES[kind]}")
+
+
+async def run_recipe(run: Run) -> None:
+    """Import the module named by `run.config.recipe.kind` and await its `run(run)`."""
+    await module_for(run.config.recipe.kind).run(run)
+
+
+def resolution(recipe: Any) -> str | None:
+    """The one-line account of what a gradient recipe's knobs resolve to, for `check`;
+    None for a recipe whose module has no `preset` to resolve."""
+    found = getattr(module_for(recipe.kind), "preset", None)
+    if found is None:
+        return None
+    from shipyard.recipes import train as loop
+
+    return loop.resolution(found(recipe))

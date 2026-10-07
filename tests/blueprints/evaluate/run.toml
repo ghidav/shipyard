@@ -1,0 +1,15 @@
+[model]
+name = "some-hosted-model"
+provider = "openrouter"
+
+[data]
+dataset = "fixture"
+batch_size = 1
+group_size = 2
+
+[rollout]
+harness = "pi@0.85.1"
+sandbox = "modal"
+
+[recipe]
+kind = "evaluate"

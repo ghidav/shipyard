@@ -1,0 +1,14 @@
+[model]
+name = "Qwen/Qwen3-8B"
+
+[data]
+dataset = ["aime-train", "math-500"]
+batch_size = 4
+
+[rollout]
+harness = "pi@0.85.1"
+
+[recipe]
+kind = "gepa"
+reflection_harness = "pi@0.85.1"
+reflection_model = "Qwen/Qwen3-8B"
