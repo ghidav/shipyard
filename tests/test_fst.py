@@ -1,0 +1,145 @@
+"""Fast-slow training: the paper's defaults, the slow recipe fst resolves to, the jobs of a
+slow step merged into one group per task, and one cycle end to end on fakes."""
+
+from __future__ import annotations
+
+import shutil
+from pathlib import Path
+
+import pytest
+from harbor.models.trial.config import TrialConfig
+
+from shipyard import record
+from shipyard.config import ConfigError, check, load
+from shipyard.gepa.reflect import COLLECTED
+from shipyard.modules import SKILL_FILE, seed
+from shipyard.recipes import resolution, run_recipe
+from shipyard.recipes.fst import merged, preset
+from shipyard.rollout import Rollouts
+from shipyard.run import Run
+from tests.records import made
+from tests.test_loop import fakes  # noqa: F401 - the proxy and the Tinker service, faked
+from tests.trials import FIXTURES, write_blueprint, write_result
+
+FST = Path(__file__).parent / "blueprints" / "fst"
+VALID = Path(__file__).parent / "modules" / "valid"
+
+
+def _text(**changes: str) -> str:
+    text = (FST / "run.toml").read_text(encoding="utf-8")
+    for old, new in changes.items():
+        text = text.replace(old, new)
+    return text
+
+
+def test_the_fixture_takes_the_papers_defaults() -> None:
+    recipe = load(FST).recipe
+    assert (recipe.slow, recipe.kl_coef, recipe.edits) == ("cispo", 0.001, "incremental")
+    assert (recipe.cycle, recipe.population, recipe.anchor) == (2, 2, None)
+    found = preset(recipe)
+    assert (found.name, found.loss_fn) == ("fst", "cispo")
+    assert found.loss_config == {"clip_low_threshold": 0.0, "clip_high_threshold": 4.0}
+    assert resolution(recipe).startswith("# fst: cycles of 2 cispo steps")
+
+
+def test_another_slow_recipe_takes_its_own_knobs(tmp_path: Path) -> None:
+    text = _text(**{'kind = "fst"': 'kind = "fst"\nslow = "dapo"\nclip_high = 0.3'})
+    found = preset(load(write_blueprint(tmp_path, text)).recipe)
+    assert found.loss_fn == "ppo"
+    assert found.loss_config == {"clip_low_threshold": 0.8, "clip_high_threshold": 1.3}
+
+
+def test_a_knob_of_another_slow_recipe_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError) as refused:
+        load(write_blueprint(tmp_path, _text(**{'kind = "fst"': 'kind = "fst"\nclip = 0.2'})))
+    assert refused.value.problems == [
+        "[recipe] clip: not a knob of slow = 'cispo', which takes clip_high"
+    ]
+
+
+def test_a_population_that_does_not_divide_the_group_is_blocked(tmp_path: Path) -> None:
+    home = write_blueprint(tmp_path, _text(**{"population = 2": "population = 3"}))
+    texts = [found.text for found in check(home) if found.level == "blocked"]
+    assert any(text.startswith("[recipe] population: 3 does not divide") for text in texts)
+
+
+def _part(job: str, suffix: str, updates: int = 3) -> Rollouts:
+    trials = [Path(f"jobs/{job}/{task}__{suffix}") for task in ("a", "b")]
+    return Rollouts(
+        job=job,
+        trials=trials,
+        plan=[(Path(task), 0) for task in ("a", "b")],
+        records={trial.name: [made()] for trial in trials},
+        updates=updates,
+    )
+
+
+def test_the_jobs_of_a_step_merge_into_one_group_per_task() -> None:
+    found = merged([_part("j1", "one"), _part("j2", "two")], share=1)
+    assert [trial.name for trial in found.trials] == ["a__one", "a__two", "b__one", "b__two"]
+    assert [task.name for task, _ in found.plan] == ["a", "a", "b", "b"]
+    assert set(found.records or {}) == {"a__one", "a__two", "b__one", "b__two"}
+    assert (found.job, found.updates) == ("j1+j2", 3)
+    with pytest.raises(ValueError, match="different weights"):
+        merged([_part("j1", "one"), _part("j2", "two", updates=4)], share=1)
+
+
+class Trials:
+    """A policy trial scores 1 when its skill names its task; a reflection publishes a
+    skill naming the task of its first trace."""
+
+    def __init__(self) -> None:
+        self.configs: list[TrialConfig] = []
+
+    async def __call__(self, config: TrialConfig) -> None:
+        self.configs.append(config)
+        task = Path(str(config.task.path))
+        trial = Path(config.trials_dir) / config.trial_name
+        if task.name == "reflection":
+            traces = sorted((task / "environment" / "traces").iterdir())
+            named = traces[0].read_text().splitlines()[0].removeprefix("task: ")
+            published = trial.joinpath(*COLLECTED)
+            published.mkdir(parents=True)
+            skill = (
+                f"---\nname: solving\ndescription: what to do.\n---\n\nmention {Path(named).name}\n"
+            )
+            (published / SKILL_FILE).write_text(skill)
+            write_result(trial, tokens=(1000, 100, 50), provider="anthropic")
+            return
+        text = (Path(config.agent.skills[0]) / "solving" / SKILL_FILE).read_text()
+        trial.mkdir(parents=True)
+        (trial / "agent").mkdir()
+        (trial / "agent" / "pi.txt").write_text(f"working on {task.name}")
+        write_result(trial, reward=1.0 if f"mention {task.name}\n" in text else 0.0)
+
+
+@pytest.mark.usefixtures("fakes")
+async def test_a_cycle_evolves_two_texts_then_splits_every_group_across_them(
+    tmp_path: Path,
+) -> None:
+    for name in ("a", "b", "c", "d"):
+        shutil.copytree(FIXTURES / "fixture" / "alpha", tmp_path / "tasks" / "four" / name)
+    home = write_blueprint(
+        tmp_path, _text(**{'"aime-train"': '"four"', "group_size = 4": "group_size = 2"})
+    )
+    shutil.copytree(VALID, home / "modules")
+    opened = Run.open(home, root=tmp_path / "runs")
+    opened.run_trial = Trials()
+    with opened:
+        await run_recipe(opened)
+    rows = list(record.read(opened.directory / record.METRICS))
+    (evolution,) = [row for row in rows if row.get("evolution")]
+    population = evolution["population"]
+    assert evolution["cycle"] == 0 and len(population) == 2 and population[0] != population[1]
+    assert all(row["cycle"] == 0 for row in rows if "round" in row), "gepa's rounds, by cycle"
+    steps = [row for row in rows if "step" in row]
+    assert [(row["step"], row["cycle"]) for row in steps] == [(0, 0), (1, 0)]
+    assert any(row["trained"] for row in steps), "a task the two texts split has spread"
+    jobs = [
+        job for job in record.read(opened.directory / record.JOBS) if job["purpose"] == "rollout"
+    ]
+    assert [job["modules"] for job in jobs[-4:]] == population * 2, "one job per text per step"
+    kept = opened.directory / record.MODULES
+    assert [seed(kept / "cycle-0" / rank).digest for rank in ("0", "1")] == population
+    assert seed(kept / "best").digest == population[0]
+    assert Run.read(opened.directory)["kind"] == "fst"

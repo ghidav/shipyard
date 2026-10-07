@@ -82,7 +82,7 @@ async def test_run_recipe_dispatches_to_the_kind(tmp_path: Path, monkeypatch) ->
     """gepa reaches its recipe, which seeds and then wants the datasets; the evaluate
     recipe runs in `test_evaluate`, gepa in `test_gepa_recipe`, the gradient recipes in
     `test_loop`."""
-    assert set(KINDS) == {"dapo", "dr-grpo", "cispo", "gepa", "evaluate"}
+    assert set(KINDS) == {"dapo", "dr-grpo", "cispo", "gepa", "fst", "evaluate"}
     monkeypatch.chdir(tmp_path)
     opened = Run.open(BLUEPRINTS / "gepa", root=tmp_path / "runs")
     with pytest.raises(NoSuchDataset, match="aime-train"):

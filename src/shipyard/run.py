@@ -17,7 +17,7 @@ from shortuuid import ShortUUID
 
 from shipyard import record, ui
 from shipyard.admit import verdicts
-from shipyard.config import Blueprint, GepaRecipe, config_file, load, modules_dir
+from shipyard.config import Blueprint, FstRecipe, GepaRecipe, config_file, load, modules_dir
 from shipyard.cost import Costs, billed_by, reported, sandbox_seconds
 from shipyard.modules import Candidate, keep, seed
 from shipyard.rollout import Rollouts, Runner, rollout
@@ -299,7 +299,7 @@ class Run:
 def carried_modules(config: Blueprint) -> Candidate | None:
     """The candidate a run carries into every job, seeded from `[recipe] modules`; None
     when the key is unset, or for the one recipe that seeds its own search, gepa."""
-    return None if isinstance(config.recipe, GepaRecipe) else seeded(config)
+    return None if isinstance(config.recipe, GepaRecipe | FstRecipe) else seeded(config)
 
 
 def seeded(config: Blueprint) -> Candidate | None:

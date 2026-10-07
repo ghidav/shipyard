@@ -29,7 +29,11 @@ async def run_recipe(run: Run) -> None:
 def resolution(recipe: Any) -> str | None:
     """The one-line account of what a gradient recipe's knobs resolve to, for `check`;
     None for a recipe whose module has no `preset` to resolve."""
-    found = getattr(module_for(recipe.kind), "preset", None)
+    module = module_for(recipe.kind)
+    own = getattr(module, "resolution", None)
+    if own is not None:
+        return own(recipe)
+    found = getattr(module, "preset", None)
     if found is None:
         return None
     from shipyard.recipes import train as loop

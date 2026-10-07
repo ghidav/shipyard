@@ -59,7 +59,7 @@ The backend is Thinking Machines' Tinker by default. `TINKER_BASE_URL` points sh
 
 A model from another provider, such as `[model] provider = "anthropic"`, needs neither the proxy nor the backend. The harness calls the provider through Harbor's own model connection. Only `evaluate` and `gepa` take such a model.
 
-## The five recipes
+## The six recipes
 
 The **recipe** is the `[recipe] kind`: what the run does with its batches.
 
@@ -70,6 +70,7 @@ The **recipe** is the `[recipe] kind`: what the run does with its batches.
 | `dr-grpo` | trains: reward minus the group mean, not divided; PPO loss, clip 0.2; an optional length rule | Tinker-served |
 | `cispo` | trains: dapo's advantage; CISPO loss, weight truncated above 1.2 | Tinker-served |
 | `gepa` | evolves the skills the harness reads; no gradient | any |
+| `fst` | both, in cycles: gepa on the next batches, then steps with every group split across the top skills | Tinker-served |
 
 `shipyard check` prints what a gradient recipe resolves to, on one comment line after the config:
 

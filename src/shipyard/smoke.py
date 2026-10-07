@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from shipyard import record
 from shipyard.admit import verdicts
-from shipyard.config import Blueprint, GepaRecipe
+from shipyard.config import Blueprint, FstRecipe, GepaRecipe
 from shipyard.data import batches
 from shipyard.modules import Candidate
 from shipyard.proxy.profiles import PROFILES, bare_name, profile_for
@@ -41,7 +41,7 @@ def planned(cfg: Blueprint) -> list[Path]:
 def carried(cfg: Blueprint) -> Candidate | None:
     """The modules the job carries: gepa's seed, since a search's first job scores it;
     None for the other recipes, whose run carries its own."""
-    return seeded(cfg) if isinstance(cfg.recipe, GepaRecipe) else None
+    return seeded(cfg) if isinstance(cfg.recipe, GepaRecipe | FstRecipe) else None
 
 
 @dataclass(frozen=True)

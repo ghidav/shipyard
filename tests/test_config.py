@@ -14,7 +14,7 @@ from tests.trials import write_blueprint
 
 BLUEPRINTS = Path(__file__).parent / "blueprints"
 #: The kinds whose recipe is a `Gradient`: the three the loop trains.
-GRADIENT = ("dapo", "dr-grpo", "cispo")
+GRADIENT = ("dapo", "dr-grpo", "cispo", "fst")
 
 MINIMAL = """
 [model]
@@ -141,7 +141,8 @@ def test_each_gradient_recipe_takes_the_shared_knobs(tmp_path: Path) -> None:
         text = MINIMAL.replace(
             'kind = "dapo"',
             f'kind = "{kind}"\nsubsteps = 2\nreference = "sampler"\nkl_coef = 0.1\n'
-            'modules = "skills"',
+            'modules = "skills"'
+            + ('\nreflection_harness = "claude-code"' if kind == "fst" else ""),
         )
         found = load(write_blueprint(tmp_path / str(at), text)).recipe
         assert found.kind == kind and found.substeps == 2 and found.reference == "sampler"
@@ -162,7 +163,7 @@ def test_dataset_str_and_list_both_give_datasets(tmp_path: Path) -> None:
 def test_wrong_kind_is_named(tmp_path: Path) -> None:
     problems = _problems(tmp_path, MINIMAL.replace('kind = "dapo"', 'kind = "train"'))
     assert problems == [
-        "[recipe] kind: no recipe called 'train'; one of dapo, dr-grpo, cispo, gepa, evaluate"
+        "[recipe] kind: no recipe called 'train'; one of dapo, dr-grpo, cispo, gepa, fst, evaluate"
     ]
     problems = _problems(tmp_path / "none", MINIMAL.replace('kind = "dapo"\n', ""))
     assert problems == ["[recipe] kind: field required"]

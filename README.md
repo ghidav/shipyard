@@ -6,7 +6,7 @@ Post-training on Harbor jobs. A blueprint is a config, a run is its record.
 - Harbor runs each task in a container, runs an agent program (the **harness**) there, and grades the result.
 - A Tinker-API backend holds the weights, samples from them and trains them: Thinking Machines' Tinker by default, or another backend that implements the Tinker API, such as Fireworks or Baseten, named by `TINKER_BASE_URL`.
 - Between the two, shipyard's proxy serves the weights to the harness and records every model call as tokens.
-- Five recipes: `evaluate` measures a policy, `dapo`, `dr-grpo` and `cispo` train it, `gepa` evolves the skills its harness reads.
+- Six recipes: `evaluate` measures a policy, `dapo`, `dr-grpo` and `cispo` train it, `gepa` evolves the skills its harness reads, and `fst` does both in cycles.
 
 ## Install
 

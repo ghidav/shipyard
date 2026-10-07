@@ -4,6 +4,8 @@ and `train`, the session of steps around it."""
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -17,10 +19,14 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
 
+    from shipyard.rollout import Rollouts
     from shipyard.run import Run
     from shipyard.serving import Serving
 
-__all__ = ["ROW", "Preset", "clipped", "resolution", "row", "shared", "step", "train"]
+#: How a step samples its batch: the tasks and the step's index in, the rollouts out.
+Sampler = Callable[["Sequence[Path]", int], Awaitable["Rollouts"]]
+
+__all__ = ["ROW", "Preset", "clipped", "resolution", "row", "shared", "step", "train", "training"]
 
 #: The step's row, in this order; a measure with nothing behind it is left out, never zero.
 ROW = (
@@ -107,11 +113,21 @@ def resolution(preset: Preset) -> str:
 
 
 async def train(run: Run, preset: Preset) -> None:
-    """The session around the steps: the trainer and the anchor opened, the proxy started,
-    a `step` per batch of the plan, `final` checkpointed always, the session closed."""
-    serving = serving_of(run, preset)
+    """The session around the steps: a `step` per batch of the plan inside `training`."""
     cfg = run.config
-    model, data = cfg.model, cfg.data
+    data = cfg.data
+    async with training(run, preset) as (trainer, anchor):
+        planned = batches(cfg.datasets, size=data.batch_size, seed=data.seed, epochs=data.epochs)
+        for index, tasks in enumerate(planned):
+            await step(run, trainer, anchor, preset, tasks, index)
+
+
+@asynccontextmanager
+async def training(run: Run, preset: Preset) -> AsyncIterator[tuple[Trainer, Any]]:
+    """The trainer and the KL anchor opened, the proxy started; on a clean exit `final`
+    checkpointed, and the session closed either way with how it ended."""
+    serving = serving_of(run, preset)
+    model = run.config.model
     metadata = {"shipyard_run": run.id, "shipyard_recipe": preset.name}
     service = session.service_client(metadata)
     trainer = await Trainer.create(
@@ -132,9 +148,7 @@ async def train(run: Run, preset: Preset) -> None:
                 base_model=model.name, model_path=model.from_checkpoint or None
             )
         await serving.start()
-        planned = batches(cfg.datasets, size=data.batch_size, seed=data.seed, epochs=data.epochs)
-        for index, tasks in enumerate(planned):
-            await step(run, trainer, anchor, preset, tasks, index)
+        yield trainer, anchor
         await run.checkpoint(trainer, "final")
     except BaseException as failed:
         status = "errored" if isinstance(failed, Exception) else "interrupted"
@@ -144,11 +158,20 @@ async def train(run: Run, preset: Preset) -> None:
 
 
 async def step(
-    run: Run, trainer: Trainer, anchor: Any, preset: Preset, tasks: Sequence[Path], index: int
+    run: Run,
+    trainer: Trainer,
+    anchor: Any,
+    preset: Preset,
+    tasks: Sequence[Path],
+    index: int,
+    *,
+    sample: Sampler | None = None,
+    about: Mapping[str, Any] | None = None,
 ) -> None:
     """One step over `tasks`: the weights published and the proxy pointed at them, the
-    batch sampled and credited, the gradient applied unless nothing was credited, the row
-    logged, and a checkpoint when `index + 1` divides by `[checkpoints] every`."""
+    batch sampled (by `sample` when given) and credited, the gradient applied unless
+    nothing was credited, the row logged with `about`, and a checkpoint when `index + 1`
+    divides by `[checkpoints] every`."""
     serving = serving_of(run, preset)
     data, every = run.config.data, run.config.checkpoints.every
     # Published as `sample-<index>`, not the spec's `step-<index>`: the checkpoint after
@@ -156,17 +179,21 @@ async def step(
     # under, and `save_weights_for_sampler` does not overwrite a name by default.
     path = await trainer.publish(f"sample-{index}", ttl_seconds=SERVE_TTL)
     await serving.point(path)
-    rollouts = await run.sample(tasks, rollouts=data.group_size, index=index)
+    if sample is None:
+        rollouts = await run.sample(tasks, rollouts=data.group_size, index=index)
+    else:
+        rollouts = await sample(tasks, index)
     batch = await credit(group(rollouts, data.group_size), preset, trainer, anchor)
     run.spent(
         serving.party, reference_tokens=batch.reference_tokens, anchor_tokens=batch.anchor_tokens
     )
+    extra = dict(about or {})
     if batch.empty:
-        run.log(**row(index, batch, None))
+        run.log(**row(index, batch, None), **extra)
         return
     update = await trainer.apply(batch, preset)
     run.spent(serving.party, train_tokens=update.train_tokens)
-    run.log(**row(index, batch, update))
+    run.log(**row(index, batch, update), **extra)
     if (index + 1) % every == 0:
         await run.checkpoint(trainer, f"step-{index + 1}")
 

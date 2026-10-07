@@ -63,10 +63,10 @@ How the served keys behave is in [The proxy](../concepts/proxy.md).
 
 ## `[recipe]`
 
-`kind` is required and picks the recipe: `"dapo"`, `"dr-grpo"`, `"cispo"`, `"gepa"` or
+`kind` is required and picks the recipe: `"dapo"`, `"dr-grpo"`, `"cispo"`, `"gepa"`, `"fst"` or
 `"evaluate"`. Each kind accepts its own keys and no others ([Recipes](../concepts/recipes.md)).
 
-### Common to `dapo`, `dr-grpo` and `cispo`
+### Common to `dapo`, `dr-grpo`, `cispo` and `fst`
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
@@ -113,6 +113,21 @@ The gradient recipes need a served model.
 | `edits` | `"rewrite"` or `"incremental"` | `"rewrite"` | `"incremental"` asks the reflector to edit the text in place and keep what works, not rewrite it. |
 
 See [gepa](../concepts/gepa.md).
+
+### `fst`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `slow` | `"dapo"`, `"dr-grpo"` or `"cispo"` | `"cispo"` | The gradient recipe each slow step uses. Its own knobs (`clip_low`, `clip_high`, `clip`, `length_penalty`, `length_floor`) are accepted when they belong to it, with its defaults, except `clip_high` under `cispo`, which is `3.0` here. |
+| `cycle` | integer ≥ 1 | `6` | Slow steps per cycle, and the batches each fast phase looks ahead. |
+| `population` | integer ≥ 1 | `4` | Texts kept per cycle. It must divide `group_size`. |
+| `anchor` | integer ≥ 1 | unset | The fast phase evolves on the first `anchor` tasks of the lookahead; unset is all of them. |
+| `kl_coef` | float ≥ 0 | `0.001` | As above, with the paper's default. |
+| `budget` | integer ≥ 1 | unset | Rollouts each fast phase may spend. Unset is five passes: 5 × its tasks × `group_size / population`. |
+| `edits` | `"rewrite"` or `"incremental"` | `"incremental"` | As for `gepa`, with the paper's default. |
+
+`reflection_harness` (required), `reflection_model`, `reflection_image`, `modules` (the seed, default
+`"modules"`), `minibatch` and `patience` are as for `gepa`. See [fst](../concepts/recipes.md#fst).
 
 ### `evaluate`
 

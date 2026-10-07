@@ -9,7 +9,7 @@ This page uses these terms:
 - **Candidate.** A set of named [modules](modules.md) with one digest.
 - **Seed.** The candidate in the blueprint's modules directory.
 - **Pool.** Every candidate the search has accepted. The seed is the first.
-- **Frontier.** Every pool candidate that is best on at least one task, ties included.
+- **Frontier.** Every pool candidate that is best on at least one task, ties included, less the dominated: a candidate leaves when every task it is best on also has another frontier candidate as best.
 - **Round.** One proposal: a parent, one rewritten component, and a judgement on the child.
 - **Reflector.** The agent that writes the rewrite.
 
@@ -54,7 +54,7 @@ The policy can be served by a provider, as it is here, or by this run through th
 
 1. **Seed.** The modules directory is read, copied to `runs/<id>/modules/seed/`, and scored on every task.
 2. **Rounds.** While the budget and patience last, each round does the following:
-    1. **Parent.** One candidate is drawn at random from the frontier.
+    1. **Parent.** One candidate is drawn from the frontier, with probability proportional to the number of tasks it is best on.
     2. **Component.** The next module is taken, round-robin over the seed's components.
     3. **Window.** `minibatch` consecutive tasks are taken, wrapping around the list. The window moves
        on once every component has had a round.

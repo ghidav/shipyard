@@ -5,7 +5,7 @@
 The first release.
 
 - **Blueprints.** A blueprint is a directory holding a `run.toml` with `[model]`, `[data]`, `[rollout]`, `[recipe]` and `[checkpoints]`. `shipyard check` prints the config as resolved and every problem at once, before anything is spent.
-- **Five recipes.** `evaluate` measures; `dapo`, `dr-grpo` and `cispo` train, each a fixed preset of advantage, loss and clipping; `gepa` evolves the skills a harness reads. Any recipe can carry skills, directories holding a `SKILL.md`, into every rollout.
+- **Five recipes.** `evaluate` measures; `dapo`, `dr-grpo` and `cispo` train, each a fixed preset of advantage, loss and clipping; `gepa` evolves the skills a harness reads; `fst` alternates the two in cycles (fast-slow training). Any recipe can carry skills, directories holding a `SKILL.md`, into every rollout.
 - **Runs.** Every run writes `runs/<blueprint>__<7 chars>/`: `run.toml` copied byte for byte, `process.json`, `metrics.jsonl`, `jobs.jsonl`, `requests.jsonl`, `checkpoints.jsonl`, `costs.json`, `modules/`, and `proxy.log` when it serves. `shipyard runs` lists them; `shipyard show` prints one.
 - **Datasets as directories.** A dataset is `tasks/<name>/`, one Harbor task per subdirectory. A blueprint may name a list. Batches are a seeded reshuffle per epoch.
 - **Rollouts on Harbor.** One Harbor job per batch, under `jobs/<run id>-NNNN/`, on any Harbor sandbox. Profiles wire `pi`, `claude-code`, `opencode` and `terminus-2`; any other Harbor agent runs with the generic OpenAI wiring.

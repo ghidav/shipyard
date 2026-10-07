@@ -10,9 +10,10 @@ of their rewards.
 | `dr-grpo` | Gradient. The advantage is not divided, and ppo clips symmetrically. It has an optional length rule. | yes |
 | `cispo` | Gradient. The advantage is formed as in `dapo`, and the loss is Tinker's `cispo`. | yes |
 | `gepa` | Searches over the text the harness reads. See [gepa](gepa.md). | no |
+| `fst` | Fast-slow training: gepa and a gradient recipe in cycles. See [fst](#fst). | yes |
 | `evaluate` | Measures the policy. | no |
 
-The first three are the gradient recipes. They train the weights the run serves, so they need
+The first three are the gradient recipes, and `fst` steps like them. They train the weights the run serves, so they need
 `[model] provider = "tinker"`, which is the default. With any other provider, the run stops before it trains:
 
 ```
@@ -157,6 +158,43 @@ never written as 0. Every row also carries `at` and `seq`.
 | `anchor_kl` | mean(μ − anchor), present only when `kl_coef > 0`. |
 | `learning_rate`, `substeps`, `loss_fn` | As applied. |
 | `seconds` | The time taken to apply the gradient. |
+
+## fst
+
+`fst` is fast-slow training (Tiwari, Sareen, Agrawal et al., arXiv 2605.12484). The weights and a
+population of `population` skill texts change together, in cycles:
+
+1. **Fast phase.** The run takes the next `cycle` batches. [gepa](gepa.md) runs on their tasks
+   against the current weights, seeded with the previous population, and the top `population` of its
+   frontier become the new population. The first cycle starts from the blueprint's modules directory.
+2. **Slow phase.** `cycle` gradient steps follow, one per batch. Each task's group of `group_size`
+   rollouts is split evenly across the population: `group_size / population` rollouts per text, one
+   job per text. The rollouts are normalised as one group, so the advantage compares what the text
+   did and what the sampling did on the same problem. `slow` names the gradient recipe whose
+   advantage and loss the step uses.
+
+```toml
+[recipe]
+kind = "fst"
+learning_rate = 2e-5
+reflection_harness = "claude-code"
+reflection_model = "anthropic/claude-sonnet-5"
+```
+
+`check` prints what it resolves to:
+
+```
+# fst: cycles of 6 cispo steps, each after gepa evolves 4 texts on the next 6 batches; every group split group_size / 4 per text; advantage = group mean, divided by spread; loss = cispo, weight truncated above 4.0, no lower bound; degenerate groups dropped; kl 0.001 to the starting weights
+```
+
+The defaults are the paper's: `slow = "cispo"` with the importance weight truncated above 4.0,
+`kl_coef = 0.001`, `cycle = 6`, `population = 4`, `edits = "incremental"`, and a gepa budget of five
+passes over the fast phase's tasks. `population` must divide `group_size`; `check` blocks the run
+otherwise.
+
+Each cycle's population is kept under `runs/<id>/modules/cycle-<n>/<rank>/`, and the last
+population's first text under `modules/best/`. `metrics.jsonl` holds gepa's round rows and one
+`evolution` row per cycle, then the step rows; every one of them carries its `cycle`.
 
 ## evaluate
 

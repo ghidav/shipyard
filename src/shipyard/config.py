@@ -16,7 +16,7 @@ from shipyard.record import CONFIG
 
 TINKER = "tinker"
 #: The recipe kinds, one module each under `shipyard.recipes`; the first three train.
-KINDS = ("dapo", "dr-grpo", "cispo", "gepa", "evaluate")
+KINDS = ("dapo", "dr-grpo", "cispo", "gepa", "fst", "evaluate")
 #: The SDK's floor on a checkpoint's TTL: `TrainingClient.save_state` takes "between
 #: 1 hour (3600) and 10 years" (tinker/lib/public_interfaces/training_client.py).
 MIN_TTL_HOURS = 1.0
@@ -145,12 +145,55 @@ class GepaRecipe(_Table):
     edits: Literal["rewrite", "incremental"] = "rewrite"
 
 
+#: The knobs each slow recipe of fst takes; a knob of another one is an error.
+SLOW_KNOBS = {
+    "dapo": ("clip_low", "clip_high"),
+    "dr-grpo": ("clip", "length_penalty", "length_floor"),
+    "cispo": ("clip_high",),
+}
+
+
+class FstRecipe(Gradient):
+    """Fast-slow training: a slow recipe for the weights, gepa's knobs for the population
+    of texts, and the cycle that interleaves them. Defaults are the paper's."""
+
+    kind: Literal["fst"]
+    slow: Literal["dapo", "dr-grpo", "cispo"] = "cispo"
+    kl_coef: float = Field(default=0.001, ge=0)
+    cycle: int = Field(default=6, ge=1)
+    population: int = Field(default=4, ge=1)
+    anchor: int | None = Field(default=None, ge=1)
+    clip_low: float | None = Field(default=None, gt=0, lt=1)
+    clip_high: float | None = Field(default=None, gt=0)
+    clip: float | None = Field(default=None, gt=0, lt=1)
+    length_penalty: float | None = Field(default=None, ge=0)
+    length_floor: int | None = Field(default=None, ge=0)
+    reflection_harness: str
+    reflection_model: str | None = None
+    reflection_image: str = REFLECTION_IMAGE
+    modules: str = "modules"
+    minibatch: int = Field(default=3, ge=1)
+    budget: int | None = Field(default=None, ge=1)
+    patience: int = Field(default=3, ge=1)
+    edits: Literal["rewrite", "incremental"] = "incremental"
+
+    @field_validator("clip_low", "clip_high", "clip", "length_penalty", "length_floor")
+    @classmethod
+    def _of_slow(cls, value: Any, info: Any) -> Any:
+        slow = info.data.get("slow", "cispo")
+        if value is not None and info.field_name not in SLOW_KNOBS[slow]:
+            raise ValueError(
+                f"not a knob of slow = {slow!r}, which takes {', '.join(SLOW_KNOBS[slow])}"
+            )
+        return value
+
+
 class EvaluateRecipe(_Table):
     kind: Literal["evaluate"]
     modules: str | None = None
 
 
-Recipe = DapoRecipe | DrGrpoRecipe | CispoRecipe | GepaRecipe | EvaluateRecipe
+Recipe = DapoRecipe | DrGrpoRecipe | CispoRecipe | GepaRecipe | FstRecipe | EvaluateRecipe
 
 
 class Checkpoints(_Table):
@@ -275,8 +318,17 @@ def findings(loaded: Blueprint) -> list[Finding]:
     found += [_dataset_finding(name) for name in loaded.datasets]
     if (directory := modules_dir(loaded)) is not None:
         found.append(_modules_finding(directory))
-    if isinstance(loaded.recipe, GepaRecipe):
+    if isinstance(loaded.recipe, GepaRecipe | FstRecipe):
         found.append(_reflector_finding(loaded.recipe))
+    if isinstance(loaded.recipe, FstRecipe) and loaded.data.group_size % loaded.recipe.population:
+        k, g = loaded.recipe.population, loaded.data.group_size
+        found.append(
+            Finding(
+                "blocked",
+                f"[recipe] population: {k} does not divide [data] group_size {g}; each "
+                "candidate takes group_size / population rollouts of every task's group",
+            )
+        )
     if not rollout.harness.strip():
         found.append(Finding("blocked", NO_HARNESS))
     if rollout.sandbox not in SANDBOXES:
@@ -297,7 +349,7 @@ def _modules_finding(directory: Path) -> Finding:
     )
 
 
-def _reflector_finding(recipe: GepaRecipe) -> Finding:
+def _reflector_finding(recipe: GepaRecipe | FstRecipe) -> Finding:
     """`ok` naming the reflector's harness, model and image, or `blocked` for a blank
     harness; the image is a string by schema, and Harbor pulls it at the first round."""
     if not recipe.reflection_harness.strip():

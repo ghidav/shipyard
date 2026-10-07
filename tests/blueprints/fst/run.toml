@@ -1,0 +1,20 @@
+[model]
+name = "Qwen/Qwen3-8B"
+lora_rank = 32
+
+[data]
+dataset = "aime-train"
+batch_size = 2
+group_size = 4
+
+[rollout]
+harness = "pi@0.85.1"
+concurrency = 2
+
+[recipe]
+kind = "fst"
+learning_rate = 2e-5
+population = 2
+cycle = 2
+reflection_harness = "claude-code"
+reflection_model = "anthropic/claude-sonnet-5"
