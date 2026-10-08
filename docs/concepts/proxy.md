@@ -164,11 +164,17 @@ The **bridge** keeps a tool loop as one sequence. When a call quotes a reply
 this proxy sampled in the same trial, the proxy builds the prompt from that
 reply's tokens. Every rule must hold, or the call is rendered afresh:
 
-1. **Exact message match.** The call's messages, up to and including the
-   reply, digest the same as an earlier call's messages plus its reply. A
-   digest covers role, text, thinking, images by their pixels, tool calls by
-   name and parsed arguments, and a tool result's tool name; never a tool-call
-   id. The longest such match wins.
+1. **The same reply.** The call's messages, up to and including the reply,
+   digest the same as an earlier call's messages plus its reply. A digest
+   covers role, text with its whitespace left out, thinking, images by their
+   pixels, tool calls by name and id, and a tool result's tool name. The proxy
+   gives every tool call it returns an id when the model wrote none, and the
+   harness sends that id back, so a reply is known by its ids whatever the
+   harness did to the arguments, such as Claude Code filling in
+   `"replace_all": false`. The longest such match wins. Two different replies
+   to one history that share a call id, as from a model that writes its own
+   ids and numbers a call alike in both, or that make no call and say the
+   same, are both passed over.
 2. The reply is not the call's first message.
 3. After the reply come only tool results, optionally closed by one user
    message. An empty tail is a resample, not an extension. The closing user

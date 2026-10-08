@@ -67,10 +67,15 @@ say so.
 extend an earlier call's prompt plus completion starts a new sequence.**
 Training on tokens the model never read would be a silent off-policy error.
 
-**A narrow bridge keeps a tool loop in one sequence: exact message match, exact token equality, else
-a fork.**
+**A narrow bridge keeps a tool loop in one sequence: the same reply, exact token equality, else a
+fork.**
 Without it, a reply re-rendered as different tokens would split every tool loop into one sequence per
 call.
+
+**A reply is known by its tool calls' ids, not their arguments.**
+A harness runs a normalized form of what the model wrote (Claude Code fills in defaults and coerces
+types) and echoes that form back. The id the proxy gave the call survives the rewrite; the model then
+reads the call it wrote, and the result of the one the harness ran.
 
 **A retry gets the stored answer, with no second sample.**
 Otherwise the record would hold a sample the harness never saw.

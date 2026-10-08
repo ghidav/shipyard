@@ -19,6 +19,8 @@ class Exchange:
     the wrapper cut or bridged."""
 
     trial: str = ""
+    #: `anthropic` for a request on `/messages`, `openai` otherwise: the form of the ids.
+    wire: str = "openai"
     retry: int = 0
     idempotency_key: str | None = None
     request_id: str | None = None
@@ -52,6 +54,7 @@ def middleware() -> Any:
     async def opened(request: Any, handler: Any) -> Any:
         found = Exchange(
             trial=trial_in(str(request.match_info.get("address") or "")),
+            wire="anthropic" if request.path.endswith("/messages") else "openai",
             retry=_count(request.headers.get(RETRY_HEADER)),
             idempotency_key=request.headers.get("Idempotency-Key") or None,
             request_id=request.headers.get("x-request-id") or None,

@@ -46,23 +46,26 @@ def call(name: str, arguments: str, id: str | None = None) -> dict[str, Any]:
 # ----------------------------------------------------------------------- the digest
 
 
-def test_a_tool_call_id_is_not_part_of_a_message_and_its_arguments_count_by_value() -> None:
-    by_dict = {"role": "assistant", "content": "", "tool_calls": [call("ls", '{"a": 1}', "x")]}
-    by_model = {
-        "role": "assistant",
-        "content": "",
-        "tool_calls": [
-            ToolCall(id="y", function=ToolCall.FunctionBody(name="ls", arguments='{"a":1}'))
-        ],
-    }
-    assert digest(by_dict) == digest(by_model)
-    # Arguments that were not JSON come back from the harness in the proxy's own wrapper,
-    # and digest as the string the model sampled.
-    sampled = {"role": "assistant", "content": "", "tool_calls": [call("sh", "ls -la")]}
-    wrapped = {**sampled, "tool_calls": [call("sh", '{"_raw_arguments": "ls -la"}', "z")]}
-    assert digest(sampled) == digest(wrapped)
-    assert digest(by_dict) != digest({**by_dict, "tool_calls": [call("ls", '{"a": 2}')]})
-    assert digest(by_dict) != digest({**by_dict, "tool_calls": [call("cat", '{"a": 1}')]})
+def test_a_tool_call_is_its_name_and_id_so_a_rewritten_argument_is_the_same_call() -> None:
+    sampled = {"role": "assistant", "content": "", "tool_calls": [call("edit", '{"p": "a"}', "c1")]}
+    echoed = {**sampled, "tool_calls": [call("edit", '{"replace_all": false, "p": "a"}', "c1")]}
+    assert digest(sampled) == digest(echoed)
+    parsed = ToolCall(id="c1", function=ToolCall.FunctionBody(name="edit", arguments="{}"))
+    assert digest({"role": "assistant", "content": "", "tool_calls": [parsed]}) == digest(sampled)
+    assert digest(sampled) != digest({**sampled, "tool_calls": [call("edit", '{"p": "a"}', "c2")]})
+    assert digest(sampled) != digest({**sampled, "tool_calls": [call("write", '{"p": "a"}', "c1")]})
+    assert digest(sampled) != digest({**sampled, "tool_calls": []})
+
+
+def test_whitespace_in_a_messages_text_is_not_part_of_it() -> None:
+    reads = [call("read", "{}", "c1"), call("read", "{}", "c2")]
+    between = [{"type": "text", "text": "\n"}, {"type": "text", "text": "\n\n"}]
+    sampled = {"role": "assistant", "content": between, "tool_calls": reads}
+    assert digest(sampled) == digest({"role": "assistant", "content": [], "tool_calls": reads})
+    said = {"role": "assistant", "content": "two files\n"}
+    assert digest(said) == digest({"role": "assistant", "content": "two files"})
+    assert digest(said) == digest({"role": "assistant", "content": " two  files"})
+    assert digest(said) != digest({"role": "assistant", "content": "two filez"})
 
 
 def test_a_tool_result_is_its_name_and_text_and_never_its_call_id() -> None:
@@ -111,6 +114,32 @@ def test_the_chain_of_a_prefix_is_its_own_and_the_index_finds_the_longest_reply(
     assert index.find(digests[:1]) is None and index.find(()) is None
     assert index.find((digests[1], digests[0])) is None, "order is the chain"
     assert len(index) == 2
+
+
+def test_two_different_replies_under_one_history_leave_it_ambiguous() -> None:
+    digests = digests_of([{"role": "user", "content": c} for c in ("a", "b")])
+    index = Index()
+    index.add(digests[:1], digests[1], Reply((1,), (2,), True, (1,)))
+    index.add(digests[:1], digests[1], Reply((1,), (2,), True, (1,)))
+    assert index.find(digests) == (1, Reply((1,), (2,), True, (1,))), "the same reply twice"
+    index.add(digests[:1], digests[1], Reply((1,), (3,), True, (1,)))
+    assert index.find(digests) is None
+
+
+def test_two_different_replies_to_one_history_sharing_a_call_id_are_both_passed_over() -> None:
+    """A model that writes its own ids gives two samples of one history the same id. If
+    the harness trims the one it kept (drops its thinking, or a call), the echo can digest
+    as the other: both are passed over."""
+    user = digests_of([{"role": "user", "content": "look"}])
+    kept, other = Reply((1,), (2,), True, (1,)), Reply((1,), (3,), True, (1,))
+    index = Index()
+    index.add(user, "with-thinking", kept, ["functions.ls:0"])
+    index.add(user, "without", other, ["functions.ls:0"])
+    assert index.find([*user, "with-thinking"]) is None
+    assert index.find([*user, "without"]) is None
+    elsewhere = digests_of([{"role": "user", "content": "else"}])
+    index.add(elsewhere, "without", other, ["functions.ls:0"])
+    assert index.find([*elsewhere, "without"]) == (1, other), "another history is its own"
 
 
 # ------------------------------------------------------------------ the rule, by hand
@@ -231,6 +260,7 @@ async def test_a_tool_loop_bridges_and_every_prompt_extends_the_last() -> None:
     assert [r.bridged for r in records] == [False, True, True]
     assert one.prompt_token_ids == ids("system:<tools:ls>\nuser:look\n>")
     call_id = chars(two.prompt_token_ids).split("tool[")[1].split("]")[0]
+    assert call_id.startswith("call_"), "the proxy names the call, in the wire's form"
     assert two.prompt_token_ids == (
         *one.prompt_token_ids,
         *one.completion_token_ids,
@@ -269,8 +299,8 @@ async def test_a_user_message_after_a_non_tool_tail_does_not_bridge() -> None:
 
 
 async def test_a_head_that_re_renders_differently_does_not_bridge() -> None:
-    """The digest does not see a tool-call id; this renderer renders it. A history whose
-    id changed matches by digest and renders another head, so the prompt is forked."""
+    """The digest does not see a tool result's call id; this renderer renders it. A history
+    whose result's id changed matches by digest and renders another head, so it forks."""
 
     def renumber(history: list[dict[str, Any]]) -> None:
         history[2] = {**history[2], "tool_call_id": "call_other"}
@@ -289,6 +319,7 @@ async def test_the_anthropic_wire_bridges_a_tool_loop_too() -> None:
         assert first.status_code == 200, first.text
         block = first.json()["content"][0]
         assert block["type"] == "tool_use" and block["name"] == "ls"
+        assert block["id"].startswith("toolu_"), "the proxy names the call, in the wire's form"
         messages.append({"role": "assistant", "content": [block]})
         messages.append(
             {
@@ -363,3 +394,145 @@ def test_a_renderer_that_strips_history_thinking_renders_a_user_turn_afresh() ->
     )
     renderer.strip_thinking_from_history = False
     assert bridge([*history, {"role": "user", "content": "more"}], renderer, index) is not None
+
+
+# --------------------------------------------------------- a call known by its id
+
+
+async def _reply(started: Any, history: list[dict[str, Any]], **headers: str) -> dict[str, Any]:
+    answered = await ask(started, "t", messages=history, tools=TOOLS_OPENAI, headers=headers)
+    assert answered.status_code == 200, answered.text
+    return answered.json()["choices"][0]["message"]
+
+
+def _echo(said: dict[str, Any], arguments: str, result: str) -> list[dict[str, Any]]:
+    """The reply's call as a harness sends it back with its arguments rewritten, and its
+    result: Claude Code echoes the input it normalized, not the one the model wrote."""
+    (sent,) = said["tool_calls"]
+    rewritten = {**sent, "function": {**sent["function"], "arguments": arguments}}
+    return [
+        {"role": "assistant", "content": None, "tool_calls": [rewritten]},
+        {"role": "tool", "tool_call_id": sent["id"], "content": result},
+    ]
+
+
+def _extends(later: Any, earlier: Any) -> bool:
+    head = (*earlier.prompt_token_ids, *earlier.completion_token_ids)
+    return later.prompt_token_ids[: len(head)] == head
+
+
+async def test_an_echo_whose_arguments_the_harness_rewrote_still_bridges() -> None:
+    sampler = ScriptedSampler("", answers=['CALL ls {"p": "a"}', "done"])
+    async with endpoint(sampler, renderer=BridgeRenderer()) as started:
+        history: list[dict[str, Any]] = [{"role": "user", "content": "look"}]
+        history += _echo(await _reply(started, history), '{"all": false, "p": "a"}', "alpha")
+        await _reply(started, history)
+        one, two = started.records_for("t")
+    assert two.bridged and _extends(two, one)
+    shown = chars(two.prompt_token_ids)
+    assert 'CALL ls {"p": "a"}' in shown and '"ALL"' not in shown, "the call the model wrote"
+
+
+async def test_of_two_replies_to_one_history_the_one_the_harness_kept_is_bridged() -> None:
+    """Two samples of one history call the same tool on different files. The harness kept
+    the first and rewrote its arguments; its ids say which it was."""
+    answers = ['CALL ls {"p": "a"}', 'CALL ls {"p": "b"}', "done"]
+    async with endpoint(ScriptedSampler("", answers=answers), renderer=BridgeRenderer()) as started:
+        history: list[dict[str, Any]] = [{"role": "user", "content": "look"}]
+        a = await _reply(started, history)
+        b = await _reply(started, history)
+        assert a["tool_calls"][0]["id"] != b["tool_calls"][0]["id"]
+        history += _echo(a, '{"p": "a", "n": 1}', "alpha")
+        await _reply(started, history)
+        first, _, third = started.records_for("t")
+    assert third.bridged and _extends(third, first)
+
+
+class ModelNamedCalls(BridgeRenderer):
+    """A renderer whose model writes its own call ids, numbered as Kimi numbers them: two
+    samples of one history give their calls the same id."""
+
+    def parse_response(self, response: list[int]) -> tuple[dict[str, Any], Any]:
+        message, termination = super().parse_response(response)
+        calls = message.get("tool_calls") or []
+        message["tool_calls"] = [
+            c.model_copy(update={"id": f"functions.{c.function.name}:0"}) for c in calls
+        ]
+        return message, termination
+
+
+async def test_a_model_that_names_its_own_calls_keeps_its_ids_and_two_samples_fork() -> None:
+    answers = ['CALL ls {"p": "a"}', 'CALL ls {"p": "b"}', "done"]
+    async with endpoint(
+        ScriptedSampler("", answers=answers), renderer=ModelNamedCalls()
+    ) as started:
+        history: list[dict[str, Any]] = [{"role": "user", "content": "look"}]
+        a = await _reply(started, history)
+        b = await _reply(started, history)
+        assert a["tool_calls"][0]["id"] == b["tool_calls"][0]["id"] == "functions.ls:0"
+        history += _echo(a, '{"p": "a", "n": 1}', "alpha")
+        await _reply(started, history)
+        assert not started.records_for("t")[-1].bridged, "two replies fit: neither is spliced"
+    answers = ['CALL ls {"p": "a"}', "done"]
+    async with endpoint(
+        ScriptedSampler("", answers=answers), renderer=ModelNamedCalls()
+    ) as started:
+        history = [{"role": "user", "content": "look"}]
+        history += _echo(await _reply(started, history), '{"p": "a", "n": 1}', "alpha")
+        await _reply(started, history)
+        one, two = started.records_for("t")
+    assert two.bridged and _extends(two, one), "one reply fits: its rewritten echo bridges"
+
+
+async def test_a_replayed_retry_carries_the_ids_its_first_answer_did() -> None:
+    sampler = ScriptedSampler("", answers=["CALL ls {}"])
+    async with endpoint(sampler, renderer=BridgeRenderer()) as started:
+        history = [{"role": "user", "content": "look"}]
+        first = await _reply(started, history)
+        replayed = await _reply(started, history, **{"x-stainless-retry-count": "1"})
+    assert len(sampler.asked) == 1
+    assert replayed["tool_calls"][0]["id"] == first["tool_calls"][0]["id"]
+
+
+async def test_a_sibling_the_trimmed_echo_of_a_kept_reply_digests_as_is_not_spliced() -> None:
+    """Kimi-like ids: the kept reply had thinking, its sibling had none. The harness echoes
+    the kept one without its thinking, which digests as the sibling; the shared id forks."""
+    answers = ['{plan}CALL ls {"p": "a"}', 'CALL ls {"p": "b"}', "done"]
+    async with endpoint(
+        ScriptedSampler("", answers=answers), renderer=ModelNamedCalls()
+    ) as started:
+        history: list[dict[str, Any]] = [{"role": "user", "content": "look"}]
+        a = await _reply(started, history)
+        await _reply(started, history)
+        history += _echo(a, '{"p": "a"}', "alpha")
+        await _reply(started, history)
+        assert not started.records_for("t")[-1].bridged
+
+
+async def test_two_turns_that_sample_the_same_call_get_their_own_ids() -> None:
+    answers = ["CALL ls {}", "CALL ls {}", "done"]
+    async with endpoint(ScriptedSampler("", answers=answers), renderer=BridgeRenderer()) as started:
+        history: list[dict[str, Any]] = [{"role": "user", "content": "look"}]
+        first = await _reply(started, history)
+        history += _echo(first, "{}", "alpha")
+        second = await _reply(started, history)
+    assert first["tool_calls"][0]["id"] != second["tool_calls"][0]["id"]
+
+
+async def test_an_anthropic_echo_that_drops_a_whitespace_only_block_bridges() -> None:
+    """Claude Code drops a text block holding only whitespace when it echoes a reply."""
+    sampler = ScriptedSampler("", answers=["\n\nCALL ls {}", "done"])
+    async with endpoint(sampler, renderer=BridgeRenderer()) as started:
+        messages: list[dict[str, Any]] = [{"role": "user", "content": "look"}]
+        body = {"system": "be brief", "tools": TOOLS_ANTHROPIC}
+        first = await ask_anthropic(started, "t", messages=messages, **body)
+        blocks = first.json()["content"]
+        assert [b["type"] for b in blocks] == ["text", "tool_use"]
+        (use,) = [b for b in blocks if b["type"] == "tool_use"]
+        messages.append({"role": "assistant", "content": [use]})
+        result = {"type": "tool_result", "tool_use_id": use["id"], "content": "a b"}
+        messages.append({"role": "user", "content": [result]})
+        second = await ask_anthropic(started, "t", messages=messages, **body)
+        assert second.status_code == 200, second.text
+        one, two = started.records_for("t")
+    assert two.bridged and _extends(two, one)

@@ -228,9 +228,11 @@ class Recorder:
         *,
         ended_with_stop: bool,
         rendered: tuple[int, ...] | None = None,
+        call_ids: tuple[str, ...] = (),
     ) -> None:
         """Stamp the parsed reply's digest on record `seq` of the trial and index the
-        reply for the bridge, unless the prompt held an image, which no ids rebuild."""
+        reply for the bridge, with its calls' ids, unless the prompt held an image, which
+        no ids rebuild."""
         records = self.records.get(trial, [])
         for at in range(len(records) - 1, -1, -1):
             if records[at].seq != seq:
@@ -243,7 +245,7 @@ class Recorder:
                     ended_with_stop=ended_with_stop,
                     rendered=record.prompt_token_ids if rendered is None else rendered,
                 )
-                self.index_for(trial).add(record.prompt_digests, reply_digest, reply)
+                self.index_for(trial).add(record.prompt_digests, reply_digest, reply, call_ids)
             return
 
     def records_for(self, trial: str) -> list[Record]:

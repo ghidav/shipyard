@@ -21,30 +21,20 @@ def _field(value: Any, name: str) -> Any:
     return getattr(value, name, None) if value is not None else None
 
 
-def _arguments(raw: Any) -> Any:
-    """Tool arguments as a value when they parse, so formatting alone cannot fork; the
-    proxy's `{"_raw_arguments": s}` wrapper is unwrapped to the string sampled."""
-    if not isinstance(raw, str):
-        return raw
-    try:
-        parsed = json.loads(raw)
-    except ValueError:
-        return raw
-    if isinstance(parsed, dict) and set(parsed) == {"_raw_arguments"}:
-        return parsed["_raw_arguments"]
-    return parsed
-
-
-def _call(call: Any) -> list[Any]:
+def _call(call: Any) -> list[str]:
+    """A tool call by its name and id. The id says which reply made the call, so a call
+    the harness rewrote before echoing it (a default filled in, a type coerced) is still
+    that reply's: the harness runs what it rewrote, and the model reads what it wrote."""
     function = _field(call, "function")
     named = function if function is not None else call
-    return [str(_field(named, "name") or ""), _arguments(_field(named, "arguments"))]
+    return [str(_field(named, "name") or ""), str(_field(call, "id") or "")]
 
 
 def normalize(message: Any) -> dict[str, Any]:
-    """What identifies a message: role, text, thinking (a harness that strips it has
-    changed the message), images by their pixels, tool calls by name and value, a tool
-    result's tool name. Never a tool-call id: the proxy mints those after parsing."""
+    """What identifies a message: role, text with its whitespace left out (a harness may
+    drop a block of it), thinking (a harness that strips it has changed the message),
+    images by their pixels, tool calls by name and id (`with_call_ids` gives every call
+    an id), a tool result's tool name. Not a call's arguments, nor a result's call id."""
     content = _field(message, "content")
     text: list[str] = []
     thinking: list[str] = []
@@ -63,7 +53,7 @@ def normalize(message: Any) -> dict[str, Any]:
                 images.append(image_key(part))
     return {
         "role": str(_field(message, "role") or ""),
-        "text": "".join(text),
+        "text": "".join("".join(text).split()),
         "thinking": "".join(thinking),
         "images": images,
         "calls": [_call(call) for call in (_field(message, "tool_calls") or [])],
@@ -114,22 +104,46 @@ class Reply:
 
 
 class Index:
-    """One trial's sampled replies, each under the chain of digests that leads to it."""
+    """One trial's sampled replies, each under the chain of digests that leads to it. Two
+    different replies to one history that share a call id (a model that writes its own
+    numbers a call alike in every sample, as Kimi's do), or that make no call and say the
+    same, are both ambiguous: an echo of one that the harness trimmed may match the other,
+    so neither is bridged from."""
 
     def __init__(self) -> None:
         self._replies: dict[str, Reply] = {}
+        self._ambiguous: set[str] = set()
+        #: Per history and identity (a call id, or the digest of a reply making no call),
+        #: the replies that carry it.
+        self._carried: dict[tuple[str, str], list[tuple[str, Reply]]] = {}
 
     def __len__(self) -> int:
         return len(self._replies)
 
-    def add(self, prompt_digests: Sequence[str], reply_digest: str, reply: Reply) -> None:
-        self._replies[chain([*prompt_digests, reply_digest])] = reply
+    def add(
+        self,
+        prompt_digests: Sequence[str],
+        reply_digest: str,
+        reply: Reply,
+        call_ids: Sequence[str] = (),
+    ) -> None:
+        key, history = chain([*prompt_digests, reply_digest]), chain(prompt_digests)
+        identities = [f"call:{one}" for one in call_ids] or [f"reply:{reply_digest}"]
+        for identity in identities:
+            carried = self._carried.setdefault((history, identity), [])
+            for other_key, other in carried:
+                if other.completion_ids != reply.completion_ids:
+                    self._ambiguous.update((key, other_key))
+            carried.append((key, reply))
+        self._replies[key] = reply
 
     def find(self, digests: Sequence[str]) -> tuple[int, Reply] | None:
         """The longest prefix of the digests that ends in a sampled reply: where that
-        reply sits among the messages, and the reply."""
+        reply sits among the messages, and the reply; None when it ends in two."""
         keys = chains(digests)
         for end in range(len(keys), 0, -1):
+            if keys[end - 1] in self._ambiguous:
+                return None
             reply = self._replies.get(keys[end - 1])
             if reply is not None:
                 return end - 1, reply
