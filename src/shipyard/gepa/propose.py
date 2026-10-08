@@ -35,10 +35,11 @@ class Proposer(Protocol):
     async def __call__(self, reflection: Reflection) -> Module | None: ...
 
 
-def component_for(round_index: int, names: Sequence[str]) -> str:
-    """Which component this round rewrites: round-robin, so every one is attended to in
-    turn rather than whichever was rewritten first and so has evidence."""
-    return names[round_index % len(names)]
+def component_for(turn: int, names: Sequence[str]) -> str:
+    """The component the `turn`-th rewrite asked for changes: round-robin, so every one is
+    attended to in turn rather than whichever was rewritten first and so has evidence. A
+    round skipped for a perfect parent asks for none and takes no turn."""
+    return names[turn % len(names)]
 
 
 async def propose(

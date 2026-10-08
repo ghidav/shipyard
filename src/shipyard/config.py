@@ -171,12 +171,16 @@ class CispoRecipe(Gradient):
 PAPER_PARETO = (2, 3)
 #: GEPA 4.3: "All GEPA optimization runs use a minibatch size of 3".
 PAPER_MINIBATCH = 3
+#: No patience: the budget alone ends the search, as in GEPA's released code, whose
+#: `NoImprovementStopper` (gepa 0.1.4, utils/stop_condition.py) runs only when passed in
+#: `stop_callbacks`, and `api.py` adds none of its own.
+GEPA_PATIENCE = None
 
 
 class GepaRecipe(_Table):
     """The search's knobs: the reflector in three halves, the seed directory, the tasks held
     out to select on, the minibatch a child is judged on, the rollouts the search may spend,
-    and when a quiet proposer ends it."""
+    and how many rounds without a better Pareto mean end it."""
 
     kind: Literal["gepa"]
     reflection_harness: str
@@ -186,7 +190,7 @@ class GepaRecipe(_Table):
     pareto: int | str | None = None
     minibatch: int = Field(default=PAPER_MINIBATCH, ge=1)
     budget: int | None = Field(default=None, ge=1)
-    patience: int = Field(default=3, ge=1)
+    patience: int | None = Field(default=GEPA_PATIENCE, ge=1)
     edits: Literal["rewrite", "incremental"] = "rewrite"
 
     @field_validator("pareto", mode="before")
@@ -230,7 +234,7 @@ class FstRecipe(Gradient):
     modules: str = "modules"
     minibatch: int = Field(default=3, ge=1)
     budget: int | None = Field(default=None, ge=1)
-    patience: int = Field(default=3, ge=1)
+    patience: int | None = Field(default=GEPA_PATIENCE, ge=1)
     edits: Literal["rewrite", "incremental"] = "incremental"
 
     @field_validator(

@@ -130,9 +130,9 @@ cookbook's; the paper states none of these.
 | `reflection_image` | string | `"python:3.12-slim"` | The container image the reflector runs in. |
 | `modules` | string | `"modules"` | The seed: a modules directory, relative to the blueprint. |
 | `pareto` | integer ≥ 0 or string | unset | The Pareto tasks, which score every candidate the search keeps; minibatches come from the rest. A count holds that many of the run's tasks out, drawn with `[data] seed`; `0` holds none out and selects on the tasks the search reflects on; a dataset name selects on that dataset. Unset holds out two thirds of the run's tasks, rounded down, as in three of GEPA's four benchmarks: GEPA §4.1 (split sizes) and §4.3 (the validation set is D_pareto). §4.1 states no single proportion: 300 validation tasks beside 150 training ones for three benchmarks, 111 beside 111 for PUPA. |
-| `minibatch` | integer ≥ 1 | `3` (GEPA §4.3) | How many feedback tasks the parent and a new candidate run on each round. |
+| `minibatch` | integer ≥ 1 | `3` (GEPA §4.3) | How many feedback tasks the parent and a new candidate run on each round. A round whose parent scores 1.0 on every one of them asks for no rewrite, as GEPA's released code does by default (gepa 0.1.4, `api.py`: `skip_perfect_score = True`, `perfect_score = 1.0`). |
 | `budget` | integer ≥ 1 | unset (GEPA states no default: §4.3 matches MIPROv2's rollouts per benchmark) | Rollouts the search may spend, every scoring counted. Unset is two passes: 2 × tasks × `group_size`, over every task it may score. |
-| `patience` | integer ≥ 1 | `3` (GEPA has none; its loop runs until the budget is spent) | Rounds in a row with no new candidate before the search stops. |
+| `patience` | integer ≥ 1 | unset (GEPA's released code: gepa 0.1.4, `utils/stop_condition.py`, whose `NoImprovementStopper` runs only when passed in `stop_callbacks`) | Rounds in a row in which the best Pareto mean of the pool did not rise, every round counted, before the search stops. Unset, the budget alone ends the search. |
 | `edits` | `"rewrite"` or `"incremental"` | `"rewrite"` | `"incremental"` asks the reflector to edit the text in place and keep what works, not rewrite it. |
 
 See [gepa](../concepts/gepa.md).
@@ -150,7 +150,8 @@ See [gepa](../concepts/gepa.md).
 | `edits` | `"rewrite"` or `"incremental"` | `"incremental"` (FST App. E) | As for `gepa`. |
 
 `reflection_harness` (required), `reflection_model`, `reflection_image`, `modules` (the seed, default
-`"modules"`), `minibatch` and `patience` are as for `gepa`. The fast phase selects on the paper's anchor set.
+`"modules"`), `minibatch` and `patience` are as for `gepa`, and so is the round whose parent scores 1.0
+on its whole minibatch. The fast phase selects on the paper's anchor set.
 FST names one anchor set (§3, App. A) and no other source for the minibatches, so fst draws them
 from it too. Token losses are averaged per prompt (FST Eq. 4), whatever `slow` is. The optimizer is
 AdamW at betas 0.9 / 0.999 and no weight decay (FST App. D, which also warms up over 10 steps; `warmup = 10` reproduces it), with eps 1e-8,

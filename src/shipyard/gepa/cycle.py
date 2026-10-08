@@ -1,8 +1,9 @@
 """The search (GEPA, Agrawal et al., arXiv 2507.19457, Alg. 1): score the seeds on the Pareto
 tasks; then each round draw a parent off the frontier in proportion to the tasks it leads, run
 it on a minibatch sampled from the feedback tasks, ask for a rewrite of one component from
-those traces, run the child on the same minibatch, and score the child on the Pareto tasks
-only when it beat its parent there. The weights never move here."""
+those traces unless the parent is perfect on every one of them, run the child on the same
+minibatch, and score the child on the Pareto tasks only when it beat its parent there. The
+weights never move here."""
 
 from __future__ import annotations
 
@@ -19,10 +20,19 @@ from shipyard.modules import Candidate
 
 logger = logging.getLogger(__name__)
 
-#: Told once per round what it did: `round`, `parent`, `component`, `child` (None for a
-#: decline), `parent_mean` and `child_mean` over the minibatch, `accepted`, `pool`,
+#: Told once per round what it did: `round`, `parent`, `component` (None when skipped),
+#: `skipped` (why no rewrite was asked for, or None), `child` (None when no child was
+#: scored), `parent_mean` and `child_mean` over the minibatch, `accepted`, `pool`,
 #: `frontier` and `spent`. A run's `log` takes exactly this.
 Log = Callable[..., Any]
+
+#: The score no rollout can beat, Harbor's maximum reward. A round whose parent reaches it on
+#: every task of the minibatch asks for no rewrite, as GEPA's released code skips it by
+#: default (gepa 0.1.4, api.py: skip_perfect_score = True, perfect_score = 1.0): a child
+#: must score strictly above its parent, and no child can.
+PERFECT = 1.0
+#: What a skipped round's row says in `skipped`.
+SKIPPED_PERFECT = "perfect"
 
 
 @dataclass(frozen=True)
@@ -52,7 +62,7 @@ async def evolve(
     score: Scorer,
     minibatch: int,
     budget: int,
-    patience: int,
+    patience: int | None = None,
     rollouts: int = 1,
     rng: random.Random | None = None,
     log: Log | None = None,
@@ -60,9 +70,13 @@ async def evolve(
     """The loop over GEPA's two task lists: minibatches are drawn from `tasks` (D_feedback),
     and every seed and accepted child is scored on `pareto` (D_pareto), which the frontier
     and the winner are read from; None is `tasks` again (GEPA 6, FST's anchor set). `budget`
-    counts rollouts, `rollouts` per task scored, every scoring included; `patience` rounds in
-    a row with no child to score end it. `seed` is one candidate or a population. `rng`
-    draws the parents and shuffles the minibatches. A scorer that raises is not caught."""
+    counts rollouts, `rollouts` per task scored, every scoring included, and every round
+    spends the parent's, so the budget always ends the search. `patience`, when set, ends it
+    after that many rounds in a row, skipped ones included, in which the best Pareto mean of
+    the pool did not rise: GEPA's `NoImprovementStopper` (gepa 0.1.4,
+    utils/stop_condition.py), which its code adds only when asked. `seed` is one candidate
+    or a population. `rng` draws the parents and shuffles the minibatches. A scorer that
+    raises is not caught."""
     chosen = random.Random() if rng is None else rng
     told = log if log is not None else _silent
     feedback = tuple(dict.fromkeys(Path(task) for task in tasks))
@@ -74,11 +88,13 @@ async def evolve(
             f"nothing to evolve: {len(feedback)} task(s) to reflect on, {len(columns)} to "
             f"select on, {len(names)} component(s)"
         )
+    if rollouts < 1:
+        raise ValueError(f"rollouts must be at least 1, so that every round spends; got {rollouts}")
     pool: dict[str, Candidate] = {member.digest: member for member in seeds}
     declined: set[str] = set()
     seen: dict[str, dict[str, Outcome]] = {}
     drawn = minibatches(feedback, minibatch, chosen)
-    spent = rounds = quiet = 0
+    spent = rounds = asked = stale = 0
 
     async def measure(candidate: Candidate, over: Sequence[Path]) -> list[Outcome]:
         """Fresh outcomes over `over` under the current round; the rollouts asked for are
@@ -94,33 +110,38 @@ async def evolve(
 
     for member in list(pool.values()):
         await admit(member)
-    while spent < budget and quiet < max(patience, len(names)):
+    high = peak(tally(pool, seen))
+    while spent < budget and (patience is None or stale < patience):
         leads = tally(pool, seen).leads() or {seeds[0].digest: 1}
         parent = pool[chosen.choices(list(leads), weights=list(leads.values()))[0]]
         batch = next(drawn)
-        component = component_for(rounds, names)
         rounds += 1
         # The parent runs afresh, as in GEPA: the reflector reads traces of this round, and
         # the child is compared with a score from the same round.
         before = await measure(parent, batch)
-        try:
-            child = await propose(parent, component, before, write)
-        except Exception:
-            logger.exception("the proposer failed; the pool stands")
-            child = None
         row: dict[str, Any] = {
             "round": rounds,
             "parent": parent.digest,
-            "component": component,
+            "component": None,
+            "skipped": None,
             "child": None,
             "parent_mean": mean(before),
             "child_mean": None,
             "accepted": False,
         }
-        if child is None or child.digest in pool or child.digest in declined:
-            quiet += 1
+        child: Candidate | None = None
+        if perfect(batch, before):
+            row["skipped"] = SKIPPED_PERFECT
         else:
-            quiet = 0
+            # Turns go to the rounds that ask, as GEPA's selector is not consulted on a skip.
+            component = component_for(asked, names)
+            asked += 1
+            row["component"] = component
+            try:
+                child = await propose(parent, component, before, write)
+            except Exception:
+                logger.exception("the proposer failed; the pool stands")
+        if child is not None and child.digest not in pool and child.digest not in declined:
             after = await measure(child, batch)
             row.update(child=child.digest, child_mean=mean(after))
             if _beats(before, after):
@@ -129,9 +150,32 @@ async def evolve(
                 await admit(child)
             else:
                 declined.add(child.digest)
-        told(**row, pool=len(pool), frontier=len(tally(pool, seen).frontier()), spent=spent)
+        fitness = tally(pool, seen)
+        now = peak(fitness)
+        stale = 0 if now > high else stale + 1
+        high = max(high, now)
+        told(**row, pool=len(pool), frontier=len(fitness.frontier()), spent=spent)
     fitness = tally(pool, seen)
     return Evolution(best(pool, fitness), pool, fitness, rounds, spent)
+
+
+def perfect(batch: Sequence[Path], outcomes: Sequence[Outcome]) -> bool:
+    """Whether every task of the minibatch scored `PERFECT` or above, task by task as GEPA's
+    code compares each example's score and not their mean. A task's score is the mean over
+    its measured rollouts; a task with none measured, or no outcome at all, is not perfect."""
+    reached = {
+        outcome.task
+        for outcome in outcomes
+        if outcome.reward is not None and outcome.reward >= PERFECT
+    }
+    return all(str(task) in reached for task in batch)
+
+
+def peak(fitness: Fitness) -> float:
+    """The best Pareto mean in the pool, what patience watches: GEPA's stopper reads the
+    highest of `program_full_scores_val_set`. -inf while nothing was measured."""
+    found = [fitness.aggregate(digest) for digest in fitness.scores]
+    return max((value for value in found if value is not None), default=float("-inf"))
 
 
 def best(pool: dict[str, Candidate], fitness: Fitness) -> Candidate:

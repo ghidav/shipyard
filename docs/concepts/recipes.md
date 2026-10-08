@@ -357,6 +357,11 @@ calls over 192 examples, and a metric call is one rollout. Scoring the texts car
 previous cycle comes on top of that budget, so a full population does not spend the search's passes
 before it starts. `population` must divide `group_size`; `check` blocks the run otherwise.
 
+A fast phase runs gepa's rounds: a round whose parent scores 1.0 on every minibatch task asks for no
+rewrite, and `patience`, unset by default as in GEPA's released code (gepa 0.1.4,
+`utils/stop_condition.py`), ends a fast phase after that many rounds in a row in which the best mean
+on the anchor set did not rise. Unset, the budget alone ends it. See [gepa](gepa.md#the-loop).
+
 Each cycle's population is kept under `runs/<id>/modules/cycle-<n>/<rank>/`, and the last
 population's first text under `modules/best/`. `metrics.jsonl` holds gepa's round rows and one
 `evolution` row per cycle, then the step rows; every one of them carries its `cycle`.

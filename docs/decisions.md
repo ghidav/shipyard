@@ -181,6 +181,14 @@ frontier.
 A child whose full scoring mostly failed has a mean over very few tasks, so one lucky task could
 otherwise win.
 
-**The budget counts every rollout, and patience counts quiet rounds.**
-A reflector that keeps declining would otherwise spend the budget running parents for rewrites that
-never come.
+**A round whose parent scores 1.0 on every minibatch task asks for no rewrite.**
+A child must beat its parent strictly, and none can there, so the reflection and the child's run would
+be spent for nothing. GEPA's released code skips such a round by default (gepa 0.1.4, `api.py`:
+`skip_perfect_score = True`, `perfect_score = 1.0`).
+
+**The budget counts every rollout and always ends the search; patience is off unless set.**
+Every round spends its parent's run, so a search ends however its reflector answers. Patience is off
+by default as in GEPA's released code (gepa 0.1.4, `utils/stop_condition.py`: `NoImprovementStopper`
+runs only when passed in `stop_callbacks`). Set, patience is
+GEPA's no-improvement stopper: it counts rounds in which the best Pareto mean did not rise, so it stops
+a search that has stopped finding better texts and leaves one that still does.

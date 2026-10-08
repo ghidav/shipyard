@@ -151,6 +151,7 @@ async def test_the_recipe_runs_end_to_end_on_fakes(
     *rounds, final = list(record.read(opened.directory / record.METRICS))
     (row,) = rounds
     assert row["seq"] == 1 and row["round"] == 1 and row["component"] == "solving"
+    assert row["skipped"] is None
     assert (row["parent"], row["child"]) == (seeded.digest, winner.digest)
     assert (row["parent_mean"], row["child_mean"], row["accepted"]) == (0.0, 1.0, True)
     # The winner ties the seed on one task and beats it on the other: the seed is dominated.
@@ -253,6 +254,30 @@ async def test_a_quiet_reflector_leaves_the_seed_as_the_winner(
     ], "the seed on the held-out task, then each round the parent before the reflector"
 
 
+async def test_a_seed_perfect_on_its_minibatches_is_never_reflected_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every rollout scores 1.0: each round runs the parent and asks for no rewrite, and
+    with the best Pareto mean never rising, `patience = 2` ends it after two rounds."""
+    monkeypatch.chdir(tmp_path)
+    opened = Run.open(_blueprint(tmp_path), root=tmp_path / "runs")
+    ran: list[str] = []
+
+    async def solved(config: TrialConfig) -> None:
+        ran.append(Path(str(config.task.path)).name)
+        write_result(Path(config.trials_dir) / config.trial_name, reward=1.0)
+
+    opened.run_trial = solved
+    with opened:
+        await run_recipe(opened)
+    assert "reflection" not in ran and len(ran) == 3, "the seed's scoring, then two parents"
+    *rounds, final = list(record.read(opened.directory / record.METRICS))
+    assert [(row["skipped"], row["component"], row["child"]) for row in rounds] == [
+        ("perfect", None, None)
+    ] * 2
+    assert (final["rounds"], final["spent"], final["moved"]) == (2, 3, False)
+
+
 # -------------------------------------------------------------------- the blueprint
 
 
@@ -262,7 +287,7 @@ def test_the_fixture_loads_with_the_searchs_knobs() -> None:
     assert found.reflection_model == "Qwen/Qwen3-8B"
     assert found.reflection_image == REFLECTION_IMAGE == "python:3.12-slim"
     assert found.modules == "modules" and found.minibatch == 3 and found.pareto is None
-    assert found.budget is None and found.patience == 3 and found.edits == "rewrite"
+    assert found.budget is None and found.patience is None and found.edits == "rewrite"
     for gone in ("tolerance", "max_metric_calls", "components", "rng_seed", "population"):
         assert not hasattr(found, gone)
 

@@ -5,7 +5,7 @@ The `gepa` recipe improves text, not weights. It rewrites a skill the harness re
 A module is a directory of text a trial carries into its container. A skill is the one kind of module this version delivers: a `SKILL.md` the harness reads before it starts work. A candidate is a set of named modules, identified by one digest. The seed is the candidate the search starts from.
 
 !!! note "A real run"
-    The skill, the rows and the costs below are from one run of this blueprint, `gepa-docker__fK3MrF8`. That run took each round's minibatch as the next two tasks in the dataset's order, and compared each child with its parent's scores from the seed's measurement instead of running the parent on the minibatch. The `check` output is what `check` prints for this blueprint. The search kept its seed: none of its four rewrites scored better. The page shows what each round did and why.
+    The skill, the rows and the costs below are from one run of this blueprint, `gepa-docker__fK3MrF8`. That run took each round's minibatch as the next two tasks in the dataset's order, and compared each child with its parent's scores from the seed's measurement instead of running the parent on the minibatch. It also asked for a rewrite when the parent's scores on both minibatch tasks were 1.0, and its `patience` counted rounds with no child to score; its rows have no `skipped` column. The `check` output is what `check` prints for this blueprint. The search kept its seed: none of its four rewrites scored better. The page shows what each round did and why.
 
 ## The seed skill
 
@@ -74,7 +74,7 @@ The policy is the one from [Train with dapo](train-with-dapo.md): Qwen3-8B serve
 - `pareto = 0` makes the eight tasks both the feedback tasks, which each round's minibatch is drawn from, and the Pareto tasks, which score every candidate the search keeps. gepa's default, as in three of GEPA's four benchmarks, holds two thirds of the tasks out as Pareto tasks: over eight tasks, 5 to select on and 3 to reflect on.
 - `minibatch` is how many tasks the parent and a child run on each round; gepa's default is 3.
 - `budget` is how many trials of the policy, called rollouts, the search may spend. Unset, it is two passes over the tasks: 2 × tasks × `group_size`, 32 here as well.
-- `patience` ends the search after that many rounds in a row with no child to score.
+- `patience` ends the search after that many rounds in a row in which the best mean on the Pareto tasks did not rise. Unset, the default as in GEPA's released code (gepa 0.1.4, `utils/stop_condition.py`: `NoImprovementStopper` runs only when passed in `stop_callbacks`), the budget alone ends the search.
 - `edits = "incremental"` asks the reflector for the smallest change; `"rewrite"` is the default.
 
 ## Check
@@ -117,16 +117,17 @@ ok  tinker serves Qwen/Qwen3-8B
 First the seed is measured on the Pareto tasks, here all eight. Then each round:
 
 1. **Parent.** One candidate is drawn from the frontier, with probability proportional to the number of Pareto tasks it is best on. The pool is every candidate the search has accepted, the seed first; the frontier is the pool's candidates that score best on at least one Pareto task.
-2. **Component.** One module of the parent is chosen, round-robin.
-3. **Minibatch.** `minibatch` tasks are drawn from the feedback tasks, here all eight, in passes shuffled with `[data] seed`.
-4. **Parent's run.** The parent is rolled out on the minibatch.
-5. **Reflect.** One Harbor trial runs the reflector. It reads the module's files and one trace per minibatch task from the parent's run: the task's instruction, its score, the tail of the policy's transcript and what the grader printed. It writes a new `SKILL.md`. A rewrite that fails the skill frontmatter rule or comes back blank or unchanged, or a trial that writes nothing, is a decline.
-6. **Score.** The child is rolled out on the same minibatch.
-7. **Accept.** A child whose mean is strictly above the parent's on the minibatch joins the pool and is measured on every Pareto task.
+2. **Minibatch.** `minibatch` tasks are drawn from the feedback tasks, here all eight, in passes shuffled with `[data] seed`.
+3. **Parent's run.** The parent is rolled out on the minibatch.
+4. **Perfect parent.** If every minibatch task scored 1.0, the round ends here: no child could score higher. A task's score is the mean over its measured rollouts, so every measured rollout of it must score 1.0, and a task with none measured is not perfect. The row says `"skipped": "perfect"`.
+5. **Component.** One module of the parent is chosen, round-robin over the rounds that reach this step.
+6. **Reflect.** One Harbor trial runs the reflector. It reads the module's files and one trace per minibatch task from the parent's run: the task's instruction, its score, the tail of the policy's transcript and what the grader printed. It writes a new `SKILL.md`. A rewrite that fails the skill frontmatter rule or comes back blank or unchanged, or a trial that writes nothing, is a decline.
+7. **Score.** The child is rolled out on the same minibatch.
+8. **Accept.** A child whose mean is strictly above the parent's on the minibatch joins the pool and is measured on every Pareto task.
 
-The search stops when it has spent `budget` rollouts of the policy, or after `patience` rounds in a row with no child to score. Reflection trials do not count against the budget.
+The search stops when it has spent `budget` rollouts of the policy, or, with `patience` set, after that many rounds in a row in which the best mean on the Pareto tasks did not rise; a skipped round counts. Reflection trials do not count against the budget.
 
-The seed's measurement spends 8 tasks × 2 = 16 rollouts, and each round 8, the parent and the child on 2 tasks each, so the budget of 32 allows two rounds when each scores a child; a round whose reflector declines costs 4, and an accepted child 16 more, for its measurement on all eight. The run below compared each child with the seed's scores and spent 4 a round, the child's alone, so it had four.
+The seed's measurement spends 8 tasks × 2 = 16 rollouts, and each round 8, the parent and the child on 2 tasks each, so the budget of 32 allows two rounds when each scores a child; a round that scores no child, because its parent was perfect or its reflector declined, costs 4, and an accepted child 16 more, for its measurement on all eight. The run below compared each child with the seed's scores and spent 4 a round, the child's alone, so it had four.
 
 ## What the run did
 
@@ -139,7 +140,7 @@ The run took 35 minutes. The seed scored 15 of 16: every rollout passed but one 
 | 3 | puzzle24, shortest-path | 0.75 | 0.5 | no |
 | 4 | knights-knaves, zebra-puzzles | 1.0 | 1.0 | no |
 
-Three children tied a parent that already scored 1.0, and a tie is not accepted. Round 3's child failed both shortest-path rollouts the same way, out of tokens before an answer. The pool never grew past the seed.
+Three children tied a parent that already scored 1.0, and a tie is not accepted. gepa skips such a round: the parent's run is spent and no rewrite is asked for. Round 3's child failed both shortest-path rollouts the same way, out of tokens before an answer. The pool never grew past the seed.
 
 The reflector read the traces well. Its first rewrite, under `edits = "incremental"`, kept the seed's three lines and added:
 
@@ -162,8 +163,9 @@ That names pi's habit with this model: calling tools long after the answer is wr
 | column | what it is |
 |---|---|
 | `round` | the round, from 1 |
-| `parent`, `component` | the parent's digest and the module rewritten |
-| `child` | the child's digest; null when the reflector declined or wrote a text already seen |
+| `parent`, `component` | the parent's digest and the module rewritten; `component` is null on a skipped round |
+| `skipped` | `"perfect"` when the parent scored 1.0 on every minibatch task, so no rewrite was asked for; null otherwise |
+| `child` | the child's digest; null when the round was skipped, or the reflector declined or wrote a text already seen |
 | `parent_mean`, `child_mean` | both means over the minibatch |
 | `accepted` | whether the child joined the pool |
 | `pool`, `frontier` | how many candidates each holds after the round |

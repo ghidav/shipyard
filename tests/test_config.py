@@ -165,7 +165,7 @@ def test_gepa_fixture_defaults() -> None:
     found = load(BLUEPRINTS / "gepa")
     assert found.recipe.kind == "gepa" and not isinstance(found.recipe, config.Gradient)
     assert found.recipe.modules == "modules" and found.recipe.minibatch == 3
-    assert found.recipe.budget is None and found.recipe.patience == 3
+    assert found.recipe.budget is None and found.recipe.patience is None
     assert found.recipe.reflection_image == "python:3.12-slim"
     assert found.recipe.edits == "rewrite"
 

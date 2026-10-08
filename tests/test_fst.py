@@ -49,6 +49,7 @@ def test_the_fixture_takes_the_papers_defaults() -> None:
     recipe = load(FST).recipe
     assert (recipe.slow, recipe.kl_coef, recipe.edits) == ("cispo", 0.001, "incremental")
     assert (recipe.cycle, recipe.population, recipe.anchor) == (2, 2, None)
+    assert recipe.patience is None, "gepa's: the budget alone ends a fast phase"
     found = preset(recipe)
     assert (found.name, found.loss_fn) == ("fst", "cispo")
     assert found.loss_config == {"clip_low_threshold": 0.0, "clip_high_threshold": 4.0}
@@ -214,6 +215,27 @@ async def test_the_fast_phase_scores_each_cell_with_one_rollout_on_five_passes(
     fast, slow = jobs[:-4], jobs[-4:]
     assert fast and all(job["trials"] == job["tasks"] for job in fast), "one rollout a cell"
     assert all(job["trials"] == 2 * job["tasks"] for job in slow), "group_size / population"
+
+
+@pytest.mark.usefixtures("fakes")
+async def test_patience_ends_a_fast_phase_as_it_ends_gepa(tmp_path: Path) -> None:
+    """`patience = 1` under a budget that would run on: the fast phase stops at its first
+    round that does not raise the best anchor-set mean. Each text here names one task, so
+    the first child's rise is the only one."""
+    for name in ("a", "b", "c", "d"):
+        shutil.copytree(FIXTURES / "fixture" / "alpha", tmp_path / "tasks" / "four" / name)
+    changes = {'"aime-train"': '"four"', 'kind = "fst"': 'kind = "fst"\npatience = 1\nbudget = 100'}
+    home = write_blueprint(tmp_path, _text(**changes))
+    shutil.copytree(VALID, home / "modules")
+    opened = Run.open(home, root=tmp_path / "runs")
+    opened.run_trial = Trials()
+    with opened:
+        await run_recipe(opened)
+    rows = list(record.read(opened.directory / record.METRICS))
+    rounds = [row for row in rows if "round" in row]
+    assert len(rounds) == 2 and rounds[0]["accepted"] is True
+    (evolution,) = [row for row in rows if row.get("evolution")]
+    assert evolution["rounds"] == 2 and evolution["spent"] < 100
 
 
 @pytest.mark.usefixtures("fakes")

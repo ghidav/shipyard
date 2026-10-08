@@ -1,7 +1,8 @@
 """The search on a fake scorer and a fake proposer: four tasks and one rule, a text scores
 1.0 on a task whose name it mentions and `BASELINE` on one it does not, so every reward
 in a case is visible in the case. Minibatches are drawn at random, so a case that needs a
-child to win its minibatch uses `Echo`, whose child names the minibatch it was shown."""
+child to win its minibatch uses `Echo`, whose child names the minibatch it was shown. A text
+that names every task of a minibatch is perfect there, and its round is skipped."""
 
 from __future__ import annotations
 
@@ -13,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from shipyard.gepa.cycle import Evolution, best, evolve, minibatches
+from shipyard.gepa.cycle import Evolution, best, evolve, minibatches, perfect
 from shipyard.gepa.fitness import Outcome, tally
 from shipyard.gepa.propose import Reflection, component_for, propose
 from shipyard.modules import SKILL_FILE, Candidate, Module
@@ -25,6 +26,7 @@ ROW = (
     "round",
     "parent",
     "component",
+    "skipped",
     "child",
     "parent_mean",
     "child_mean",
@@ -66,6 +68,19 @@ class World:
             reward = 1.0 if hit else BASELINE
             out.append(Outcome(str(task), reward, feedback=f"seen in round {round_index}"))
         return out
+
+
+@dataclass
+class Table:
+    """A scorer reading each task's reward off a table, whatever the candidate: None is a
+    task with no measured rollout."""
+
+    rewards: dict[str, float | None]
+
+    async def __call__(
+        self, candidate: Candidate, tasks: Sequence[Path], round_index: int
+    ) -> list[Outcome]:
+        return [Outcome(str(task), self.rewards[task.name]) for task in tasks]
 
 
 @dataclass
@@ -206,39 +221,109 @@ async def test_a_child_that_did_not_beat_its_parent_costs_two_minibatches() -> N
     world, log = World(), Logged()
     result = await run(seed(), TASKS, write=Scripted(["mentions nothing"]), score=world, log=log)
     assert result.pool == {seed().digest: seed()} and result.best == seed()
-    assert [row["spent"] for row in log.rows] == [4 + 2 + 2, 10, 12, 14], (
+    assert [row["spent"] for row in log.rows] == [4 + 2 + 2, 10, 12], (
         "the parent's minibatch and the child's, never the rest of the list"
     )
-    assert result.rounds == 1 + 3, "scored and turned down, then three declines"
+    assert result.rounds == 1 + 2, "scored and turned down, then two declines: patience = 3"
     assert log.rows[0]["accepted"] is False and log.rows[0]["child"] is not None
     assert log.rows[0]["child_mean"] == BASELINE == log.rows[0]["parent_mean"]
-    assert [row["child"] for row in log.rows[1:]] == [None, None, None]
+    assert [row["child"] for row in log.rows[1:]] == [None, None]
     tied = await run(seed("t1 t2"), TASKS, write=Scripted(["t2 t1"]), score=World())
     assert tied.best == seed("t1 t2"), "a tie buys nothing"
 
 
-async def test_patience_counts_rounds_with_nothing_to_score_in_a_row() -> None:
-    world, log = World(), Logged()
-    result = await run(seed(), TASKS, write=Scripted([None]), score=world, patience=2, log=log)
-    assert result.rounds == 2 and result.spent == 4 + 2 + 2, "a quiet round runs its parent"
+async def test_patience_counts_rounds_in_which_the_best_pareto_mean_did_not_rise() -> None:
+    """GEPA's NoImprovementStopper (gepa 0.1.4, utils/stop_condition.py): every round
+    counts, skipped ones too, and only a higher best Pareto mean in the pool clears it."""
+    log = Logged()
+    declined = await run(seed(), TASKS, write=Scripted([None]), score=World(), patience=2, log=log)
+    assert declined.rounds == 2 and declined.spent == 4 + 2 + 2, (
+        "a round with no child runs its parent"
+    )
     assert [row["child"] for row in log.rows] == [None, None]
-    replies = [None, None, "mentions nothing", None, None, "nothing again"]
-    spread, rows = Logged(), Scripted(replies)
-    found = await run(seed(), TASKS, write=rows, score=World(), log=spread)
-    assert found.rounds == 6 + 3, "two quiet stretches of two, and the search ran through both"
-    assert [row["child"] is not None for row in spread.rows] == [
-        False,
-        False,
-        True,
-        False,
-        False,
-        True,
-        False,
-        False,
-        False,
-    ]
-    repeated = await run(seed(), TASKS, write=Scripted(["mentions nothing"] * 20), score=World())
-    assert repeated.rounds == 1 + 3, "the same rejected rewrite is a decline, not a loop"
+    turned = await run(seed(), TASKS, write=Fresh(), score=World(), patience=2)
+    assert turned.rounds == 2, "a child scored and turned down is no rise"
+    log = Logged()
+    held = await run(seed(), TASKS, pareto=HELD, write=Echo(), score=World(), patience=2, log=log)
+    assert [row["accepted"] for row in log.rows] == [True, True] and held.rounds == 2, (
+        "accepted on its minibatch, and BASELINE on the Pareto tasks like the seed: no rise"
+    )
+    log = Logged()
+    rising = await run(seed(), TASKS, write=Echo(), score=World(), patience=1, log=log)
+    assert [(row["accepted"], row["skipped"]) for row in log.rows] == [
+        (True, None),
+        (True, None),
+        (False, "perfect"),
+    ], "two rises, then a child perfect on every task: its round is skipped, and counts"
+    assert rising.rounds == 3 and rising.fitness.aggregate(rising.best.digest) == 1.0
+
+
+async def test_with_no_patience_the_budget_alone_ends_the_search() -> None:
+    """Patience is unset by default, as in GEPA's code; every round spends its parent's
+    rollouts, so the budget ends even a search whose reflector never answers."""
+    result = await run(seed(), TASKS, write=Scripted([]), score=World(), patience=None, budget=20)
+    assert result.rounds == 8 and result.spent == 20, "4 for the seed, then 2 a round"
+    with pytest.raises(ValueError, match="rollouts must be at least 1"):
+        await run(seed(), TASKS, write=Scripted([]), score=World(), rollouts=0)
+
+
+async def test_a_round_whose_parent_is_perfect_on_its_minibatch_asks_for_no_rewrite() -> None:
+    """GEPA's code skips it by default (gepa 0.1.4, api.py: skip_perfect_score = True,
+    perfect_score = 1.0): no child can beat a parent at 1.0 on every task. The parent's
+    run is spent all the same."""
+    world, log, writes = World(), Logged(), Scripted(["anything"])
+    solved = seed("t1 t2 t3 t4")
+    result = await run(solved, TASKS, write=writes, score=world, log=log, patience=None, budget=10)
+    assert writes.seen == [] and result.pool == {solved.digest: solved}
+    assert result.rounds == 3 and result.spent == 4 + 3 * 2, "each round spends the parent's run"
+    assert [job[0] for job in world.jobs] == [solved.digest] * 4, "the seed, then three parents"
+    for row in log.rows:
+        assert tuple(row) == ROW
+        assert (row["skipped"], row["component"], row["child"], row["child_mean"]) == (
+            "perfect",
+            None,
+            None,
+            None,
+        )
+        assert row["parent_mean"] == 1.0 and row["accepted"] is False
+    shown, log = Scripted([]), Logged()
+    table = Table({"t1": 1.0, "t2": None})
+    await run(seed(), TASKS[:2], write=shown, score=table, log=log, patience=1)
+    assert (log.rows[0]["parent_mean"], log.rows[0]["skipped"]) == (1.0, None)
+    assert len(shown.seen) == 1, "a mean of 1.0 over the measured tasks, and one unmeasured"
+
+
+def test_a_minibatch_is_perfect_when_every_task_is_not_when_the_mean_is() -> None:
+    """Task by task, as GEPA's code compares each example's score; a task's score is the
+    mean over its measured rollouts."""
+    one, two = (str(task) for task in TASKS[:2])
+    assert perfect(TASKS[:2], [Outcome(one, 1.0), Outcome(two, 1.0)])
+    assert not perfect(TASKS[:2], [Outcome(one, 1.5), Outcome(two, 0.5)]), "a mean of 1.0"
+    assert not perfect(TASKS[:2], [Outcome(one, 1.0), Outcome(two, None)]), "none measured"
+    assert not perfect(TASKS[:2], [Outcome(one, 1.0)]), "no outcome back"
+    assert not perfect(TASKS[:2], [Outcome(one, 1.0), Outcome(two, 0.5)])
+
+
+async def test_a_skipped_round_takes_no_components_turn() -> None:
+    """GEPA's code consults its round-robin selector only past the skip: a text that names
+    t1..t3 is perfect on three minibatches of one in every four, and each component is
+    offered in turn on the fourth."""
+    writes, log = Scripted([]), Logged()
+    perfect_on_three = seed("t1 t2 t3", "a", "b", "c")
+    budget = 4 + 12
+    await run(
+        perfect_on_three,
+        TASKS,
+        write=writes,
+        score=World(),
+        log=log,
+        minibatch=1,
+        budget=budget,
+        patience=None,
+    )
+    assert [reflection.component for reflection in writes.seen] == ["a", "b", "c"]
+    assert [row["component"] for row in log.rows if row["skipped"] is None] == ["a", "b", "c"]
+    assert [row["skipped"] for row in log.rows].count("perfect") == 9
 
 
 async def test_the_budget_ends_the_search_in_rollouts() -> None:
@@ -253,7 +338,10 @@ async def test_the_budget_ends_the_search_in_rollouts() -> None:
 
 async def test_every_component_is_rotated_and_each_round_draws_its_own_minibatch() -> None:
     writes, world = Fresh(), World()
-    await run(seed("x", "a", "b", "c"), TASKS, write=writes, score=world, budget=4 + 4 * 6)
+    budget = 4 + 4 * 6
+    await run(
+        seed("x", "a", "b", "c"), TASKS, write=writes, score=world, budget=budget, patience=None
+    )
     assert [reflection.component for reflection in writes.seen] == ["a", "b", "c"] * 2
     shown = [{Path(outcome.task).name for outcome in r.outcomes} for r in writes.seen]
     assert shown[0] | shown[1] == shown[2] | shown[3] == {"t1", "t2", "t3", "t4"}, (
@@ -320,7 +408,8 @@ async def test_the_rng_draws_the_minibatches() -> None:
     found = {}
     for at in (1, 2):
         world = World()
-        await run(seed(), TASKS, write=Fresh(), score=world, rng=random.Random(at), budget=28)
+        rng = random.Random(at)
+        await run(seed(), TASKS, write=Fresh(), score=world, rng=rng, budget=28, patience=None)
         parents = [list(job[1]) for job in world.jobs[1::2]]
         assert parents == drawn(TASKS, 2, random.Random(at), 6), (
             "each of six rounds opens with its parent's job"
@@ -330,11 +419,12 @@ async def test_the_rng_draws_the_minibatches() -> None:
 
 
 async def test_a_dominated_candidate_is_not_a_parent_and_the_best_has_the_top_mean() -> None:
-    writes = Scripted(["t1 t2 t3 t4", "t3"])
-    result = await run(seed("do the work"), TASKS, write=writes, score=World())
+    writes, log = Scripted(["t1 t2 t3 t4", "t3"]), Logged()
+    result = await run(seed("do the work"), TASKS, write=writes, score=World(), log=log)
     assert writes.seen[0].module.text == "do the work"
-    assert {reflection.module.text for reflection in writes.seen[1:]} == {"t1 t2 t3 t4"}
     assert result.best.components["guide"].text == "t1 t2 t3 t4"
+    assert {row["parent"] for row in log.rows[1:]} == {result.best.digest}, "never the seed"
+    assert len(writes.seen) == 1, "the child is perfect on every minibatch: no more rewrites"
     wide, narrow, balanced = seed("t1 t2"), seed("t3"), seed("mid")
     pool = {member.digest: member for member in (wide, narrow, balanced)}
     seen = {
@@ -451,11 +541,3 @@ def test_the_winner_is_the_best_aggregate_of_the_pool_and_top_k_takes_the_fronti
     assert best(pool, scores) == even
     found = Evolution(even, pool, scores, rounds=0, spent=0)
     assert {member.digest for member in found.top(2)} == {left.digest, right.digest}
-
-
-async def test_patience_waits_for_every_component_to_be_tried_once() -> None:
-    world = World()
-    result = await run(
-        seed("", "a", "b", "c", "d"), TASKS, write=Scripted([None] * 8), score=world, patience=1
-    )
-    assert result.rounds == 4, "one quiet round per component, not one in all"
