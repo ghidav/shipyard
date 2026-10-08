@@ -53,6 +53,8 @@ class Rollouts:
     plan: list[tuple[Path, int]]
     records: dict[str, list[Record]] | None = None
     asked: dict[str, int] | None = None
+    #: The trials whose harness log says their last model call failed.
+    failed: set[str] | None = None
     #: The trainer's update count when this job sampled, for credit to check against.
     updates: int | None = None
 

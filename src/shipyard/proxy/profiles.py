@@ -11,7 +11,8 @@ from dataclasses import dataclass, field
 @dataclass(frozen=True)
 class Profile:
     """One harness: its dialect, the extra agent kwargs and trial env it takes, whether it
-    appends `/v1` itself, the system lines it rewrites per request, and its turn counter."""
+    appends `/v1` itself, the system lines it rewrites per request, its turn counter, and
+    the reader of its log that says whether its last model call failed."""
 
     dialect: str = "openai"
     kwargs: dict = field(default_factory=dict)
@@ -21,6 +22,9 @@ class Profile:
     strip_v1: bool = False
     volatile: tuple[str, ...] = ()
     turns: Callable[[str], int] | None = None
+    #: Read on every trial, whatever `check_turns` says: a last call that failed where the
+    #: proxy never saw it (on the way, or refused before recording) must not be graded.
+    failed_last: Callable[[str], bool] | None = None
 
 
 #: The model Claude Code names on an assistant message it wrote itself, without a model.
@@ -49,6 +53,24 @@ def distinct_requests(text: str) -> int:
     return len(seen)
 
 
+def last_assistant_failed(text: str) -> bool:
+    """pi's JSON log: whether its last assistant `message_end` stopped on `error`. pi writes
+    that when it gives up on a call, and exits 0 all the same."""
+    stop = None
+    for line in text.splitlines():
+        if '"message_end"' not in line:
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        message = event.get("message") if isinstance(event, dict) else None
+        if event.get("type") == "message_end" and isinstance(message, dict):
+            if message.get("role") == "assistant":
+                stop = message.get("stopReason")
+    return stop == "error"
+
+
 def lines_with(*markers: str) -> Callable[[str], int]:
     """Count the lines carrying every marker, whitespace ignored: a count that fell to zero
     when a harness started pretty-printing would disable a guard rather than fail it."""
@@ -64,7 +86,7 @@ def lines_with(*markers: str) -> Callable[[str], int]:
 
 
 PROFILES: dict[str, Profile] = {
-    "pi": Profile(kwargs={"model_api": "openai-completions"}),
+    "pi": Profile(kwargs={"model_api": "openai-completions"}, failed_last=last_assistant_failed),
     "claude-code": Profile(
         dialect="anthropic",
         strip_v1=True,

@@ -207,6 +207,17 @@ def test_a_harness_that_asked_more_turns_than_were_recorded_is_an_env_error(
     assert served_verdict([], None, asked=0) == Verdict(None, ENV_ERROR, None)
 
 
+def test_a_last_call_the_harness_logged_as_failed_and_the_proxy_never_saw_is_masked(
+    tmp_path: Path,
+) -> None:
+    graded = write_result(tmp_path / "t", reward=0.0)
+    clean = [made(seq=1), made(seq=2)]
+    assert verdict(graded, clean, failed=True) == Verdict(None, API_ERROR, None)
+    assert verdict(graded, clean) == Verdict(0.0, None, None)
+    refused = [made(seq=1), made(seq=2, error=CONTEXT)]
+    assert verdict(graded, refused, failed=True) == Verdict(0.0, None, None), "the proxy saw it"
+
+
 def test_the_served_endings_come_before_the_block_2_rules(tmp_path: Path) -> None:
     gone = tmp_path / "gone"
     assert verdict(gone, [made(error=BUDGET)]) == Verdict(0.0, None, None)
@@ -235,5 +246,7 @@ def test_verdicts_read_the_records_and_turn_counts_attached_to_the_rollouts(
     assert scores(rollouts) == [1.0, 0.0, 1.0]
     asked = Rollouts(job="j", trials=[won, short], plan=[], records=records, asked={short.name: 2})
     assert [v.mask for v in verdicts(asked)] == [None, ENV_ERROR]
+    failed = Rollouts(job="j", trials=[won, short], plan=[], records=records, failed={won.name})
+    assert [v.mask for v in verdicts(failed)] == [API_ERROR, None]
     plain = Rollouts(job="j", trials=[won, cut, quiet], plan=[])
     assert scores(plain) == [1.0, 1.0, 1.0], "without records, the files alone decide"

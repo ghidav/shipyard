@@ -75,6 +75,13 @@ async def test_a_request_is_served_and_recorded_under_its_trial() -> None:
     assert record.seq == 1 and record.sampling_params["temperature"] == 1.0
 
 
+async def test_a_request_over_aiohttps_default_body_size_is_served_and_recorded() -> None:
+    async with endpoint(FakeSampler("ok")) as started:
+        answered = await ask(started, "task-1", metadata={"pad": "x" * (2 * 1024**2)})
+        assert answered.status_code == 200
+        assert len(started.records_for("task-1")) == 1
+
+
 async def test_the_anthropic_wire_is_served_and_recorded_too() -> None:
     async with endpoint(FakeSampler("ok")) as started:
         answered = await ask_anthropic(started, "task-1")

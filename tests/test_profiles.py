@@ -8,6 +8,7 @@ from shipyard.proxy.profiles import (
     PROFILES,
     Profile,
     distinct_requests,
+    last_assistant_failed,
     lines_with,
     profile_for,
     slug_of,
@@ -77,3 +78,23 @@ def test_opencode_turns_are_step_start_lines_whatever_the_spacing() -> None:
     assert count is not None
     assert count('{"type": "step-start"}\n{"type":"step-finish"}\n{ "type" : "step-start" }') == 2
     assert lines_with("a", "b")("a b\nab\nb\n") == 2
+
+
+def _ended(*stops: str) -> str:
+    """pi's JSON log: a message_start and message_end per assistant message, tool lines between."""
+    lines = []
+    for stop in stops:
+        message = {"role": "assistant", "content": [], "stopReason": stop}
+        lines.append(json.dumps({"type": "message_start", "message": message}))
+        lines.append(json.dumps({"type": "message_end", "message": message}))
+        lines.append(json.dumps({"type": "message_end", "message": {"role": "toolResult"}}))
+    return "\n".join([*lines, '{"type":"agent_settled"}'])
+
+
+def test_pi_says_its_last_call_failed_only_when_its_last_assistant_message_did() -> None:
+    assert PROFILES["pi"].failed_last is last_assistant_failed
+    assert last_assistant_failed(_ended("toolUse", "error")) is True
+    assert last_assistant_failed(_ended("toolUse", "error", "stop")) is False, "pi recovered"
+    assert last_assistant_failed(_ended("toolUse", "stop")) is False
+    assert last_assistant_failed(_ended("toolUse", "length")) is False
+    assert last_assistant_failed("") is False and last_assistant_failed("not json") is False

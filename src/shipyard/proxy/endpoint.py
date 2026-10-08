@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 SERVED_KEPT_SECONDS = 1800.0
 #: What a request that names no limit is allowed; the cookbook's 1024 cuts a coding turn.
 DEFAULT_MAX_TOKENS = 8192
+#: The largest request body the proxy reads; aiohttp's own default is 1 MiB.
+MAX_BODY_BYTES = 256 * 1024**2
 
 #: How a sampling client is made for a `tinker://` path, or None for the base model.
 ClientFactory = Callable[[str | None], Awaitable[Any]]
@@ -143,6 +145,9 @@ class Endpoint:
             default_max_tokens=int(self.max_tokens),
         )
         app = cookbook.make_app(self._deps, auth_token=self.token)
+        # aiohttp answers a body over its 1 MiB default with a 413 before any handler, so a
+        # long history or a few images would fail unrecorded; the context refusal is the cap.
+        app._client_max_size = MAX_BODY_BYTES
         # Outermost, so the control token and not the harness's opens the control route;
         # the Exchange after the cookbook's auth, so a refused request opens nothing.
         app.middlewares.insert(0, self._control_middleware())

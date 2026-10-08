@@ -80,7 +80,11 @@ def endpoint_failed(why: str | None) -> bool:
 
 
 def verdict(
-    trial: Path, records: Sequence[Record] | None = None, *, asked: int | None = None
+    trial: Path,
+    records: Sequence[Record] | None = None,
+    *,
+    asked: int | None = None,
+    failed: bool = False,
 ) -> Verdict:
     """With records, the served endings first (`served_verdict`); then no result is
     `env_error`, the clock's cut `timeout`, an endpoint failure `api_error`, a numeric
@@ -88,7 +92,7 @@ def verdict(
     payload = result_of(trial)
     why = _ended(payload)
     if records is not None:
-        found = served_verdict(records, why, asked=asked)
+        found = served_verdict(records, why, asked=asked, failed=failed)
         if found is not None:
             return found
     if payload is None:
@@ -106,11 +110,17 @@ def verdict(
 
 
 def served_verdict(
-    records: Sequence[Record], why: str | None, *, asked: int | None = None
+    records: Sequence[Record],
+    why: str | None,
+    *,
+    asked: int | None = None,
+    failed: bool = False,
 ) -> Verdict | None:
     """The served endings, decided before the verifier's number is read, or None: no (or
     too few) records `env_error`, a first turn that never fit `context_overflow`, a budget
-    cut or a filled context 0, a quit on a failed call `api_error`, an image `multimodal`."""
+    cut or a filled context 0, a quit on a failed call `api_error`, an image `multimodal`.
+    `failed` is the harness's log saying its last call failed: with no failure on the last
+    record, the proxy never saw it, and the trial measured the connection."""
     if not records:
         return Verdict(None, ENV_ERROR, why)
     if asked is not None and asked > len(records):
@@ -126,6 +136,8 @@ def served_verdict(
     last = records[-1].error
     if last is not None and last not in (BUDGET, CONTEXT):
         return Verdict(None, API_ERROR, why)
+    if failed and last is None:
+        return Verdict(None, API_ERROR, why)
     if any(IMAGE_TOKEN in item.prompt_token_ids for item in records):
         return Verdict(None, MULTIMODAL, why)
     return None
@@ -136,12 +148,13 @@ def verdicts(rollouts: Rollouts) -> list[Verdict]:
     rollouts, each trial is judged beside its own and its harness's turn count."""
     if rollouts.records is None:
         return [verdict(Path(trial)) for trial in rollouts.trials]
-    asked = rollouts.asked or {}
+    asked, failed = rollouts.asked or {}, rollouts.failed or set()
     return [
         verdict(
             Path(trial),
             list(rollouts.records.get(Path(trial).name) or []),
             asked=asked.get(Path(trial).name),
+            failed=Path(trial).name in failed,
         )
         for trial in rollouts.trials
     ]

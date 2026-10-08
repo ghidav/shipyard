@@ -191,11 +191,15 @@ def merged(parts: Sequence[Rollouts], share: int) -> Rollouts:
     asked = None
     if any(part.asked is not None for part in parts):
         asked = {name: count for part in parts for name, count in (part.asked or {}).items()}
+    failed = None
+    if any(part.failed is not None for part in parts):
+        failed = {name for part in parts for name in (part.failed or set())}
     return Rollouts(
         job="+".join(part.job for part in parts),
         trials=trials,
         plan=plan,
         records=records,
         asked=asked,
+        failed=failed,
         updates=first.updates,
     )

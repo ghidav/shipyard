@@ -225,7 +225,9 @@ class Serving:
         noted = dict(turned_away=0, cut=0, bridged=0)
         taken: dict[str, list[Record]] = {}
         asked: dict[str, int] = {}
+        failed: set[str] = set()
         counter = self.profile.turns if self.config.rollout.check_turns else None
+        reader = self.profile.failed_last
         for trial in rolled.trials:
             name = Path(trial).name
             try:
@@ -255,10 +257,13 @@ class Serving:
                     )
                 if turns is not None:
                     asked[name] = turns
+            text = harness_log(Path(trial), self.config.rollout.harness) if reader else None
+            if reader is not None and text is not None and reader(text):
+                failed.add(name)
         counted["trials"] = sum(1 for _ in results(rolled))
         if self.pointed:
             answered_by_ours(rolled.job, taken, self.told)
-        return Harvest(replace(rolled, records=taken, asked=asked), counted, noted)
+        return Harvest(replace(rolled, records=taken, asked=asked, failed=failed), counted, noted)
 
     def close(self) -> None:
         """Stop the proxy and the tunnel; synchronous, for a run closing outside its loop."""
@@ -309,12 +314,18 @@ def _row(job: str, trial: str, item: Record, hit: int) -> dict[str, Any]:
 def turns_asked(trial: Path, harness: str, counter: Any) -> int | None:
     """How many turns the harness asked for, counted off `agent/<harness>.txt`; None when
     it left no such log, which is not a claim that it asked for nothing."""
-    log = trial / "agent" / f"{bare_name(harness)}.txt"
+    text = harness_log(trial, harness)
+    return None if text is None else int(counter(text))
+
+
+def harness_log(trial: Path, harness: str) -> str | None:
+    """The harness's own log, `agent/<harness>.txt`, or None when it left none."""
     try:
-        text = log.read_text(encoding="utf-8", errors="replace")
+        return (trial / "agent" / f"{bare_name(harness)}.txt").read_text(
+            encoding="utf-8", errors="replace"
+        )
     except OSError:
         return None
-    return int(counter(text))
 
 
 def answered_by_ours(job: str, taken: Mapping[str, Sequence[Record]], told: str | None) -> None:

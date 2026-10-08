@@ -21,13 +21,19 @@ trial starts at rule 8.
 | 3 | had its first call refused as too long for the context, and no call served | mask `context_overflow` |
 | 4 | had a call refused for the token budget | reward 0 |
 | 5 | had a call refused as too long while others were served, and the harness then ended with an error that is neither Harbor's clock nor the grader's | reward 0 |
-| 6 | ended on a failed call: its last record carries an error other than the two refusals | mask `api_error` |
+| 6 | ended on a failed call: its last record carries an error other than the two refusals, or its harness's log says the last call failed and the last record carries none | mask `api_error` |
 | 7 | sent an image | mask `multimodal` |
 | 8 | left no `result.json` | mask `env_error` |
 | 9 | was cut by Harbor's clock (`AgentTimeoutError`) | mask `timeout` |
 | 10 | ended with the harness giving up on the endpoint (below) | mask `api_error` |
 | 11 | has a number at `verifier_result.rewards.reward` | that reward |
 | 12 | anything else | mask `grading_error` |
+
+Rule 6 reads the harness's log where its profile knows how. pi's is
+`agent/pi.txt`: its last assistant message stopped on `error`. A failed call
+with no failed record never reached the proxy, or the proxy refused it before
+recording, as with a dropped connection. pi exits cleanly either way, so
+without this rule such a trial would be graded as the policy's work.
 
 Rule 10 reads Harbor's `exception_info.exception_type`. The endpoint failures
 are `ApiError`, `UnknownApiError`, `ApiInternalServerError`,

@@ -4,6 +4,7 @@ the run stopping its proxy on the way out."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -363,7 +364,23 @@ async def test_turns_are_counted_off_the_harness_log_only_when_asked(
     await unprofiled.start()
     assert (await unprofiled.harvest(batch)).rollouts.asked == {}
     assert turns_asked(batch.trials[1], "opencode", PROFILES["opencode"].turns) is None
+    assert (await counted.harvest(batch)).rollouts.failed == set()
     assert turns_asked(batch.trials[0], "opencode@1", PROFILES["opencode"].turns) == 2
+
+
+async def test_a_pi_log_ending_on_a_failed_call_is_read_whatever_check_turns_says(
+    fake: FakeProxy, tmp_path: Path
+) -> None:
+    batch = rolled(tmp_path, ("alpha", {"reward": 0.0}), ("beta", {"reward": 1.0}))
+    for trial, stop in zip(batch.trials, ("error", "stop"), strict=True):
+        (trial / "agent").mkdir()
+        message = {"role": "assistant", "stopReason": stop}
+        (trial / "agent" / "pi.txt").write_text(
+            json.dumps({"type": "message_end", "message": message})
+        )
+    held = Serving(blueprint(), tmp_path)
+    await held.start()
+    assert (await held.harvest(batch)).rollouts.failed == {batch.trials[0].name}
 
 
 # --------------------------------------------------------------------- the run
