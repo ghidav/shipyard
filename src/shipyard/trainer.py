@@ -27,8 +27,32 @@ DEFAULT_LORA_RANK = 32
 #: from them, and a crashed run's leftovers expire on their own.
 SERVE_TTL = 12 * 3600
 SECONDS_PER_HOUR = 3600
-#: Adam as the cookbook's `train_step` sets it; the SDK's own `eps` default is 1e-12.
-BETA1, BETA2, EPS = 0.9, 0.95, 1e-8
+
+
+@dataclass(frozen=True)
+class Adam:
+    """AdamW as a recipe's paper sets it: the betas, eps, the decoupled weight decay, the
+    global gradient norm each step is clipped to (Tinker's `grad_clip_norm`, 0: none), and
+    the `warmup` steps over which the learning rate rises linearly to its value (0: none)."""
+
+    beta1: float
+    beta2: float
+    eps: float
+    weight_decay: float = 0.0
+    grad_clip_norm: float = 0.0
+    warmup: int = 0
+
+    def rate(self, learning_rate: float, done: int) -> float:
+        """The learning rate of the update after `done` updates: `(done + 1) / warmup` of it
+        through the warm-up, so the first update moves the weights too, then all of it."""
+        if done >= self.warmup:
+            return learning_rate
+        return learning_rate * (done + 1) / self.warmup
+
+
+#: Adam as the cookbook's `train_step` sets it (no weight decay, no gradient clipping, no
+#: warm-up), for whatever a paper leaves unstated; the SDK's own `eps` default is 1e-12.
+COOKBOOK = Adam(beta1=0.9, beta2=0.95, eps=1e-8)
 
 
 @dataclass(frozen=True)
@@ -60,11 +84,14 @@ class Checkpoint:
 @dataclass
 class Trainer:
     """A Tinker training client and what a run asks of it. `updates` counts the gradients
-    applied: how credit tells whether the weights a batch was sampled at have moved."""
+    applied: how credit tells whether the weights a batch was sampled at have moved, and
+    how far the recipe's warm-up has gone. `restored` is set when the optimizer state was
+    loaded with the weights: it continues an earlier run's, so there is no warm-up."""
 
     client: Any
     updates: int = 0
     service: Any = None
+    restored: bool = False
 
     @classmethod
     async def create(
@@ -77,8 +104,9 @@ class Trainer:
         metadata: dict[str, str] | None = None,
     ) -> Trainer:
         """A LoRA on `base_model`, or the weights at `from_checkpoint` (the SDK's `from_state`
-        loads no optimizer state; `restore_optimizer` asks for the one that does), tagged
-        `metadata` on Tinker's side; the capabilities are read before a session spends."""
+        loads no optimizer state; `restore_optimizer` asks for the one that does, and the
+        trainer is then `restored`), tagged `metadata` on Tinker's side; the capabilities are
+        read before a session spends."""
         try:
             await server_has(service, base_model)
             if from_checkpoint:
@@ -96,7 +124,7 @@ class Trainer:
         except BaseException as failed:
             await quietly_closed(service, failed)
             raise
-        return cls(client, service=service)
+        return cls(client, service=service, restored=bool(from_checkpoint) and restore_optimizer)
 
     async def publish(self, name: str, *, ttl_seconds: int = SERVE_TTL) -> str:
         """The current weights at a `tinker://` path a proxy anywhere resolves, kept for
@@ -141,8 +169,21 @@ class Trainer:
         split_parts = [[one for group in part for one in group] for part in split(groups, parts)]
         datums = [one for part in split_parts for one in part]
         train_tokens = sum(int(one.model_input.length) for one in datums)
+        optimizer = preset.adam
+        # The optimizer state loaded with the weights continues the earlier run's, so the
+        # rate does not warm up again.
+        rate = (
+            preset.learning_rate
+            if self.restored
+            else optimizer.rate(preset.learning_rate, self.updates)
+        )
         adam = tinker.AdamParams(
-            learning_rate=preset.learning_rate, beta1=BETA1, beta2=BETA2, eps=EPS
+            learning_rate=rate,
+            beta1=optimizer.beta1,
+            beta2=optimizer.beta2,
+            eps=optimizer.eps,
+            weight_decay=optimizer.weight_decay,
+            grad_clip_norm=optimizer.grad_clip_norm,
         )
         # Before the call and never rolled back: a substep that fails after the first
         # leaves optimizer steps landed, and this count is what guards credit's mu.
@@ -164,7 +205,7 @@ class Trainer:
         return Update(
             train_tokens=train_tokens,
             substeps=parts,
-            learning_rate=preset.learning_rate,
+            learning_rate=rate,
             loss_fn=preset.loss_fn,
             kl_v1=observed.get("kl_v1"),
             kl_v2=observed.get("kl_v2"),

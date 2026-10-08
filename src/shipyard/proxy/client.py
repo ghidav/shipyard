@@ -90,6 +90,8 @@ class Proxy:
     tunnel: Tunnel | None = field(default=None, repr=False)
     #: What each fetch brought beside the records, by trial: turned_away, cut, spoke.
     counters: dict[str, dict[str, int]] = field(default_factory=dict, repr=False)
+    #: The tokens a trial may sample, as `/healthz` last said; None when it enforces none.
+    budget: int | None = None
     #: A test's transport for the HTTP client; None is httpx's own.
     transport: Any = field(default=None, repr=False)
 
@@ -177,8 +179,8 @@ class Proxy:
 
     async def ready(self, seconds: float = PROBE_SECONDS) -> str:
         """What the proxy serves, read off `/healthz` through its tunnel when it has one,
-        else on loopback (a remote one's origin); `Unreachable` names the address when
-        nothing answers, before a sandbox is opened to dial it."""
+        else on loopback (a remote one's origin), its token budget kept; `Unreachable`
+        names the address when nothing answers, before a sandbox is opened to dial it."""
         what, base = ("tunnel", self.origin) if self.tunnel else ("proxy", self.loopback)
         url = f"{base}{HEALTH_PATH}"
         try:
@@ -187,6 +189,9 @@ class Proxy:
             raise Unreachable(
                 f"the {what} at {base} does not answer: {type(failed).__name__}: {failed}"
             ) from failed
+        budget = answer.get("budget")
+        known = isinstance(budget, int) and not isinstance(budget, bool) and budget > 0
+        self.budget = budget if known else None
         return str(answer.get("serving") or answer.get("model") or "")
 
     def gone(self) -> str | None:

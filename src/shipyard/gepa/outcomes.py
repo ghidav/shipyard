@@ -30,8 +30,8 @@ INSTRUCTION = "instruction.md"
 
 def outcomes(rollouts: Rollouts, tasks: Sequence[Path], group_size: int = 1) -> list[Outcome]:
     """One outcome per task from a job's trials, which arrive in plan order, `group_size`
-    per task: the mean over the measured verdicts (a budget-cut rollout is a 0 here as
-    in training), the feedback and transcript off the worst, the inputs off the task."""
+    per task: the mean over the measured verdicts (a budget-cut rollout is a 0 here, as
+    admission scores it), the feedback and transcript off the worst, the inputs off the task."""
     if group_size < 1:
         raise ValueError(f"group_size must be at least 1; got {group_size}")
     trials = [Path(trial) for trial in rollouts.trials]

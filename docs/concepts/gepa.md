@@ -68,7 +68,7 @@ The policy can be served by a provider, as it is here, or by this run through th
 3. **Winner.** The best candidate is written to `runs/<id>/modules/best/`.
 
 A task's score under a candidate is the mean reward over its measured rollouts. A masked rollout is left
-out, and a budget cut counts as 0, just as in training (see [Admission](admission.md)).
+out, and a budget cut counts as 0, as admission scores it (see [Admission](admission.md)).
 
 ## The reflector
 

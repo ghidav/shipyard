@@ -3,6 +3,7 @@ and `check` resolves the config it prints. Its findings are `test_preflight`'s."
 
 from __future__ import annotations
 
+import math
 import tomllib
 from pathlib import Path
 
@@ -86,6 +87,80 @@ def test_substeps_and_refill_are_knobs_and_fst_takes_no_refill(tmp_path: Path) -
     assert _problems(tmp_path / "fst", fst) == ["[recipe] refill: unknown key"]
 
 
+def test_dapo_and_cispo_dock_overlong_rollouts_as_dapo_does_and_take_its_knobs(
+    tmp_path: Path,
+) -> None:
+    for kind in ("dapo", "cispo"):
+        found = load(BLUEPRINTS / kind).recipe
+        assert (found.overlong_penalty, found.overlong_buffer) == (0.5, 0.2), "DAPO Eq. 13, 4.1"
+    knobs = "learning_rate = 2e-5\noverlong_penalty = 0.0\noverlong_buffer = 1.0"
+    found = load(write_blueprint(tmp_path / "set", MINIMAL.replace("learning_rate = 2e-5", knobs)))
+    assert (found.recipe.overlong_penalty, found.recipe.overlong_buffer) == (0.0, 1.0)
+    for at, bad in enumerate(("overlong_buffer = 0.0", "overlong_buffer = 1.5")):
+        text = MINIMAL + f"{bad}\n"
+        assert [p.split(":")[0] for p in _problems(tmp_path / str(at), text)] == [
+            "[recipe] overlong_buffer"
+        ], "a share of the budget, above 0 and at most all of it"
+    text = MINIMAL + "overlong_penalty = -0.1\n"
+    assert [p.split(":")[0] for p in _problems(tmp_path / "neg", text)] == [
+        "[recipe] overlong_penalty"
+    ]
+    fst = (BLUEPRINTS / "fst" / "run.toml").read_text(encoding="utf-8")
+    fst = fst.replace('kind = "fst"', 'kind = "fst"\noverlong_penalty = 0.5')
+    assert _problems(tmp_path / "fst", fst) == ["[recipe] overlong_penalty: unknown key"]
+
+
+@pytest.mark.parametrize("kind", ["dapo", "cispo"])
+@pytest.mark.parametrize("value", ["inf", "nan"])
+def test_the_overlong_penalty_is_a_finite_number(tmp_path: Path, kind: str, value: str) -> None:
+    text = MINIMAL.replace('kind = "dapo"', f'kind = "{kind}"\noverlong_penalty = {value}')
+    assert _problems(tmp_path, text) == [
+        "[recipe] overlong_penalty: Input should be a finite number"
+    ]
+
+
+def _cap_warnings(home: Path) -> list[str]:
+    return [
+        found.text
+        for found in check(home)
+        if found.level == "warning" and found.text.startswith("[recipe] length_cap")
+    ]
+
+
+def test_the_length_cap_is_a_dr_grpo_knob_that_takes_infinity_and_warns_from_one(
+    tmp_path: Path,
+) -> None:
+    """The warning stands only while the length rule is on: with `length_penalty = 0` the
+    cap docks nothing, whatever its value."""
+    assert load(BLUEPRINTS / "dr-grpo").recipe.length_cap == 0.5
+    assert _cap_warnings(BLUEPRINTS / "dr-grpo") == []
+    dr = (BLUEPRINTS / "dr-grpo" / "run.toml").read_text(encoding="utf-8")
+    home = write_blueprint(tmp_path / "inf", dr + "length_cap = inf\n")
+    assert math.isinf(load(home).recipe.length_cap)
+    assert _cap_warnings(home) == [
+        "[recipe] length_cap: inf lets the length rule take a solved answer's whole reward, "
+        "so a long solved answer can score as low as a failure"
+    ]
+    assert _cap_warnings(write_blueprint(tmp_path / "high", dr + "length_cap = 0.9\n")) == []
+    off = dr.replace("length_penalty = 0.2", "length_penalty = 0.0") + "length_cap = inf\n"
+    assert _cap_warnings(write_blueprint(tmp_path / "off", off)) == [], "the rule is off"
+    unset = dr.replace("length_penalty = 0.2\n", "") + "length_cap = 1.0\n"
+    assert _cap_warnings(write_blueprint(tmp_path / "unset", unset)) == [], "off by default"
+    assert [p.split(":")[0] for p in _problems(tmp_path / "zero", dr + "length_cap = 0.0\n")] == [
+        "[recipe] length_cap"
+    ]
+    fst = (BLUEPRINTS / "fst" / "run.toml").read_text(encoding="utf-8")
+    slow = fst.replace('kind = "fst"', 'kind = "fst"\nslow = "dr-grpo"\nlength_cap = 1.0')
+    home = write_blueprint(tmp_path / "fst-off", slow)
+    assert load(home).recipe.length_cap == 1.0 and _cap_warnings(home) == [], "no penalty set"
+    home = write_blueprint(tmp_path / "fst", slow + "length_penalty = 0.1\n")
+    assert load(home).recipe.length_cap == 1.0 and len(_cap_warnings(home)) == 1
+    cispo = fst.replace('kind = "fst"', 'kind = "fst"\nlength_cap = 1.0')
+    assert _problems(tmp_path / "cispo", cispo) == [
+        "[recipe] length_cap: not a knob of slow = 'cispo', which takes clip_high"
+    ]
+
+
 def test_gepa_fixture_defaults() -> None:
     found = load(BLUEPRINTS / "gepa")
     assert found.recipe.kind == "gepa" and not isinstance(found.recipe, config.Gradient)
@@ -146,6 +221,8 @@ def test_the_advantage_and_stabilize_tables_are_gone(tmp_path: Path) -> None:
         ("dr-grpo", "clip_high = 0.3"),
         ("cispo", "clip_low = 0.1"),
         ("cispo", "length_floor = 2"),
+        ("dapo", "length_cap = 0.9"),
+        ("dr-grpo", "overlong_penalty = 0.5"),
     ],
 )
 def test_a_knob_of_another_recipe_is_an_unknown_key(tmp_path: Path, kind: str, knob: str) -> None:
@@ -262,6 +339,8 @@ def test_the_resolved_config_fills_every_table_and_leads_the_recipe_with_its_kin
         "clip_low": 0.2,
         "clip_high": 0.28,
         "refill": 9,
+        "overlong_penalty": 0.5,
+        "overlong_buffer": 0.2,
     }
     assert found["checkpoints"] == {"every": 1, "ttl_hours": 168.0}
 
@@ -340,20 +419,25 @@ def test_toml_values_are_spelled_as_toml() -> None:
         (
             "dapo",
             "# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, "
-            "averaged per prompt; 16 substeps by prompt; degenerate groups dropped and "
-            "refilled from the plan, up to 9 more rounds",
+            "averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token "
+            "budget; 16 substeps by prompt; adamw betas 0.9 / 0.95, eps 1e-08, learning rate "
+            "warmed up over 20 steps; degenerate groups dropped and refilled from the plan, "
+            "up to 9 more rounds",
         ),
         (
             "dr-grpo",
             "# dr-grpo: advantage = group mean, not divided by spread; loss = ppo, "
             "clip 0.2 / 0.2, summed over tokens; length penalty 0.2 over 0 tokens among "
-            "solved answers; 1 substep; degenerate groups dropped",
+            "solved answers, capped at 0.5; 1 substep; adamw betas 0.9 / 0.95, eps 1e-08, "
+            "gradient norm clipped at 1.0; degenerate groups dropped",
         ),
         (
             "cispo",
             "# cispo: advantage = group mean, divided by spread; loss = cispo, "
-            "weight truncated above 4.0, no lower bound, averaged per prompt; 16 substeps by "
-            "prompt; degenerate groups dropped and refilled from the plan, up to 9 more rounds",
+            "weight truncated above 4.0, no lower bound, averaged per prompt; overlong penalty "
+            "up to 0.5 over the last 20% of the token budget; 16 substeps by prompt; adamw "
+            "betas 0.9 / 0.95, eps 1e-15; degenerate groups dropped and refilled from the "
+            "plan, up to 9 more rounds",
         ),
         ("gepa", None),
         ("evaluate", None),
@@ -379,18 +463,27 @@ def test_the_resolution_line_names_a_kl_anchor_when_asked(tmp_path: Path) -> Non
     assert report.resolution.endswith("up to 9 more rounds; kl 0.05 to the starting weights")
 
 
+def test_the_resolution_line_says_how_far_the_length_rule_may_dock(tmp_path: Path) -> None:
+    dr = (BLUEPRINTS / "dr-grpo" / "run.toml").read_text(encoding="utf-8")
+    report = resolved.report(write_blueprint(tmp_path, dr + "length_cap = inf\n"))
+    assert report.resolution is not None
+    assert "length penalty 0.2 over 0 tokens among solved answers, uncapped;" in report.resolution
+    assert "length_cap = inf" in report.text()
+
+
 def test_the_resolution_line_says_what_one_substep_and_no_refill_leave(tmp_path: Path) -> None:
     text = MINIMAL.replace('kind = "dapo"', 'kind = "dapo"\nsubsteps = 1\nrefill = 1')
     report = resolved.report(write_blueprint(tmp_path / "one", text))
     assert report.resolution == (
         "# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, "
-        "averaged per prompt; 1 substep; degenerate groups dropped and refilled from the "
-        "plan, up to 1 more round"
+        "averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token "
+        "budget; 1 substep; adamw betas 0.9 / 0.95, eps 1e-08, learning rate warmed up over "
+        "20 steps; degenerate groups dropped and refilled from the plan, up to 1 more round"
     )
     text = MINIMAL.replace('kind = "dapo"', 'kind = "dapo"\nrefill = 0')
     report = resolved.report(write_blueprint(tmp_path / "off", text))
     assert report.resolution is not None
-    assert report.resolution.endswith("; 16 substeps by prompt; degenerate groups dropped")
+    assert report.resolution.endswith("warmed up over 20 steps; degenerate groups dropped")
 
 
 def test_the_rollout_serving_keys_load_with_their_defaults(tmp_path: Path) -> None:

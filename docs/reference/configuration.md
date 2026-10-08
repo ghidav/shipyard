@@ -19,7 +19,7 @@ The **For** column says when a key matters:
 | `provider` | string | `"tinker"` | all | Who serves the weights. `"tinker"`: this run serves them through its proxy, from a Tinker-API backend. Anything else: the harness calls that provider itself. |
 | `from_checkpoint` | string | unset | served | A `tinker://` path to start from instead of the base model: a checkpoint's `state_path` to go on training, its `sampler_path` to measure it. `check` blocks the other one. |
 | `lora_rank` | integer | unset (32) | gradient | The LoRA rank of a new training client. Not used with `from_checkpoint`. |
-| `restore_optimizer` | boolean | `false` | gradient | With `from_checkpoint`, load the optimizer state as well as the weights. |
+| `restore_optimizer` | boolean | `false` | gradient | With `from_checkpoint`, load the optimizer state as well as the weights. The state continues the earlier run's, so the run skips its recipe's warm-up. |
 
 ## `[data]`
 
@@ -70,10 +70,10 @@ How the served keys behave is in [The proxy](../concepts/proxy.md).
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `learning_rate` | float > 0 | required | Adam's learning rate. |
+| `learning_rate` | float > 0 | required | AdamW's learning rate, reached after the recipe's warm-up. The betas, eps, weight decay, gradient clipping and warm-up are the recipe's, from its paper ([The optimizer](../concepts/recipes.md#the-optimizer)), and are not keys. |
 | `substeps` | integer ≥ 1 | `16` for `dapo` (DAPO §4.1) and `cispo` (MiniMax-M1 §3.1); `1` for `dr-grpo` (Dr. GRPO states none) and `fst` (FST App. D) | Optimizer steps per batch. The batch is split by prompt into this many parts of whole groups, or one per group carrying a gradient when it has fewer, each one `forward_backward` and one `optim_step`. Every part keeps the reference logprobs of the weights the batch was sampled at. |
 | `reference` | `"trainer"` or `"sampler"` | `"trainer"` | Where the loss's reference logprobs come from: a forward pass on the trainer, or the logprobs recorded when sampling, with no extra pass. |
-| `kl_coef` | float ≥ 0 | `0.0`, as DAPO (§2.3), Dr. GRPO (App. G) and MiniMax-M1 (§3.1) train | Weight of a per-token KL term to the run's starting weights, folded into the advantage. `0` is off. |
+| `kl_coef` | float ≥ 0 | `0.0`, as DAPO (§2.3), Dr. GRPO (App. G) and MiniMax-M1 (§3.1) train | Weight of a per-token KL term to the run's starting weights, folded into the advantage token by token, not centred. `0` is off. |
 | `modules` | string | unset | A modules directory, relative to the blueprint, carried into every job ([Modules](../concepts/modules.md)). |
 
 The gradient recipes need a served model.
@@ -85,19 +85,26 @@ The gradient recipes need a served model.
 | `clip_low` | float, 0 < x < 1 | `0.2` (DAPO §4.1) | The ratio's lower bound is `1 - clip_low`. |
 | `clip_high` | float > 0 | `0.28` (DAPO §4.1) | The ratio's upper bound is `1 + clip_high`. |
 | `refill` | integer ≥ 0 | `9` (DAPO Alg. 1; ten generation batches a step in DAPO's released recipe) | The most extra batches a step samples from the plan while fewer than `batch_size` groups carry a gradient ([Dynamic sampling](../concepts/recipes.md#dynamic-sampling)). `0` is off. |
+| `overlong_penalty` | float ≥ 0 | `0.5` (DAPO Eq. 13: −1 on its reward of −1 or 1, Eq. 7, which is −0.5 on Harbor's 0 to 1) | The most a rollout loses from its reward for its length, reached at its token budget ([The overlong term](../concepts/recipes.md#the-overlong-term-dapo-and-cispo)). `0` is off. |
+| `overlong_buffer` | float, 0 < x ≤ 1 | `0.2` (DAPO §4.1: L_cache / L_max, 4,096 of 20,480 tokens) | The last share of the token budget over which the loss grows linearly from 0 to `overlong_penalty`. |
 
-Token losses are averaged per prompt (DAPO Eq. 8).
+Token losses are averaged per prompt (DAPO Eq. 8). The optimizer is AdamW warmed up over 20 steps
+(DAPO §4.1), at the cookbook's betas 0.9 / 0.95, eps 1e-8, no weight decay and no gradient
+clipping; the paper states none of these.
 
 ### `dr-grpo`
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `clip` | float, 0 < x < 1 | `0.2` (Dr. GRPO App. G) | The ratio's bounds are `1 - clip` and `1 + clip`. |
-| `length_penalty` | float ≥ 0 | `0.0` | When at least two answers in a group are solved, each solved one loses `length_penalty × (length - length_floor) / mean solved length`, at most 0.5. `0` is off. |
-| `length_floor` | integer ≥ 0 | `0` | Tokens of an answer the length penalty does not count. |
+| `length_penalty` | float ≥ 0 | `0.0` (Dr. GRPO docks no answer for its length) | shipyard's own length rule ([The length rule](../concepts/recipes.md#the-length-rule-dr-grpo-only)): when at least two answers in a group are solved, each solved one loses `length_penalty × (length - length_floor) / mean solved length`, at most `length_cap`. `0` is off. |
+| `length_floor` | integer ≥ 0 | `0` (shipyard's own; Dr. GRPO has no length rule) | Tokens of an answer the length penalty does not count. |
+| `length_cap` | float > 0, `inf` allowed | `0.5` (shipyard's own; Dr. GRPO has no length rule) | The most the length penalty takes from a solved answer, so a solved answer never falls below a failure scored `1 - length_cap` or less. `inf` lifts the cap; `check` warns at 1 or more while `length_penalty` is above 0. |
 | `refill` | integer ≥ 0 | `0` (Dr. GRPO states no dynamic sampling, App. G) | As for `dapo`. |
 
-Token losses are summed (Dr. GRPO §3.2).
+Token losses are summed (Dr. GRPO §3.2). The optimizer is AdamW at betas 0.9 / 0.95, no weight
+decay, the gradient norm clipped at 1.0 and a constant learning rate (Dr. GRPO App. G, Table 6),
+with the cookbook's eps 1e-8.
 
 ### `cispo`
 
@@ -105,8 +112,12 @@ Token losses are summed (Dr. GRPO §3.2).
 |---|---|---|---|
 | `clip_high` | float > 0 | `3.0` (ScaleRL App. A.17.2, FST App. D) | The importance weight is cut above `1 + clip_high`. It has no lower bound. |
 | `refill` | integer ≥ 0 | `9` (MiniMax-M1 §3.1, which takes DAPO's dynamic sampling) | As for `dapo`. |
+| `overlong_penalty` | float ≥ 0 | `0.5` (MiniMax-M1 §3.1, which takes DAPO's length penalty) | As for `dapo`. |
+| `overlong_buffer` | float, 0 < x ≤ 1 | `0.2` (as for `dapo`) | As for `dapo`. |
 
-Token losses are averaged per prompt (MiniMax-M1 Eq. 4).
+Token losses are averaged per prompt (MiniMax-M1 Eq. 4). The optimizer is AdamW at betas 0.9 / 0.95
+and eps 1e-15 (MiniMax-M1 §3.2), with no weight decay, no gradient clipping and no warm-up, the
+cookbook's; the paper states none of these.
 
 ### `gepa`
 
@@ -127,16 +138,19 @@ See [gepa](../concepts/gepa.md).
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `slow` | `"dapo"`, `"dr-grpo"` or `"cispo"` | `"cispo"` (FST App. D) | The gradient recipe each slow step uses, with its loss and aggregation. Its own knobs (`clip_low`, `clip_high`, `clip`, `length_penalty`, `length_floor`) are accepted when they belong to it, with its defaults. `refill` is not a key of `fst`: a slow step trains on the batch it sampled. |
+| `slow` | `"dapo"`, `"dr-grpo"` or `"cispo"` | `"cispo"` (FST App. D) | The gradient recipe each slow step uses, with its loss and clipping. Its own knobs (`clip_low`, `clip_high`, `clip`, `length_penalty`, `length_floor`, `length_cap`) are accepted when they belong to it, with its defaults. `refill`, `overlong_penalty` and `overlong_buffer` are not keys of `fst`: a slow step trains on the batch it sampled, with no overlong term. |
 | `cycle` | integer ≥ 1 | `6` (FST App. D) | Slow steps per cycle, and the batches each fast phase looks ahead. |
 | `population` | integer ≥ 1 | `4` (FST App. E, the light recipe) | Texts kept per cycle. It must divide `group_size`. |
 | `anchor` | integer ≥ 1 | unset | The fast phase evolves on the first `anchor` tasks of the lookahead; unset is all of them. |
 | `kl_coef` | float ≥ 0 | `0.001` (FST App. D) | As above. |
-| `budget` | integer ≥ 1 | unset | Rollouts each fast phase may spend. Unset is five passes: 5 × its tasks × `group_size / population`. One more pass per text carried from the previous cycle, beyond the first, is added on top to score them. |
+| `budget` | integer ≥ 1 | unset | Rollouts each fast phase may spend; the fast phase scores each (task, text) pair with one rollout. Unset is five passes: 5 × its tasks (FST App. D: 960 metric calls over 192 examples, one rollout each). One more pass per text carried from the previous cycle, beyond the first, is added on top to score them. |
 | `edits` | `"rewrite"` or `"incremental"` | `"incremental"` (FST App. E) | As for `gepa`. |
 
 `reflection_harness` (required), `reflection_model`, `reflection_image`, `modules` (the seed, default
-`"modules"`), `minibatch` and `patience` are as for `gepa`. See [fst](../concepts/recipes.md#fst).
+`"modules"`), `minibatch` and `patience` are as for `gepa`. Token losses are averaged per prompt (FST
+Eq. 4), whatever `slow` is. The optimizer is AdamW at betas 0.9 / 0.999 and no weight decay, warmed up
+over 10 steps (FST App. D), with eps 1e-8, PyTorch's and the cookbook's, and no gradient clipping,
+as the paper states none. See [fst](../concepts/recipes.md#fst).
 
 ### `evaluate`
 

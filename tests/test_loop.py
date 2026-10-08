@@ -5,6 +5,7 @@ and dr-grpo resolve to; the refusals."""
 
 from __future__ import annotations
 
+import logging
 import shutil
 from pathlib import Path
 from typing import Any
@@ -170,7 +171,9 @@ async def test_a_two_step_dapo_run_publishes_points_samples_credits_steps_and_ch
         assert row["kl_v1"] == pytest.approx(-0.2, abs=1e-5)
         assert row["kl_v2"] == pytest.approx(0.02, abs=1e-5)
         assert row["entropy"] == pytest.approx(0.5, abs=1e-5)
-        assert (row["learning_rate"], row["substeps"], row["loss_fn"]) == (2e-5, 2, "ppo")
+        warmed = 2e-5 * (row["step"] + 1) / 20  # DAPO 4.1: a 20-step linear warm-up
+        assert row["learning_rate"] == pytest.approx(warmed)
+        assert (row["substeps"], row["loss_fn"]) == (2, "ppo")
         assert row["seconds"] >= 0.0 and "anchor_kl" not in row
         keys = [key for key in row if key not in ("at", "seq")]
         assert keys == [
@@ -221,6 +224,48 @@ async def test_a_two_step_dapo_run_publishes_points_samples_credits_steps_and_ch
     assert [job["batch"] for job in jobs] == [0, 1] and all(job["graded"] == 4 for job in jobs)
     note = Run.read(opened.directory)
     assert note["failed"] is False and note["kind"] == "dapo"
+
+
+#: What a run logs when its recipe has an overlong term and the proxy reports no budget.
+OVERLONG_OFF = (
+    "dapo's overlong term is off for this run: the proxy reports no token budget, so "
+    "overlong_penalty = 0.5 docks no rollout"
+)
+
+
+def _overlong_off(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [one.getMessage() for one in caplog.records if "overlong term" in one.getMessage()]
+
+
+async def test_the_proxys_token_budget_reaches_credit_and_the_row_counts_the_docked(
+    tmp_path: Path, fakes: tuple[FakeProxy, FakeService], caplog: pytest.LogCaptureFixture
+) -> None:
+    """Every fake trial samples two tokens; with a budget of two, each sampled to the limit
+    and is docked DAPO's full penalty, which the row counts."""
+    proxy, _ = fakes
+    proxy.budget = 2
+    with caplog.at_level(logging.WARNING):
+        opened = await _run(_blueprint(tmp_path), tmp_path, Alternating())
+    rows = _rows(opened)
+    assert [row["overlong"] for row in rows] == [4, 4]
+    assert all(row["trained"] for row in rows), "1 - 0.5 against 0 - 0.5 still has spread"
+    assert _overlong_off(caplog) == [], "a budget to dock against"
+
+
+async def test_an_overlong_term_with_no_budget_reported_warns_once_that_it_is_off(
+    tmp_path: Path, fakes: tuple[FakeProxy, FakeService], caplog: pytest.LogCaptureFixture
+) -> None:
+    """A proxy that reports no token budget, as a remote one may not: nothing is docked, no
+    row counts `overlong`, and the run says once, not once a step, that the term is off."""
+    proxy, _ = fakes
+    assert proxy.budget is None
+    with caplog.at_level(logging.WARNING):
+        opened = await _run(_blueprint(tmp_path), tmp_path, Alternating())
+    rows = _rows(opened)
+    assert len(rows) == 2 and all("overlong" not in row for row in rows)
+    assert _overlong_off(caplog) == [OVERLONG_OFF]
+    (logged,) = [one for one in caplog.records if one.getMessage() == OVERLONG_OFF]
+    assert logged.levelno == logging.WARNING
 
 
 async def test_a_step_with_every_group_degenerate_logs_untrained_and_takes_no_gradient(

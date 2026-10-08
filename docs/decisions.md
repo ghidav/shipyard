@@ -6,7 +6,7 @@ silent failure it prevents. The concept pages hold the mechanics.
 ## Recipes
 
 **A recipe is a name: `dapo`, `dr-grpo` and `cispo` each fix the advantage, the loss, the
-clipping and how token losses add up, and `check` prints what the name resolves to.**
+clipping, how token losses add up and the optimizer, and `check` prints what the name resolves to.**
 A combination nobody has validated would train without complaint and look like a result.
 
 **A gradient recipe's defaults are its paper's, and the docs name the section each comes from, or
@@ -20,6 +20,15 @@ An epsilon passed as a bound would clamp every ratio near 0.2, and nothing would
 **The length rule lives only in `dr-grpo`.**
 Under `dapo`'s division by the group's spread, a small length difference among solved answers would
 become a full-size advantage, and the step would mostly train on length.
+
+**`dapo` and `cispo` dock a rollout that sampled near or up to its token budget, after the group is
+judged degenerate on its rewards alone.**
+DAPO keeps a prompt by its accuracy (Eq. 11): judged after the docking, a group of failures that
+differ only in how far they ran would train on length alone.
+
+**A recipe's optimizer is its paper's, and the cookbook's wherever the paper states no value.**
+A learning rate tuned with one set of betas, eps and warm-up trains differently with another, and
+nothing would say so.
 
 ## Training
 
@@ -43,8 +52,8 @@ keeps the ratio within one engine.
 **Under `reference = "sampler"`, a batch whose records carry no logprobs is refused.**
 A gap would misalign every ratio after it.
 
-**A group with one measured rollout, or with equal rewards after any length rule, is dropped before
-the reference pass.**
+**A group with one measured rollout, or with equal rewards after `dr-grpo`'s length rule, is dropped
+before the reference pass.**
 It carries no gradient, and a step left with nothing logs `trained: false`, so it never reads like one
 that trained.
 

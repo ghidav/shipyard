@@ -23,7 +23,7 @@ ValueError: [recipe] kind = 'dapo' trains the weights this run serves, and [mode
 ## A gradient recipe is a name
 
 Each gradient recipe is a preset. The name fixes how the advantage is formed, which loss runs, how
-it clips and how its token losses add up. You can tune its knobs, but you cannot combine the parts
+it clips, how its token losses add up and the optimizer that steps. You can tune its knobs, but you cannot combine the parts
 another way. The defaults come from each recipe's paper.
 
 `shipyard check` prints the resolved config with every default filled in. After it comes one comment
@@ -47,11 +47,13 @@ kl_coef = 0.0
 clip_low = 0.2
 clip_high = 0.28
 refill = 9
+overlong_penalty = 0.5
+overlong_buffer = 0.2
 
 [checkpoints]
 every = 1
 ttl_hours = 168.0
-# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, averaged per prompt; 16 substeps by prompt; degenerate groups dropped and refilled from the plan, up to 9 more rounds
+# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token budget; 16 substeps by prompt; adamw betas 0.9 / 0.95, eps 1e-08, learning rate warmed up over 20 steps; degenerate groups dropped and refilled from the plan, up to 9 more rounds
 ```
 
 Each name resolves as follows, with the section of its paper each default comes from:
@@ -65,7 +67,9 @@ Each name resolves as follows, with the section of its paper each default comes 
 | Clipping | `clip_low = 0.2`, `clip_high = 0.28`, §4.1 | `clip = 0.2`, App. G | `clip_high = 3.0`, from ScaleRL (arXiv 2510.13786) App. A.17.2 and FST App. D |
 | `substeps` | `16`, §4.1 | `1`, not stated (App. G) | `16`, §3.1 |
 | `refill` | `9`, Alg. 1, capped as in DAPO's released recipe | `0` | `9`, §3.1, which takes DAPO's |
-| Length rule | none | `length_penalty = 0.0`, `length_floor = 0` | none |
+| Overlong term | `overlong_penalty = 0.5`, `overlong_buffer = 0.2`, Eq. 13 and §4.1 | none, as the paper has none | as `dapo`, §3.1, which takes DAPO's |
+| Length rule | none | shipyard's own, off: `length_penalty = 0.0` | none |
+| Optimizer | AdamW, warmed up over 20 steps, §4.1 | AdamW, betas 0.9 / 0.95, gradient norm clipped at 1.0, App. G | AdamW, betas 0.9 / 0.95, eps 1e-15, §3.2 |
 | `loss_fn_config` sent | `clip_low_threshold = 0.8`, `clip_high_threshold = 1.28` | `0.8` and `1.2` | `0.0` and `4.0` |
 
 At shipyard's batch sizes the split often reaches one prompt group per substep: a batch whose 4 groups
@@ -78,21 +82,93 @@ FST uses 4. Dr. GRPO does not state how many optimizer steps it takes per rollou
 one inner update epoch and no mini-batch size), so `dr-grpo` takes one. `check` prints these lines:
 
 ```
-# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, averaged per prompt; 16 substeps by prompt; degenerate groups dropped and refilled from the plan, up to 9 more rounds
-# dr-grpo: advantage = group mean, not divided by spread; loss = ppo, clip 0.2 / 0.2, summed over tokens; 1 substep; degenerate groups dropped
-# cispo: advantage = group mean, divided by spread; loss = cispo, weight truncated above 4.0, no lower bound, averaged per prompt; 16 substeps by prompt; degenerate groups dropped and refilled from the plan, up to 9 more rounds
+# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token budget; 16 substeps by prompt; adamw betas 0.9 / 0.95, eps 1e-08, learning rate warmed up over 20 steps; degenerate groups dropped and refilled from the plan, up to 9 more rounds
+# dr-grpo: advantage = group mean, not divided by spread; loss = ppo, clip 0.2 / 0.2, summed over tokens; 1 substep; adamw betas 0.9 / 0.95, eps 1e-08, gradient norm clipped at 1.0; degenerate groups dropped
+# cispo: advantage = group mean, divided by spread; loss = cispo, weight truncated above 4.0, no lower bound, averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token budget; 16 substeps by prompt; adamw betas 0.9 / 0.95, eps 1e-15; degenerate groups dropped and refilled from the plan, up to 9 more rounds
 ```
 
+### The overlong term (dapo and cispo)
+
+DAPO shapes the reward of a response that runs near or past its length limit with its soft overlong
+punishment (§3.4, Eq. 13). Up to `L_max − L_cache` tokens nothing changes; from there the penalty
+grows linearly to −1 at `L_max`, and it is added to the correctness reward. DAPO sets `L_max` to 20,480
+tokens and `L_cache` to 4,096 (§4.1). §3.4 also describes overlong filtering, which masks
+truncated samples. DAPO's Table 1 lists overlong filtering as one step of its ablation; the authors'
+release says the best run does not use it (verl `recipe/dapo` README). The overlong term here is the
+punishment alone. MiniMax-M1 uses DAPO's length penalty with CISPO (§3.1).
+
+In shipyard the limit is the trial's token budget: a trial may sample `max_context` tokens in all,
+across its calls ([The proxy](proxy.md#the-token-budget-and-the-context)). A trial's length is the
+tokens the policy sampled over all its calls, the same count the budget is spent by. A rollout that
+sampled L tokens of a budget B loses
+
+```
+overlong_penalty × min(max(L − (1 − overlong_buffer) × B, 0) / (overlong_buffer × B), 1)
+```
+
+from its reward before the advantage is formed. The defaults are DAPO's:
+
+- `overlong_buffer = 0.2` is `L_cache / L_max`, 4,096 of 20,480 tokens.
+- `overlong_penalty = 0.5` is DAPO's −1 on its reward of −1 or 1 (Eq. 7), carried to Harbor's reward
+  of 0 to 1. Every reward difference halves, so the advantage, divided by the spread, is the same.
+
+A trial cut by the budget has sampled all of it. Admission scores it 0 ([rule 4](admission.md#masked-or-zero)),
+and the term takes it to −0.5. A group is judged degenerate before the term, on its rewards alone,
+as DAPO keeps a prompt by its accuracy (Eq. 11): failures that differ only in how far they ran carry
+no gradient. `evaluate` and `gepa` measure without the term, so a budget cut is 0 there.
+`overlong_penalty = 0` turns the term off. A proxy that knows no context length enforces no budget,
+and a remote proxy may not report the one it enforces. Either way the run has no budget to dock
+against: the term is off for that run, and the run logs one warning saying so.
+
+`dr-grpo` and `fst` have no overlong term. Dr. GRPO states none (App. G). FST follows ScaleRL, which
+controls length by interrupting long generations rather than by a reward term (ScaleRL §2, App.
+A.10). Under both, a budget cut scores 0.
+
 ### The length rule (dr-grpo only)
+
+The length rule is shipyard's own. Dr. GRPO controls length through its two removals alone, the
+division by the response length and by the spread (§3.2, App. C), and docks no answer for its
+length. `length_penalty` is `0.0`, off, by default.
 
 `length_penalty` docks solved answers for their length. A solved answer has reward 1.0, and the rule
 applies only in a group with at least two of them. Each solved reward loses
 `length_penalty × max(L − length_floor, 0) / mean solved L`, where L is the number of tokens the policy
-wrote. The loss is capped at 0.5, so the longest solved answer still scores above every failure.
+wrote, and at most `length_cap`, `0.5` by default. So a solved answer never scores below
+`1 − length_cap`, nor below any failure scored that or less. `length_cap = inf` lifts the cap.
+`check` warns when `length_cap` is 1 or more and `length_penalty` is above 0, since a long solved
+answer could then score as low as a failure, or lower.
 
 ```
-# dr-grpo: advantage = group mean, not divided by spread; loss = ppo, clip 0.2 / 0.2, summed over tokens; length penalty 0.1 over 512 tokens among solved answers; 1 substep; degenerate groups dropped
+# dr-grpo: advantage = group mean, not divided by spread; loss = ppo, clip 0.2 / 0.2, summed over tokens; length penalty 0.1 over 512 tokens among solved answers, capped at 0.5; 1 substep; adamw betas 0.9 / 0.95, eps 1e-08, gradient norm clipped at 1.0; degenerate groups dropped
 ```
+
+### The optimizer
+
+Each recipe steps with AdamW as its paper sets it. Where the paper states a value, it is the paper's;
+where it states none, it is the cookbook's (`train_step` in `tinker_cookbook/rl/train.py`): betas
+0.9 / 0.95, eps 1e-8, no weight decay, no gradient clipping and no warm-up.
+
+| | betas | eps | weight decay | gradient clipping | warm-up |
+|---|---|---|---|---|---|
+| `dapo` | 0.9 / 0.95, cookbook's | 1e-8, cookbook's | 0, cookbook's | none: the paper states none | 20 steps, §4.1 |
+| `dr-grpo` | 0.9 / 0.95, App. G | 1e-8, cookbook's | 0, App. G | global norm 1.0, App. G, Table 6 | none: a constant rate, App. G |
+| `cispo` | 0.9 / 0.95, MiniMax-M1 §3.2 | 1e-15, §3.2 | 0, cookbook's | none: the paper states none | none, cookbook's |
+| `fst` | 0.9 / 0.999, App. D | 1e-8, cookbook's and PyTorch's | 0, App. D | none: the paper states none | 10 steps, App. D |
+
+Gradient clipping scales an optimizer step's gradient down to the given global norm when it is
+larger; Tinker takes the norm as `grad_clip_norm`. MiniMax-M1 sets eps to 1e-15 because most of its
+gradients are below 1e-14 (§3.2).
+
+The warm-up raises the learning rate linearly over the run's first N updates: update k, counted
+from 0, uses `learning_rate × (k + 1) / N`, and every update from the N-th on uses `learning_rate`.
+All substeps of a step use the same rate, and the row's `learning_rate` is the rate applied. A step
+that trains nothing takes no update, so it does not move the warm-up on.
+
+A run from `from_checkpoint` with `[model] restore_optimizer = true` skips the warm-up: its
+optimizer state continues the earlier run's, and every update uses `learning_rate`. A run from a
+checkpoint without it, or from the base model, warms up.
+
+The optimizer is part of the name, not a key; `check` prints it on the comment line.
 
 ### How token losses add up
 
@@ -127,10 +203,10 @@ the weights have moved, the ratio moves with them, and the clip bounds act. With
 
 | Key | Default | Meaning |
 |---|---|---|
-| `learning_rate` | required, > 0 | Adam's step size (beta1 0.9, beta2 0.95, eps 1e-8). |
+| `learning_rate` | required, > 0 | AdamW's step size, after the recipe's warm-up (see [The optimizer](#the-optimizer)). |
 | `substeps` | `16` for `dapo` and `cispo`, `1` for `dr-grpo` and `fst` | Optimizer steps per batch, split by prompt (see [Substeps](#substeps)). |
 | `reference` | `"trainer"` | Where μ comes from. μ is the sampling logprobs that the ratio is formed against. `"trainer"` recomputes μ in one forward pass on the training engine. `"sampler"` reads the logprobs the proxy recorded and makes no extra pass. |
-| `kl_coef` | `0.0`; `0.001` for `fst` | A per-token penalty for drifting from the run's starting weights, which are the base model or `from_checkpoint`. It is subtracted from the advantage: `kl_coef × (μ − anchor)`. DAPO (§2.3), Dr. GRPO (App. G) and MiniMax-M1 (§3.1) train without one; FST uses 0.001 (App. D). |
+| `kl_coef` | `0.0`; `0.001` for `fst` | A per-token penalty for drifting from the run's starting weights, which are the base model or `from_checkpoint`. It is subtracted from the advantage: `kl_coef × (μ − anchor)`, token by token, not centred on the step's mean. DAPO (§2.3), Dr. GRPO (App. G) and MiniMax-M1 (§3.1) train without one; FST uses 0.001 (App. D) and does not say how the term enters the loss. |
 | `modules` | unset | A directory of skills to carry into every rollout. See [Modules](modules.md). |
 
 `"trainer"` is the default because the sampler and the trainer are different engines and their logprobs
@@ -163,8 +239,8 @@ to `checkpoints.jsonl` with `tag`, `state_path`, `sampler_path` and `ttl_hours`.
 ### Degenerate groups
 
 A group is degenerate when only one of its rollouts was measured, or when its measured rewards are all
-equal after `dr-grpo`'s length rule. A degenerate group carries no gradient, so credit drops it before
-any reference pass. As a result, `group_size = 1` never trains, and never refills. If no group of a
+equal after `dr-grpo`'s length rule. The overlong term of `dapo` and `cispo` comes after this judgement.
+A degenerate group carries no gradient, so credit drops it before any reference pass. As a result, `group_size = 1` never trains, and never refills. If no group of a
 step is left, the step logs `trained: false` and takes no gradient and no checkpoint. Under `dapo` and
 `cispo`, or `dr-grpo` without a length penalty, a policy that solves every task, or fails every one,
 gives flat groups and so takes no step.
@@ -230,7 +306,8 @@ never written as 0. Every row also carries `at` and `seq`.
 | `kl_v1`, `kl_v2` | mean(μ − π) and half its mean square over the trained tokens, where π is the training pass's logprobs. |
 | `entropy` | mean(−μ) over the trained tokens. |
 | `anchor_kl` | mean(μ − anchor), present only when `kl_coef > 0`. |
-| `learning_rate`, `substeps`, `loss_fn` | As applied; `substeps` never exceeds the groups trained on. |
+| `overlong` | Graded rollouts that sampled into the last `overlong_buffer` of their token budget; present under `dapo` and `cispo` when the proxy reports a budget. |
+| `learning_rate`, `substeps`, `loss_fn` | As applied, `learning_rate` after the warm-up; `substeps` never exceeds the groups trained on. |
 | `seconds` | The time taken to apply the gradient. |
 
 ## fst
@@ -258,15 +335,19 @@ reflection_model = "anthropic/claude-sonnet-5"
 `check` prints what it resolves to:
 
 ```
-# fst: cycles of 6 cispo steps, each after gepa evolves 4 texts on the next 6 batches; every group split group_size / 4 per text; advantage = group mean, divided by spread; loss = cispo, weight truncated above 4.0, no lower bound, averaged per prompt; 1 substep; degenerate groups dropped; kl 0.001 to the starting weights
+# fst: cycles of 6 cispo steps, each after gepa evolves 4 texts on the next 6 batches; every group split group_size / 4 per text; advantage = group mean, divided by spread; loss = cispo, weight truncated above 4.0, no lower bound, averaged per prompt; 1 substep; adamw betas 0.9 / 0.999, eps 1e-08, learning rate warmed up over 10 steps; degenerate groups dropped; kl 0.001 to the starting weights
 ```
 
 The defaults are the paper's: `slow = "cispo"` with the importance weight truncated above 4.0 (App. D),
 token losses averaged per prompt (Eq. 4), `substeps = 1` (App. D: `ppo_mini_batch_size` equals
-`train_batch_size`), no refill (§2, after ScaleRL §3.2), `kl_coef = 0.001`, `cycle = 6`, `population = 4`,
-`edits = "incremental"`, and a gepa budget of five passes over the fast phase's tasks. Scoring the texts carried from the previous cycle comes on top of
-that budget, so a full population does not spend the search's passes before it starts. `population` must divide `group_size`; `check` blocks the run
-otherwise.
+`train_batch_size`), no refill (§2, after ScaleRL §3.2), no overlong term (see
+[The overlong term](#the-overlong-term-dapo-and-cispo)), AdamW at betas 0.9 / 0.999 with a 10-step
+warm-up (App. D), `kl_coef = 0.001`, `cycle = 6`, `population = 4`, `edits = "incremental"`, and a gepa
+budget of five passes over the fast phase's tasks. The fast phase scores each (task, text) pair with
+one rollout, whatever share of a group the text takes in the slow steps: App. D spends 960 metric
+calls over 192 examples, and a metric call is one rollout. Scoring the texts carried from the
+previous cycle comes on top of that budget, so a full population does not spend the search's passes
+before it starts. `population` must divide `group_size`; `check` blocks the run otherwise.
 
 Each cycle's population is kept under `runs/<id>/modules/cycle-<n>/<rank>/`, and the last
 population's first text under `modules/best/`. `metrics.jsonl` holds gepa's round rows and one

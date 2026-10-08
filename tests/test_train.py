@@ -17,8 +17,10 @@ from shipyard.credit import credit
 from shipyard.pack import Group, Member, Sequence, datum
 from shipyard.recipes.train import row
 from shipyard.trainer import (
+    COOKBOOK,
     DEFAULT_LORA_RANK,
     SERVE_TTL,
+    Adam,
     Trainer,
     Update,
     _observed,
@@ -186,7 +188,60 @@ async def test_apply_hands_the_loss_and_its_config_and_the_adam_knobs_through() 
     (adam,) = [call[1] for call in client.calls if call[0] == "optim_step"]
     assert isinstance(adam, tinker.AdamParams)
     assert (adam.learning_rate, adam.beta1, adam.beta2, adam.eps) == (2e-5, 0.9, 0.95, 1e-8)
+    assert adam.grad_clip_norm == 0.0, "the cookbook clips no gradient"
     assert update.loss_fn == "cispo" and update.learning_rate == 2e-5 and update.seconds >= 0.0
+
+
+async def test_the_recipes_adam_reaches_the_step_and_its_warm_up_scales_the_rate() -> None:
+    trained, client = _trainer()
+    adam = Adam(beta1=0.9, beta2=0.999, eps=1e-15, weight_decay=0.1, grad_clip_norm=1.0, warmup=4)
+    applied = [(await trained.apply(batch(_datum()), preset(adam=adam))) for _ in range(5)]
+    sent = [call[1] for call in client.calls if call[0] == "optim_step"]
+    rates = [2e-5 * share for share in (0.25, 0.5, 0.75, 1.0, 1.0)]
+    assert [one.learning_rate for one in sent] == pytest.approx(rates)
+    assert [one.learning_rate for one in applied] == pytest.approx(rates), "the row's, as sent"
+    assert {
+        (one.beta1, one.beta2, one.eps, one.weight_decay, one.grad_clip_norm) for one in sent
+    } == {(0.9, 0.999, 1e-15, 0.1, 1.0)}
+
+
+async def test_a_restored_optimizer_skips_the_warm_up_and_a_fresh_one_warms_up() -> None:
+    """With the optimizer state loaded, the moments continue the earlier run's and every
+    update takes the full rate; from a checkpoint without it, or from the base, the rate
+    warms up from the first update."""
+    path = "tinker://run/weights/step-3"
+    adam = Adam(beta1=0.9, beta2=0.95, eps=1e-8, warmup=4)
+    opened = {
+        "restored": dict(from_checkpoint=path, restore_optimizer=True),
+        "weights only": dict(from_checkpoint=path),
+        "base": dict(restore_optimizer=True),
+    }
+    rates: dict[str, list[float]] = {}
+    for name, named in opened.items():
+        service = FakeService()
+        trained = await Trainer.create(service, MODEL, **named)
+        assert trained.restored is (name == "restored")
+        for _ in range(2):
+            await trained.apply(batch(_datum()), preset(adam=adam))
+        sent = [call[1] for call in service.client.calls if call[0] == "optim_step"]
+        rates[name] = [one.learning_rate for one in sent]
+    assert rates["restored"] == pytest.approx([2e-5, 2e-5])
+    assert rates["weights only"] == pytest.approx([5e-6, 1e-5])
+    assert rates["base"] == pytest.approx([5e-6, 1e-5]), "no state to restore warms up"
+
+
+def test_a_warm_up_rises_linearly_from_the_first_update_and_none_leaves_the_rate() -> None:
+    warm = Adam(beta1=0.9, beta2=0.95, eps=1e-8, warmup=20)
+    assert [warm.rate(1e-6, done) for done in (0, 9, 19, 20, 100)] == pytest.approx(
+        [5e-8, 5e-7, 1e-6, 1e-6, 1e-6]
+    )
+    assert COOKBOOK.rate(1e-6, 0) == 1e-6 and COOKBOOK.warmup == 0
+    assert (COOKBOOK.beta1, COOKBOOK.beta2, COOKBOOK.eps, COOKBOOK.weight_decay) == (
+        0.9,
+        0.95,
+        1e-8,
+        0.0,
+    ), "tinker_cookbook/rl/train.py's train_step"
 
 
 async def test_apply_sends_the_datums_without_their_mask() -> None:

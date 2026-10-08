@@ -24,9 +24,6 @@ if TYPE_CHECKING:
 EPSILON = 1e-6
 #: Harbor's reward for a task fully solved: only solved rollouts are compared on length.
 SOLVED = 1.0
-#: The most the length penalty takes from a solved rollout, so that the longest solved
-#: answer still scores above every failure.
-LENGTH_CAP = 0.5
 #: Anchor passes in flight at once.
 LOGPROB_CONCURRENCY = 16
 
@@ -36,7 +33,9 @@ class Batch:
     """What one step consumes and what it left out; a measure that had nothing to
     measure is None, never zero. `credited` counts the members carrying a gradient;
     `owners` holds, per datum, the index of the group it came from; `surplus` counts the
-    groups past a full batch, None when the batch had no size to fill."""
+    groups past a full batch, None when the batch had no size to fill; `overlong` counts
+    the graded members that sampled into the overlong buffer, None when the preset has no
+    overlong term or the token budget is unknown."""
 
     datums: tuple[tinker.Datum, ...]
     owners: tuple[int, ...]
@@ -46,6 +45,7 @@ class Batch:
     masked: int
     degenerate: int
     surplus: int | None = None
+    overlong: int | None = None
     credited: int
     sequences: int
     reward_mean: float | None
@@ -66,11 +66,11 @@ class Batch:
 
 
 def shaped(
-    rewards: Values[float], lengths: Values[int], *, penalty: float, floor: int
+    rewards: Values[float], lengths: Values[int], *, penalty: float, floor: int, cap: float
 ) -> list[float]:
     """The rewards less the length penalty on the solved rollouts: among solved answers,
-    at least two solved, docked `penalty * max(L - floor, 0) / mean solved L`, capped;
-    the rewards themselves when the penalty is off or fewer than two solved."""
+    at least two solved, docked `penalty * max(L - floor, 0) / mean solved L`, at most
+    `cap`; the rewards themselves when the penalty is off or fewer than two solved."""
     if not penalty:
         return [float(one) for one in rewards]
     solved = [one >= SOLVED for one in rewards]
@@ -82,9 +82,23 @@ def shaped(
     out: list[float] = []
     for reward, length, yes in zip(rewards, lengths, solved, strict=True):
         excess = max(float(length) - float(floor), 0.0)
-        docked = min(penalty * excess / mean, LENGTH_CAP)
+        docked = min(penalty * excess / mean, cap)
         out.append(float(reward) - docked if yes else float(reward))
     return out
+
+
+def overlong(
+    lengths: Values[int], *, penalty: float, buffer: float, budget: int | None
+) -> list[float]:
+    """DAPO's soft overlong punishment (Eq. 13) per rollout, the sampled tokens standing for
+    the response length and the trial's token budget for L_max: 0 up to the last `buffer`
+    of the budget, then falling linearly to `-penalty` at the budget and staying there.
+    All zeros when the term is off or the budget is unknown."""
+    if not penalty or not budget:
+        return [0.0] * len(lengths)
+    cache = buffer * budget
+    start = budget - cache
+    return [-penalty * min(max(float(length) - start, 0.0) / cache, 1.0) for length in lengths]
 
 
 def measured(group: Group) -> list[Member]:
@@ -95,12 +109,13 @@ def measured(group: Group) -> list[Member]:
 
 
 def scored(group: Group, preset: Preset) -> tuple[list[Member], list[float], list[float]]:
-    """The measured members, their rewards, and the rewards as the preset shapes them."""
+    """The measured members, their rewards, and the rewards after the preset's length rule:
+    what a group is judged degenerate on. The overlong term comes after that judgement."""
     members = measured(group)
     found = [float(one.verdict.reward) for one in members]
     wrote = [one.sampled_tokens for one in members]
-    penalty, floor = preset.length_penalty, preset.length_floor
-    return members, found, shaped(found, wrote, penalty=penalty, floor=floor)
+    penalty, floor, cap = preset.length_penalty, preset.length_floor, preset.length_cap
+    return members, found, shaped(found, wrote, penalty=penalty, floor=floor, cap=cap)
 
 
 def flat(shaped_rewards: Values[float]) -> bool:
@@ -210,15 +225,18 @@ async def credit(
     anchor: Any = None,  # a `tinker.SamplingClient` on the starting weights
     *,
     limit: int | None = None,
+    budget: int | None = None,
 ) -> Batch:
     """The batch: measured members only; degenerate groups dropped before any reference
     pass, and with `limit` the groups carrying a gradient past the first `limit` left out
-    as surplus; mu from the trainer's forward or the records; the KL to the anchor folded
+    as surplus; the overlong term against the token `budget` added to the rewards of the
+    groups kept; mu from the trainer's forward or the records; the KL to the anchor folded
     into the advantage per token when `kl_coef > 0`; each group's tokens weighted by the
     preset's aggregation."""
     if preset.reference == "trainer":
         pinned(groups, trainer)
-    rollouts = graded = dropped = surplus = 0
+    docking = preset.overlong_penalty > 0 and bool(budget)
+    rollouts = graded = dropped = surplus = docked = 0
     rewards: list[float] = []
     spreads: list[float] = []
     lengths: list[int] = []
@@ -230,9 +248,18 @@ async def credit(
         graded += len(members)
         if not members:
             continue
+        wrote = [one.sampled_tokens for one in members]
         rewards.extend(found)
-        lengths.extend(one.sampled_tokens for one in members)
+        lengths.extend(wrote)
         spreads.append(pstdev(shaped_rewards) if len(shaped_rewards) > 1 else 0.0)
+        terms = overlong(
+            wrote,
+            penalty=preset.overlong_penalty,
+            buffer=preset.overlong_buffer,
+            budget=budget,
+        )
+        docked += sum(term < 0 for term in terms)
+        # Judged before the overlong term: DAPO keeps a group by its accuracy (Eq. 11).
         if flat(shaped_rewards):
             dropped += 1
             continue
@@ -241,10 +268,11 @@ async def credit(
             continue
         owner = len(owned)
         owned.append(owner)
+        final = [one + term for one, term in zip(shaped_rewards, terms, strict=True)]
         kept.extend(
             (owner, member, advantage)
             for member, advantage in zip(
-                members, advantages(shaped_rewards, normalize=preset.normalize), strict=True
+                members, advantages(final, normalize=preset.normalize), strict=True
             )
         )
     sequences = [one for _, member, _ in kept for one in member.sequences]
@@ -292,6 +320,7 @@ async def credit(
         masked=rollouts - graded,
         degenerate=dropped,
         surplus=surplus if limit is not None else None,
+        overlong=docked if docking else None,
         credited=len(kept),
         sequences=len(sequences),
         reward_mean=fmean(rewards) if rewards else None,

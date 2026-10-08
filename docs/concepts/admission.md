@@ -54,6 +54,11 @@ filled its context and its harness gave up. Masking those would hide the
 failure, and the policy would never learn to stop. A harness that filled its
 context and still finished keeps the verifier's reward (rule 11).
 
+The verdict is the same for every recipe. `dapo` and `cispo` then dock a
+rollout that sampled near or up to its budget, as DAPO does, so a budget cut
+trains as −0.5 there ([The overlong term](recipes.md#the-overlong-term-dapo-and-cispo));
+`evaluate` and `gepa` count it as 0.
+
 ## Why a masked rollout enters no mean
 
 A zero for a container that never started would read as a policy that

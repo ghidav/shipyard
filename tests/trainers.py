@@ -14,6 +14,7 @@ from tinker.types import GetServerCapabilitiesResponse, SupportedModel
 
 from shipyard.credit import Batch
 from shipyard.recipes.train import Preset
+from shipyard.trainer import COOKBOOK
 
 
 def preset(**named: Any) -> Preset:
@@ -28,6 +29,7 @@ def preset(**named: Any) -> Preset:
         aggregation="sum",
         length_penalty=0.0,
         length_floor=0,
+        adam=COOKBOOK,
         kl_coef=0.0,
         reference="trainer",
         learning_rate=2e-5,

@@ -214,12 +214,23 @@ async def test_healthz_names_what_is_served_without_a_token_and_follows_a_swap()
     async with endpoint(FakeSampler("ok"), control_token="c") as started:
         async with httpx.AsyncClient() as http:
             answer = (await http.get(f"{root(started)}/healthz")).json()
-            assert answer == {"status": "ok", "model": MODEL, "serving": MODEL}
+            assert answer == {"status": "ok", "model": MODEL, "serving": MODEL, "budget": None}
             await control(started, "tinker://w/step-3")
             answer = (await http.get(f"{root(started)}/healthz")).json()
         assert answer["serving"] == "tinker://w/step-3"
         proxy = Proxy(origin=root(started), token="not-needed")
         assert await proxy.ready(seconds=2) == "tinker://w/step-3"
+
+
+async def test_healthz_names_the_token_budget_and_the_run_keeps_it() -> None:
+    async with endpoint(FakeSampler("ok"), max_context=12288) as started:
+        async with httpx.AsyncClient() as http:
+            answer = (await http.get(f"{root(started)}/healthz")).json()
+        assert answer["budget"] == 12288, "each trial may sample the context length in all"
+        proxy = Proxy(origin=root(started), token="not-needed")
+        assert proxy.budget is None
+        await proxy.ready(seconds=2)
+        assert proxy.budget == 12288
 
 
 class LateName(httpx.AsyncBaseTransport):

@@ -24,7 +24,7 @@ from shipyard.recipes import train as loop
 from shipyard.recipes.gepa import BEST, SEED
 from shipyard.recipes.train import Preset
 from shipyard.rollout import Rollouts
-from shipyard.trainer import SERVE_TTL
+from shipyard.trainer import SERVE_TTL, Adam
 
 if TYPE_CHECKING:
     from shipyard.run import Run
@@ -35,9 +35,14 @@ SLOW = {
     "dr-grpo": (DrGrpoRecipe, dr_grpo),
     "cispo": (CispoRecipe, cispo),
 }
-#: Gepa's budget per cycle in passes over the anchor tasks: the paper's 960 metric calls
-#: over 192 examples.
+#: Gepa's budget per cycle in passes over the anchor tasks, one rollout per (task, text)
+#: cell: App. D's 960 metric calls over 192 examples, a metric call being one rollout.
 BUDGET_PASSES = 5
+CELL_ROLLOUTS = 1
+#: App. D: AdamW at PyTorch's betas 0.9 / 0.999, weight decay 0, a 10-step linear warm-up;
+#: eps is unstated, and 1e-8 is both PyTorch's default and the cookbook's; it states no
+#: gradient clipping, so none, the cookbook's.
+ADAM = Adam(beta1=0.9, beta2=0.999, eps=1e-8, warmup=10)
 
 
 def slow_recipe(recipe: Any) -> Any:
@@ -50,11 +55,20 @@ def slow_recipe(recipe: Any) -> Any:
 
 
 def preset(recipe: Any) -> Preset:
-    """The slow recipe's preset, under fst's name, without refill and averaged per prompt
-    whatever the slow loss: FST follows ScaleRL (section 2), whose zero-variance filtering
-    drops flat groups without resampling, and aggregates at the prompt level (Eq. 4)."""
+    """The slow recipe's preset, under fst's name, with FST's optimizer (App. D), averaged
+    per prompt (Eq. 4), and with neither refill nor overlong penalty whatever the slow
+    recipe: FST follows ScaleRL (section 2), whose zero-variance filtering drops flat groups
+    without resampling and which controls length by interruption, not by a reward term
+    (ScaleRL 2, A.10)."""
     _, module = SLOW[recipe.slow]
-    return replace(module.preset(slow_recipe(recipe)), name="fst", refill=0, aggregation="prompt")
+    return replace(
+        module.preset(slow_recipe(recipe)),
+        name="fst",
+        refill=0,
+        aggregation="prompt",
+        overlong_penalty=0.0,
+        adam=ADAM,
+    )
 
 
 def resolution(recipe: Any) -> str:
@@ -97,7 +111,7 @@ async def run(run: Run) -> None:
         for cycle, start in enumerate(range(0, len(planned), recipe.cycle)):
             lookahead = planned[start : start + recipe.cycle]
             await serving.point(await trainer.publish(f"fast-{cycle}", ttl_seconds=SERVE_TTL))
-            population = await fast(run, population, lookahead, cycle, index, write, share)
+            population = await fast(run, population, lookahead, cycle, index, write)
             for rank, member in enumerate(population):
                 keep(member, kept / f"cycle-{cycle}" / str(rank))
             sample = partial(sampled, run, population, share)
@@ -117,20 +131,21 @@ async def fast(
     cycle: int,
     index: int,
     write: Any,
-    share: int,
 ) -> list[Candidate]:
     """One fast phase under the weights the proxy now serves: gepa on the lookahead's tasks
-    (the first `anchor` of them when set), seeded with the population, its top K back."""
+    (the first `anchor` of them when set), seeded with the population, every (task, text)
+    cell scored with one rollout, its top K back."""
     recipe = run.config.recipe
     tasks = list(dict.fromkeys(task for batch in lookahead for task in batch))
     tasks = tasks[: recipe.anchor] if recipe.anchor else tasks
+    cells = CELL_ROLLOUTS
 
     # Measuring the population carried in is on top of the budget, past the first member.
     carried = len({member.digest for member in population}) - 1
 
     async def score(candidate: Candidate, over: Sequence[Path], round_index: int) -> Any:
-        rolled = await run.sample(list(over), rollouts=share, index=index, modules=candidate)
-        return outcomes(rolled, over, share)
+        rolled = await run.sample(list(over), rollouts=cells, index=index, modules=candidate)
+        return outcomes(rolled, over, cells)
 
     result = await evolve(
         population,
@@ -138,9 +153,9 @@ async def fast(
         write=write,
         score=score,
         minibatch=recipe.minibatch,
-        budget=(recipe.budget or BUDGET_PASSES * len(tasks) * share) + carried * len(tasks) * share,
+        budget=(recipe.budget or BUDGET_PASSES * len(tasks) * cells) + carried * len(tasks) * cells,
         patience=recipe.patience,
-        rollouts=share,
+        rollouts=cells,
         log=partial(run.log, cycle=cycle),
     )
     chosen = result.top(recipe.population)

@@ -235,13 +235,15 @@ class Endpoint:
     def _control_middleware(self) -> Any:
         """`POST /control/weights` behind the control token alone: the harness token is in
         every sandbox, and the model under training must not re-point its own proxy. And
-        `GET /healthz` naming what is served, the cookbook's answer with `serving` on it."""
+        `GET /healthz` naming what is served, the cookbook's answer with `serving` on it,
+        and the token budget each trial may sample, null when none is enforced."""
 
         @web.middleware
         async def control(request: Any, handler: Any) -> Any:
             if request.path == HEALTH_PATH and request.method == "GET":
                 served = self.model_path or self.base_model
-                return web.json_response({"status": "ok", "model": served, "serving": served})
+                answer = {"status": "ok", "model": served, "serving": served}
+                return web.json_response({**answer, "budget": self.max_context or None})
             if request.path != CONTROL_PATH:
                 return await handler(request)
             if self.control_token is None:

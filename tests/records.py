@@ -70,6 +70,8 @@ class FakeProxy:
     fetched: list[str] = field(default_factory=list)
     swapped: list[str | None] = field(default_factory=list)
     counters: dict[str, dict[str, int]] = field(default_factory=dict)
+    #: The token budget `/healthz` reports; None: the proxy enforces none.
+    budget: int | None = None
     closed: int = 0
     #: How often `/healthz` was probed, whether it answers, and why it is gone (None: alive).
     probed: int = 0

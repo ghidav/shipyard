@@ -14,7 +14,7 @@ from shipyard.config import ConfigError, check, load
 from shipyard.gepa.reflect import COLLECTED
 from shipyard.modules import SKILL_FILE, seed
 from shipyard.recipes import resolution, run_recipe
-from shipyard.recipes.fst import merged, preset
+from shipyard.recipes.fst import ADAM, BUDGET_PASSES, merged, preset
 from shipyard.rollout import Rollouts
 from shipyard.run import Run
 from tests.records import made
@@ -41,8 +41,18 @@ def test_the_fixture_takes_the_papers_defaults() -> None:
     assert found.loss_config == {"clip_low_threshold": 0.0, "clip_high_threshold": 4.0}
     assert (found.substeps, found.aggregation, found.refill) == (1, "prompt", 0), "App. D, Eq. 4"
     assert resolution(recipe).startswith("# fst: cycles of 2 cispo steps")
+    assert (found.overlong_penalty, found.adam) == (0.0, ADAM), "App. D; ScaleRL A.10"
+    assert (ADAM.beta1, ADAM.beta2, ADAM.eps, ADAM.weight_decay, ADAM.warmup) == (
+        0.9,
+        0.999,
+        1e-8,
+        0.0,
+        10,
+    ), "App. D"
+    assert ADAM.grad_clip_norm == 0.0, "App. D states no gradient clipping"
     assert resolution(recipe).endswith(
-        "no lower bound, averaged per prompt; 1 substep; degenerate groups dropped; "
+        "no lower bound, averaged per prompt; 1 substep; adamw betas 0.9 / 0.999, eps 1e-08, "
+        "learning rate warmed up over 10 steps; degenerate groups dropped; "
         "kl 0.001 to the starting weights"
     )
 
@@ -151,8 +161,34 @@ async def test_a_cycle_evolves_two_texts_then_splits_every_group_across_them(
     assert Run.read(opened.directory)["kind"] == "fst"
 
 
+@pytest.mark.usefixtures("fakes")
+async def test_the_fast_phase_scores_each_cell_with_one_rollout_on_five_passes(
+    tmp_path: Path,
+) -> None:
+    """FST App. D: 960 metric calls over 192 examples, one rollout each, whatever share of
+    the group a text takes in the slow steps (here two of four)."""
+    for name in ("a", "b", "c", "d"):
+        shutil.copytree(FIXTURES / "fixture" / "alpha", tmp_path / "tasks" / "four" / name)
+    home = write_blueprint(tmp_path, _text(**{'"aime-train"': '"four"'}))
+    shutil.copytree(VALID, home / "modules")
+    opened = Run.open(home, root=tmp_path / "runs")
+    opened.run_trial = Trials()
+    with opened:
+        await run_recipe(opened)
+    rows = list(record.read(opened.directory / record.METRICS))
+    (evolution,) = [row for row in rows if row.get("evolution")]
+    assert 0 < evolution["spent"] <= BUDGET_PASSES * 4, "five passes over four tasks"
+    jobs = [
+        job for job in record.read(opened.directory / record.JOBS) if job["purpose"] == "rollout"
+    ]
+    fast, slow = jobs[:-4], jobs[-4:]
+    assert fast and all(job["trials"] == job["tasks"] for job in fast), "one rollout a cell"
+    assert all(job["trials"] == 2 * job["tasks"] for job in slow), "group_size / population"
+
+
 def test_fst_averages_per_prompt_whatever_its_slow_loss(tmp_path: Path) -> None:
     """FST aggregates at the prompt level (Eq. 4); a dr-grpo step on its own sums."""
     text = _text(**{'kind = "fst"': 'kind = "fst"\nslow = "dr-grpo"'})
     found = preset(load(write_blueprint(tmp_path, text)).recipe)
     assert (found.aggregation, found.refill) == ("prompt", 0)
+    assert (found.length_cap, found.adam) == (0.5, ADAM), "dr-grpo's cap, FST's optimizer"

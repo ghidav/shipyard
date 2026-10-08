@@ -4,16 +4,18 @@ resolves to, `step` (publish, point, sample and refill, credit, apply, log, chec
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 from shipyard import session
+from shipyard.config import LENGTH_CAP, PAPER_OVERLONG_BUFFER
 from shipyard.credit import Batch, carrying, credit
 from shipyard.data import batches
 from shipyard.pack import Group, group
-from shipyard.trainer import SERVE_TTL, Trainer, Update
+from shipyard.trainer import SERVE_TTL, Adam, Trainer, Update
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -23,6 +25,8 @@ if TYPE_CHECKING:
     from shipyard.run import Run
     from shipyard.serving import Serving
 
+logger = logging.getLogger(__name__)
+
 #: How a step samples its batch: the tasks and the step's index in, the rollouts out.
 Sampler = Callable[["Sequence[Path]", int], Awaitable["Rollouts"]]
 
@@ -31,6 +35,7 @@ __all__ = [
     "Preset",
     "Refill",
     "clipped",
+    "optimizer",
     "refilled",
     "resolution",
     "row",
@@ -62,6 +67,7 @@ ROW = (
     "kl_v2",
     "entropy",
     "anchor_kl",
+    "overlong",
     "learning_rate",
     "substeps",
     "loss_fn",
@@ -75,7 +81,10 @@ class Preset:
     Tinker's `loss_fn_config` for the step (see `clipped`); `clipping` says it for `check`.
     `aggregation` is "prompt", each prompt's token losses averaged so every prompt weighs
     the same, or "sum", Tinker's own sum over tokens; `refill` caps the extra sampling
-    rounds a step may take to fill its batch with groups that carry a gradient."""
+    rounds a step may take to fill its batch with groups that carry a gradient. The length
+    rule docks solved answers (`credit.shaped`); the overlong term docks a rollout that
+    sampled into the last `overlong_buffer` of its token budget (`credit.overlong`).
+    `adam` is the optimizer as the recipe's paper sets it."""
 
     name: str
     normalize: bool
@@ -85,6 +94,10 @@ class Preset:
     aggregation: Literal["prompt", "sum"]
     length_penalty: float = 0.0
     length_floor: int = 0
+    length_cap: float = LENGTH_CAP
+    overlong_penalty: float = 0.0
+    overlong_buffer: float = PAPER_OVERLONG_BUFFER
+    adam: Adam
     kl_coef: float
     reference: str
     learning_rate: float
@@ -128,7 +141,7 @@ def clipped(low: float, high: float) -> dict[str, float]:
 def resolution(preset: Preset) -> str:
     """The comment line `check` prints after the resolved config: how the advantage is
     formed, which loss with which clipping and aggregation, the shaping if any, the
-    substeps, what becomes of degenerate groups, and the KL if any."""
+    substeps, the optimizer, what becomes of degenerate groups, and the KL if any."""
     spread = "divided by spread" if preset.normalize else "not divided by spread"
     summed = "averaged per prompt" if preset.aggregation == "prompt" else "summed over tokens"
     parts = [
@@ -136,11 +149,20 @@ def resolution(preset: Preset) -> str:
         f"loss = {preset.loss_fn}, {preset.clipping}, {summed}",
     ]
     if preset.length_penalty > 0:
+        capped = (
+            "uncapped" if preset.length_cap == float("inf") else f"capped at {preset.length_cap}"
+        )
         parts.append(
             f"length penalty {preset.length_penalty} over {preset.length_floor} tokens "
-            "among solved answers"
+            f"among solved answers, {capped}"
+        )
+    if preset.overlong_penalty > 0:
+        parts.append(
+            f"overlong penalty up to {preset.overlong_penalty} over the last "
+            f"{preset.overlong_buffer * 100:g}% of the token budget"
         )
     parts.append("1 substep" if preset.substeps == 1 else f"{preset.substeps} substeps by prompt")
+    parts.append(optimizer(preset.adam))
     if preset.refill > 0:
         rounds = "round" if preset.refill == 1 else "rounds"
         parts.append(
@@ -152,6 +174,20 @@ def resolution(preset: Preset) -> str:
     if preset.kl_coef > 0:
         parts.append(f"kl {preset.kl_coef} to the starting weights")
     return f"# {preset.name}: " + "; ".join(parts)
+
+
+def optimizer(adam: Adam) -> str:
+    """The optimizer as the resolution line states it: betas and eps, then the weight decay,
+    the gradient clipping and the warm-up when the recipe has them."""
+    said = f"adamw betas {adam.beta1} / {adam.beta2}, eps {adam.eps:g}"
+    if adam.weight_decay > 0:
+        said += f", weight decay {adam.weight_decay}"
+    if adam.grad_clip_norm > 0:
+        said += f", gradient norm clipped at {adam.grad_clip_norm}"
+    if adam.warmup > 0:
+        steps = "step" if adam.warmup == 1 else "steps"
+        said += f", learning rate warmed up over {adam.warmup} {steps}"
+    return said
 
 
 async def train(run: Run, preset: Preset) -> None:
@@ -167,7 +203,8 @@ async def train(run: Run, preset: Preset) -> None:
 
 @asynccontextmanager
 async def training(run: Run, preset: Preset) -> AsyncIterator[tuple[Trainer, Any]]:
-    """The trainer and the KL anchor opened, the proxy started; on a clean exit `final`
+    """The trainer and the KL anchor opened, the proxy started (a warning when the preset's
+    overlong term has no token budget to dock against); on a clean exit `final`
     checkpointed, and the session closed either way with how it ended."""
     serving = serving_of(run, preset)
     model = run.config.model
@@ -192,6 +229,13 @@ async def training(run: Run, preset: Preset) -> AsyncIterator[tuple[Trainer, Any
                 base_model=model.name, model_path=start
             )
         await serving.start()
+        if preset.overlong_penalty > 0 and serving.budget is None:
+            logger.warning(
+                "%s's overlong term is off for this run: the proxy reports no token budget, "
+                "so overlong_penalty = %s docks no rollout",
+                preset.name,
+                preset.overlong_penalty,
+            )
         yield trainer, anchor
         await run.checkpoint(trainer, "final", keep=True)
     except BaseException as failed:
@@ -238,7 +282,7 @@ async def step(
             groups, preset, data.batch_size, data.group_size, plan, draw
         )
     limit = data.batch_size if refill is not None else None
-    batch = await credit(groups, preset, trainer, anchor, limit=limit)
+    batch = await credit(groups, preset, trainer, anchor, limit=limit, budget=serving.budget)
     run.spent(
         serving.party, reference_tokens=batch.reference_tokens, anchor_tokens=batch.anchor_tokens
     )

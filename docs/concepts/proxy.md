@@ -36,7 +36,8 @@ them. `[rollout] endpoint_url` names a proxy the run does not start, one
 started elsewhere with `shipyard serve`. The run then needs the harness token
 in its environment (`check` blocks without it), and the control token to point
 that proxy at new weights. It asks the proxy's `/healthz` before it opens any
-sandbox.
+sandbox. The answer names the weights served and the token budget below, or
+`null` when the proxy enforces none.
 
 ## Two dialects
 
@@ -115,7 +116,8 @@ from it, each a 400 to the harness and a record with `error` set:
 
 [Admission](admission.md) reads both: a budget cut scores 0, and so does a
 filled context the harness then gave up on; a first call that never fit is
-masked.
+masked. `dapo` and `cispo` also dock a rollout that sampled near or up to the
+budget ([The overlong term](recipes.md#the-overlong-term-dapo-and-cispo)).
 
 ## Retries are replayed
 

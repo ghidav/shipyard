@@ -5,16 +5,18 @@ weights that moved."""
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 import tinker
 
 from shipyard.admit import Verdict
+from shipyard.config import LENGTH_CAP
 from shipyard.credit import (
-    LENGTH_CAP,
     advantages,
     carrying,
     credit,
+    overlong,
     reference_logprobs,
     shaped,
     weights,
@@ -93,18 +95,29 @@ def test_the_three_recipes_resolve_to_their_presets() -> None:
     assert (found.learning_rate, found.substeps) == (2e-5, 16), "DAPO 4.1"
     assert (found.aggregation, found.refill) == ("prompt", 9), "DAPO Eq. 8; verl's 10 batches"
     assert found.clipping == "clip 0.2 / 0.28"
+    assert (found.overlong_penalty, found.overlong_buffer) == (0.5, 0.2), "Eq. 13; 4.1"
+    assert _adam(found) == (0.9, 0.95, 1e-8, 0.0, 0.0, 20), "4.1's warm-up; the rest the cookbook's"
     found = dr_grpo.preset(load(root / "dr-grpo").recipe)
     assert (found.name, found.normalize, found.loss_fn) == ("dr-grpo", False, "ppo")
     assert found.loss_config == {"clip_low_threshold": 0.8, "clip_high_threshold": 1.2}
-    assert (found.length_penalty, found.length_floor) == (0.2, 0)
+    assert (found.length_penalty, found.length_floor, found.length_cap) == (0.2, 0, 0.5)
     assert (found.substeps, found.aggregation, found.refill) == (1, "sum", 0)
     assert found.clipping == "clip 0.2 / 0.2"
+    assert found.overlong_penalty == 0.0, "Dr. GRPO has no overlong term"
+    assert _adam(found) == (0.9, 0.95, 1e-8, 0.0, 1.0, 0), "App. G, Table 6; eps the cookbook's"
     found = cispo.preset(load(root / "cispo").recipe)
     assert (found.name, found.normalize, found.loss_fn) == ("cispo", True, "cispo")
     assert found.loss_config == {"clip_low_threshold": 0.0, "clip_high_threshold": 4.0}
     assert found.reference == "sampler"
     assert (found.substeps, found.aggregation, found.refill) == (16, "prompt", 9)
     assert found.clipping == "weight truncated above 4.0, no lower bound"
+    assert (found.overlong_penalty, found.overlong_buffer) == (0.5, 0.2), "3.1, DAPO's"
+    assert _adam(found) == (0.9, 0.95, 1e-15, 0.0, 0.0, 0), "MiniMax-M1 3.2"
+
+
+def _adam(found: Any) -> tuple[float, float, float, float, float, int]:
+    adam = found.adam
+    return (adam.beta1, adam.beta2, adam.eps, adam.weight_decay, adam.grad_clip_norm, adam.warmup)
 
 
 async def test_dapo_divides_by_the_spread_and_dr_grpo_does_not() -> None:
@@ -256,7 +269,7 @@ async def test_a_tie_on_reward_is_broken_by_length_only_when_the_penalty_is_on()
     assert not docked.empty and docked.degenerate == 0
     # r - min(0.5 L / 20, 0.5) = [0.5, 0.75]; centred, the long one is -0.125.
     assert [_advantage_of(one) for one in docked.datums] == [-0.125, 0.125]
-    assert shaped([1.0, 1.0], [30, 10], penalty=0.5, floor=0) == [0.5, 0.75]
+    assert shaped([1.0, 1.0], [30, 10], penalty=0.5, floor=0, cap=LENGTH_CAP) == [0.5, 0.75]
 
 
 async def test_length_is_compared_among_the_solved_and_failures_are_left_alone() -> None:
@@ -285,7 +298,7 @@ async def test_a_lone_success_and_a_group_of_failures_are_not_shaped() -> None:
     failures = _group(_member(0.0, wrote=30), _member(0.0, wrote=10))
     found = await credit([failures], docked, _trainer())
     assert found.empty and found.degenerate == 1
-    assert shaped([0.0, 0.0], [30, 10], penalty=0.2, floor=0) == [0.0, 0.0]
+    assert shaped([0.0, 0.0], [30, 10], penalty=0.2, floor=0, cap=LENGTH_CAP) == [0.0, 0.0]
 
 
 async def test_the_longest_solved_answer_still_beats_every_failure() -> None:
@@ -297,6 +310,22 @@ async def test_the_longest_solved_answer_still_beats_every_failure() -> None:
     # Mean solved length 505: 2.0 * 1000 / 505 = 3.96, capped at 0.5; the short one pays 0.04.
     assert longest - failure == pytest.approx(LENGTH_CAP, abs=1e-4)
     assert shortest > longest > failure
+
+
+async def test_the_cap_bounds_the_dock_and_an_infinite_one_lets_length_sink_below_a_failure() -> (
+    None
+):
+    group = _group(_member(1.0, wrote=1000), _member(1.0, wrote=10), _member(0.0, wrote=5))
+    capped = await credit([group], preset(**DR, length_penalty=2.0, length_cap=0.9), _trainer())
+    longest, _, failure = (_advantage_of(one) for one in capped.datums)
+    assert longest - failure == pytest.approx(1 - 0.9, abs=1e-4), "docked 0.9: kept 0.1"
+    free = await credit(
+        [group], preset(**DR, length_penalty=2.0, length_cap=float("inf")), _trainer()
+    )
+    longest, shortest, failure = (_advantage_of(one) for one in free.datums)
+    # Mean solved length 505: docked 2.0 * 1000 / 505 = 3.96, so the long answer scores -2.96.
+    assert longest < failure < shortest
+    assert shaped([1.0, 1.0], [30, 10], penalty=0.5, floor=0, cap=0.6) == [0.4, 0.75]
 
 
 async def test_under_the_floor_nothing_is_docked_and_over_it_only_the_excess_is() -> None:
@@ -312,6 +341,54 @@ async def test_length_is_on_the_row_whether_or_not_it_is_penalised() -> None:
     pair = _group(_member(1.0, wrote=4), _member(0.0, wrote=2))
     found = await credit([pair], preset(), _trainer())
     assert found.length_mean == 3.0 and row(0, found, None)["length_mean"] == 3.0
+
+
+# ------------------------------------------------------------- the overlong term
+
+OVERLONG = dict(overlong_penalty=0.5, overlong_buffer=0.2)
+
+
+def test_the_overlong_term_ramps_over_the_last_fifth_of_the_budget_as_eq_13() -> None:
+    lengths = [0, 80, 90, 100, 120]
+    found = overlong(lengths, penalty=0.5, buffer=0.2, budget=100)
+    assert found == pytest.approx([0.0, 0.0, -0.25, -0.5, -0.5])
+    assert overlong(lengths, penalty=1.0, buffer=1.0, budget=100) == pytest.approx(
+        [0.0, -0.8, -0.9, -1.0, -1.0]
+    )
+    assert overlong(lengths, penalty=0.5, buffer=0.2, budget=None) == [0.0] * 5
+    assert overlong(lengths, penalty=0.0, buffer=0.2, budget=100) == [0.0] * 5
+
+
+async def test_a_rollout_near_or_at_the_budget_is_docked_before_the_advantage() -> None:
+    group = _group(
+        _member(1.0, wrote=50),
+        _member(1.0, wrote=90),
+        _member(0.0, wrote=10),
+        _member(0.0, wrote=100),  # cut by the budget: scored 0 by admission
+    )
+    found = await credit([group], preset(**OVERLONG), _trainer(), budget=100)
+    # Rewards 1, 0.75, 0, -0.5: mean 0.3125, spread 0.5962.
+    assert [_advantage_of(one) for one in found.datums] == pytest.approx(
+        [1.1531, 0.7338, -0.5241, -1.3628], abs=1e-3
+    )
+    assert found.overlong == 2 and row(0, found, None)["overlong"] == 2
+    assert found.reward_mean == 0.5, "the measured rewards, before any docking"
+    plain = await credit([group], preset(**OVERLONG), _trainer())
+    assert plain.overlong is None and "overlong" not in row(0, plain, None)
+    assert [_advantage_of(one) for one in plain.datums] == pytest.approx(
+        [1.0, 1.0, -1.0, -1.0], abs=1e-4
+    ), "no budget known, nothing docked"
+    off = await credit([group], preset(), _trainer(), budget=100)
+    assert off.overlong is None, "a recipe without the term"
+
+
+async def test_a_group_is_judged_degenerate_before_the_overlong_term() -> None:
+    """DAPO keeps a group by its accuracy (Eq. 11): failures that differ only by how far
+    they ran into the budget carry nothing to compare."""
+    failures = _group(_member(0.0, wrote=100), _member(0.0, wrote=10))
+    found = await credit([failures], preset(**OVERLONG), _trainer(), budget=100)
+    assert found.empty and found.degenerate == 1 and found.overlong == 1
+    assert carrying([failures], preset(**OVERLONG)) == 0
 
 
 # ---------------------------------------------------------------- the reference

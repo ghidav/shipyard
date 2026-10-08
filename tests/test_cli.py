@@ -118,8 +118,10 @@ def test_check_prints_the_resolution_line_for_a_gradient_recipe(tmp_path: Path) 
     comment = next(line for line in lines if line.startswith("#"))
     assert comment == (
         "# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, "
-        "averaged per prompt; 16 substeps by prompt; degenerate groups dropped and refilled "
-        "from the plan, up to 9 more rounds"
+        "averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token "
+        "budget; 16 substeps by prompt; adamw betas 0.9 / 0.95, eps 1e-08, learning rate "
+        "warmed up over 20 steps; degenerate groups dropped and refilled from the plan, up to "
+        "9 more rounds"
     )
     assert lines.index(comment) == lines.index("ttl_hours = 168.0") + 1
     findings = [line for line in lines if line.startswith(("ok  ", "warning  ", "blocked  "))]

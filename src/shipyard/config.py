@@ -110,6 +110,15 @@ PAPER_SUBSTEPS = 16
 PAPER_REFILL = 9
 #: cispo's ceiling as an epsilon, 4.0 on the weight: ScaleRL A.17.2 and FST appendix D.
 PAPER_CISPO_HIGH = 3.0
+#: DAPO's soft overlong punishment (Eq. 13), which MiniMax-M1 3.1 takes for CISPO: a ramp
+#: over the last L_cache / L_max of the budget, 4,096 of 20,480 tokens (4.1), down to -1 at
+#: the limit on DAPO's reward of -1 or 1 (Eq. 7). On Harbor's 0 to 1 that -1 is -0.5, which
+#: gives the same advantages once divided by the spread.
+PAPER_OVERLONG_BUFFER = 0.2
+PAPER_OVERLONG_PENALTY = 0.5
+#: The most dr-grpo's length rule takes from a solved answer by default, so a solved answer
+#: never falls below a failure scored 0.5 or less.
+LENGTH_CAP = 0.5
 
 
 class Gradient(_Table):
@@ -129,6 +138,8 @@ class DapoRecipe(Gradient):
     clip_low: float = Field(default=0.2, gt=0, lt=1)
     clip_high: float = Field(default=0.28, gt=0)
     refill: int = Field(default=PAPER_REFILL, ge=0)
+    overlong_penalty: float = Field(default=PAPER_OVERLONG_PENALTY, ge=0, allow_inf_nan=False)
+    overlong_buffer: float = Field(default=PAPER_OVERLONG_BUFFER, gt=0, le=1)
 
 
 class DrGrpoRecipe(Gradient):
@@ -136,6 +147,7 @@ class DrGrpoRecipe(Gradient):
     clip: float = Field(default=0.2, gt=0, lt=1)
     length_penalty: float = Field(default=0.0, ge=0)
     length_floor: int = Field(default=0, ge=0)
+    length_cap: float = Field(default=LENGTH_CAP, gt=0)
     refill: int = Field(default=0, ge=0)
 
 
@@ -144,6 +156,8 @@ class CispoRecipe(Gradient):
     substeps: int = Field(default=PAPER_SUBSTEPS, ge=1)
     clip_high: float = Field(default=PAPER_CISPO_HIGH, gt=0)
     refill: int = Field(default=PAPER_REFILL, ge=0)
+    overlong_penalty: float = Field(default=PAPER_OVERLONG_PENALTY, ge=0, allow_inf_nan=False)
+    overlong_buffer: float = Field(default=PAPER_OVERLONG_BUFFER, gt=0, le=1)
 
 
 class GepaRecipe(_Table):
@@ -164,7 +178,7 @@ class GepaRecipe(_Table):
 #: The knobs each slow recipe of fst takes; a knob of another one is an error.
 SLOW_KNOBS = {
     "dapo": ("clip_low", "clip_high"),
-    "dr-grpo": ("clip", "length_penalty", "length_floor"),
+    "dr-grpo": ("clip", "length_penalty", "length_floor", "length_cap"),
     "cispo": ("clip_high",),
 }
 
@@ -184,6 +198,7 @@ class FstRecipe(Gradient):
     clip: float | None = Field(default=None, gt=0, lt=1)
     length_penalty: float | None = Field(default=None, ge=0)
     length_floor: int | None = Field(default=None, ge=0)
+    length_cap: float | None = Field(default=None, gt=0)
     reflection_harness: str
     reflection_model: str | None = None
     reflection_image: str = REFLECTION_IMAGE
@@ -193,7 +208,9 @@ class FstRecipe(Gradient):
     patience: int = Field(default=3, ge=1)
     edits: Literal["rewrite", "incremental"] = "incremental"
 
-    @field_validator("clip_low", "clip_high", "clip", "length_penalty", "length_floor")
+    @field_validator(
+        "clip_low", "clip_high", "clip", "length_penalty", "length_floor", "length_cap"
+    )
     @classmethod
     def _of_slow(cls, value: Any, info: Any) -> Any:
         slow = info.data.get("slow", "cispo")
@@ -352,6 +369,14 @@ def findings(loaded: Blueprint) -> list[Finding]:
                 "candidate takes group_size / population rollouts of every task's group",
             )
         )
+    if (cap := _length_cap(loaded.recipe)) is not None and cap >= 1:
+        found.append(
+            Finding(
+                "warning",
+                f"[recipe] length_cap: {cap} lets the length rule take a solved answer's "
+                "whole reward, so a long solved answer can score as low as a failure",
+            )
+        )
     if not rollout.harness.strip():
         found.append(Finding("blocked", NO_HARNESS))
     if rollout.sandbox not in SANDBOXES:
@@ -359,6 +384,19 @@ def findings(loaded: Blueprint) -> list[Finding]:
         found.append(Finding("blocked", f"[rollout] sandbox: {named}"))
     found += preflight_findings(loaded)
     return found
+
+
+def _length_cap(recipe: Any) -> float | None:
+    """dr-grpo's cap on its length rule, as set or defaulted, while the rule is on
+    (`length_penalty > 0`); None for a recipe without the rule or with it off."""
+    if isinstance(recipe, DrGrpoRecipe):
+        penalty, cap = recipe.length_penalty, recipe.length_cap
+    elif isinstance(recipe, FstRecipe) and recipe.slow == "dr-grpo":
+        penalty = recipe.length_penalty or 0.0
+        cap = LENGTH_CAP if recipe.length_cap is None else recipe.length_cap
+    else:
+        return None
+    return cap if penalty > 0 else None
 
 
 def _checkpoint_finding(loaded: Blueprint) -> Finding | None:

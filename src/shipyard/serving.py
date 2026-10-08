@@ -141,6 +141,12 @@ class Serving:
     def party(self) -> str:
         return backend(self.environ)
 
+    @property
+    def budget(self) -> int | None:
+        """The tokens one trial may sample, as the proxy said when it answered; None before
+        it started or when it enforces no budget."""
+        return self.proxy.budget if self.proxy is not None else None
+
     def model_name(self) -> str:
         """`<slug>/<model>`: the provider pose the harness's wire expects."""
         return f"{slug_of(self.profile)}/{self.config.model.name}"
