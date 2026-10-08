@@ -45,11 +45,9 @@ Each trial has its own address, `http://<host>:<port>/r/trial/<trial>/v1`.
 Under it the proxy speaks both dialects: `POST .../chat/completions` (OpenAI)
 and `POST .../messages` (Anthropic). The harness's profile picks one. The
 proxy renders the messages to tokens with the renderer the Tinker cookbook
-recommends for the model (`[rollout] renderer` names another), at
-`[rollout] effort` for a renderer that takes a thinking effort, such as
-Inkling's `tml_v0`, and samples on Tinker. With `effort` unset, `tml_v0`
-renders at its own `0.9`. The `model` a request names is recorded and ignored:
-the proxy serves one model.
+recommends for the model (`[rollout] renderer` names another), and samples
+on Tinker. The `model` a request names is recorded and ignored: the proxy
+serves one model.
 
 ## What a record holds
 

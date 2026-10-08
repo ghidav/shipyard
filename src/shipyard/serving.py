@@ -81,7 +81,7 @@ def start_weights(cfg: Blueprint) -> str | None:
 
 def endpoint_settings(cfg: Blueprint, *, run: str | None = None) -> dict[str, Any]:
     """What `shipyard serve` is handed: the model and its checkpoint, the bind, the
-    renderer and its effort, and every `[rollout]` knob the endpoint pins; volatile lines
+    renderer, and every `[rollout]` knob the endpoint pins; volatile lines
     unless the run keeps them. Named, the run tags the proxy's Tinker session, as the
     trainer's is tagged."""
     rollout, profile = cfg.rollout, profile_for(cfg.rollout.harness)
@@ -90,7 +90,6 @@ def endpoint_settings(cfg: Blueprint, *, run: str | None = None) -> dict[str, An
         "model": cfg.model.name,
         "weights": start_weights(cfg),
         "renderer": rollout.renderer or None,
-        "effort": rollout.effort,
         "bind": rollout.bind,
         "bind_port": rollout.bind_port,
         "temperature": rollout.temperature,

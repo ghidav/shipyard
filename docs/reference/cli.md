@@ -18,7 +18,7 @@ Says whether a blueprint could run, before anything is spent.
 | `--verbose` | print the `ok` lines too |
 | `--json` | print one JSON object instead |
 
-It prints the blueprint with every default filled in, as TOML. For a Tinker-served model with no `[rollout] renderer`, the `renderer` line names the one the proxy will load. When that renderer takes a thinking effort at prompt time, the `effort` line names the effort it renders at: the renderer's own default when `[rollout] effort` is unset, `0.9` for Inkling's `tml_v0`. For `dapo`, `dr-grpo`, `cispo` and `fst` a comment line follows, saying what the recipe's name resolves to. Then come the findings, one per line: `blocked`, `warning`, and, under `--verbose`, `ok`. Every problem is listed at once.
+It prints the blueprint with every default filled in, as TOML. For a Tinker-served model with no `[rollout] renderer`, the `renderer` line names the one the proxy will load. For `dapo`, `dr-grpo`, `cispo` and `fst` a comment line follows, saying what the recipe's name resolves to. Then come the findings, one per line: `blocked`, `warning`, and, under `--verbose`, `ok`. Every problem is listed at once.
 
 For a Tinker-served model, `check` asks the backend whether it serves the model. That network call is made only when `TINKER_API_KEY` is set; without it, the line is a warning.
 
@@ -175,7 +175,7 @@ Serves a Tinker model to a harness in a sandbox and records every model call: th
 | `--port N` | the port to listen on; 0, the default, for any free port |
 | `--advertise NAME` | the name a sandbox reaches the proxy by, when it is not the bind |
 | `--renderer NAME` | a cookbook renderer to use instead of the model's own |
-| `--settings JSON` | the run's other endpoint keys, as a JSON object: `effort`, `temperature`, `top_p`, `top_k`, `max_tokens`, `max_context`, `fill_context`, `volatile` |
+| `--settings JSON` | the run's other endpoint keys, as a JSON object: `temperature`, `top_p`, `top_k`, `max_tokens`, `max_context`, `fill_context`, `volatile` |
 
 The harness presents `SHIPYARD_PROXY_TOKEN` as its API key. A run presents `SHIPYARD_CONTROL_TOKEN` to point the proxy at other weights. Each is read from the environment; one that is unset is generated, and printed after the first line as `<NAME> <value>`.
 

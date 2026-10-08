@@ -160,8 +160,8 @@ What `check` looks at includes:
   which must never enter a sandbox;
 - a key that `.env` assigns twice, as a warning, since the last one wins;
 - for a served model: where the proxy will stand, whether the harness has a profile,
-  whether `[rollout] env` switches its compaction off without `fill_context`, whether the
-  renderer takes `[rollout] effort`, and whether the backend serves the model. That last
+  whether `[rollout] env` switches its compaction off without `fill_context`, and whether
+  the backend serves the model. That last
   one is a network call, made only when `TINKER_API_KEY` is set; without it, `check` warns.
 
 `shipyard` reads `.env` in the working directory before any command; a variable already set

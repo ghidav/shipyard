@@ -23,7 +23,6 @@ from shipyard.config import Blueprint, Finding
 from shipyard.proxy import tunnel
 from shipyard.proxy.profiles import PROFILES, bare_name, profile_for
 from shipyard.proxy.wire import CONTROL_TOKEN_ENV, PROXY_TOKEN_ENV
-from shipyard.resolved import PROMPT_EFFORT, served_renderer
 from shipyard.serving import LOCAL_SANDBOXES, backend, placement
 
 #: Over this, a reply to a sandbox elsewhere takes long enough for a harness to give up on it.
@@ -391,8 +390,7 @@ def assigned(dotenv: Path) -> list[str]:
 
 def served_findings(cfg: Blueprint, environ: Mapping[str, str]) -> list[Finding]:
     """What `check` says of a served model: where its proxy will stand and whether that
-    can work here, the harness's wiring, whether its renderer takes the effort named, and
-    whether the backend serves the model."""
+    can work here, the harness's wiring, and whether the backend serves the model."""
     model, rollout = cfg.model, cfg.rollout
     if not model.served:
         return []
@@ -453,15 +451,6 @@ def served_findings(cfg: Blueprint, environ: Mapping[str, str]) -> list[Finding]
                 "compaction off, but the proxy still refuses a call that overflows the "
                 "context, as a harness that compacts expects; set [rollout] fill_context = "
                 "true, which sets the same keys and gives such a call what is left",
-            )
-        )
-    if rollout.effort is not None and (renderer := served_renderer(cfg)) not in PROMPT_EFFORT:
-        found.append(
-            Finding(
-                "blocked",
-                f"[rollout] effort: the renderer {renderer or '(none known for the model)'} "
-                "takes no thinking effort when it builds a prompt; where a model's effort "
-                "levels are renderers, [rollout] renderer picks one",
             )
         )
     found.append(probe(model.name, environ))
