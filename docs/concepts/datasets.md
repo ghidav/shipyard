@@ -47,9 +47,9 @@ harbor datasets download hello-world -o tasks
 Harbor writes `<output dir>/<dataset name>/<task name>/`, so `-o tasks` gives exactly the
 layout above. For a dataset named `org/name`, the directory is `name`.
 
-`-o tasks/hello-world` nests one level too deep: Harbor adds its own `hello-world/` inside,
-and the tasks land at `tasks/hello-world/hello-world/<task>/`. Then no task sits directly
-under `tasks/hello-world/`, and `check` blocks:
+`-o tasks/hello-world` nests one level too deep. Harbor adds its own `hello-world/` inside, so
+the tasks land at `tasks/hello-world/hello-world/<task>/`. No task sits directly under
+`tasks/hello-world/`, and `check` blocks:
 
 ```text
 blocked  no dataset at tasks/hello-world: no valid Harbor task directory under it; `harbor datasets download` fills it
@@ -71,7 +71,7 @@ A directory directly under `tasks/<dataset>/` is a task when:
 - Harbor accepts it: a `task.toml` that parses, an `environment/` directory, and the tests
   its config asks for.
 
-Anything else there is skipped without a word: files, hidden directories, a directory Harbor
+Anything else there is skipped silently: files, hidden directories, a directory Harbor
 would refuse. Tasks are taken in name order. A dataset with no task at all blocks `check`,
 since a run over zero batches would finish and look like a success. With `--verbose`, `check`
 counts the tasks it found:
@@ -92,7 +92,7 @@ The order is made once per epoch:
 3. cut into batches of `batch_size`, keeping a short last batch.
 
 `epochs` repeats this. The same tasks and the same `seed` give the same batches in any
-process; another `seed` gives another order. A blueprint with one task, `batch_size = 1`,
+process. Another `seed` gives another order. A blueprint with one task, `batch_size = 1`,
 `group_size = 4` and `epochs = 2` makes two batches, each a job of four trials:
 
 ```toml
@@ -106,7 +106,7 @@ epochs = 2
 `evaluate` and the gradient recipes go through the batches in order. A `dapo` or `cispo` step
 short of groups that carry a gradient takes the next batches too, so its run has fewer steps than
 batches ([Dynamic sampling](recipes.md#dynamic-sampling)). `gepa` does not use
-them: it holds some tasks out to score the candidates it keeps, and runs each round on a minibatch
+them. It holds some tasks out to score the candidates it keeps, and runs each round on a minibatch
 of the rest ([gepa](gepa.md)). Of `[data]`, it reads only `dataset`, `group_size` and `seed`.
 
 ## A list of datasets

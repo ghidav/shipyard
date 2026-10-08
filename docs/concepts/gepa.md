@@ -71,8 +71,8 @@ and the winner is picked, by Pareto scores alone. `pareto` says where the Pareto
 
 The default holds out two thirds, as in three of GEPA's four benchmarks: GEPA §4.1 (split sizes)
 and §4.3 (the validation set is D_pareto). §4.1 states no single proportion: HotpotQA, IFBench and
-HoVer hold 300 validation tasks beside 150 training ones, and PUPA 111 beside 111. IFBench's is the
-one split the paper says it drew itself. A run of eight tasks then reflects on 3 and selects on 5:
+HoVer hold 300 validation tasks beside 150 training ones, and PUPA 111 beside 111. The paper says
+it drew only IFBench's split itself. A run of eight tasks then reflects on 3 and selects on 5:
 
 ```
 ok  pareto: 5 of 8 tasks held out with seed 0 to select on, 3 to reflect on
@@ -92,7 +92,7 @@ single task.
        other has had its turn. A pass's last minibatch, when short, is filled from the start of the same pass.
     3. **Parent's run.** The parent is run on the minibatch.
     4. **Perfect parent.** If every minibatch task scored 1.0, Harbor's maximum reward, the round
-       ends here, with no reflection and no child: no child could beat the parent strictly. A task with
+       ends here, with no reflection and no child, since no child could beat the parent strictly. A task with
        no measured rollout is not perfect.
     5. **Component.** The next module is taken, round-robin over the seed's components. A round that
        ends at step 4 takes no turn.
@@ -103,23 +103,22 @@ single task.
        Otherwise the child is not accepted, and its text is never scored again.
 3. **Winner.** The best candidate is written to `runs/<id>/modules/best/`.
 
-Steps 2, 3 and 6 to 8 are GEPA's Alg. 1 (lines 9 to 17): the minibatch is sampled from the feedback
-tasks, and the parent is run on it each round, so the reflector reads this round's traces and both
-means come from the same round. The paper does not say how the minibatch is sampled; passes in a
+Steps 2, 3 and 6 to 8 are GEPA's Alg. 1 (lines 9 to 17). The minibatch is sampled from the feedback
+tasks and the parent is run on it each round, so the reflector reads this round's traces and both
+means come from the same round. The paper does not say how the minibatch is sampled. Passes in a
 fresh shuffle are what the authors' released code does. `minibatch = 3` is the paper's (§4.3). An
 accepted child's Pareto scores come from its scoring on the Pareto tasks, never from the minibatch
 it won on, even where `pareto = 0` makes a minibatch task a Pareto task too.
 
 Step 4 is what GEPA's released code does by default (gepa 0.1.4, `api.py`: `skip_perfect_score = True`,
 `perfect_score = 1.0`; the check is in `proposer/reflective_mutation/reflective_mutation.py`). Like that
-code, gepa compares each minibatch task's score with 1.0, not the minibatch mean: a parent at 1.0 on
+code, gepa compares each minibatch task's score with 1.0, not the minibatch mean. A parent at 1.0 on
 one task and nothing measured on the other has a mean of 1.0 and is still reflected on, though its
 child, compared on the measured task alone, cannot beat it. The parent's rollouts count against the
 budget all the same.
 
-A task's score under a candidate is the mean reward over its measured rollouts, so it is 1.0 when every
-measured rollout scored 1.0. A masked rollout is left out, and a budget cut counts as 0, as admission
-scores it (see [Admission](admission.md)).
+A task's score under a candidate is the mean reward over its measured rollouts. A masked rollout is
+left out, and a budget cut counts as 0, as admission scores it (see [Admission](admission.md)).
 
 ## The reflector
 
@@ -156,7 +155,7 @@ of the text.
 | `reflection_model` | the harness's own default | The model the reflector uses. |
 | `reflection_image` | `"python:3.12-slim"` | The reflector's container image. |
 | `modules` | `"modules"` | The seed directory, relative to the blueprint. |
-| `pareto` | two thirds of the run's tasks, as in three of GEPA's four benchmarks: GEPA §4.1 (split sizes) and §4.3 (the validation set is D_pareto) | The Pareto tasks: a count of the run's tasks to hold out, `0` for none, or a dataset name. See [The two task sets](#the-two-task-sets). |
+| `pareto` | two thirds of the run's tasks | The Pareto tasks: a count of the run's tasks to hold out, `0` for none, or a dataset name. See [The two task sets](#the-two-task-sets). |
 | `minibatch` | `3` (GEPA §4.3) | The number of feedback tasks in each round's minibatch. |
 | `budget` | 2 × tasks × `group_size` (GEPA states no default: §4.3 matches MIPROv2's rollouts per benchmark) | The rollouts the search may spend. The tasks are every one it may score, feedback and Pareto, each counted once. |
 | `patience` | unset (GEPA's released code: gepa 0.1.4, `utils/stop_condition.py`, whose `NoImprovementStopper` runs only when passed in `stop_callbacks`) | How many rounds in a row may pass without the best Pareto mean of the pool rising before the search stops. Unset, the budget alone ends the search. |

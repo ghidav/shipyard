@@ -7,7 +7,7 @@ seen from training: the model calls it made, and its reward.
 
 ## A batch is one Harbor job
 
-A recipe hands the run one batch of tasks at a time (see
+A recipe gives the run one batch of tasks at a time (see
 [Datasets](datasets.md)). The run turns each batch into one Harbor **job**,
 named `<run id>-NNNN` and kept under `jobs/`. The job holds one trial per task
 and rollout: each task of the batch, `[data] group_size` times. This order is
@@ -30,8 +30,7 @@ verifier grades every trial, and the container is deleted when the trial ends.
 
 A trial that crashes keeps its slot. If Harbor raises, the run logs
 `trial <name> could not run` and goes on. The slot has no `result.json`, and
-[admission](admission.md) masks it `env_error`. The task's group keeps its
-size, so no rollout slides into another task's group.
+[admission](admission.md) masks it `env_error`. The task's group keeps its size.
 
 ## Served or provider-served
 
@@ -66,7 +65,7 @@ ok  model claude-sonnet-5-5, provider anthropic
 ok  model Qwen/Qwen3-8B, provider tinker (served by this run)
 ```
 
-Each job row says it again, as `"served": "provider"` or `"served": "tinker"`.
+Each job row records it as `"served": "provider"` or `"served": "tinker"`.
 A gradient recipe on a provider-served model stops with:
 
 ```text
@@ -75,10 +74,9 @@ A gradient recipe on a provider-served model stops with:
 
 ## How a harness reaches the proxy
 
-Harbor's agents already know how to reach a model provider. Each reads a base
-URL and an API key from its environment, and takes a model named
-`<provider>/<model>`. This is Harbor's model connection. For a served model,
-each trial gets:
+Harbor's agents reach a model provider through a base URL and an API key in
+their environment, and take a model named `<provider>/<model>`. This is
+Harbor's model connection. For a served model, each trial gets:
 
 - `OPENAI_BASE_URL`: the proxy's address, with the trial's name in it;
 - `OPENAI_API_KEY`: the proxy's harness token;
@@ -102,10 +100,10 @@ names a provider of its own, so opencode gets `SHIPYARD_BASE_URL`,
 }
 ```
 
-The trial's name in the address is how the proxy files each call under its
-trial. These names win over `[rollout] env`. When a task's
-agent phase runs in Harbor's allowlist network mode, the proxy's host is added
-to the agent's allowed hosts.
+The trial's name in the address tells the proxy which trial a call belongs to.
+These variables win over `[rollout] env`. When a task's agent phase runs in
+Harbor's allowlist network mode, the proxy's host is added to the agent's
+allowed hosts.
 
 ## Harness profiles
 
@@ -121,19 +119,19 @@ speaks, and what it needs beyond the model connection. Four harnesses have one:
 
 The turn counters serve `[rollout] check_turns` (see
 [Admission](admission.md)). The profile's kwargs are laid over
-`[rollout] kwargs` table by table: an `opencode_config` in the blueprint keeps
-its own keys, such as a model's limits under `provider.shipyard.models`, and
-the profile's keys win where both set one.
+`[rollout] kwargs` table by table. An `opencode_config` in the blueprint keeps
+its own keys, such as a model's limits under `provider.shipyard.models`. The
+profile's keys win where both set one.
 
 !!! note "terminus-2"
     terminus-2 cannot use a served model in v1. It makes its model calls
     through litellm inside the Harbor process, from its `api_base` option and
-    the host's environment, so the per-trial environment above never reaches
+    the host's environment, so the per-trial environment above does not reach
     them. Since it has a profile, `check` does not warn.
 
-A version rides on the name: `harness = "pi@0.85.1"` runs the agent `pi` and
-hands Harbor `0.85.1` as its `version` kwarg, as in the `config.json` above. A
-name with a colon, an import path, is passed whole.
+A version follows the name: `harness = "pi@0.85.1"` runs the agent `pi` and
+passes Harbor `0.85.1` as its `version` kwarg, as in the `config.json` above. A
+name with a colon (an import path) is passed whole.
 
 Any other Harbor agent runs with the generic profile: the OpenAI dialect,
 nothing added. For a served model, `check` and `run` both say so:
@@ -167,6 +165,6 @@ max_tokens = 4096
 | `fill_context` | `false` | lays the profile's environment on each served trial, and lets a turn fill the context (see [The proxy](proxy.md)); `check` warns when `env` sets one of the profile's keys to the profile's own value without it, since the proxy then still refuses an overflowing call |
 | `check_turns` | `false` | compares the harness's own turn count with the proxy's records (see [Admission](admission.md)) |
 
-The other `[rollout]` keys shape the proxy, not the trial: see
-[The proxy](proxy.md). Every key with its default is in
+The other `[rollout]` keys configure the proxy (see [The proxy](proxy.md)).
+Every key with its default is in
 [Configuration](../reference/configuration.md).

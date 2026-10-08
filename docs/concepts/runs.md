@@ -87,21 +87,21 @@ A `requests.jsonl` row is one model call, in the order the trial made them:
 {"at": "2026-10-07T20:57:50.840828+00:00", "job": "02-eval-tinker-docker__eTNXY25-0000", "trial": "hello-world__csFTaNW", "seq": 2, "prompt_tokens": 1681, "cached_tokens": 1408, "completion_tokens": 128, "stop_reason": "stop", "sample_ms": 2630.4, "served": null, "request_id": null, "bridged": true, "error": null}
 ```
 
-`metrics.jsonl` is the recipe's own. Every row has `at` and `seq`, a count from 1, since two
-rows can share a timestamp. `evaluate` writes a row per batch and a closing row:
+The rows of `metrics.jsonl` depend on the recipe. Every row has `at` and `seq`, a count from 1,
+since two rows can share a timestamp. `evaluate` writes a row per batch and a closing row:
 
 ```json
 {"at": "2026-10-07T20:57:50.873382+00:00", "seq": 1, "batch": 0, "tasks": 1, "rollouts": 2, "graded": 2, "masked": 0, "mean": 1.0}
 {"at": "2026-10-07T20:57:50.873722+00:00", "seq": 2, "evaluation": true, "batches": 1, "rollouts": 2, "graded": 2, "masked": 0, "mean": 1.0}
 ```
 
-A gradient recipe writes a row per step ([Recipes](recipes.md)); `gepa` a row per round and a
-closing row ([gepa](gepa.md)).
+A gradient recipe writes a row per step ([Recipes](recipes.md)). `gepa` writes a row per round
+and a closing row ([gepa](gepa.md)).
 
 `checkpoints.jsonl` has one row per save, each with `tag`, `state_path`, `sampler_path` and
 `ttl_hours`. The tag is `step-<n>` every `[checkpoints] every` steps, and `final` once the
-last step is done. A `step-<n>` save expires after `[checkpoints] ttl_hours`; `final` is kept
-with no expiry. The state path rebuilds a trainer; the sampler path only serves.
+last step is done. A `step-<n>` save expires after `[checkpoints] ttl_hours`. `final` is kept
+with no expiry. The state path rebuilds a trainer. The sampler path only serves.
 
 ## Four states
 
@@ -124,16 +124,16 @@ gone.
 `shipyard runs` lists every run under the root, newest first, with its kind, state and times.
 `shipyard show <run id>` prints one run in five sections: `process`, `metrics`, `jobs`,
 `checkpoints` and `costs`, leaving out a section whose file is absent. `process` adds an `error`
-line for a failed run. `metrics` shows the row count and the last row; `jobs` the last 10 rows,
-or every row with `--full`. `--json` prints the five sections as one object.
+line for a failed run. `metrics` shows the row count and the last row. `jobs` shows the last 10
+rows, or every row with `--full`. `--json` prints the five sections as one object.
 [Commands](../reference/cli.md#shipyard-runs) shows the output of both.
 
 ## Append and flush, never amended
 
 A `.jsonl` file only grows. Each row is one line, stamped `at`, and flushed before the write
-returns, so a row on disk is a row that happened. A reader skips a cut last line.
-`process.json` and `costs.json` are whole documents, each written beside the old one and
-renamed over it, so a reader sees the old document or the new one, never half.
+returns. A reader skips a cut last line. `process.json` and `costs.json` are whole documents,
+each written beside the old one and renamed over it, so a reader sees either the old document
+or the new one.
 
 Once a run ends, nothing writes to its directory again.
 

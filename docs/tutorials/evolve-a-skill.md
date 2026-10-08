@@ -1,11 +1,11 @@
 # Evolve a skill
 
-The `gepa` recipe improves text, not weights. It rewrites a skill the harness reads, keeps a rewrite only when it scores better, and ends with the best text it found.
+The `gepa` recipe improves text. It rewrites a skill the harness reads, keeps a rewrite only when it scores better, and ends with the best text it found.
 
-A module is a directory of text a trial carries into its container. A skill is the one kind of module this version delivers: a `SKILL.md` the harness reads before it starts work. A candidate is a set of named modules, identified by one digest. The seed is the candidate the search starts from.
+A module is a directory of text a trial carries into its container. This version delivers one kind of module, a skill: a `SKILL.md` the harness reads before it starts work. A candidate is a set of named modules, identified by a digest. The seed is the candidate the search starts from.
 
 !!! note "A real run"
-    The skill, the rows and the costs below are from one run of this blueprint, `gepa-docker__fK3MrF8`. That run took each round's minibatch as the next two tasks in the dataset's order, and compared each child with its parent's scores from the seed's measurement instead of running the parent on the minibatch. It also asked for a rewrite when the parent's scores on both minibatch tasks were 1.0, and its `patience` counted rounds with no child to score; its rows have no `skipped` column. The `check` output is what `check` prints for this blueprint. The search kept its seed: none of its four rewrites scored better. The page shows what each round did and why.
+    The skill, rows and costs below come from one run of this blueprint, `gepa-docker__fK3MrF8`. That run took each round's minibatch as the next two tasks in the dataset's order, and took each parent's minibatch scores from the seed's measurement without running the parent. It asked for a rewrite even when the parent scored 1.0 on both minibatch tasks, and its `patience` counted rounds with no child to score. Its rows have no `skipped` column. The `check` output is what `check` prints for this blueprint. The search kept its seed because none of its four rewrites scored better.
 
 ## The seed skill
 
@@ -30,7 +30,7 @@ Work step by step and check each step against the rules the question states.
 Give the final answer exactly in the format the question asks for, and nothing after it.
 ```
 
-The directory's name names the module. `SKILL.md` must open with a `---` frontmatter block holding a non-empty `name` and `description`, which the harness needs to surface the skill. Files beside `SKILL.md` travel with it. A skill without a description is refused:
+The directory name is the module name. `SKILL.md` must open with a `---` frontmatter block holding a non-empty `name` and `description`, which the harness needs to surface the skill. Files beside `SKILL.md` travel with it. A skill without a description is refused:
 
 ```
 blocked  [recipe] modules: 'solving' cannot be delivered as a skill: the frontmatter has no description
@@ -72,10 +72,10 @@ The policy is the one from [Train with dapo](train-with-dapo.md): Qwen3-8B serve
 
 - `modules`, left at its default, is the seed's directory, `modules` beside `run.toml`.
 - `pareto = 0` makes the eight tasks both the feedback tasks, which each round's minibatch is drawn from, and the Pareto tasks, which score every candidate the search keeps. gepa's default, as in three of GEPA's four benchmarks, holds two thirds of the tasks out as Pareto tasks: over eight tasks, 5 to select on and 3 to reflect on.
-- `minibatch` is how many tasks the parent and a child run on each round; gepa's default is 3.
+- `minibatch` is how many tasks the parent and a child run on each round. gepa's default is 3.
 - `budget` is how many trials of the policy, called rollouts, the search may spend. Unset, it is two passes over the tasks: 2 × tasks × `group_size`, 32 here as well.
-- `patience` ends the search after that many rounds in a row in which the best mean on the Pareto tasks did not rise. Unset, the default as in GEPA's released code (gepa 0.1.4, `utils/stop_condition.py`: `NoImprovementStopper` runs only when passed in `stop_callbacks`), the budget alone ends the search.
-- `edits = "incremental"` asks the reflector for the smallest change; `"rewrite"` is the default.
+- `patience` ends the search after that many rounds in a row in which the best mean on the Pareto tasks did not rise. Unset, the budget alone ends the search, as in GEPA's released code (gepa 0.1.4, `utils/stop_condition.py`: `NoImprovementStopper` runs only when passed in `stop_callbacks`).
+- `edits = "incremental"` asks the reflector for the smallest change. `"rewrite"` is the default.
 
 ## Check
 
@@ -110,13 +110,13 @@ ok  serving Qwen/Qwen3-8B on this machine for a docker sandbox
 ok  tinker serves Qwen/Qwen3-8B
 ```
 
-`af0e102e3ce13a51` is the seed's digest. `reflection_image` is the reflector's container image, `python:3.12-slim` unless the blueprint names another. gepa writes no checkpoints; the `[checkpoints]` table is only a default here.
+`af0e102e3ce13a51` is the seed's digest. `reflection_image` is the reflector's container image, `python:3.12-slim` unless the blueprint names another. gepa writes no checkpoints. The `[checkpoints]` table is only a default here.
 
 ## What a round does
 
 First the seed is measured on the Pareto tasks, here all eight. Then each round:
 
-1. **Parent.** One candidate is drawn from the frontier, with probability proportional to the number of Pareto tasks it is best on. The pool is every candidate the search has accepted, the seed first; the frontier is the pool's candidates that score best on at least one Pareto task.
+1. **Parent.** One candidate is drawn from the frontier, with probability proportional to the number of Pareto tasks it is best on. The pool is every candidate the search has accepted, the seed first. The frontier is the pool's candidates that score best on at least one Pareto task.
 2. **Minibatch.** `minibatch` tasks are drawn from the feedback tasks, here all eight, in passes shuffled with `[data] seed`.
 3. **Parent's run.** The parent is rolled out on the minibatch.
 4. **Perfect parent.** If every minibatch task scored 1.0, the round ends here: no child could score higher. A task's score is the mean over its measured rollouts, so every measured rollout of it must score 1.0, and a task with none measured is not perfect. The row says `"skipped": "perfect"`.
@@ -125,13 +125,13 @@ First the seed is measured on the Pareto tasks, here all eight. Then each round:
 7. **Score.** The child is rolled out on the same minibatch.
 8. **Accept.** A child whose mean is strictly above the parent's on the minibatch joins the pool and is measured on every Pareto task.
 
-The search stops when it has spent `budget` rollouts of the policy, or, with `patience` set, after that many rounds in a row in which the best mean on the Pareto tasks did not rise; a skipped round counts. Reflection trials do not count against the budget.
+The search stops when it has spent `budget` rollouts of the policy, or, with `patience` set, after that many rounds in a row in which the best mean on the Pareto tasks did not rise. A skipped round counts. Reflection trials do not count against the budget.
 
-The seed's measurement spends 8 tasks × 2 = 16 rollouts, and each round 8, the parent and the child on 2 tasks each, so the budget of 32 allows two rounds when each scores a child; a round that scores no child, because its parent was perfect or its reflector declined, costs 4, and an accepted child 16 more, for its measurement on all eight. The run below compared each child with the seed's scores and spent 4 a round, the child's alone, so it had four.
+The seed's measurement spends 8 tasks × 2 = 16 rollouts. Each round spends 8, the parent and the child on 2 tasks each, so the budget of 32 allows two rounds when each scores a child. A round that scores no child, because its parent was perfect or its reflector declined, costs 4. An accepted child costs 16 more for its measurement on all eight. The run below compared each child with the seed's scores and spent 4 a round, the child's alone, so it had four.
 
 ## What the run did
 
-The run took 35 minutes. The seed scored 15 of 16: every rollout passed but one on `graphs-shortest-path`, which spent its whole 4,096-token reply thinking and never wrote an answer. Then four rounds, each on the next two tasks in the dataset's order, the parent's column being the seed's scores on them:
+The run took 35 minutes. The seed scored 15 of 16: every rollout passed but one on `graphs-shortest-path`, which spent its whole 4,096-token reply thinking and never wrote an answer. Then came four rounds, each on the next two tasks in the dataset's order. The parent column is the seed's scores on them:
 
 | round | minibatch | parent | child | accepted |
 |---|---|---|---|---|
@@ -150,7 +150,7 @@ Write the file once, after you have finished and checked the reasoning. Do not r
 Keep your reasoning compact so there is room left to finish.
 ```
 
-That names pi's habit with this model: calling tools long after the answer is written. Qwen3-8B did not follow it. Under the rewrites most trials still made dozens of calls, and gepa compares scores only. On three of the four minibatches the seed already scored 1.0, so no rewrite could score higher. A search moves a skill on tasks the policy fails often enough for a minibatch to show the difference.
+That names pi's habit with this model: calling tools long after the answer is written. Qwen3-8B did not follow it. Under the rewrites most trials still made dozens of calls, and gepa compares scores only. On three of the four minibatches the seed already scored 1.0, so no rewrite could score higher. A search can improve a skill only on tasks the policy fails often enough for a minibatch to show the difference.
 
 ## The round rows
 
@@ -214,7 +214,7 @@ In `jobs.jsonl`, a job that scored a candidate has `purpose` `rollout` and the c
 
 The run keeps the seed under `runs/<id>/modules/seed/` and the winner under `runs/<id>/modules/best/`. Here the two are the same text. The winner is the pool's candidate measured on the most Pareto tasks, then with the highest mean.
 
-Both use the blueprint's own layout, `<module>/SKILL.md`, so the winner is a seed. Copy `modules/best/` into a blueprint's `modules/` and either search again from it, or carry it into another recipe:
+Both use the blueprint's own layout, `<module>/SKILL.md`, so the winner can serve as a seed. Copy `modules/best/` into a blueprint's `modules/` to search again from it or to carry it into another recipe:
 
 ```toml
 [recipe]

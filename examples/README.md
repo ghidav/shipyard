@@ -9,7 +9,7 @@ harbor datasets download reasoning-gym-easy -o tasks
 ./shipyard run blueprints/dapo-reasoning-gym
 ```
 
-`harbor datasets download` nests the tasks one level deeper than a run reads them; move them up so
+`harbor datasets download` nests the tasks one level deeper than a run reads them. Move them up so
 the layout is `tasks/<dataset>/<task>/` (see [Datasets](../docs/concepts/datasets.md)).
 
 | Blueprint | Recipe | Dataset | Sandbox |
@@ -21,5 +21,5 @@ the layout is `tasks/<dataset>/<task>/` (see [Datasets](../docs/concepts/dataset
 | `gepa-terminal-bench` | `gepa` | `terminal-bench-sample` | modal |
 | `fst-reasoning-gym` | `fst` | `reasoning-gym-easy` | modal |
 
-Every blueprint needs `TINKER_API_KEY`; the Modal ones need Modal's credentials and Harbor's
-extra (`uv add "harbor[modal]"`); `gepa` and `fst` also need `ANTHROPIC_API_KEY` for the reflector.
+Every blueprint needs `TINKER_API_KEY`. The Modal ones need Modal's credentials and Harbor's
+extra (`uv add "harbor[modal]"`). `gepa` and `fst` also need `ANTHROPIC_API_KEY` for the reflector.

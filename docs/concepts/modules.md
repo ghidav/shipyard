@@ -16,7 +16,7 @@ marker file inside it names the module's kind:
 | `agent.py` | harness | refused |
 
 Every file in the subdirectory travels with the module, at any depth, except dot-files, `__pycache__`
-and `.DS_Store`. Every file must be UTF-8 text. Here is a real blueprint with one skill:
+and `.DS_Store`. Every file must be UTF-8 text. A blueprint with one skill:
 
 ```
 blueprints/05-gepa-docker/
@@ -26,7 +26,7 @@ blueprints/05-gepa-docker/
         └── SKILL.md
 ```
 
-The digest is a sha256 prefix computed over every file of every module, so changing any file changes it.
+The digest is a sha256 prefix computed over every file of every module.
 
 ## Skills
 
@@ -80,8 +80,9 @@ modules = "modules"
 ok  modules: 1 component(s) under blueprints/05-gepa-docker/modules (f33ca85e3cd4ecf1)
 ```
 
-The run reads the directory once, when it opens, and copies it to `runs/<id>/modules/carried/`. If you edit the blueprint's modules during the run, later jobs do not
-pick up the edits. The digest on each job row matches that copy.
+The run reads the directory once, when it opens, and copies it to `runs/<id>/modules/carried/`.
+Edits to the blueprint's modules during the run do not reach later jobs. The digest on each
+job row matches that copy.
 
 `gepa` uses the same key in a different way: there it names the seed of the search. See [gepa](gepa.md).
 
@@ -97,7 +98,7 @@ blocked  [recipe] modules: 'myagent' is a harness module, and harness modules ar
 
 These cases are refused too:
 
-- A subdirectory with no marker. Nothing says what kind of module it is.
+- A subdirectory with no marker.
 - A directory with no subdirectories, or a path that does not exist.
 - A file that is not UTF-8 text.
 

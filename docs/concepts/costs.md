@@ -6,7 +6,7 @@ dashboard.
 
 ## The shape
 
-This is the record of a run whose model was served through the proxy:
+This is `costs.json` for a run whose model was served through the proxy:
 
 ```json
 {
@@ -27,7 +27,7 @@ This is the record of a run whose model was served through the proxy:
 }
 ```
 
-And this one of a run whose harness called a provider directly:
+And this is `costs.json` for a run whose harness called a provider directly:
 
 ```json
 {
@@ -53,8 +53,8 @@ show` prints it under `costs`.
 
 ## Parties
 
-A *party* is whoever bills the tokens. A run can have several: a `gepa` run whose reflector
-calls a provider bills it beside the policy's party.
+A *party* is whoever bills the tokens. A run can have several. In a `gepa` run, a reflector
+that calls a provider adds that provider as a party beside the policy's.
 
 | Tokens from | Party |
 |---|---|
@@ -71,7 +71,7 @@ trials disagree. A reflection with neither is billed to `unknown`.
 
 `trials` counts the trials that left a result. `output_tokens` counts what the model wrote.
 `input_tokens` counts the whole prompt, and `cache_tokens` counts the part of it the backend
-had cached. Both parties count this way:
+had cached. The counts come from different sources:
 
 - **A served model.** The proxy counts from its own records. Above, 6,216 is the sum of
   `prompt_tokens` over the run's four `requests.jsonl` rows, 4,224 of them cached.
@@ -97,13 +97,13 @@ A gradient recipe adds up to three counts to the served party, each only once it
 phases starting (environment setup, agent setup, agent run, verifier) to the last one
 finishing.
 
-The seconds are summed over trials, and trials run side by side. The served run above spent
+The seconds are summed over trials, and trials run in parallel. The served run above spent
 131 sandbox seconds in 90 seconds of wall clock, two trials at a time.
 
 ## Per job
 
 Each `jobs.jsonl` row carries the token counts of its own job, with its `party`, `sandbox`
-and `sandbox_seconds`; `costs.json` adds them up. A row's `trials` counts every trial the job
+and `sandbox_seconds`. `costs.json` adds them up. A row's `trials` counts every trial the job
 planned, where `costs.json` counts those that left a result. To split a run's costs by batch,
 or to tell the reflector's tokens from the policy's, read the rows:
 
@@ -111,5 +111,5 @@ or to tell the reflector's tokens from the policy's, read the rows:
 {"at": "2026-10-07T20:57:50.871956+00:00", "job": "02-eval-tinker-docker__eTNXY25-0000", "purpose": "rollout", "trials": 2, "batch": 0, "tasks": 1, "graded": 2, "served": "tinker", "bridged": 2, "party": "tinker", "input_tokens": 6216, "cache_tokens": 4224, "output_tokens": 727, "sandbox": "docker", "sandbox_seconds": 131.392899}
 ```
 
-The training counts are elsewhere: `train_tokens` is on each step's row in `metrics.jsonl`,
+The job rows carry no training counts. `train_tokens` is on each step's row in `metrics.jsonl`,
 and `reference_tokens` and `anchor_tokens` are in `costs.json` only.

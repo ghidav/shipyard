@@ -1,6 +1,6 @@
 # Measure a policy
 
-A policy is the model that answers a harness's calls. To measure it is to run it on tasks and read its mean reward, with no training. The `evaluate` recipe does this.
+A policy is the model that answers a harness's calls. Measuring a policy means running it on tasks and reading its mean reward, without training. The `evaluate` recipe does this.
 This tutorial starts from an empty directory. It measures one task twice: once with a model a provider serves, and once with weights that Tinker serves through the run's proxy.
 
 You need shipyard installed (see [Installation](../getting-started/installation.md)) and Docker running. You also need `ANTHROPIC_API_KEY` for the first blueprint and `TINKER_API_KEY` for the second.
@@ -35,11 +35,11 @@ tasks/hello-world/hello-world/
 └── tests/
 ```
 
-Give `-o` the `tasks` directory itself: `-o tasks/hello-world` puts the task one level too deep ([Datasets](../concepts/datasets.md#getting-one) shows how to flatten it).
+Give `-o` the `tasks` directory. With `-o tasks/hello-world` the task lands one level too deep ([Datasets](../concepts/datasets.md#getting-one) shows how to flatten it).
 
 ## A provider-served blueprint
 
-A provider-served model is one whose `[model] provider` is not `tinker`. The harness calls the provider itself.
+A provider-served model is one whose `[model] provider` is not `tinker`. The harness calls the provider directly.
 
 ```toml title="blueprints/01-eval-provider-docker/run.toml"
 [model]
@@ -60,11 +60,11 @@ concurrency = 1
 kind = "evaluate"
 ```
 
-`group_size` is how many times each task is attempted; each attempt is a trial, run in its own container. `batch_size` is how many tasks go into one Harbor job, the unit the trials run in. The harness is the agent program in the container, here Claude Code.
+`group_size` is how many times each task is attempted. Each attempt is a trial, run in its own container. `batch_size` is how many tasks go into one Harbor job, the unit the trials run in. The harness is the agent program in the container, here Claude Code.
 
 ## A Tinker-served blueprint
 
-When `provider` is left out it is `tinker`, and the run serves the weights itself. It starts the proxy, which samples from Tinker and records every model call the harness makes. See [The proxy](../concepts/proxy.md).
+When `provider` is left out it defaults to `tinker`, and the run serves the weights. It starts the proxy, which samples from Tinker and records every model call the harness makes. See [The proxy](../concepts/proxy.md).
 
 ```toml title="blueprints/02-eval-tinker-docker/run.toml"
 [model]
@@ -182,7 +182,7 @@ costs
   }
 ```
 
-`process` says where the proxy ran (`local`, on this machine, reached from the containers as `host.docker.internal`) and which Tinker backend served the weights. `metrics.jsonl` holds a row per batch, then one row for the whole run, marked `evaluation`. Both trials were graded and both scored 1, so the mean is 1.0. A masked trial, one the run could not measure fairly, would be left out of the mean, never counted as 0 (see [Admission](../concepts/admission.md)). The run took 58 seconds; the two containers ran for 70 seconds between them.
+`process` says where the proxy ran (`local`, on this machine, reached from the containers as `host.docker.internal`) and which Tinker backend served the weights. `metrics.jsonl` holds a row per batch, then one row for the whole run, marked `evaluation`. Both trials were graded and both scored 1, so the mean is 1.0. A masked trial, one the run could not measure fairly, is left out of the mean and does not count as 0 (see [Admission](../concepts/admission.md)). The run took 58 seconds. The two containers ran for 70 seconds between them.
 
 The jobs section holds `jobs.jsonl`, one row per Harbor job, printed as a block when it is wider than the terminal.
 
@@ -215,6 +215,6 @@ A provider-served run has neither file.
 
 ## Next
 
-- [Train with dapo](train-with-dapo.md) trains the Tinker-served policy on the same task.
+- [Train with dapo](train-with-dapo.md) trains the Tinker-served policy.
 - [Evolve a skill](evolve-a-skill.md) improves the text a provider-served policy reads.
 - [Runs](../concepts/runs.md) describes every file of the record.

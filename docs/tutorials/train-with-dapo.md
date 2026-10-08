@@ -3,7 +3,7 @@
 `dapo` is a gradient recipe: it changes the policy's weights from the rewards its rollouts earn. A rollout is one trial seen from training: the model calls the proxy recorded, and the reward the task gave. This tutorial trains Qwen/Qwen3-8B with pi on eight Reasoning Gym tasks, four tasks per step and four attempts per task.
 
 !!! note "A real run"
-    The metrics, the checkpoints and the costs below are from one run of this blueprint, `dapo-docker__Su3tmfE`, and from its continuation, `dapo-continue__ZCdgppB`. That run took one substep per step, refilled nothing, summed its token losses over the step, trained at its full learning rate from step 0 with no weight decay or gradient clipping, and docked no rollout for its length. The `check` output is what `check` prints for this blueprint. Two steps are far too few to show a policy improving. The run shows what a step does and what it records.
+    The metrics, the checkpoints and the costs below are from one run of this blueprint, `dapo-docker__Su3tmfE`, and from its continuation, `dapo-continue__ZCdgppB`. That run took one substep per step, refilled nothing, summed its token losses over the step, trained at its full learning rate from step 0 with no weight decay or gradient clipping, and docked no rollout for its length. The `check` output is what `check` prints for this blueprint. Two steps are too few to show a policy improving. The run shows what a step does and what it records.
 
 ## The dataset
 
@@ -50,16 +50,16 @@ every = 1
 ttl_hours = 24
 ```
 
-A group is the `group_size` rollouts of one task in one step. Their rewards are compared with each other, so a group needs more than one member. Eight tasks at four per step make two steps. `learning_rate` has no default for a gradient recipe. `lora_rank` is the rank of the LoRA adapter trained on the base model; 32 is also the default.
+A group is the `group_size` rollouts of one task in one step. Their rewards are compared with each other, so a group needs more than one member. Eight tasks at four per step make two steps. `learning_rate` has no default for a gradient recipe. `lora_rank` is the rank of the LoRA adapter trained on the base model. 32 is also the default.
 
-Two recipe keys set dapo's defaults aside:
+Two recipe keys differ from dapo's defaults:
 
-- **`substeps = 1`.** One optimizer step per batch. dapo's default is 16, as in its paper, with each substep taking whole groups and never more substeps than groups that carry a gradient.
-- **`refill = 0`.** Each step trains on the groups its own batch leaves. dapo's default, 9, samples the plan's next batches while fewer than `batch_size` groups carry a gradient; over eight tasks, a first step short of groups would sample the second batch too and leave the run one step. See [Dynamic sampling](../concepts/recipes.md#dynamic-sampling).
+- **`substeps = 1`.** One optimizer step per batch. dapo's default is 16, as in its paper. Each substep takes whole groups, and a step never takes more substeps than it has groups that carry a gradient.
+- **`refill = 0`.** Each step trains on the groups its own batch leaves. dapo's default, 9, samples the plan's next batches while fewer than `batch_size` groups carry a gradient. Over eight tasks, a first step short of groups would sample the second batch too and leave the run one step. See [Dynamic sampling](../concepts/recipes.md#dynamic-sampling).
 
 Two rollout keys matter for these tasks:
 
-- **`timeout = 600`.** Each Reasoning Gym task gives the agent 120 seconds. Qwen3-8B thinks at length, and a first run at that limit had 26 of its 32 rollouts cut by the clock. A rollout the clock cut is masked, never scored 0, so neither step had a group left to train on. `timeout` replaces the task's limit.
+- **`timeout = 600`.** Each Reasoning Gym task gives the agent 120 seconds. Qwen3-8B thinks at length, and a first run at that limit had 26 of its 32 rollouts cut by the clock. A rollout the clock cut is masked, not scored 0, so neither step had a group left to train on. `timeout` replaces the task's limit.
 - **`max_context = 12288`.** It is the context each call must fit, and the most tokens one trial may sample. With Qwen3-8B, pi often keeps calling tools long after it has written its answer, up to 127 calls in one trial. Once its history passes 8,192 tokens, a call's prompt plus its 4,096-token `max_tokens` no longer fits, the proxy refuses the call, and pi stops. In this run 20 of the 32 trials ended that way, and the verifier graded each on the answer it had written.
 
 A gradient recipe trains the weights its own proxy serves, so `[model] provider` must stay `tinker`.
@@ -109,7 +109,7 @@ ok  tinker serves Qwen/Qwen3-8B
 - **loss**: PPO, with the probability ratio clipped to [1 − 0.2, 1 + 0.28], each prompt's token losses averaged so every prompt weighs the same.
 - **overlong penalty**: a rollout that sampled into the last 20% of its token budget, `max_context` (12,288 here), loses up to 0.5 of its reward, the full 0.5 at the budget. See [The overlong term](../concepts/recipes.md#the-overlong-term-dapo-and-cispo).
 - **1 substep**: one optimizer step over the whole batch.
-- **adamw**: the optimizer's betas and eps, and the weight decay of 0.1 and gradient clipping at a norm of 1.0 that DAPO's released recipe uses. DAPO also warms up over 20 steps; a two-step run takes no warm-up by default and trains at the full `learning_rate` from its first step, as the run recorded below did.
+- **adamw**: the optimizer's betas and eps, and the weight decay of 0.1 and gradient clipping at a norm of 1.0 that DAPO's released recipe uses. DAPO also warms up over 20 steps. A two-step run takes no warm-up by default and trains at the full `learning_rate` from its first step, as the run recorded below did.
 - **degenerate groups dropped**: a group whose rewards are all equal, or that has one measured member, carries no gradient and is left out.
 
 See [Recipes](../concepts/recipes.md) for `dr-grpo` and `cispo`.
@@ -118,7 +118,7 @@ See [Recipes](../concepts/recipes.md) for `dr-grpo` and `cispo`.
 
 1. **Publish.** The current weights are saved for sampling as `sample-<step>`, kept for 12 hours, and the proxy is pointed at them.
 2. **Sample.** One Harbor job runs `group_size` trials of each task in the batch. The proxy records every model call. With `refill` above 0, a step short of groups with a gradient samples the plan's next batch as well.
-3. **Credit.** Masked rollouts are set aside (see [Admission](../concepts/admission.md)). Each group's advantages are formed and degenerate groups are dropped. With `reference = "trainer"`, the reference logprobs are recomputed on the training engine, and credit refuses a batch if the weights moved since it was sampled.
+3. **Credit.** Masked rollouts are set aside (see [Admission](../concepts/admission.md)). Each group's advantages are computed and degenerate groups are dropped. With `reference = "trainer"`, the reference logprobs are recomputed on the training engine, and credit refuses a batch if the weights moved since it was sampled.
 4. **Apply.** The credited groups are split into `substeps` parts, each one forward-backward pass and one Adam step.
 5. **Log** one row to `metrics.jsonl`.
 6. **Checkpoint** when `step + 1` is a multiple of `[checkpoints] every`, and only after a step that trained.
@@ -159,7 +159,7 @@ The two steps drew different tasks, so the rise in `reward_mean` compares two ba
 
 ## The metrics row
 
-One row per step, after the `at` and `seq` every metrics row starts with. A measure with nothing behind it is absent from the row, never written as zero.
+One row per step, after the `at` and `seq` every metrics row starts with. A measure with nothing behind it is absent from the row and not written as zero.
 
 | column | what it is |
 |---|---|
@@ -221,7 +221,7 @@ restore_optimizer = true
 dataset = "rg-four"
 ```
 
-The rest of the blueprint is as before. `from_checkpoint` loads the training client from that state, so `lora_rank` is not read. The first step publishes those weights for sampling and points the proxy at them; with `kl_coef > 0` the KL anchor samples them too. `check` blocks a `sampler_path` here. `restore_optimizer = true` also loads the optimizer's state, which continues the earlier run's. Left `false`, the weights continue with a fresh optimizer. The continuation is a new run with its own id, and its steps count from 0 again.
+The rest of the blueprint is as before. `from_checkpoint` loads the training client from that state, so `lora_rank` is not read. The first step publishes those weights for sampling and points the proxy at them. With `kl_coef > 0` the KL anchor samples them too. `check` blocks a `sampler_path` here. `restore_optimizer = true` also loads the earlier run's optimizer state. Left `false`, the weights continue with a fresh optimizer. The continuation is a new run with its own id, and its steps count from 0 again.
 
 `rg-four` is the first four tasks of `rg-small` in name order, so the continuation runs one step. Every one of its 16 rollouts scored 1, so all four groups were degenerate and the step took no gradient:
 

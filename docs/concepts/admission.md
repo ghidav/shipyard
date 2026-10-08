@@ -11,7 +11,7 @@ the proxy's records of the trial (see [The proxy](proxy.md)).
 ## Masked or zero
 
 The rules run in this order, and the first that matches decides. Rules 1 to 7
-read the records, so they apply to a served model only; a provider-served
+read the records, so they apply to a served model only. A provider-served
 trial starts at rule 8.
 
 | # | the trial | verdict |
@@ -29,11 +29,12 @@ trial starts at rule 8.
 | 11 | has a number at `verifier_result.rewards.reward` | that reward |
 | 12 | anything else | mask `grading_error` |
 
-Rule 6 reads the harness's log where its profile knows how. pi's is
-`agent/pi.txt`: its last assistant message stopped on `error`. A failed call
-with no failed record never reached the proxy, or the proxy refused it before
-recording, as with a dropped connection. pi exits cleanly either way, so
-without this rule such a trial would be graded as the policy's work.
+Rule 6 reads the harness's log where its profile knows how. For pi the log is
+`agent/pi.txt`, and a failed call shows as a last assistant message that
+stopped on `error`. A failed call with no failed record never reached the
+proxy, or the proxy refused it before recording, as with a dropped connection.
+pi exits cleanly either way, so such a trial would otherwise be graded as the
+policy's work.
 
 Rule 10 reads Harbor's `exception_info.exception_type`. The endpoint failures
 are `ApiError`, `UnknownApiError`, `ApiInternalServerError`,
@@ -41,10 +42,10 @@ are `ApiError`, `UnknownApiError`, `ApiInternalServerError`,
 `ApiRateLimitError`, `ApiUsageLimitError`, `ApiProviderResourceNotFoundError`,
 and any other name ending in `ApiError`. Harbor's three endings that are the
 policy's own (`OutputTokenExceededError`, `ContextWindowExceededError`,
-`AgentSafetyRefusalError`) are not: such a trial is graded as usual. Nor are
+`AgentSafetyRefusalError`) are not endpoint failures. Neither are
 `NetworkConnectionError`, `AgentAuthenticationError` and `ModelNotFoundError`,
 which Harbor raises when the harness's own command fails on the network, a key
-or a model name. Such a trial goes on to rule 11.
+or a model name. A trial with any of these endings goes on to rule 11.
 
 A mask is for a trial that measured something other than the policy: a
 container that never started, a grader that wrote nothing, an endpoint that
@@ -56,20 +57,19 @@ context and still finished keeps the verifier's reward (rule 11).
 
 The verdict is the same for every recipe. `dapo` and `cispo` then dock a
 rollout that sampled near or up to its budget, as DAPO does, so a budget cut
-trains as −0.5 there ([The overlong term](recipes.md#the-overlong-term-dapo-and-cispo));
+trains as −0.5 there ([The overlong term](recipes.md#the-overlong-term-dapo-and-cispo)).
 `evaluate` and `gepa` count it as 0.
 
 ## Why a masked rollout enters no mean
 
 A zero for a container that never started would read as a policy that
 failed. Averaged in, it pulls the mean down for a reason the policy had no
-part in; in training, it pushes the policy away from whatever it did.
+part in. In training, it pushes the policy away from what it did.
 
-So a masked rollout enters no mean. `evaluate` averages the graded trials
-only, and logs the masked ones as a count beside them. A batch with nothing
-graded logs a `mean` of `null`, never 0. A gradient recipe builds each
-group's baseline from its graded members only, and a masked rollout carries
-no gradient. The live run's metrics row:
+`evaluate` averages the graded trials only, and logs the masked ones as a count
+beside them. A batch with nothing graded logs a `mean` of `null`, never 0. A
+gradient recipe builds each group's baseline from its graded members only, and
+a masked rollout carries no gradient. The live run's metrics row:
 
 ```json
 {"seq": 1, "batch": 0, "tasks": 1, "rollouts": 2, "graded": 2, "masked": 0, "mean": 1.0}
@@ -77,21 +77,21 @@ no gradient. The live run's metrics row:
 
 ## Completeness by construction
 
-The served rules trust that a trial's records are complete. They are, by how
-they are made:
+The served rules trust that a trial's records are complete. This holds for
+three reasons:
 
 - The proxy records every call it serves, under the trial named in the
   call's address. A call refused for the budget or the context, or one that
   fails at the sampler, leaves a record too, with `error` set.
 - The run takes a trial's records as one object, in call order, and drains
-  them from the proxy. A fetch lost on the way is asked again for the same
-  answer.
+  them from the proxy. The run repeats a fetch lost on the way and gets the
+  same answer.
 - A trial that never reached the proxy has no records, which rule 1 masks.
 
-A call that never reached the proxy, a harness talking to some other
-endpoint, leaves nothing to see. The optional per-harness turn count covers
-it. With `[rollout] check_turns = true`, the run counts the turns the harness
-says it took, from its own log, `agent/<harness>.txt`, and masks the trial
+A call that never reached the proxy, such as a harness talking to some other
+endpoint, leaves no record. The optional per-harness turn count covers this
+case. With `[rollout] check_turns = true`, the run counts the turns the harness
+says it took, from its own log `agent/<harness>.txt`, and masks the trial
 when that count is more than the proxy's records (rule 2). Two profiles carry
 a counter: `claude-code` counts distinct request ids, and `opencode` counts
 `step-start` lines. A harness without a counter, or a trial without the log,

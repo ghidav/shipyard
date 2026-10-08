@@ -53,11 +53,11 @@ such as `"anthropic"`, means the harness calls that provider itself.
 | Kind | Does |
 |---|---|
 | `dapo`, `dr-grpo`, `cispo` | train the served weights by gradient |
-| `gepa` | search over the text in `modules/`; the weights never move |
-| `evaluate` | measure the policy; nothing changes |
+| `gepa` | search over the text in `modules/`; the weights stay fixed |
+| `evaluate` | measure the policy |
 
 A name is a preset: it fixes how the advantage is formed and which loss and clipping are
-used. Each name takes its own knobs; a knob from another recipe is an unknown key. See
+used. Each name takes its own knobs. A knob from another recipe is an unknown key. See
 [Recipes](recipes.md).
 
 A gradient recipe trains the weights the run serves. With any provider but `"tinker"`, the
@@ -98,7 +98,7 @@ blocked  [recipe] clip: unknown key
 blocked  [logging]: unknown table
 ```
 
-`clip` is a `dr-grpo` knob, so `dapo` refuses it. A misspelt kind names the five:
+`clip` is a `dr-grpo` knob, so `dapo` refuses it. A misspelt kind lists the valid ones:
 
 ```text
 blocked  [recipe] kind: no recipe called 'grpo'; one of dapo, dr-grpo, cispo, gepa, evaluate
@@ -142,9 +142,8 @@ always shows:
 warning  no profile for harness codex; generic OpenAI wiring
 ```
 
-`check` exits 1 when any finding is `blocked`, and 0 otherwise; a warning does not block.
-`shipyard run` makes the same checks first, and on a `blocked` it prints
-`blocked; nothing was started`.
+`check` exits 1 when any finding is `blocked`, and 0 otherwise. `shipyard run` makes the same
+checks first, and on a `blocked` it prints `blocked; nothing was started`.
 
 What `check` looks at includes:
 
@@ -157,18 +156,19 @@ What `check` looks at includes:
 - for a `modal` sandbox with a token, whether Modal takes it: a network call, a warning
   when Modal does not answer within 15 seconds;
 - that `[rollout] env` holds no key starting with `TINKER_` and no `SHIPYARD_CONTROL_TOKEN`,
-  which must never enter a sandbox;
+  which must not enter a sandbox;
 - a key that `.env` assigns twice, as a warning, since the last one wins;
 - for a served model: where the proxy will stand, whether the harness has a profile,
   whether `[rollout] env` switches its compaction off without `fill_context`, and whether
-  the backend serves the model. That last
-  one is a network call, made only when `TINKER_API_KEY` is set; without it, `check` warns.
+  the backend serves the model. The backend check is a network call, made only when
+  `TINKER_API_KEY` is set. Without it, `check` warns.
 
-`shipyard` reads `.env` in the working directory before any command; a variable already set
+`shipyard` reads `.env` in the working directory before any command. A variable already set
 in the shell wins.
 
 ## As JSON
 
-`--json` prints one object, `{"config": ..., "findings": [{"level": ..., "text": ...}]}`:
-the resolved config, with unset keys as `null`, and every finding, `ok` included. It carries
-no comment line. `config` is `null` when the file did not load. The exit code is the same.
+`--json` prints one object, `{"config": ..., "findings": [{"level": ..., "text": ...}]}`.
+`config` is the resolved config with unset keys as `null`, or `null` when the file did not
+load. `findings` lists every finding, `ok` included. The comment line is not printed. The exit
+code is the same.

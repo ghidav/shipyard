@@ -1,6 +1,6 @@
 # shipyard
 
-Post-training on Harbor jobs. A blueprint is a config, a run is its record.
+Post-training on Harbor jobs.
 
 - A **blueprint** is a directory holding a `run.toml`. `shipyard run` reads it and writes a **run**: a directory under `runs/` that records what happened.
 - Harbor runs each task in a container, runs an agent program (the **harness**) there, and grades the result.
@@ -14,7 +14,7 @@ Post-training on Harbor jobs. A blueprint is a config, a run is its record.
 uv add shipyard
 ```
 
-shipyard needs Python 3.12 or newer. A Docker sandbox needs Docker running; a cloud sandbox takes Harbor's own extra, such as `uv add "harbor[modal]"`. Keys go in a `.env` in your workspace: the directory holding your blueprints, `tasks/` and `.env`, where you run every command. [Installation](docs/getting-started/installation.md) has the details.
+shipyard needs Python 3.12 or newer. A Docker sandbox needs Docker running. A cloud sandbox needs the matching Harbor extra, such as `uv add "harbor[modal]"`. Your workspace is the directory holding your blueprints, `tasks/` and `.env`, and you run every command there. Keys go in its `.env`. [Installation](docs/getting-started/installation.md) has the details.
 
 ## A blueprint
 
@@ -69,7 +69,7 @@ Two rollouts, both graded, both solved.
 
 ## Documentation
 
-The pages live under `docs/`; `uvx --with mkdocs-material mkdocs serve` builds the site.
+The pages live under `docs/`. `uvx --with mkdocs-material mkdocs serve` builds the site.
 
 - Getting started: [Installation](docs/getting-started/installation.md)
 - Concepts: [Blueprints](docs/concepts/blueprints.md), [Runs](docs/concepts/runs.md), [Datasets](docs/concepts/datasets.md), [Rollouts](docs/concepts/rollouts.md), [The proxy](docs/concepts/proxy.md), [Admission](docs/concepts/admission.md), [Recipes](docs/concepts/recipes.md), [Modules](docs/concepts/modules.md), [gepa](docs/concepts/gepa.md), [Costs](docs/concepts/costs.md)

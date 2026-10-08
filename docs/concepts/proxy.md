@@ -1,11 +1,11 @@
 # The proxy
 
-The **proxy** is one process, `shipyard serve`, that stands in for a model
-provider. It serves the run's weights to every harness in every sandbox, and
-keeps a **record** of every model call. A run with a served model (see
+The **proxy** is one process, `shipyard serve`, that acts as the model provider
+for every harness in every sandbox. It serves the run's weights and keeps a
+**record** of every model call. A run with a served model (see
 [Rollouts](rollouts.md)) starts it before its first job and stops it when the
-run ends. Its output goes to `runs/<id>/proxy.log`, which holds the line the
-run waits for:
+run ends. Its output goes to `runs/<id>/proxy.log`. The run waits for this line
+in the log:
 
 ```text
 serving Qwen/Qwen3-8B at http://host.docker.internal:56479 (control: on)
@@ -19,17 +19,16 @@ interface and any free port, by default), and the sandboxes reach it as
 `[rollout] host`, `host.docker.internal` by default. A remote sandbox reaches
 the proxy through a tunnel the run starts.
 
-Two tokens guard the proxy, both environment variables and never config
-keys, since `run.toml` is copied into the run directory. The harness token,
-`SHIPYARD_PROXY_TOKEN`, opens every route but `/healthz` and
-`/control/weights`, and every sandbox holds it. One of those routes is
-`GET /records/<trial>`, which hands over a trial's records and drains them, so
-a sandbox could read another trial's. The control token,
-`SHIPYARD_CONTROL_TOKEN`, alone opens `POST /control/weights`, which points the
-proxy at new weights: the model under training cannot re-point its own proxy.
-Before each batch, a training
-run publishes its weights and points the proxy at them; the addresses already
-handed out keep answering.
+Two tokens guard the proxy. Both are environment variables, because `run.toml`
+is copied into the run directory. The harness token, `SHIPYARD_PROXY_TOKEN`,
+opens every route but `/healthz` and `/control/weights`, and every sandbox
+holds it. One of those routes is `GET /records/<trial>`, which returns a
+trial's records and drains them. A sandbox could therefore read another
+trial's. Only the control token, `SHIPYARD_CONTROL_TOKEN`, opens
+`POST /control/weights`, which points the proxy at new weights. The model under
+training cannot re-point its own proxy. Before each batch, a training run
+publishes its weights and points the proxy at them. Addresses already handed
+out keep answering.
 
 A run that starts the proxy takes both tokens from its environment, or makes
 them. `[rollout] endpoint_url` names a proxy the run does not start, one
@@ -46,8 +45,8 @@ Under it the proxy speaks both dialects: `POST .../chat/completions` (OpenAI)
 and `POST .../messages` (Anthropic). The harness's profile picks one. The
 proxy renders the messages to tokens with the renderer the Tinker cookbook
 recommends for the model (`[rollout] renderer` names another), and samples
-on Tinker. The `model` a request names is recorded and ignored: the proxy
-serves one model.
+on Tinker. The proxy serves one model, so the `model` a request names is
+recorded and ignored.
 
 ## What a record holds
 
@@ -82,24 +81,23 @@ pointed the proxy at, and stops if one was not.
 ## Pinned sampling
 
 `[rollout] temperature`, `top_p` and `top_k` (defaults `1.0`, `1.0`, `-1`: the
-model's whole distribution) replace whatever the harness sends, so every
+model's whole distribution) replace the values the harness sends, so every
 rollout samples the distribution the run chose. `[rollout] max_tokens`
-(default `8192`) only caps: a call that asks for more, or names no limit, gets
-`max_tokens`; one that asks for less keeps its own.
+(default `8192`) is a cap. A call that asks for more, or names no limit, gets
+`max_tokens`. A call that asks for less keeps its own.
 
 ## Volatile lines
 
-Claude Code's system prompt carries a per-request `<total_tokens>` line. A
-line that changes per request makes each prompt differ from the
-last at the system prompt: nothing is cached, and no call extends the one
-before, so every call forks (below).
+Claude Code's system prompt carries a `<total_tokens>` line that changes with
+every request. Each prompt then differs from the last in the system prompt, so
+nothing is cached and no call extends the one before. Every call forks (below).
 The proxy cuts the profile's volatile lines from system messages before
-rendering, and the job row counts the cuts as `cut`.
+rendering. The job row counts the cuts as `cut`.
 `[rollout] cut_volatile = false` keeps them.
 
 ## The token budget and the context
 
-`[rollout] max_context` is the model's context length; `0`, the default, asks
+`[rollout] max_context` is the model's context length. The default `0` asks
 the backend. When no length is known, nothing is refused. Two refusals follow
 from it, each a 400 to the harness and a record with `error` set:
 
@@ -109,13 +107,13 @@ from it, each a 400 to the harness and a record with `error` set:
   true`, a call whose prompt still fits is served instead, its `max_tokens`
   cut to the room left.
 - **Token budget.** A trial may sample `max_context` tokens in all. A call
-  that would overrun is cut to what is left; a call after the budget is spent
+  that would overrun is cut to what is left. A call after the budget is spent
   is refused with `error = "budget"` and a 400 that does not read as an
   overflow, so the harness does not compact and retry:
   `This rollout has spent its budget: ... sampled tokens of ..., the model's context length. Nothing more is served to it.`
 
-[Admission](admission.md) reads both: a budget cut scores 0, and so does a
-filled context the harness then gave up on; a first call that never fit is
+[Admission](admission.md) reads both. A budget cut scores 0, and so does a
+filled context the harness then gave up on. A first call that never fit is
 masked. `dapo` and `cispo` also dock a rollout that sampled near or up to the
 budget ([The overlong term](recipes.md#the-overlong-term-dapo-and-cispo)).
 
@@ -123,44 +121,45 @@ budget ([The overlong term](recipes.md#the-overlong-term-dapo-and-cispo)).
 
 The OpenAI and Anthropic SDKs mark a retry with `x-stainless-retry-count`. A
 retry gets the stored answer when its trial already sent the same prompt with
-the same parameters, or the same `Idempotency-Key`: no second sample, no
-second record. A first attempt with an `Idempotency-Key` is matched by that
-key alone, so the same prompt under a new key is a new sample. A call that
-failed stored nothing, and its retry samples anew.
+the same parameters, or the same `Idempotency-Key`. The proxy takes no second
+sample and writes no second record. A first attempt with an `Idempotency-Key`
+is matched by that key alone, so the same prompt under a new key is a new
+sample. A call that failed stored nothing, and its retry samples anew.
 
 ## Thinking goes both ways
 
-A reply's thinking goes back to the harness in its dialect's own form: a
-`thinking` block ahead of the text on the Anthropic wire, with a signature
-that is a digest of the text and that the proxy never checks; `reasoning` and
-one `reasoning_details` entry on the OpenAI wire. Thinking the harness sends
-back (Anthropic `thinking` blocks; OpenAI `reasoning_content`, `reasoning`,
-`reasoning_text` or `reasoning_details`) becomes the message's thinking again.
-`redacted_thinking` blocks are dropped. A harness that drops a reply's thinking
-has changed the message, and its next call forks (below).
+A reply's thinking goes back to the harness in its dialect's form. On the
+Anthropic wire it is a `thinking` block ahead of the text, with a signature
+that is a digest of the text. The proxy does not check the signature. On the
+OpenAI wire it is `reasoning` and one `reasoning_details` entry. Thinking the
+harness sends back (Anthropic `thinking` blocks; OpenAI `reasoning_content`,
+`reasoning`, `reasoning_text` or `reasoning_details`) becomes the message's
+thinking again. `redacted_thinking` blocks are dropped. A harness that drops a
+reply's thinking has changed the message, and its next call forks (below).
 
 ## Images and PDFs
 
 The proxy takes images and documents on both wires: Anthropic `image` and
 `document` blocks, also inside tool results; OpenAI `image_url` parts and
-`file` parts. Images and PDFs come as base64 bytes; an image given by URL is
-refused. An image is scaled to at most 1536 pixels on its longest side. A PDF
+`file` parts. Images and PDFs come as base64 bytes, and an image given by URL
+is refused. An image is scaled to at most 1536 pixels on its longest side. A PDF
 becomes one image per page, at most 16 pages, with a note when it is cut. An
 image in a system prompt is replaced by a note saying so. A model whose
 renderer has no image processor refuses any image with a 400.
 
 Each image token stands as `-1` in the record's prompt ids, so the record
-keeps its length; [admission](admission.md) masks the rollout `multimodal`.
+keeps its length. [Admission](admission.md) masks the rollout `multimodal`.
 
 ## Forks and the bridge
 
-Training reads the records as **sequences**, by the token-prefix rule: a call
-joins the sequence whose last prompt plus completion begins its prompt, or
-else starts a new one, a **fork**. Each completion is a target exactly once,
-and the model is trained on exactly what it read, so a fork is always correct.
-In a tool loop it is wasteful: a fresh render of the re-sent history need not
-give back the tokens the model sampled, so each call would fork, and ten calls
-would train as ten sequences, each repeating the one before.
+Training reads the records as **sequences**, by the token-prefix rule. A call
+joins the sequence whose last prompt plus completion begins its prompt. A call
+that matches none starts a new sequence, a **fork**. Each completion is a
+target exactly once, and the model is trained on exactly what it read, so a
+fork is always correct. In a tool loop it is wasteful. A fresh render of the
+re-sent history need not give back the tokens the model sampled, so each call
+would fork, and ten calls would train as ten sequences, each repeating the one
+before.
 
 The **bridge** keeps a tool loop as one sequence. When a call quotes a reply
 this proxy sampled in the same trial, the proxy builds the prompt from that
@@ -170,19 +169,19 @@ reply's tokens. Every rule must hold, or the call is rendered afresh:
    digest the same as an earlier call's messages plus its reply. A digest
    covers role, text with its whitespace left out, thinking, images by their
    pixels, tool calls by name and id, and a tool result's tool name. The proxy
-   gives every tool call it returns an id when the model wrote none, and the
-   harness sends that id back, so a reply is known by its ids whatever the
-   harness did to the arguments, such as Claude Code filling in
-   `"replace_all": false`. The longest such match wins. Two different replies
-   to one history that share a call id, as from a model that writes its own
-   ids and numbers a call alike in both, or that make no call and say the
-   same, are both passed over.
+   gives every tool call it returns an id when the model wrote none. The
+   harness sends that id back, so a reply is known by its ids even when the
+   harness changed the arguments, such as Claude Code filling in
+   `"replace_all": false`. The longest such match wins. If two different
+   replies to one history share a call id, both are passed over. This happens
+   with a model that writes its own ids and numbers a call alike in both, and
+   with replies that make no call and say the same.
 2. The reply is not the call's first message.
 3. After the reply come only tool results, optionally closed by one user
    message. An empty tail is a resample, not an extension. The closing user
    message is refused when the renderer drops thinking from earlier turns, as
-   Qwen3's does: the fresh render of that turn drops the reply's thinking,
-   and the bridge would keep it.
+   Qwen3's does, because the fresh render of that turn drops the reply's
+   thinking and the bridge would keep it.
 4. The renderer has stop tokens that are token ids.
 5. **Exact token equality.** The fresh render of the messages before the reply
    equals, token for token, the fresh render of the earlier call's messages.
@@ -193,7 +192,7 @@ The prompt is then the earlier call's prompt, the reply's completion (and its
 stop token, if the sampler left it off), and the fresh render after that stop.
 
 The live run shows it. In trial `hello-world__csFTaNW`, pi's first call had a
-prompt of 1,424 tokens; the model sampled 239: its thinking and a call to
+prompt of 1,424 tokens, and the model sampled 239: its thinking and a call to
 `write`. pi ran the tool and called again with the history and the tool
 result. That history matched the first call and its reply, and its tail was
 one tool result, so the bridge built the prompt: the 1,424 prompt tokens, the
