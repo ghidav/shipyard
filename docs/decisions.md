@@ -153,8 +153,18 @@ Editing the blueprint's modules mid-run cannot change what later jobs carry.
 **The reflector is a Harbor trial, and a failed one counts as a decline.**
 One broken container cannot end the search, and its cost lands in the record like any other job's.
 
-**The reflector sees its parent's own traces.**
-Shown another text's traces, it would be asked to fix mistakes its own text did not make.
+**gepa holds tasks out to select on: by default two thirds of the run's, as in three of GEPA's four
+benchmarks, drawn with `[data] seed`.**
+A winner picked on the tasks it was rewritten from would report a score it was fitted to. The
+sources are GEPA §4.1 (split sizes) and §4.3 (the validation set is D_pareto).
+
+**Each round's minibatch is drawn in shuffled passes over the feedback tasks.**
+In the dataset's listed order, a sorted dataset would put related tasks in every minibatch, and the
+listing would decide which tasks get reflected on first.
+
+**Each round runs the parent on its minibatch, and the reflector sees those traces.**
+Shown another text's traces, it would be asked to fix mistakes its own text did not make; and the
+child would be judged against a score its parent got in another round.
 
 **Fitness is a vector over tasks: the frontier keeps every candidate that is best on at least one
 task.**
@@ -163,9 +173,14 @@ A text that alone solves a task stays on the frontier, whatever its mean.
 **A child must beat its parent strictly, on the tasks both were measured on.**
 A tie buys nothing, and finding that out would cost a full scoring.
 
+**An accepted child is scored afresh on every Pareto task.**
+Its row would otherwise keep the minibatch scores it won with, and a lucky draw would carry it onto the
+frontier.
+
 **The winner is chosen by coverage first, then by mean.**
 A child whose full scoring mostly failed has a mean over very few tasks, so one lucky task could
 otherwise win.
 
-**The budget is in rollouts, and patience is in quiet rounds.**
-Rounds that score no child spend no rollouts, so the budget alone would never stop them.
+**The budget counts every rollout, and patience counts quiet rounds.**
+A reflector that keeps declining would otherwise spend the budget running parents for rewrites that
+never come.

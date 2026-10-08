@@ -1,6 +1,7 @@
 """The search on a fake scorer and a fake proposer: four tasks and one rule, a text scores
 1.0 on a task whose name it mentions and `BASELINE` on one it does not, so every reward
-in a case is visible in the case."""
+in a case is visible in the case. Minibatches are drawn at random, so a case that needs a
+child to win its minibatch uses `Echo`, whose child names the minibatch it was shown."""
 
 from __future__ import annotations
 
@@ -12,12 +13,13 @@ from typing import Any
 
 import pytest
 
-from shipyard.gepa.cycle import Evolution, best, evolve
+from shipyard.gepa.cycle import Evolution, best, evolve, minibatches
 from shipyard.gepa.fitness import Outcome, tally
 from shipyard.gepa.propose import Reflection, component_for, propose
 from shipyard.modules import SKILL_FILE, Candidate, Module
 
 TASKS = tuple(Path("tasks/four") / name for name in ("t1", "t2", "t3", "t4"))
+HELD = tuple(Path("tasks/held") / name for name in ("h1", "h2", "h3"))
 BASELINE = 0.1
 ROW = (
     "round",
@@ -45,21 +47,24 @@ def seed(text: str = "", *names: str) -> Candidate:
 @dataclass
 class World:
     """A scorer: 1.0 on a task the candidate's text names, `BASELINE` otherwise; what it
-    was asked, and in which round."""
+    was asked, in which round, and one call per job; the feedback names the round."""
 
     asked: list[tuple[str, str]] = field(default_factory=list)
     rounds: list[int] = field(default_factory=list)
+    jobs: list[tuple[str, tuple[str, ...], int]] = field(default_factory=list)
 
     async def __call__(
         self, candidate: Candidate, tasks: Sequence[Path], round_index: int
     ) -> list[Outcome]:
         text = " ".join(module.text for module in candidate.components.values())
+        self.jobs.append((candidate.digest, tuple(task.name for task in tasks), round_index))
         out = []
         for task in tasks:
             self.asked.append((candidate.digest, task.name))
             self.rounds.append(round_index)
             hit = task.name in text
-            out.append(Outcome(str(task), 1.0 if hit else BASELINE, feedback="seen"))
+            reward = 1.0 if hit else BASELINE
+            out.append(Outcome(str(task), reward, feedback=f"seen in round {round_index}"))
         return out
 
 
@@ -90,11 +95,36 @@ class Fresh:
 
 
 @dataclass
+class Echo:
+    """A proposer whose child names the tasks it was shown, after the parent's text, so it
+    wins any minibatch its parent did not already solve."""
+
+    seen: list[Reflection] = field(default_factory=list)
+
+    async def __call__(self, reflection: Reflection) -> Module | None:
+        self.seen.append(reflection)
+        named = " ".join(Path(outcome.task).name for outcome in reflection.outcomes)
+        return _module(f"{reflection.module.text} {named}".strip(), reflection.component)
+
+
+@dataclass
 class Logged:
     rows: list[dict[str, Any]] = field(default_factory=list)
 
     def __call__(self, **row: Any) -> None:
         self.rows.append(row)
+
+
+def drawn(feedback: Sequence[Path], size: int, rng: random.Random, rounds: int) -> list[list[str]]:
+    """By task name, the minibatches of a search's first `rounds` rounds: what
+    `minibatches(feedback, size, rng)` yields, each round's parent drawn from the same `rng`
+    just before its minibatch, as `evolve` draws them."""
+    sampled = minibatches(feedback, size, rng)
+    found = []
+    for _ in range(rounds):
+        rng.random()
+        found.append([task.name for task in next(sampled)])
+    return found
 
 
 async def run(*args: Any, **kwargs: Any) -> Evolution:
@@ -136,10 +166,13 @@ async def test_the_seed_is_measured_on_every_task_first_and_once() -> None:
     world = World()
     result = await run(seed("hold"), TASKS, write=Scripted([None]), score=world, rollouts=2)
     assert world.asked[:4] == [(result.best.digest, task.name) for task in TASKS]
-    assert world.rounds == [0] * 4, "the seed's measurement is round 0"
-    assert result.spent == 8, "four tasks at two rollouts each, before any proposal"
+    assert world.rounds[:4] == [0] * 4, "the seed's measurement is round 0"
     assert result.rounds == 3 and result.pool == {result.best.digest: result.best}
-    assert len(world.asked) == 4, "a declined round scores nothing"
+    rounds = [(job[0], len(job[1]), job[2]) for job in world.jobs[1:]]
+    assert rounds == [(seed("hold").digest, 2, at) for at in (1, 2, 3)], (
+        "after it, a declined round scores its parent on the minibatch and nothing else"
+    )
+    assert result.spent == 8 + 3 * 2 * 2, "four tasks at two rollouts, then a minibatch a round"
 
 
 async def test_a_task_named_twice_is_one_column() -> None:
@@ -147,35 +180,35 @@ async def test_a_task_named_twice_is_one_column() -> None:
     result = await run(
         seed("hold"), (TASKS[0], TASKS[1], TASKS[0]), write=Scripted([None]), score=world
     )
-    assert world.asked == [(result.best.digest, "t1"), (result.best.digest, "t2")]
+    assert world.asked[:2] == [(result.best.digest, "t1"), (result.best.digest, "t2")]
     assert result.fitness.tasks == [str(TASKS[0]), str(TASKS[1])]
+    assert all(sorted(job[1]) == ["t1", "t2"] for job in world.jobs[1:])
 
 
 async def test_a_child_is_accepted_on_a_strict_minibatch_win_and_then_fully_evaluated() -> None:
-    world, log = World(), Logged()
-    result = await run(seed(), TASKS, write=Scripted(["t1 t2"]), score=world, log=log)
+    world, log, writes = World(), Logged(), Echo()
+    result = await run(seed(), TASKS, write=writes, score=world, log=log, patience=1, budget=12)
     child = next(member for digest, member in result.pool.items() if digest != seed().digest)
-    assert child.components["guide"].text == "t1 t2"
-    assert {task for digest, task in world.asked if digest == child.digest} == {
-        "t1",
-        "t2",
-        "t3",
-        "t4",
-    }
-    assert world.asked[4:6] == [(child.digest, "t1"), (child.digest, "t2")], "the window first"
-    assert world.rounds == [0] * 4 + [1] * 4, "the window and the rest, both in round 1"
-    assert result.spent == 4 + 2 + 2 and result.best == child
+    (parent_job, child_job, full_job) = world.jobs[1:]
+    assert parent_job[0] == seed().digest and child_job[0] == child.digest
+    assert child_job[1] == parent_job[1], "the child runs on the parent's minibatch"
+    assert child.components["guide"].text == " ".join(parent_job[1])
+    assert full_job == (child.digest, ("t1", "t2", "t3", "t4"), 1), "then every task, afresh"
+    assert world.rounds == [0] * 4 + [1] * 8, "the minibatch twice and the rest, in round 1"
+    assert result.spent == 4 + 2 + 2 + 4 and result.best == child
     assert log.rows[0]["accepted"] is True and log.rows[0]["child"] == child.digest
     assert (log.rows[0]["parent_mean"], log.rows[0]["child_mean"]) == (BASELINE, 1.0)
-    # The child leads t1 and t2 and ties the seed on the rest: the seed is dominated.
-    assert (log.rows[0]["pool"], log.rows[0]["frontier"], log.rows[0]["spent"]) == (2, 1, 8)
+    # The child leads its two tasks and ties the seed on the rest: the seed is dominated.
+    assert (log.rows[0]["pool"], log.rows[0]["frontier"], log.rows[0]["spent"]) == (2, 1, 12)
 
 
-async def test_a_child_that_did_not_beat_its_parent_costs_one_minibatch() -> None:
+async def test_a_child_that_did_not_beat_its_parent_costs_two_minibatches() -> None:
     world, log = World(), Logged()
     result = await run(seed(), TASKS, write=Scripted(["mentions nothing"]), score=world, log=log)
     assert result.pool == {seed().digest: seed()} and result.best == seed()
-    assert result.spent == 4 + 2, "the window only, never the rest of the list"
+    assert [row["spent"] for row in log.rows] == [4 + 2 + 2, 10, 12, 14], (
+        "the parent's minibatch and the child's, never the rest of the list"
+    )
     assert result.rounds == 1 + 3, "scored and turned down, then three declines"
     assert log.rows[0]["accepted"] is False and log.rows[0]["child"] is not None
     assert log.rows[0]["child_mean"] == BASELINE == log.rows[0]["parent_mean"]
@@ -187,12 +220,23 @@ async def test_a_child_that_did_not_beat_its_parent_costs_one_minibatch() -> Non
 async def test_patience_counts_rounds_with_nothing_to_score_in_a_row() -> None:
     world, log = World(), Logged()
     result = await run(seed(), TASKS, write=Scripted([None]), score=world, patience=2, log=log)
-    assert result.rounds == 2 and result.spent == 4
+    assert result.rounds == 2 and result.spent == 4 + 2 + 2, "a quiet round runs its parent"
     assert [row["child"] for row in log.rows] == [None, None]
-    spread = await run(
-        seed(), TASKS, write=Scripted([None, None, "t1 t2", None, None, "t3"]), score=World()
-    )
-    assert len(spread.pool) == 3, "two quiet stretches of two, and the search ran through both"
+    replies = [None, None, "mentions nothing", None, None, "nothing again"]
+    spread, rows = Logged(), Scripted(replies)
+    found = await run(seed(), TASKS, write=rows, score=World(), log=spread)
+    assert found.rounds == 6 + 3, "two quiet stretches of two, and the search ran through both"
+    assert [row["child"] is not None for row in spread.rows] == [
+        False,
+        False,
+        True,
+        False,
+        False,
+        True,
+        False,
+        False,
+        False,
+    ]
     repeated = await run(seed(), TASKS, write=Scripted(["mentions nothing"] * 20), score=World())
     assert repeated.rounds == 1 + 3, "the same rejected rewrite is a decline, not a loop"
 
@@ -200,33 +244,89 @@ async def test_patience_counts_rounds_with_nothing_to_score_in_a_row() -> None:
 async def test_the_budget_ends_the_search_in_rollouts() -> None:
     world, log = World(), Logged()
     result = await run(seed(), TASKS, write=Fresh(), score=world, budget=10, log=log)
-    assert result.spent == 10 and result.rounds == 3, "4 for the seed, then 2 per rejected child"
-    assert [row["spent"] for row in log.rows] == [6, 8, 10]
+    assert result.spent == 12 and result.rounds == 2, "4 for the seed, then 2 + 2 a round"
+    assert [row["spent"] for row in log.rows] == [8, 12]
     doubled = await run(seed(), TASKS, write=Fresh(), score=World(), budget=10, rollouts=2)
-    assert doubled.spent == 12 and doubled.rounds == 1, "8 for the seed, 4 for one window"
+    assert doubled.spent == 16 and doubled.rounds == 1, "8 for the seed, 4 + 4 for one round"
     assert (await run(seed(), TASKS, write=Fresh(), score=World(), budget=3)).rounds == 0
 
 
-async def test_every_component_is_rotated_and_reflected_over_the_whole_list() -> None:
-    writes = Fresh()
-    await run(seed("x", "a", "b", "c"), TASKS, write=writes, score=World(), budget=4 + 2 * 6)
+async def test_every_component_is_rotated_and_each_round_draws_its_own_minibatch() -> None:
+    writes, world = Fresh(), World()
+    await run(seed("x", "a", "b", "c"), TASKS, write=writes, score=world, budget=4 + 4 * 6)
     assert [reflection.component for reflection in writes.seen] == ["a", "b", "c"] * 2
-    reflected: dict[str, set[str]] = {}
-    for reflection in writes.seen:
-        reflected.setdefault(reflection.component, set()).update(
-            Path(outcome.task).name for outcome in reflection.outcomes
+    shown = [{Path(outcome.task).name for outcome in r.outcomes} for r in writes.seen]
+    assert shown[0] | shown[1] == shown[2] | shown[3] == {"t1", "t2", "t3", "t4"}, (
+        "a pass over the tasks every two rounds, whatever the component"
+    )
+
+
+async def test_the_parent_runs_afresh_every_round_and_its_traces_are_that_rounds() -> None:
+    """GEPA Alg. 1 lines 10 and 13: the parent is run on the minibatch each round, the
+    reflector reads those traces, and both means come from the same round."""
+    world, log, writes = World(), Logged(), Fresh()
+    result = await run(seed(), TASKS, write=writes, score=world, log=log, budget=4 + 4 * 3)
+    parents = [job for job in world.jobs[1:] if job[0] == seed().digest]
+    children = [job for job in world.jobs[1:] if job[0] != seed().digest]
+    assert [job[2] for job in parents] == [job[2] for job in children] == [1, 2, 3]
+    assert [job[1] for job in parents] == [job[1] for job in children]
+    for at, reflection in enumerate(writes.seen, start=1):
+        assert {outcome.feedback for outcome in reflection.outcomes} == {f"seen in round {at}"}
+    assert result.spent == 4 + 3 * (2 + 2), "both halves of every round are spent"
+
+
+async def test_the_pareto_tasks_score_what_is_kept_and_the_feedback_tasks_teach() -> None:
+    """GEPA Alg. 1: minibatches come from D_feedback; the seed and every accepted child are
+    scored on D_pareto, which alone holds the frontier and picks the winner."""
+    world, writes = World(), Echo()
+    result = await run(seed(), TASKS, pareto=HELD, write=writes, score=world, budget=40)
+    held = tuple(task.name for task in HELD)
+    assert world.jobs[0] == (seed().digest, held, 0), "the seed on the Pareto tasks"
+    scored = [job for job in world.jobs[1:] if job[1] != held]
+    assert scored and all(set(job[1]) <= {"t1", "t2", "t3", "t4"} for job in scored)
+    assert [len(job[1]) for job in scored] == [2] * len(scored)
+    admitted = [job for job in world.jobs[1:] if job[1] == held]
+    assert [job[0] for job in admitted] == [d for d in result.pool if d != seed().digest]
+    assert admitted, "a child that names its minibatch beats its parent there"
+    assert result.fitness.tasks == [str(task) for task in HELD]
+    assert result.fitness.aggregate(result.best.digest) == pytest.approx(BASELINE), (
+        "a feedback task's win is no Pareto score: every text scores BASELINE on h1..h3"
+    )
+    assert result.spent == len(world.asked)
+
+
+async def test_minibatches_are_sampled_in_seeded_passes_without_repeats() -> None:
+    """GEPA Alg. 1 line 9 samples each minibatch from D_feedback; each pass is a fresh
+    shuffle drawn with the seed, so a sorted dataset does not fix the order."""
+    five = tuple(Path(f"t{at}") for at in range(5))
+    drawn = minibatches(five, 2, random.Random(7))
+    passes = [[next(drawn) for _ in range(3)] for _ in range(4)]
+    for each in passes:
+        assert {task for batch in each for task in batch} == set(five), "a pass covers them all"
+        assert all(len(batch) == len(set(batch)) == 2 for batch in each)
+        assert each[2][1] == each[0][0], "the short last one is filled from the pass's start"
+    again = minibatches(five, 2, random.Random(7))
+    assert [next(again) for _ in range(12)] == [batch for each in passes for batch in each]
+    firsts = {tuple(next(minibatches(five, 2, random.Random(s)))) for s in range(10)}
+    assert len(firsts) > 1, "the seed, not the listing, orders them"
+    assert next(minibatches(five[:1], 3, random.Random(0))) == [five[0]], (
+        "never wider than the list"
+    )
+
+
+async def test_the_rng_draws_the_minibatches() -> None:
+    """Each round's minibatch is the next one `minibatches` yields from `rng`: the same seed
+    draws the same sequence, and another seed another one."""
+    found = {}
+    for at in (1, 2):
+        world = World()
+        await run(seed(), TASKS, write=Fresh(), score=world, rng=random.Random(at), budget=28)
+        parents = [list(job[1]) for job in world.jobs[1::2]]
+        assert parents == drawn(TASKS, 2, random.Random(at), 6), (
+            "each of six rounds opens with its parent's job"
         )
-    assert reflected == {name: {"t1", "t2", "t3", "t4"} for name in ("a", "b", "c")}
-
-
-async def test_the_log_is_called_once_per_round_with_the_row() -> None:
-    log = Logged()
-    result = await run(seed(), TASKS, write=Scripted(["t1 t2", None]), score=World(), log=log)
-    assert len(log.rows) == result.rounds == 1 + 3
-    assert all(tuple(row) == ROW for row in log.rows)
-    assert [row["round"] for row in log.rows] == [1, 2, 3, 4]
-    assert log.rows[1]["parent"] == result.best.digest, "the frontier's winner is the parent"
-    assert all(row["component"] == "guide" for row in log.rows)
+        found[at] = parents
+    assert found[1] != found[2]
 
 
 async def test_a_dominated_candidate_is_not_a_parent_and_the_best_has_the_top_mean() -> None:
@@ -269,21 +369,24 @@ def test_a_thinly_measured_row_does_not_outrank_a_complete_one() -> None:
 
 
 async def test_a_child_whose_full_evaluation_died_is_not_the_winner() -> None:
-    """The live path to that row: the child wins its window, and the trials over the rest
-    of the list produce nothing; it stays in the pool and on the frontier, and loses."""
+    """The live path to that row: the child wins its minibatch, and the trials over the
+    Pareto tasks produce nothing past the two it names; it stays in the pool and on the
+    frontier, and loses."""
 
     class Dying:
         async def __call__(
             self, candidate: Candidate, tasks: Sequence[Path], round_index: int
         ) -> list[Outcome]:
             text = candidate.components["guide"].text
-            if "lucky" not in text:
+            if not any(task.name in text for task in TASKS):
                 return [Outcome(str(task), 0.9) for task in tasks]
             return [Outcome(str(t), 1.0 if t.name in text else None) for t in tasks]
 
-    result = await run(seed("steady"), TASKS, write=Scripted(["lucky t1 t2"]), score=Dying())
+    result = await run(seed("steady"), TASKS, write=Echo(), score=Dying(), budget=12)
     assert len(result.pool) == 2 and result.fitness.frontier() == set(result.pool)
-    assert result.best == seed("steady") and result.spent == 4 + 2 + 2
+    child = next(digest for digest in result.pool if digest != seed("steady").digest)
+    assert result.fitness.coverage(child) == 2
+    assert result.best == seed("steady") and result.spent == 4 + 2 + 2 + 4
 
 
 async def test_a_proposer_that_raises_costs_a_round_and_a_scorer_that_raises_the_run() -> None:
@@ -307,6 +410,8 @@ async def test_a_proposer_that_raises_costs_a_round_and_a_scorer_that_raises_the
 async def test_nothing_to_evolve_is_refused() -> None:
     with pytest.raises(ValueError, match="nothing to evolve"):
         await run(seed("hold"), (), write=Scripted(["t1"]), score=World())
+    with pytest.raises(ValueError, match="0 to select on"):
+        await run(seed("hold"), TASKS, pareto=(), write=Scripted(["t1"]), score=World())
     with pytest.raises(ValueError, match="nothing to evolve"):
         await run(Candidate({}), TASKS, write=Scripted(["t1"]), score=World())
 

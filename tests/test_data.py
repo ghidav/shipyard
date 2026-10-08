@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from shipyard.data import NoSuchDataset, batches, home_of, tasks
+from shipyard.data import NoSuchDataset, batches, held_out, home_of, tasks
 from tests.trials import FIXTURES, fixture_tasks
 
 
@@ -99,3 +99,15 @@ def test_each_call_is_a_fresh_generator(tmp_path: Path) -> None:
     once = batches(["d"], size=1, seed=0, epochs=1, root=tmp_path)
     assert len(list(once)) == 2 and list(once) == []
     assert len(list(batches(["d"], size=1, seed=0, epochs=1, root=tmp_path))) == 2
+
+
+def test_held_out_draws_a_seeded_count_and_keeps_list_order() -> None:
+    listed = [Path(f"t{n}") for n in range(9)]
+    kept, held = held_out(listed, 6, seed=0)
+    assert len(kept) == 3 and len(held) == 6 and sorted(kept + held) == listed
+    assert kept == sorted(kept) and held == sorted(held), "each in list order"
+    assert held_out(listed, 6, seed=0) == (kept, held), "the same draw for the same seed"
+    assert held_out(listed, 6, seed=1) != (kept, held)
+    assert held_out(listed, 0, seed=0) == (listed, [])
+    with pytest.raises(ValueError, match="cannot hold out 10 of 9"):
+        held_out(listed, 10, seed=0)

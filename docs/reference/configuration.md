@@ -29,9 +29,9 @@ The **For** column says when a key matters:
 | `batch_size` | integer ≥ 1 | required | all | Tasks per batch. One batch is one Harbor job. |
 | `group_size` | integer ≥ 1 | `1` | all | How many times each task runs in its batch. |
 | `epochs` | integer ≥ 1 | `1` | all | Passes over the tasks. |
-| `seed` | integer | `0` | all | The shuffle's seed; epoch `e` is shuffled with `seed + e`. |
+| `seed` | integer | `0` | all | The shuffle's seed; epoch `e` is shuffled with `seed + e`. `gepa` draws its held-out tasks and its minibatches with it, and `fst`'s fast phase in cycle `c` its minibatches with `seed + c`. |
 
-`gepa` reads only `dataset` and `group_size`.
+`gepa` reads only `dataset`, `group_size` and `seed`.
 
 ## `[rollout]`
 
@@ -127,9 +127,10 @@ cookbook's; the paper states none of these.
 | `reflection_model` | string | unset | The model the reflector's harness uses; unset is the harness's own default. |
 | `reflection_image` | string | `"python:3.12-slim"` | The container image the reflector runs in. |
 | `modules` | string | `"modules"` | The seed: a modules directory, relative to the blueprint. |
-| `minibatch` | integer ≥ 1 | `3` | How many tasks a new candidate is first judged on. |
-| `budget` | integer ≥ 1 | unset | Rollouts the search may spend. Unset is two passes: 2 × tasks × `group_size`. |
-| `patience` | integer ≥ 1 | `3` | Rounds in a row with no new candidate before the search stops. |
+| `pareto` | integer ≥ 0 or string | unset | The Pareto tasks, which score every candidate the search keeps; minibatches come from the rest. A count holds that many of the run's tasks out, drawn with `[data] seed`; `0` holds none out and selects on the tasks the search reflects on; a dataset name selects on that dataset. Unset holds out two thirds of the run's tasks, rounded down, as in three of GEPA's four benchmarks: GEPA §4.1 (split sizes) and §4.3 (the validation set is D_pareto). §4.1 states no single proportion: 300 validation tasks beside 150 training ones for three benchmarks, 111 beside 111 for PUPA. |
+| `minibatch` | integer ≥ 1 | `3` (GEPA §4.3) | How many feedback tasks the parent and a new candidate run on each round. |
+| `budget` | integer ≥ 1 | unset (GEPA states no default: §4.3 matches MIPROv2's rollouts per benchmark) | Rollouts the search may spend, every scoring counted. Unset is two passes: 2 × tasks × `group_size`, over every task it may score. |
+| `patience` | integer ≥ 1 | `3` (GEPA has none; its loop runs until the budget is spent) | Rounds in a row with no new candidate before the search stops. |
 | `edits` | `"rewrite"` or `"incremental"` | `"rewrite"` | `"incremental"` asks the reflector to edit the text in place and keep what works, not rewrite it. |
 
 See [gepa](../concepts/gepa.md).
@@ -147,10 +148,12 @@ See [gepa](../concepts/gepa.md).
 | `edits` | `"rewrite"` or `"incremental"` | `"incremental"` (FST App. E) | As for `gepa`. |
 
 `reflection_harness` (required), `reflection_model`, `reflection_image`, `modules` (the seed, default
-`"modules"`), `minibatch` and `patience` are as for `gepa`. Token losses are averaged per prompt (FST
-Eq. 4), whatever `slow` is. The optimizer is AdamW at betas 0.9 / 0.999 and no weight decay, warmed up
-over 10 steps (FST App. D), with eps 1e-8, PyTorch's and the cookbook's, and no gradient clipping,
-as the paper states none. See [fst](../concepts/recipes.md#fst).
+`"modules"`), `minibatch` and `patience` are as for `gepa`. The fast phase selects on the paper's anchor set.
+FST names one anchor set (§3, App. A) and no other source for the minibatches, so fst draws them
+from it too. Token losses are averaged per prompt (FST Eq. 4), whatever `slow` is. The optimizer is
+AdamW at betas 0.9 / 0.999 and no weight decay, warmed up over 10 steps (FST App. D), with eps 1e-8,
+PyTorch's and the cookbook's, and no gradient clipping, as the paper states none. See
+[fst](../concepts/recipes.md#fst).
 
 ### `evaluate`
 

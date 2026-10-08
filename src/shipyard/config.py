@@ -10,7 +10,7 @@ from typing import Any, Literal
 from harbor.models.environment_type import EnvironmentType
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, field_validator
 
-from shipyard.data import NoSuchDataset, home_of, tasks
+from shipyard.data import NoSuchDataset, held_out, home_of, tasks
 from shipyard.modules import Inadmissible, seed
 from shipyard.record import CONFIG
 
@@ -160,19 +160,41 @@ class CispoRecipe(Gradient):
     overlong_buffer: float = Field(default=PAPER_OVERLONG_BUFFER, gt=0, le=1)
 
 
+#: The share of a run's tasks gepa holds out to select on when `[recipe] pareto` is unset,
+#: rounded down, as in three of GEPA's four benchmarks: GEPA §4.1 (split sizes) and §4.3
+#: (the validation set is D_pareto). HotpotQA, IFBench and HoVer hold 300 validation tasks
+#: beside 150 training ones (PUPA alone splits 111 and 111), and the one split the paper
+#: draws itself, IFBench's, is one of those.
+PAPER_PARETO = (2, 3)
+#: GEPA 4.3: "All GEPA optimization runs use a minibatch size of 3".
+PAPER_MINIBATCH = 3
+
+
 class GepaRecipe(_Table):
-    """The search's knobs: the reflector in three halves, the seed directory, the window a
-    child is judged on, the rollouts the search may spend, and when a quiet proposer ends it."""
+    """The search's knobs: the reflector in three halves, the seed directory, the tasks held
+    out to select on, the minibatch a child is judged on, the rollouts the search may spend,
+    and when a quiet proposer ends it."""
 
     kind: Literal["gepa"]
     reflection_harness: str
     reflection_model: str | None = None
     reflection_image: str = REFLECTION_IMAGE
     modules: str = "modules"
-    minibatch: int = Field(default=3, ge=1)
+    pareto: int | str | None = None
+    minibatch: int = Field(default=PAPER_MINIBATCH, ge=1)
     budget: int | None = Field(default=None, ge=1)
     patience: int = Field(default=3, ge=1)
     edits: Literal["rewrite", "incremental"] = "rewrite"
+
+    @field_validator("pareto", mode="before")
+    @classmethod
+    def _held_out(cls, value: Any) -> Any:
+        """A dataset name or a count; a boolean, a fraction or a blank name is neither."""
+        if value is None or (isinstance(value, str) and value.strip()):
+            return value
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+        raise ValueError("a dataset name, or how many of the run's tasks to hold out (0 or more)")
 
 
 #: The knobs each slow recipe of fst takes; a knob of another one is an error.
@@ -297,6 +319,31 @@ def modules_dir(loaded: Blueprint) -> Path | None:
     return loaded.home / named if named else None
 
 
+def search_sets(loaded: Blueprint) -> tuple[list[Path], list[Path]]:
+    """gepa's two task lists, GEPA's D_feedback and D_pareto (Alg. 1 line 1): the tasks its
+    minibatches are drawn from, and the tasks every candidate it keeps is scored on. A dataset
+    name is D_pareto beside the run's tasks; a count holds that many of the run's tasks out,
+    drawn with `[data] seed`, and 0 keeps every task in both (GEPA 6); unset holds out two
+    thirds, as in three of GEPA's four benchmarks. Raises ValueError when either list would
+    be empty."""
+    listed = [task for name in loaded.datasets for task in tasks(name)]
+    named = loaded.recipe.pareto
+    if isinstance(named, str):
+        return listed, tasks(named)
+    if named == 0:
+        return listed, list(listed)
+    share, whole = PAPER_PARETO
+    count = len(listed) * share // whole if named is None else named
+    if count < 1:
+        raise ValueError(
+            "one task cannot be split; 0 selects on the task the search reflects on, and a "
+            "dataset name selects on that dataset"
+        )
+    if count >= len(listed):
+        raise ValueError(f"holding out {count} of {_tasks(len(listed))} leaves none to reflect on")
+    return held_out(listed, count, seed=loaded.data.seed)
+
+
 def _problem(error: dict[str, Any]) -> str:
     """One validation error as `[table] key: problem`, in the blueprint's own words."""
     loc = [str(part) for part in error["loc"]]
@@ -360,6 +407,8 @@ def findings(loaded: Blueprint) -> list[Finding]:
         found.append(_modules_finding(directory))
     if isinstance(loaded.recipe, GepaRecipe | FstRecipe):
         found.append(_reflector_finding(loaded.recipe))
+    if isinstance(loaded.recipe, GepaRecipe):
+        found += _pareto_findings(loaded)
     if isinstance(loaded.recipe, FstRecipe) and loaded.data.group_size % loaded.recipe.population:
         k, g = loaded.recipe.population, loaded.data.group_size
         found.append(
@@ -439,6 +488,33 @@ def _reflector_finding(recipe: GepaRecipe | FstRecipe) -> Finding:
         "ok",
         f"reflector {recipe.reflection_harness}, model {model}, image {recipe.reflection_image}",
     )
+
+
+def _pareto_findings(loaded: Blueprint) -> list[Finding]:
+    """A named held-out dataset's own finding, then `ok` with how the tasks split, or
+    `blocked` with why they cannot; no split line when a dataset is missing, which that
+    dataset's own finding already says."""
+    named = loaded.recipe.pareto
+    found = [_dataset_finding(named)] if isinstance(named, str) else []
+    try:
+        feedback, pareto = search_sets(loaded)
+    except NoSuchDataset:
+        return found
+    except ValueError as refused:
+        return [*found, Finding("blocked", f"[recipe] pareto: {refused}")]
+    if isinstance(named, str):
+        said = f"dataset {named}'s {_tasks(len(pareto))} to select on"
+        said += f", the run's {_tasks(len(feedback))} to reflect on"
+    elif named == 0:
+        said = f"none held out; {_tasks(len(feedback))} both reflected and selected on"
+    else:
+        said = f"{len(pareto)} of {_tasks(len(feedback) + len(pareto))} held out with seed "
+        said += f"{loaded.data.seed} to select on, {len(feedback)} to reflect on"
+    return [*found, Finding("ok", f"pareto: {said}")]
+
+
+def _tasks(count: int) -> str:
+    return f"{count} task" if count == 1 else f"{count} tasks"
 
 
 def _dataset_finding(name: str) -> Finding:

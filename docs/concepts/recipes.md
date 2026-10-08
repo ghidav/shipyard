@@ -318,6 +318,9 @@ population of `population` skill texts change together, in cycles:
 1. **Fast phase.** The run takes the next `cycle` batches. [gepa](gepa.md) runs on their tasks
    against the current weights, seeded with the previous population, and the top `population` of its
    frontier become the new population. The first cycle starts from the blueprint's modules directory.
+   Those tasks, the paper's anchor set, are the Pareto tasks. FST names one anchor set (§3, App. A)
+   and no other source for the minibatches, so fst draws them from it too, in cycle `c` with
+   `[data] seed + c`.
 2. **Slow phase.** `cycle` gradient steps follow, one per batch. Each task's group of `group_size`
    rollouts is split evenly across the population: `group_size / population` rollouts per text, one
    job per text. The rollouts are normalised as one group, so the advantage compares what the text

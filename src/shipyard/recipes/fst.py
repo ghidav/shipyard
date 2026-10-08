@@ -6,6 +6,7 @@ text, normalised as one group, and update the weights with the slow recipe."""
 
 from __future__ import annotations
 
+import random
 from collections.abc import Sequence
 from dataclasses import replace
 from functools import partial
@@ -134,8 +135,10 @@ async def fast(
 ) -> list[Candidate]:
     """One fast phase under the weights the proxy now serves: gepa on the lookahead's tasks
     (the first `anchor` of them when set), seeded with the population, every (task, text)
-    cell scored with one rollout, its top K back."""
-    recipe = run.config.recipe
+    cell scored with one rollout, its top K back. The anchor set is the Pareto tasks; FST
+    names one anchor set (§3, App. A) and no other source for the minibatches, so fst draws
+    them from it too."""
+    recipe, data = run.config.recipe, run.config.data
     tasks = list(dict.fromkeys(task for batch in lookahead for task in batch))
     tasks = tasks[: recipe.anchor] if recipe.anchor else tasks
     cells = CELL_ROLLOUTS
@@ -156,6 +159,7 @@ async def fast(
         budget=(recipe.budget or BUDGET_PASSES * len(tasks) * cells) + carried * len(tasks) * cells,
         patience=recipe.patience,
         rollouts=cells,
+        rng=random.Random(data.seed + cycle),
         log=partial(run.log, cycle=cycle),
     )
     chosen = result.top(recipe.population)

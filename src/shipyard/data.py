@@ -52,6 +52,16 @@ def batches(
     return _cut(listed, size=size, seed=seed, epochs=epochs)
 
 
+def held_out(listed: Sequence[Path], count: int, *, seed: int) -> tuple[list[Path], list[Path]]:
+    """`listed` less `count` of its tasks drawn with `seed`, and those tasks, each in list
+    order: a set to learn from and a set held out to measure on, the same for the same seed."""
+    if not 0 <= count <= len(listed):
+        raise ValueError(f"cannot hold out {count} of {len(listed)} task(s)")
+    drawn = set(random.Random(seed).sample(range(len(listed)), count))
+    kept = [task for at, task in enumerate(listed) if at not in drawn]
+    return kept, [task for at, task in enumerate(listed) if at in drawn]
+
+
 def _cut(listed: list[Path], *, size: int, seed: int, epochs: int) -> Iterator[list[Path]]:
     """The generator half of `batches`, kept apart so a missing dataset raises at the call
     rather than at the first batch."""

@@ -1,13 +1,14 @@
-"""The search (GEPA, Agrawal et al., arXiv 2507.19457): measure the seeds on every task, then
-draw a parent off the Pareto frontier in proportion to the tasks it leads, ask for a rewrite
-of one component, judge the child on a minibatch, and give it the rest of the tasks only when
-it beat its parent there. The weights never move here."""
+"""The search (GEPA, Agrawal et al., arXiv 2507.19457, Alg. 1): score the seeds on the Pareto
+tasks; then each round draw a parent off the frontier in proportion to the tasks it leads, run
+it on a minibatch sampled from the feedback tasks, ask for a rewrite of one component from
+those traces, run the child on the same minibatch, and score the child on the Pareto tasks
+only when it beat its parent there. The weights never move here."""
 
 from __future__ import annotations
 
 import logging
 import random
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -26,8 +27,8 @@ Log = Callable[..., Any]
 
 @dataclass(frozen=True)
 class Evolution:
-    """What one search ended with: the best of the frontier, the pool by digest, the
-    fitness over it, the rounds it ran and the rollouts it spent."""
+    """What one search ended with: the best of the pool, the pool by digest, the fitness
+    over the Pareto tasks, the rounds it ran and the rollouts it spent."""
 
     best: Candidate
     pool: dict[str, Candidate]
@@ -46,6 +47,7 @@ async def evolve(
     seed: Candidate | Sequence[Candidate],
     tasks: Sequence[Path],
     *,
+    pareto: Sequence[Path] | None = None,
     write: Proposer,
     score: Scorer,
     minibatch: int,
@@ -55,44 +57,52 @@ async def evolve(
     rng: random.Random | None = None,
     log: Log | None = None,
 ) -> Evolution:
-    """The loop, `budget` counted in rollouts at `rollouts` per task scored: a text is
-    scored once per task and the measurement reused; `patience` rounds in a row with no
-    child to score end it, since those spend nothing. `seed` is one candidate or a
-    population, every member measured first. A scorer that raises is not caught."""
+    """The loop over GEPA's two task lists: minibatches are drawn from `tasks` (D_feedback),
+    and every seed and accepted child is scored on `pareto` (D_pareto), which the frontier
+    and the winner are read from; None is `tasks` again (GEPA 6, FST's anchor set). `budget`
+    counts rollouts, `rollouts` per task scored, every scoring included; `patience` rounds in
+    a row with no child to score end it. `seed` is one candidate or a population. `rng`
+    draws the parents and shuffles the minibatches. A scorer that raises is not caught."""
     chosen = random.Random() if rng is None else rng
     told = log if log is not None else _silent
-    columns = tuple(dict.fromkeys(Path(task) for task in tasks))
+    feedback = tuple(dict.fromkeys(Path(task) for task in tasks))
+    columns = feedback if pareto is None else tuple(dict.fromkeys(Path(task) for task in pareto))
     seeds = [seed] if isinstance(seed, Candidate) else list(seed)
     names = tuple(seeds[0].components) if seeds else ()
-    if not columns or not names:
-        raise ValueError(f"nothing to evolve: {len(columns)} task(s), {len(names)} component(s)")
+    if not feedback or not columns or not names:
+        raise ValueError(
+            f"nothing to evolve: {len(feedback)} task(s) to reflect on, {len(columns)} to "
+            f"select on, {len(names)} component(s)"
+        )
     pool: dict[str, Candidate] = {member.digest: member for member in seeds}
     declined: set[str] = set()
     seen: dict[str, dict[str, Outcome]] = {}
+    drawn = minibatches(feedback, minibatch, chosen)
     spent = rounds = quiet = 0
 
     async def measure(candidate: Candidate, over: Sequence[Path]) -> list[Outcome]:
-        """The outcomes over `over`, scoring what this text was not scored on yet under
-        the current round; the rollouts asked for are counted, not the outcomes back."""
+        """Fresh outcomes over `over` under the current round; the rollouts asked for are
+        counted, not the outcomes back."""
         nonlocal spent
-        row = seen.setdefault(candidate.digest, {})
-        todo = [task for task in over if str(task) not in row]
-        if todo:
-            spent += len(todo) * rollouts
-            for outcome in await score(candidate, tuple(todo), rounds):
-                row[outcome.task] = outcome
-        return [row[str(task)] for task in over if str(task) in row]
+        spent += len(over) * rollouts
+        return list(await score(candidate, tuple(over), rounds))
+
+    async def admit(candidate: Candidate) -> None:
+        """The candidate's Pareto row, scored afresh on every Pareto task: a minibatch it
+        won on is a draw it was picked for, and would favour lucky children."""
+        seen[candidate.digest] = {found.task: found for found in await measure(candidate, columns)}
 
     for member in list(pool.values()):
-        await measure(member, columns)
+        await admit(member)
     while spent < budget and quiet < max(patience, len(names)):
         leads = tally(pool, seen).leads() or {seeds[0].digest: 1}
         parent = pool[chosen.choices(list(leads), weights=list(leads.values()))[0]]
-        # The window walks per component, so each reflects over the whole list in turn.
-        window = _minibatch(columns, rounds // len(names), minibatch)
+        batch = next(drawn)
         component = component_for(rounds, names)
         rounds += 1
-        before = await measure(parent, window)
+        # The parent runs afresh, as in GEPA: the reflector reads traces of this round, and
+        # the child is compared with a score from the same round.
+        before = await measure(parent, batch)
         try:
             child = await propose(parent, component, before, write)
         except Exception:
@@ -111,12 +121,12 @@ async def evolve(
             quiet += 1
         else:
             quiet = 0
-            after = await measure(child, window)
+            after = await measure(child, batch)
             row.update(child=child.digest, child_mean=mean(after))
             if _beats(before, after):
                 row["accepted"] = True
                 pool[child.digest] = child
-                await measure(child, columns)
+                await admit(child)
             else:
                 declined.add(child.digest)
         told(**row, pool=len(pool), frontier=len(tally(pool, seen).frontier()), spent=spent)
@@ -147,13 +157,17 @@ def _ranked(pool: dict[str, Candidate], fitness: Fitness) -> list[Candidate]:
     return [pool[digest] for digest in front + rest]
 
 
-def _minibatch(tasks: Sequence[Path], window: int, size: int) -> list[Path]:
-    """Window `window` of `size` consecutive tasks in the order given, wrapping: which
-    tasks a round reflects on is then something a caller can predict."""
+def minibatches(tasks: Sequence[Path], size: int, rng: random.Random) -> Iterator[list[Path]]:
+    """GEPA's minibatches (Alg. 1 line 9), `size` tasks each, sampled without replacement
+    in passes over the tasks, each pass a fresh shuffle, as the authors' sampler does; a
+    pass's short last minibatch is filled from the start of that pass, so none repeats a task."""
     width = max(1, min(size, len(tasks)))
-    start = (window * width) % len(tasks)
-    doubled = list(tasks) + list(tasks)
-    return doubled[start : start + width]
+    while True:
+        order = list(tasks)
+        rng.shuffle(order)
+        for start in range(0, len(order), width):
+            cut = order[start : start + width]
+            yield cut + order[: width - len(cut)]
 
 
 def _beats(parent: Sequence[Outcome], child: Sequence[Outcome]) -> bool:

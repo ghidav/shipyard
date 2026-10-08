@@ -4,11 +4,12 @@ the winner lands under `modules/best/` in the same layout, so it is the next see
 
 from __future__ import annotations
 
+import random
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from shipyard import record
-from shipyard.data import tasks as tasks_of
+from shipyard.config import search_sets
 from shipyard.gepa.cycle import Evolution, evolve
 from shipyard.gepa.outcomes import outcomes
 from shipyard.gepa.reflect import reflect
@@ -23,20 +24,23 @@ if TYPE_CHECKING:
 #: Under `runs/<id>/modules/`: the text the search started from, and the text it ends on.
 SEED = "seed"
 BEST = "best"
-#: The budget when the blueprint names none, as a multiple of one pass over the tasks.
+#: The budget when the blueprint names none, as a multiple of one pass over every task the
+#: search may score.
 DEFAULT_PASSES = 2
 
 
 async def run(run: Run) -> Evolution:
     """Seed, then evolve: every candidate scored by one job over the tasks it is asked
     about, every rewrite a reflection trial, one row per round, the winner kept, and a
-    final row naming it. A served policy answers through the proxy as `evaluate`'s does."""
+    final row naming it. Minibatches come from the run's tasks less those `[recipe] pareto`
+    holds out, the held-out ones score what the search keeps, and `[data] seed` draws both.
+    A served policy answers through the proxy as `evaluate`'s does."""
     cfg = run.config
     recipe, data = cfg.recipe, cfg.data
     seeded = seed(cfg.home / recipe.modules)
     keep(seeded, run.directory / record.MODULES / SEED)
-    listed = [task for name in cfg.datasets for task in tasks_of(name)]
-    budget = recipe.budget or DEFAULT_PASSES * len(listed) * data.group_size
+    feedback, pareto = search_sets(cfg)
+    budget = recipe.budget or DEFAULT_PASSES * len({*feedback, *pareto}) * data.group_size
 
     async def score(candidate: Candidate, over: Sequence[Path], round_index: int) -> list[Outcome]:
         """One job over `over`, its batch index the round it serves, read back."""
@@ -54,13 +58,15 @@ async def run(run: Run) -> Evolution:
     )
     result = await evolve(
         seeded,
-        listed,
+        feedback,
+        pareto=pareto,
         write=write,
         score=score,
         minibatch=recipe.minibatch,
         budget=budget,
         patience=recipe.patience,
         rollouts=data.group_size,
+        rng=random.Random(data.seed),
         log=run.log,
     )
     keep(result.best, run.directory / record.MODULES / BEST)
