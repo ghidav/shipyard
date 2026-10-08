@@ -164,7 +164,7 @@ max_tokens = 4096
 | `env` | `{}` | environment variables for every trial's agent; `check` blocks a key starting with `TINKER_`, and `SHIPYARD_CONTROL_TOKEN`, and a `${...}` value naming one |
 | `kwargs` | `{}` | agent kwargs for every trial |
 | `jobs_dir` | `"jobs"` | where the job directories go |
-| `fill_context` | `false` | lays the profile's environment on each served trial, and lets a turn fill the context (see [The proxy](proxy.md)) |
+| `fill_context` | `false` | lays the profile's environment on each served trial, and lets a turn fill the context (see [The proxy](proxy.md)); `check` warns when `env` sets one of the profile's keys to the profile's own value without it, since the proxy then still refuses an overflowing call |
 | `check_turns` | `false` | compares the harness's own turn count with the proxy's records (see [Admission](admission.md)) |
 
 The other `[rollout]` keys shape the proxy, not the trial: see

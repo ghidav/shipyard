@@ -7,9 +7,11 @@ from typing import Any
 
 import httpx
 import pytest
+import tinker
 
 from shipyard.proxy import client
 from shipyard.proxy.client import CONTROL_TOKEN_ENV, Proxy, Unreachable
+from shipyard.proxy.exchange import Exchange, exchange
 from shipyard.proxy.wire import Record
 from tests.proxies import FakeSampler, ask, endpoint, ids, root
 
@@ -46,6 +48,25 @@ async def test_records_come_back_as_records_with_their_ids_and_the_counters() ->
     assert records[0].completion_token_ids == ids("ok")
     assert proxy.counters["t-1"] == {"turned_away": 0, "cut": 0, "spoke": 0}
     assert again == [] and unknown == [], "drained, and an unknown trial asked for nothing"
+
+
+@pytest.mark.parametrize("trial", ["a b#c?d__x", "50%__y", "a%2Fb__z"])
+async def test_a_trial_name_with_reserved_characters_comes_back_whole(trial: str) -> None:
+    """The client escapes the name into the records route and aiohttp decodes it back."""
+    async with endpoint(FakeSampler("ok")) as started:
+        token = exchange.set(Exchange(trial=trial))
+        try:
+            await started.recorder.sample_async(
+                prompt=tinker.ModelInput.from_ints([1, 2]),
+                num_samples=1,
+                sampling_params=tinker.SamplingParams(),
+            )
+        finally:
+            exchange.reset(token)
+        proxy = of(started)
+        (record,) = await proxy.records(trial)
+        assert record.prompt_token_ids == (1, 2) and started.records_for(trial) == []
+    assert trial in proxy.counters
 
 
 class LosingFirst(httpx.AsyncBaseTransport):

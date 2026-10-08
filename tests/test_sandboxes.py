@@ -1,7 +1,8 @@
 """`check`'s sandbox findings: Harbor's extra and the credentials for a provider elsewhere
-(the table confirmed against the installed Harbor), a short setup time, a run secret in
-`[rollout] env`, a key `.env` assigns twice, and docker for a docker sandbox or the tunnel's
-image. The conftest pins this machine's facts; each test here takes off the pin it tests."""
+(the table confirmed against the installed Harbor), Modal's verdict on its token, a short
+setup time, a run secret in `[rollout] env`, a key `.env` assigns twice, docker for a docker
+sandbox or the tunnel's image, and the trial networks hard-killed runs left. The conftest
+pins this machine's facts; each test here takes off the pin it tests."""
 
 from __future__ import annotations
 
@@ -10,6 +11,8 @@ import os
 import re
 import sys
 import textwrap
+import threading
+import time
 from importlib.metadata import metadata
 from itertools import count
 from pathlib import Path
@@ -23,12 +26,16 @@ from shipyard.cli import app
 from shipyard.config import Finding, check
 from shipyard.preflight import (
     INSTEAD,
+    LEFTOVER_NETWORKS,
     LOGINS,
     PROVIDERS,
+    REMOVE_NETWORKS,
     docker_running,
     extra_installed,
     extra_missing,
+    leftover_networks,
     logged_in,
+    modal_finding,
 )
 from shipyard.proxy import tunnel
 from tests.trials import fixture_tasks, write_blueprint
@@ -296,6 +303,230 @@ def test_docker_running_asks_the_daemon(tmp_path: Path, monkeypatch: pytest.Monk
     assert docker_running() is False
     monkeypatch.setenv("PATH", str(tmp_path / "nowhere"))
     assert docker_running() is False
+
+
+# ------------------------------------------------------------ Modal's verdict
+
+
+class FakeModal(ModuleType):
+    """The `modal` module as the read uses it: `App.lookup` raising what `failure` names,
+    or, for "hangs", waiting until `answer` is set; each call noted, and the two exception
+    types."""
+
+    def __init__(self, failure: str | None = None) -> None:
+        super().__init__("modal")
+        self.asked: list[str] = []
+        self.answer = threading.Event()
+
+        class NotFoundError(Exception):
+            pass
+
+        class AuthError(Exception):
+            pass
+
+        self.exception = type("exception", (), {})()
+        self.exception.NotFoundError, self.exception.AuthError = NotFoundError, AuthError
+        errors = {
+            "missing": NotFoundError("App 'shipyard' not found"),
+            "refused": AuthError("Token is invalid"),
+            "down": ConnectionError("no route to api.modal.com"),
+        }
+        fake = self
+
+        class App:
+            @staticmethod
+            def lookup(name: str, **kwargs: object) -> object:
+                fake.asked.append(name)
+                assert not kwargs, "a lookup that creates nothing"
+                if failure == "hangs":
+                    fake.answer.wait()
+                elif failure is not None:
+                    raise errors[failure]
+                return object()
+
+        self.App = App
+
+
+@pytest.fixture
+def asked(here: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The Modal read unpinned, over no profile file and no Modal variables."""
+    monkeypatch.setattr(preflight, "modal_finding", modal_finding)
+    for name in ("MODAL_CONFIG_PATH", "MODAL_PROFILE"):
+        monkeypatch.delenv(name, raising=False)
+    return here
+
+
+def faked(monkeypatch: pytest.MonkeyPatch, failure: str | None = None) -> FakeModal:
+    fake = FakeModal(failure)
+    monkeypatch.setitem(sys.modules, "modal", fake)
+    return fake
+
+
+def test_a_token_modal_takes_is_ok_found_or_not(
+    asked: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (Path.home() / ".modal.toml").write_text('[work]\ntoken_id = "ak"\nactive = true\n', "utf-8")
+    fake = faked(monkeypatch, "missing")
+    found = check(blueprint(asked, "modal"))
+    home = Path.home() / ".modal.toml"
+    assert (
+        Finding("ok", f"sandbox modal: Modal takes the token from profile work in {home}") in found
+    )
+    assert fake.asked == ["shipyard"] and problems(found) == []
+    faked(monkeypatch)
+    assert not problems(check(blueprint(asked, "modal"))), "an app of that name is found"
+
+
+def test_a_refused_token_from_the_environment_names_dotenv_and_the_profile_it_shadows(
+    asked: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (Path.home() / ".modal.toml").write_text('[default]\ntoken_id = "ak-good"\n', "utf-8")
+    (asked / ".env").write_text("MODAL_TOKEN_ID=ak-stale\nMODAL_TOKEN_SECRET=as-stale\n", "utf-8")
+    monkeypatch.setenv("MODAL_TOKEN_ID", "ak-stale")
+    monkeypatch.setenv("MODAL_TOKEN_SECRET", "as-stale")
+    faked(monkeypatch, "refused")
+    home = Path.home() / ".modal.toml"
+    assert problems(check(blueprint(asked, "modal"))) == [
+        "blocked  sandbox modal: Modal refuses the token from MODAL_TOKEN_ID and "
+        "MODAL_TOKEN_SECRET in the environment (assigned in the working directory's .env): "
+        f"Token is invalid; they shadow profile default in {home}, which Modal uses once "
+        "they are unset"
+    ]
+
+
+def test_the_profiles_own_token_id_in_the_environment_shadows_nothing(
+    asked: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ids alone are compared, and no secret is read: an environment holding the profile's
+    own token id, or no token id at all, names no profile to fall back on."""
+    (Path.home() / ".modal.toml").write_text('[default]\ntoken_id = "ak-good"\n', "utf-8")
+    monkeypatch.setenv("MODAL_TOKEN_ID", "ak-good")
+    monkeypatch.setenv("MODAL_TOKEN_SECRET", "as-other")
+    faked(monkeypatch, "refused")
+    assert problems(check(blueprint(asked, "modal"))) == [
+        "blocked  sandbox modal: Modal refuses the token from MODAL_TOKEN_ID and "
+        "MODAL_TOKEN_SECRET in the environment: Token is invalid; `modal token new` makes a "
+        "new one"
+    ]
+    secret_only = modal_finding({"MODAL_TOKEN_SECRET": "as-other"})
+    assert secret_only is not None and "shadow" not in secret_only.text
+    other = modal_finding({"MODAL_TOKEN_ID": "ak-other", "MODAL_TOKEN_SECRET": "as-other"})
+    assert other is not None and "they shadow profile default" in other.text
+
+
+def test_a_refused_profile_is_named_in_the_file_modal_config_path_names(
+    asked: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    elsewhere = asked / "modal.toml"
+    elsewhere.write_text('[a]\ntoken_id = "x"\n[b]\ntoken_id = "y"\nactive = true\n', "utf-8")
+    monkeypatch.setenv("MODAL_CONFIG_PATH", str(elsewhere))
+    faked(monkeypatch, "refused")
+    said = modal_finding({"MODAL_CONFIG_PATH": str(elsewhere)})
+    assert said == Finding(
+        "blocked",
+        f"sandbox modal: Modal refuses the token from profile b in {elsewhere}: Token is "
+        "invalid; `modal token new` makes a new one",
+    )
+    named = modal_finding({"MODAL_CONFIG_PATH": str(elsewhere), "MODAL_PROFILE": "a"})
+    assert named is not None and f"profile a in {elsewhere}" in named.text
+    lone = modal_finding({"MODAL_TOKEN_ID": "x"})
+    assert lone is not None and "from MODAL_TOKEN_ID in the environment:" in lone.text
+
+
+def test_modal_that_does_not_answer_is_given_up_on_as_a_warning(
+    asked: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lookup that hangs costs `check` the bound and no more: 15 s, here made short."""
+    assert preflight.MODAL_SECONDS == 15
+    monkeypatch.setattr(preflight, "MODAL_SECONDS", 0.5)
+    fake = faked(monkeypatch, "hangs")
+    try:
+        began = time.monotonic()
+        found = problems(check(blueprint(asked, "modal")))
+        took = time.monotonic() - began
+    finally:
+        fake.answer.set()
+    assert fake.asked == ["shipyard"]
+    assert found == [
+        "warning  sandbox modal: could not ask Modal whether it takes the token from profile "
+        f"default in {Path.home() / '.modal.toml'}: no answer in 0.5 s"
+    ]
+    assert 0.5 <= took < 5, "the bound, and not the lookup, ends the wait"
+
+
+def test_modal_unreachable_is_a_warning_and_no_credentials_ask_nothing(
+    asked: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    faked(monkeypatch, "down")
+    assert problems(check(blueprint(asked, "modal"))) == [
+        "warning  sandbox modal: could not ask Modal whether it takes the token from profile "
+        f"default in {Path.home() / '.modal.toml'}: no route to api.modal.com"
+    ]
+    monkeypatch.setattr(preflight, "logged_in", logged_in)
+    fake = faked(monkeypatch)
+    blocked = problems(check(blueprint(asked, "modal")))
+    assert blocked == [
+        "blocked  sandbox modal: MODAL_TOKEN_ID is unset",
+        "blocked  sandbox modal: MODAL_TOKEN_SECRET is unset",
+    ]
+    assert fake.asked == [], "nothing to ask Modal about"
+    monkeypatch.setattr(preflight, "extra_installed", lambda name: False)
+    monkeypatch.setenv("MODAL_TOKEN_ID", "ak")
+    monkeypatch.setenv("MODAL_TOKEN_SECRET", "as")
+    check(blueprint(asked, "modal"))
+    assert fake.asked == [], "no SDK to ask with"
+    monkeypatch.delitem(sys.modules, "modal")
+    monkeypatch.setitem(sys.modules, "modal", None)  # an import that fails
+    assert modal_finding({}) is None
+
+
+# ------------------------------------------------------- leftover trial networks
+
+NETWORKS_STUB = """\
+#!/bin/sh
+[ "$1 $2 $3 $4" = "network ls --filter dangling=true" ] || exit 2
+i=0
+while [ "$i" -lt "${LEFT:-0}" ]; do
+  echo "task-${i}__abcdefg__env_default"
+  i=$((i + 1))
+done
+echo "task-x__abcdefg__verifier__tests_default"
+echo "supabase_network_db"
+echo "dq-numeric-threshold__xglzcpq_default"
+"""
+
+
+def test_leftover_trial_networks_are_counted_off_dockers_dangling_ones(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "docker").write_text(NETWORKS_STUB, encoding="utf-8")
+    (bin_dir / "docker").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    monkeypatch.setenv("LEFT", "3")
+    assert leftover_networks() == 4, "three trials' and one verifier's, no other project's"
+    monkeypatch.setenv("PATH", str(tmp_path / "nowhere"))
+    assert leftover_networks() == 0
+
+
+def test_twenty_leftover_networks_are_a_warning_with_the_command_that_removes_them(
+    here: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(preflight, "leftover_networks", lambda: LEFTOVER_NETWORKS - 1)
+    assert problems(check(blueprint(here, "docker"))) == []
+    monkeypatch.setattr(preflight, "leftover_networks", lambda: 28)
+    assert problems(check(blueprint(here, "docker"))) == [
+        "warning  28 trial networks are left over from earlier runs, with no container on "
+        "them; Docker's default address pools hold about 30 networks, and past them no "
+        f"trial starts. `{REMOVE_NETWORKS}` removes them"
+    ]
+    assert "prune" not in REMOVE_NETWORKS
+    assert problems(check(blueprint(here, "podman"))) == []
+    monkeypatch.setattr(preflight, "docker_running", lambda: False)
+    assert problems(check(blueprint(here, "docker"))) == [
+        "blocked  docker is not running (needed for the docker sandbox)"
+    ]
 
 
 def test_the_env_template_ships_every_value_commented_out() -> None:

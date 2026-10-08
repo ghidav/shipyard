@@ -34,6 +34,8 @@ NOTED = {"smoke": "smoke", "proxy": "proxy", "backend": "tinker_base_url"}
 LAST_JOBS = 10
 #: The columns a table of rows leads with, never wrapped.
 PINNED = ("name", "at")
+#: Wide enough to measure a table at its natural width; the console's own clamps it.
+UNBOUNDED = 10_000
 
 
 def alive(pid: int | None) -> bool:
@@ -140,26 +142,33 @@ def _print_metrics(metrics: dict[str, Any]) -> None:
 
 
 def print_rows(name: str, section: dict[str, Any], limit: int | None) -> None:
-    """The row count and a table of the rows, the last `limit` of them when that cuts; a
-    table wider than the console would fold every cell to "…", so each row is a block."""
+    """The row count and a table of the rows, the last `limit` of them when that cuts, or
+    each row as a block when the table does not fit."""
     count, rows = section["count"], section["rows"]
     shown = rows if limit is None or count <= limit else rows[-limit:]
     cut = f" (last {len(shown)}; --full for all)" if len(shown) < count else ""
     console.print(f"[bold]{name}[/bold]  {_rows(count)}{cut}", highlight=False)
     if not shown:
         return
-    table = _table(shown)
-    if console.measure(table).maximum + 2 <= console.width:
-        console.print(Padding(table, (0, 0, 0, 2), expand=False))
-        return
     columns = _columns(shown)
-    for index, row in enumerate(shown):
+    blocks = [{key: escape(_cell(key, row)) for key in columns if key in row} for row in shown]
+    fitted(_table(shown), blocks, indent=2)
+
+
+def fitted(table: Table, rows: list[dict[str, str]], *, indent: int = 0) -> None:
+    """The table when it fits the console, else each row as a block of `key  value` lines,
+    the values already marked up or escaped: a table wider than the console would fold its
+    cells to "…", which cannot be pasted whole."""
+    natural = console.measure(table, options=console.options.update_width(UNBOUNDED)).maximum
+    if natural + indent <= console.width:
+        console.print(Padding(table, (0, 0, 0, indent), expand=False))
+        return
+    for index, row in enumerate(rows):
         if index:
             console.print()
-        width = max(len(key) for key in columns if key in row) + 2
-        for key in columns:
-            if key in row:
-                _pair(key, escape(_cell(key, row)), width)
+        width = max(len(key) for key in row) + 2
+        for key, value in row.items():
+            _pair(key, value, width)
 
 
 def _columns(rows: list[dict[str, Any]]) -> list[str]:

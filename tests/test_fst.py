@@ -11,7 +11,17 @@ import pytest
 from harbor.models.trial.config import TrialConfig
 
 from shipyard import record
-from shipyard.config import ConfigError, check, load
+from shipyard.config import (
+    SLOW_KNOBS,
+    CispoRecipe,
+    ConfigError,
+    DapoRecipe,
+    DrGrpoRecipe,
+    FstRecipe,
+    Gradient,
+    check,
+    load,
+)
 from shipyard.data import batches
 from shipyard.gepa.reflect import COLLECTED
 from shipyard.modules import SKILL_FILE, seed
@@ -66,6 +76,19 @@ def test_another_slow_recipe_takes_its_own_knobs(tmp_path: Path) -> None:
     assert found.loss_fn == "ppo"
     assert found.loss_config == {"clip_low_threshold": 0.8, "clip_high_threshold": 1.3}
     assert (found.substeps, found.refill) == (1, 0), "fst's own step, not dapo's"
+
+
+@pytest.mark.parametrize(
+    ("slow", "recipe"), [("dapo", DapoRecipe), ("dr-grpo", DrGrpoRecipe), ("cispo", CispoRecipe)]
+)
+def test_slow_knobs_are_each_slow_recipes_own_fields_and_fsts(slow: str, recipe: type) -> None:
+    """A knob a slow recipe gains must reach fst's list and its fields, or fst cannot set
+    it; `refill` and the overlong term alone stay out, since a slow step trains on the batch
+    it sampled, with no overlong term."""
+    outside = {"refill", "overlong_penalty", "overlong_buffer"}
+    own = set(recipe.model_fields) - set(Gradient.model_fields) - {"kind"} - outside
+    assert own == set(SLOW_KNOBS[slow])
+    assert own <= set(FstRecipe.model_fields) and not outside & set(FstRecipe.model_fields)
 
 
 def test_a_knob_of_another_slow_recipe_is_refused(tmp_path: Path) -> None:

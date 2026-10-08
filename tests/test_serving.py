@@ -90,7 +90,8 @@ def test_the_party_is_tinker_or_tinker_at_the_backends_host() -> None:
 def test_the_endpoint_settings_are_the_rollout_knobs_and_the_checkpoint() -> None:
     cfg = blueprint(
         from_checkpoint="tinker://w/step-9",
-        renderer="qwen3",
+        renderer="tml_v0",
+        effort=0.5,
         bind="127.0.0.1",
         bind_port=8000,
         temperature=0.7,
@@ -103,7 +104,8 @@ def test_the_endpoint_settings_are_the_rollout_knobs_and_the_checkpoint() -> Non
     assert endpoint_settings(cfg) == {
         "model": "Qwen/Qwen3-8B",
         "weights": "tinker://w/step-9",
-        "renderer": "qwen3",
+        "renderer": "tml_v0",
+        "effort": 0.5,
         "bind": "127.0.0.1",
         "bind_port": 8000,
         "temperature": 0.7,
@@ -116,6 +118,7 @@ def test_the_endpoint_settings_are_the_rollout_knobs_and_the_checkpoint() -> Non
     }
     bare = endpoint_settings(blueprint())
     assert bare["weights"] is None and bare["renderer"] is None and bare["max_context"] is None
+    assert bare["effort"] is None, "the renderer's own"
     assert (bare["bind"], bare["bind_port"], bare["max_tokens"]) == ("0.0.0.0", 0, 8192)
     assert "metadata" not in bare
 

@@ -3,6 +3,7 @@ the recorder's refusals and failures, each of which leaves an error record."""
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 from types import SimpleNamespace
 from typing import Any
@@ -284,6 +285,41 @@ async def test_a_failed_sample_leaves_a_record_and_re_raises() -> None:
     (record,) = recorder.records_for("t")
     assert record.error == "sampler: RuntimeError" and record.served == "tinker://w/step-1"
     assert record.prompt_token_ids == (1, 2) and record.completion_token_ids == ()
+
+
+async def test_a_reply_that_lands_after_its_trial_was_taken_is_dropped() -> None:
+    """A call Harbor's clock cut mid-flight answers after the run drained its trial: the
+    harness still gets the reply, and the proxy keeps nothing nobody will fetch."""
+
+    class Held(FakeSampler):
+        def __init__(self) -> None:
+            super().__init__("late")
+            self.release = asyncio.Event()
+            self.release.set()
+
+        async def sample_async(self, prompt: Any, num_samples: int, sampling_params: Any) -> Any:
+            await self.release.wait()
+            return await super().sample_async(prompt, num_samples, sampling_params)
+
+    sampler = Held()
+    recorder = Recorder(sampler, budget=100)
+    await under("t", recorder, tinker.ModelInput.from_ints([1]))  # answered before the take
+    sampler.release.clear()
+    late = asyncio.create_task(under("t", recorder, tinker.ModelInput.from_ints([1, 2])))
+    await asyncio.sleep(0)
+    assert len(recorder.take("t")) == 1
+    sampler.release.set()
+    replied = await late
+    assert [list(s.tokens) for s in replied.sequences] == [list(ids("late"))]
+    recorder.reply("t", 1, "digest", ended_with_stop=True)
+    assert recorder.records == {} and recorder.spoke == {} and recorder.indexes == {}
+    assert not any(key[0] == "t" for key in recorder._replies)
+    await under("t", recorder, tinker.ModelInput.from_ints([3]))  # one asked after the take
+    assert recorder.take("t") == [] and recorder.records == {}
+    await under("", recorder, tinker.ModelInput.from_ints([4]))
+    recorder.take("")
+    await under("", recorder, tinker.ModelInput.from_ints([5]))
+    assert len(recorder.records_for("")) == 1, "a call with no trial is never dropped"
 
 
 async def test_a_failed_sample_is_a_500_and_a_retry_samples_fresh() -> None:

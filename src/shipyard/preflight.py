@@ -1,6 +1,7 @@
 """What `check` asks before anything is spent: whether the sandbox can open here (Harbor's
-extra, its credentials, docker) and what must never enter it; for a served model, where its
-proxy will stand, how its harness is wired, and whether the backend lists the model."""
+extra, its credentials, docker and its leftover networks) and what must never enter it; for
+a served model, where its proxy will stand, how its harness is wired, and whether the
+backend lists the model."""
 
 from __future__ import annotations
 
@@ -10,7 +11,9 @@ import os
 import re
 import shutil
 import subprocess
-from collections.abc import Mapping
+import threading
+import tomllib
+from collections.abc import Callable, Mapping
 from importlib import metadata
 from pathlib import Path
 
@@ -18,8 +21,9 @@ from dotenv.parser import parse_stream
 
 from shipyard.config import Blueprint, Finding
 from shipyard.proxy import tunnel
-from shipyard.proxy.profiles import PROFILES, bare_name
+from shipyard.proxy.profiles import PROFILES, bare_name, profile_for
 from shipyard.proxy.wire import CONTROL_TOKEN_ENV, PROXY_TOKEN_ENV
+from shipyard.resolved import PROMPT_EFFORT, served_renderer
 from shipyard.serving import LOCAL_SANDBOXES, backend, placement
 
 #: Over this, a reply to a sandbox elsewhere takes long enough for a harness to give up on it.
@@ -54,11 +58,29 @@ INSTEAD = {"daytona": ("DAYTONA_JWT_TOKEN", "DAYTONA_ORGANIZATION_ID")}
 #: A value Harbor replaces with the host's variable before the agent sees it, as
 #: `${VAR}` or `${VAR:-default}` (harbor/utils/env.py:4, resolved at agents/factory.py:147).
 TEMPLATE = re.compile(r"\$\{([^}:]+)(?::-(.*))?\}")
+#: The app `check` looks up to learn whether Modal takes the token: a lookup without
+#: `create_if_missing` creates nothing (modal/app.py, `App.lookup`).
+MODAL_APP = "shipyard"
+#: Modal reads each half from the environment before its profile file (modal/config.py).
+MODAL_TOKEN = ("MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET")
+#: How long `check` waits for Modal to answer that lookup before it gives up and warns.
+MODAL_SECONDS = 15.0
+#: At this many leftover trial networks `check` warns: Docker's default address pools hold
+#: about 30 user networks, and past them no trial's containers start.
+LEFTOVER_NETWORKS = 20
+#: Removes those networks and no other: Harbor names a trial's Compose projects
+#: `<trial>__env` and `<trial>__verifier__<key>` (harbor/trial/trial.py), and a network with
+#: a container on it is not dangling.
+REMOVE_NETWORKS = (
+    "docker network ls -q --filter dangling=true --filter name=__env_default "
+    "--filter name=__verifier__ | xargs docker network rm"
+)
 
 
 def findings(cfg: Blueprint, environ: Mapping[str, str] | None = None) -> list[Finding]:
-    """The sandbox's findings, then a served model's: problems only for the first, since
-    the facts `check` states already name the sandbox."""
+    """The sandbox's findings, then a served model's. The sandbox's are problems only, plus
+    Modal's verdict on its token, since the facts `check` states already name the
+    sandbox."""
     environ = os.environ if environ is None else environ
     found = sandbox_findings(cfg, environ)
     if (reflector := getattr(cfg.recipe, "reflection_harness", "").strip()) and (
@@ -115,7 +137,8 @@ def sandbox_findings(cfg: Blueprint, environ: Mapping[str, str]) -> list[Finding
             )
         )
     if name == "docker":
-        found += docker_findings("the docker sandbox")
+        down = docker_findings("the docker sandbox")
+        found += down if down else network_findings()
     found += [
         Finding("blocked", f"[rollout] env carries {carried}, which must never enter a sandbox")
         for key, value in rollout.env.items()
@@ -140,8 +163,8 @@ def secret(name: str) -> bool:
 
 
 def provider_findings(name: str, environ: Mapping[str, str]) -> list[Finding]:
-    """Harbor's extra for the provider, and each credential variable that is unset when
-    no login Harbor takes instead is there."""
+    """Harbor's extra for the provider, each credential variable that is unset when no
+    login Harbor takes instead is there, and, for Modal with credentials, its verdict."""
     found = []
     missing = extra_missing(name)
     if missing or not extra_installed(name):
@@ -152,13 +175,94 @@ def provider_findings(name: str, environ: Mapping[str, str]) -> list[Finding]:
                 f'sandbox {name}: Harbor\'s {name} extra {lacks}; run `uv add "harbor[{name}]"`',
             )
         )
-    if not logged_in(name, environ):
-        found += [
-            Finding("blocked", f"sandbox {name}: {variable} is unset")
-            for variable in PROVIDERS[name][1]
-            if not environ.get(variable)
-        ]
+    unset = [variable for variable in PROVIDERS[name][1] if not environ.get(variable)]
+    if unset and not logged_in(name, environ):
+        found += [Finding("blocked", f"sandbox {name}: {variable} is unset") for variable in unset]
+    elif name == "modal" and extra_installed(name) and (asked := modal_finding(environ)):
+        found.append(asked)
     return found
+
+
+def modal_finding(environ: Mapping[str, str]) -> Finding | None:
+    """One read against Modal that creates nothing: an app looked up by name, which a good
+    token answers found or not found. A refused token blocks, naming where it came from;
+    anything else, or no answer in `MODAL_SECONDS`, is a warning. None when the SDK does
+    not import."""
+    source, shadowed = modal_source(environ)
+    try:
+        modal = importlib.import_module("modal")
+    except ImportError:
+        return None
+    except Exception as failed:  # noqa: BLE001 - modal reads its profile file at import
+        return Finding("warning", f"sandbox modal: could not ask Modal about its token: {failed}")
+    try:
+        within(MODAL_SECONDS, lambda: modal.App.lookup(MODAL_APP))
+    except modal.exception.NotFoundError:
+        pass
+    except modal.exception.AuthError as refused:
+        fix = f"; {shadowed}" if shadowed else "; `modal token new` makes a new one"
+        return Finding(
+            "blocked", f"sandbox modal: Modal refuses the token from {source}: {refused}{fix}"
+        )
+    except Exception as failed:  # noqa: BLE001 - not a verdict on the token, as for the probe
+        return Finding(
+            "warning",
+            f"sandbox modal: could not ask Modal whether it takes the token from {source}: "
+            f"{failed}",
+        )
+    return Finding("ok", f"sandbox modal: Modal takes the token from {source}")
+
+
+def within(seconds: float, call: Callable[[], object]) -> None:
+    """`call` on a daemon thread, raising here what it raised; TimeoutError when it has not
+    returned after `seconds`, its thread left to end with the process."""
+    raised: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            call()
+        except BaseException as failed:  # noqa: BLE001 - raised again on the caller's thread
+            raised.append(failed)
+
+    worker = threading.Thread(target=run, name="shipyard-check", daemon=True)
+    worker.start()
+    worker.join(seconds)
+    if worker.is_alive():
+        raise TimeoutError(f"no answer in {seconds:g} s")
+    if raised:
+        raise raised[0]
+
+
+def modal_source(environ: Mapping[str, str]) -> tuple[str, str]:
+    """Where Modal takes its token from, as its config reads it: each half from the
+    environment before the profile file (`MODAL_CONFIG_PATH`, else ~/.modal.toml), whose
+    profile is `MODAL_PROFILE`, else the active one, else `default`. And, when
+    `MODAL_TOKEN_ID` differs from the token id of that profile, a sentence saying the
+    environment shadows it; ids only, no secret is read."""
+    moved = environ.get("MODAL_CONFIG_PATH")
+    path = Path(moved).expanduser() if moved else Path.home() / ".modal.toml"
+    try:
+        profiles = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+        profiles = {}
+    active = [
+        name for name, body in profiles.items() if isinstance(body, dict) and body.get("active")
+    ]
+    profile = environ.get("MODAL_PROFILE") or (active[0] if active else "default")
+    named = [variable for variable in MODAL_TOKEN if variable in environ]
+    if not named:
+        return f"profile {profile} in {path}", ""
+    source = f"{' and '.join(named)} in the environment"
+    if set(named) & set(assigned(Path.cwd() / ".env")):
+        source += " (assigned in the working directory's .env)"
+    body = profiles.get(profile)
+    held = body.get("token_id") if isinstance(body, dict) else None
+    shadowed = (
+        f"they shadow profile {profile} in {path}, which Modal uses once they are unset"
+        if held and environ.get("MODAL_TOKEN_ID", held) != held
+        else ""
+    )
+    return source, shadowed
 
 
 def extra_installed(name: str) -> bool:
@@ -210,6 +314,42 @@ def docker_findings(needed_for: str) -> list[Finding]:
     return [Finding("blocked", f"docker is not running (needed for {needed_for})")]
 
 
+def network_findings() -> list[Finding]:
+    """A warning when hard-killed runs left enough trial networks to near Docker's pools."""
+    left = leftover_networks()
+    if left < LEFTOVER_NETWORKS:
+        return []
+    return [
+        Finding(
+            "warning",
+            f"{left} trial networks are left over from earlier runs, with no container on "
+            "them; Docker's default address pools hold about 30 networks, and past them no "
+            f"trial starts. `{REMOVE_NETWORKS}` removes them",
+        )
+    ]
+
+
+def leftover_networks() -> int:
+    """How many of Harbor's trial networks have no container on them: `<trial>__env` and
+    `<trial>__verifier__<key>` Compose projects a run killed hard did not take down."""
+    binary = shutil.which("docker")
+    if binary is None:
+        return 0
+    try:
+        done = subprocess.run(
+            [binary, "network", "ls", "--filter", "dangling=true", "--format", "{{.Name}}"],
+            capture_output=True,
+            text=True,
+            timeout=DOCKER_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return 0
+    if done.returncode != 0:
+        return 0
+    names = done.stdout.split()
+    return sum(1 for name in names if name.endswith("__env_default") or "__verifier__" in name)
+
+
 def docker_running() -> bool:
     """Whether a docker daemon answers here: `docker info`, given up on after a while."""
     binary = shutil.which("docker")
@@ -229,15 +369,10 @@ def docker_running() -> bool:
 
 def twice_in(dotenv: Path) -> list[Finding]:
     """A key `.env` assigns more than once, by name: python-dotenv keeps the last one
-    (dotenv/main.py:75-84), and no value is ever read out of the file."""
-    try:
-        text = dotenv.read_text(encoding="utf-8")
-    except OSError:
-        return []
+    (dotenv/main.py:75-84)."""
     counts: dict[str, int] = {}
-    for binding in parse_stream(io.StringIO(text)):
-        if binding.key:
-            counts[binding.key] = counts.get(binding.key, 0) + 1
+    for key in assigned(dotenv):
+        counts[key] = counts.get(key, 0) + 1
     return [
         Finding("warning", f".env assigns {key} twice; the last one wins")
         for key, count in counts.items()
@@ -245,9 +380,19 @@ def twice_in(dotenv: Path) -> list[Finding]:
     ]
 
 
+def assigned(dotenv: Path) -> list[str]:
+    """Every key `.env` assigns, once per assignment; no value is ever read out of it."""
+    try:
+        text = dotenv.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    return [binding.key for binding in parse_stream(io.StringIO(text)) if binding.key]
+
+
 def served_findings(cfg: Blueprint, environ: Mapping[str, str]) -> list[Finding]:
     """What `check` says of a served model: where its proxy will stand and whether that
-    can work here, the harness's wiring, and whether the backend serves the model."""
+    can work here, the harness's wiring, whether its renderer takes the effort named, and
+    whether the backend serves the model."""
     model, rollout = cfg.model, cfg.rollout
     if not model.served:
         return []
@@ -297,6 +442,27 @@ def served_findings(cfg: Blueprint, environ: Mapping[str, str]) -> list[Finding]
     if bare_name(rollout.harness) not in PROFILES:
         found.append(
             Finding("warning", f"no profile for harness {rollout.harness}; generic OpenAI wiring")
+        )
+    profiled = profile_for(rollout.harness).env
+    by_hand = [key for key, value in profiled.items() if rollout.env.get(key) == value]
+    if by_hand and not rollout.fill_context:
+        found.append(
+            Finding(
+                "warning",
+                f"[rollout] env sets {', '.join(by_hand)}, which switches the harness's "
+                "compaction off, but the proxy still refuses a call that overflows the "
+                "context, as a harness that compacts expects; set [rollout] fill_context = "
+                "true, which sets the same keys and gives such a call what is left",
+            )
+        )
+    if rollout.effort is not None and (renderer := served_renderer(cfg)) not in PROMPT_EFFORT:
+        found.append(
+            Finding(
+                "blocked",
+                f"[rollout] effort: the renderer {renderer or '(none known for the model)'} "
+                "takes no thinking effort when it builds a prompt; where a model's effort "
+                "levels are renderers, [rollout] renderer picks one",
+            )
         )
     found.append(probe(model.name, environ))
     return found

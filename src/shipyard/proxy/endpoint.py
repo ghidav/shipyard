@@ -19,7 +19,7 @@ from shipyard.proxy import cookbook, keepalive, thinking, vision
 from shipyard.proxy.exchange import middleware
 from shipyard.proxy.keepalive import KEEPALIVE_EVERY, KEEPALIVE_GRACE
 from shipyard.proxy.recorder import Record, Recorder
-from shipyard.proxy.rendering import Rendering
+from shipyard.proxy.rendering import Rendering, at_effort
 from shipyard.proxy.wire import CONTROL_PATH, HEALTH_PATH, RECORDS_PATH, delta_encoded, new_token
 
 logger = logging.getLogger(__name__)
@@ -45,6 +45,9 @@ class Endpoint:
     model_path: str | None = None
     #: A cookbook renderer's name, an object (a test's), or None for the model's own.
     renderer: Any = None
+    #: The thinking effort a renderer that takes one at prompt time builds every prompt at;
+    #: None leaves the renderer's own default.
+    effort: float | None = None
     host: str = "host.docker.internal"
     bind: str = "0.0.0.0"
     bind_port: int = 0
@@ -60,8 +63,8 @@ class Endpoint:
     #: seconds, until its reply; None turns them off.
     keepalive_grace: float | None = KEEPALIVE_GRACE
     keepalive_every: float = KEEPALIVE_EVERY
-    token: str = field(default_factory=new_token)
-    control_token: str | None = None
+    token: str = field(default_factory=new_token, repr=False)
+    control_token: str | None = field(default=None, repr=False)
     #: The Tinker session's `user_metadata`: the run and recipe it samples for.
     metadata: dict[str, str] | None = None
     #: A test's way of making sampling clients; None opens Tinker's service client.
@@ -108,13 +111,22 @@ class Endpoint:
         return self.recorder.records_for(trial)
 
     async def start(self) -> None:
-        """Bind and serve: a sampling client on `model_path` or the base, the context from
-        Tinker when unknown, the renderer, the app and its routes, then the socket."""
+        """Bind and serve: the renderer at the run's effort, a sampling client on
+        `model_path` or the base, the context from Tinker when unknown, the app and its
+        routes, then the socket."""
         # Images and thinking on the wire, wrapped over the cookbook's parsers once per
         # process; thinking's wrap after vision's, so no thinking block reaches a parser.
         # thinking.install puts the keepalive's stream wrap beneath its own.
         vision.install()
         thinking.install()
+        renderer = (
+            cookbook.renderer_for(self.base_model, self.renderer)
+            if self.renderer is None or isinstance(self.renderer, str)
+            else self.renderer
+        )
+        # Beneath Rendering, so the bridge renders at the effort the prompt does; first, so
+        # a renderer that takes no effort is refused before a Tinker session opens.
+        renderer = at_effort(renderer, self.effort)
         if self.client_factory is None and self._service is None:
             import tinker
 
@@ -122,11 +134,6 @@ class Endpoint:
         self._client = await self._make(self.model_path)
         if self.max_context is None and self._service is not None:
             self.max_context = await context_of(self._service, self.base_model)
-        renderer = (
-            cookbook.renderer_for(self.base_model, self.renderer)
-            if self.renderer is None or isinstance(self.renderer, str)
-            else self.renderer
-        )
         self._recorder = Recorder(
             self._client,
             temperature=self.temperature,

@@ -25,7 +25,7 @@ from shipyard.proxy.client import Unreachable
 from shipyard.recipes import run_recipe
 from shipyard.run import Run, RunRefused, runs_root
 from shipyard.serving import NothingServed, ProxyGone
-from shipyard.show import print_run, sections, state_of, styled
+from shipyard.show import fitted, print_run, sections, state_of, styled
 from shipyard.smoke import SmokeFailed
 from shipyard.smoke import smoke as smoke_job
 
@@ -58,6 +58,8 @@ SmokeOption = Annotated[
     ),
 ]
 
+#: The columns of `runs`, with their styles.
+RUN_COLUMNS = {"id": "cyan", "kind": None, "state": None, "started": "dim", "finished": "dim"}
 MARKS = {
     "ok": "[green]ok[/green]",
     "warning": "[yellow]warning[/yellow]",
@@ -160,27 +162,29 @@ def serve(ctx: typer.Context) -> None:
 
 @app.command()
 def runs(root: RootOption = None) -> None:
-    """Every run under the root, newest first."""
+    """Every run under the root, newest first: a table, or a block per run when the table
+    is wider than the console."""
     found = [(directory.name, Run.read(directory)) for directory in _run_dirs(runs_root(root))]
     if not found:
         console.print("[dim](no runs)[/dim]")
         return
     found.sort(key=lambda pair: str(pair[1].get("started_at") or ""), reverse=True)
+    rows = [
+        {
+            "id": escape(run_id),
+            "kind": escape(str(note.get("kind") or "")),
+            "state": styled(state_of(note)),
+            "started": str(note.get("started_at") or "")[:19],
+            "finished": str(note.get("finished_at") or "")[:19],
+        }
+        for run_id, note in found
+    ]
     table = Table(show_header=True, header_style="bold")
-    table.add_column("id", style="cyan", no_wrap=True)
-    table.add_column("kind")
-    table.add_column("state")
-    table.add_column("started", style="dim")
-    table.add_column("finished", style="dim")
-    for run_id, note in found:
-        table.add_row(
-            run_id,
-            str(note.get("kind") or ""),
-            styled(state_of(note)),
-            str(note.get("started_at") or "")[:19],
-            str(note.get("finished_at") or "")[:19],
-        )
-    console.print(table)
+    for column, style in RUN_COLUMNS.items():
+        table.add_column(column, style=style, no_wrap=column == "id")
+    for row in rows:
+        table.add_row(*row.values())
+    fitted(table, rows)
 
 
 @app.command()

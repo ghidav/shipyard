@@ -152,13 +152,17 @@ What `check` looks at includes:
 - the `modules` directory, when the recipe names one;
 - for `gepa`, the reflector's harness, model and image;
 - that the harness is named and the sandbox is one Harbor knows;
-- for a `docker` sandbox, that Docker is running;
+- for a `docker` sandbox, that Docker is running, and whether earlier runs left 20 or more
+  trial networks behind, as a warning;
+- for a `modal` sandbox with a token, whether Modal takes it: a network call, a warning
+  when Modal does not answer within 15 seconds;
 - that `[rollout] env` holds no key starting with `TINKER_` and no `SHIPYARD_CONTROL_TOKEN`,
   which must never enter a sandbox;
 - a key that `.env` assigns twice, as a warning, since the last one wins;
-- for a served model: where the proxy will stand, whether the harness has a profile, and
-  whether the backend serves the model. That last one is a network call, made only when
-  `TINKER_API_KEY` is set; without it, `check` warns.
+- for a served model: where the proxy will stand, whether the harness has a profile,
+  whether `[rollout] env` switches its compaction off without `fill_context`, whether the
+  renderer takes `[rollout] effort`, and whether the backend serves the model. That last
+  one is a network call, made only when `TINKER_API_KEY` is set; without it, `check` warns.
 
 `shipyard` reads `.env` in the working directory before any command; a variable already set
 in the shell wins.

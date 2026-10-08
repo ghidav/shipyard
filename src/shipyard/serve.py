@@ -85,7 +85,8 @@ def endpoint_for(
 
 def fake_parts() -> tuple[Callable[[str | None], Any], Any]:
     """A sampling client that echoes the prompt's tokens as the completion, and a renderer
-    of one character per token: a scripted test runs serve for real without Tinker."""
+    of one character per token that takes a thinking effort and ignores it: a scripted test
+    runs serve for real without Tinker, with or without `[rollout] effort`."""
     from types import SimpleNamespace
 
     import tinker
@@ -110,7 +111,9 @@ def fake_parts() -> tuple[Callable[[str | None], Any], Any]:
         def get_stop_sequences(self) -> list[int]:
             return []
 
-        def build_generation_prompt(self, messages: list[dict[str, Any]]) -> Any:
+        def build_generation_prompt(
+            self, messages: list[dict[str, Any]], effort: float | None = None
+        ) -> Any:
             text = "".join(str(message.get("content") or "") for message in messages)
             return tinker.ModelInput.from_ints([ord(character) for character in text])
 
@@ -200,8 +203,8 @@ def parser() -> argparse.ArgumentParser:
         "--settings",
         type=json.loads,
         metavar="JSON",
-        help="the run's other [rollout] endpoint keys as a JSON object: temperature, top_p, "
-        "top_k, max_tokens, max_context, fill_context, volatile",
+        help="the run's other [rollout] endpoint keys as a JSON object: effort, temperature, "
+        "top_p, top_k, max_tokens, max_context, fill_context, volatile",
     )
     return made
 

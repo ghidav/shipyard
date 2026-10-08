@@ -18,11 +18,19 @@ Says whether a blueprint could run, before anything is spent.
 | `--verbose` | print the `ok` lines too |
 | `--json` | print one JSON object instead |
 
-It prints the blueprint with every default filled in, as TOML. For a Tinker-served model with no `[rollout] renderer`, the `renderer` line names the one the proxy will load. For `dapo`, `dr-grpo`, `cispo` and `fst` a comment line follows, saying what the recipe's name resolves to. Then come the findings, one per line: `blocked`, `warning`, and, under `--verbose`, `ok`. Every problem is listed at once.
+It prints the blueprint with every default filled in, as TOML. For a Tinker-served model with no `[rollout] renderer`, the `renderer` line names the one the proxy will load. When that renderer takes a thinking effort at prompt time, the `effort` line names the effort it renders at: the renderer's own default when `[rollout] effort` is unset, `0.9` for Inkling's `tml_v0`. For `dapo`, `dr-grpo`, `cispo` and `fst` a comment line follows, saying what the recipe's name resolves to. Then come the findings, one per line: `blocked`, `warning`, and, under `--verbose`, `ok`. Every problem is listed at once.
 
 For a Tinker-served model, `check` asks the backend whether it serves the model. That network call is made only when `TINKER_API_KEY` is set; without it, the line is a warning.
 
 For a sandbox elsewhere, `check` blocks when any package of Harbor's extra for it is missing. For a `gepa` or `fst` reflector, it warns when none of the API keys Harbor hands that harness is set.
+
+For `sandbox = "modal"`, with Harbor's modal extra installed and a token set, `check` makes one more network call: it looks an app up on Modal, which creates nothing. When Modal refuses the token, `check` blocks and says where the token came from: `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` in the environment, and whether the working directory's `.env` assigns them, or a profile in `~/.modal.toml`, or in the file `MODAL_CONFIG_PATH` names. Modal reads each variable before the profile, so when `MODAL_TOKEN_ID` differs from the `token_id` of the profile it shadows, `check` says so; it compares ids and reads no secret. Any other failure, or no answer within 15 seconds, is a warning.
+
+For `sandbox = "docker"`, `check` warns when 20 or more of Harbor's trial networks have no container on them. A run killed hard leaves its trials' networks behind, and Docker's default address pools hold about 30, past which no trial starts. The warning names a command that removes those networks and no others:
+
+```sh
+docker network ls -q --filter dangling=true --filter name=__env_default --filter name=__verifier__ | xargs docker network rm
+```
 
 `check` exits 1 when any finding is `blocked`, else 0.
 
@@ -76,7 +84,7 @@ See [Runs](../concepts/runs.md) for what the run directory holds.
 shipyard runs [--root PATH]
 ```
 
-Lists every run under the root, newest first: its id, recipe kind, state, and when it started and finished. It prints `(no runs)` when there are none.
+Lists every run under the root, newest first: its id, recipe kind, state, and when it started and finished. It prints `(no runs)` when there are none. When the table is wider than the terminal, each run is printed as a block of `key  value` lines instead, so nothing is cut.
 
 The state is one of:
 
@@ -118,8 +126,8 @@ The sections, in order:
 |---|---|---|
 | `process` | `process.json` | the state, the error if any, pid, started, finished, version, kind, blueprint, directory; then `proxy` and `backend` (its `tinker_base_url`) when the run noted them |
 | `metrics` | `metrics.jsonl` | the row count and the last row, one field per line |
-| `jobs` | `jobs.jsonl` | the row count and a table of the last 10 rows |
-| `checkpoints` | `checkpoints.jsonl` | the row count and a table of every row |
+| `jobs` | `jobs.jsonl` | the row count and a table of the last 10 rows; a block of `key  value` lines per row when the table is wider than the terminal |
+| `checkpoints` | `checkpoints.jsonl` | the row count and a table of every row, as blocks like `jobs` when it is wider than the terminal |
 | `costs` | `costs.json` | the document as JSON |
 
 A section whose file is absent is not printed. Under `--json` it is null; `metrics` is `{"count", "last"}` and `jobs` and `checkpoints` are `{"count", "rows"}` with every row.
@@ -167,7 +175,7 @@ Serves a Tinker model to a harness in a sandbox and records every model call: th
 | `--port N` | the port to listen on; 0, the default, for any free port |
 | `--advertise NAME` | the name a sandbox reaches the proxy by, when it is not the bind |
 | `--renderer NAME` | a cookbook renderer to use instead of the model's own |
-| `--settings JSON` | the run's other endpoint keys, as a JSON object: `temperature`, `top_p`, `top_k`, `max_tokens`, `max_context`, `fill_context`, `volatile` |
+| `--settings JSON` | the run's other endpoint keys, as a JSON object: `effort`, `temperature`, `top_p`, `top_k`, `max_tokens`, `max_context`, `fill_context`, `volatile` |
 
 The harness presents `SHIPYARD_PROXY_TOKEN` as its API key. A run presents `SHIPYARD_CONTROL_TOKEN` to point the proxy at other weights. Each is read from the environment; one that is unset is generated, and printed after the first line as `<NAME> <value>`.
 

@@ -57,6 +57,8 @@ class Recorder:
         self._replies: dict[tuple[Any, ...], asyncio.Future[Any]] = {}
         #: Per trial, the sampled replies the bridge may extend.
         self.indexes: dict[str, Index] = {}
+        #: The trials whose records were taken: nothing fetches them again.
+        self.taken: set[str] = set()
 
     def index_for(self, trial: str) -> Index:
         return self.indexes.setdefault(trial, Index())
@@ -79,6 +81,17 @@ class Recorder:
     async def sample_async(self, prompt: Any, num_samples: int, sampling_params: Any) -> Any:
         found = exchange.get()
         trial = found.trial if found is not None else ""
+        try:
+            return await self._sample(found, trial, prompt, num_samples, sampling_params)
+        finally:
+            if trial in self.taken:
+                # A call that outlived its trial's fetch, as one Harbor's clock cut can:
+                # what it left would sit in memory for the proxy's life, read by no one.
+                self._forget(trial)
+
+    async def _sample(
+        self, found: Any, trial: str, prompt: Any, num_samples: int, sampling_params: Any
+    ) -> Any:
         prompt_ids = ids_of(prompt)
         pinned = self.pin(sampling_params)
         # Keyed on the params as pinned, before the budget cut: a retry arriving after the
@@ -254,6 +267,11 @@ class Recorder:
     def take(self, trial: str) -> list[Record]:
         """This trial's records, removed with its counters and replies: a trial is read once,
         and a proxy that only accumulated would hold every token of a long run."""
+        if trial:
+            self.taken.add(trial)
+        return self._forget(trial)
+
+    def _forget(self, trial: str) -> list[Record]:
         for key in [key for key in self._replies if key[0] == trial]:
             del self._replies[key]
         for counter in (self.turned_away, self.cut, self.spoke, self._seq, self.indexes):

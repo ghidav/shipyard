@@ -3,6 +3,8 @@ and what a gradient recipe's name resolves to, on one comment line after it."""
 
 from __future__ import annotations
 
+import importlib
+import inspect
 import json
 import math
 import re
@@ -15,6 +17,9 @@ from shipyard.config import Blueprint, ConfigError, Finding, findings, load
 
 #: What TOML accepts as a bare key; any other key is quoted.
 BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
+#: The cookbook renderers that take a thinking effort each time they build a prompt, and
+#: their class; the other families pick their level by renderer name.
+PROMPT_EFFORT = {"tml_v0": ("tinker_cookbook.renderers.tml_v0", "TmlV0Renderer")}
 
 
 @dataclass(frozen=True)
@@ -52,13 +57,21 @@ def report(blueprint: Path) -> Report:
 def resolved(loaded: Blueprint) -> dict[str, Any]:
     """Every table as plain data with the defaults in, in the schema's order; `kind`
     leads the recipe table as it does in the file, and a served model's renderer is the
-    one the proxy will load."""
+    one the proxy will load, its effort the one it renders at."""
     dumped = loaded.model_dump(mode="json")
     recipe = dumped["recipe"]
     dumped["recipe"] = {"kind": recipe["kind"], **{k: v for k, v in recipe.items() if k != "kind"}}
-    if loaded.model.served and not loaded.rollout.renderer:
-        dumped["rollout"]["renderer"] = recommended_renderer(loaded.model.name)
+    if loaded.model.served:
+        rollout = dumped["rollout"]
+        rollout["renderer"] = served_renderer(loaded)
+        if rollout["effort"] is None:
+            rollout["effort"] = default_effort(rollout["renderer"])
     return dumped
+
+
+def served_renderer(loaded: Blueprint) -> str:
+    """The renderer the proxy will load: `[rollout] renderer`, else the model's own."""
+    return loaded.rollout.renderer or recommended_renderer(loaded.model.name)
 
 
 def recommended_renderer(model: str) -> str:
@@ -70,6 +83,19 @@ def recommended_renderer(model: str) -> str:
         return get_recommended_renderer_name(model)
     except Exception:  # noqa: BLE001 - the proxy's start is where an unknown model is refused
         return ""
+
+
+def default_effort(renderer: str) -> float | None:
+    """The effort `renderer` builds a prompt at when handed none, off its own signature;
+    None for a renderer that takes none, or one whose module does not import here."""
+    if renderer not in PROMPT_EFFORT:
+        return None
+    module, name = PROMPT_EFFORT[renderer]
+    try:
+        built = getattr(importlib.import_module(module), name).build_generation_prompt
+        return float(inspect.signature(built).parameters["effort"].default)
+    except Exception:  # noqa: BLE001 - the proxy's start is where a broken renderer is refused
+        return None
 
 
 def as_toml(config: Mapping[str, Any]) -> str:

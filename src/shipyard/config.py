@@ -96,6 +96,8 @@ class Rollout(_Table):
     max_tokens: int = Field(default=8192, ge=1)
     max_context: int = Field(default=0, ge=0)
     renderer: str = ""
+    #: tml_v0's own range: a finite number in [0, 1).
+    effort: float | None = Field(default=None, ge=0, lt=1)
     cut_volatile: bool = True
     fill_context: bool = False
     check_turns: bool = False

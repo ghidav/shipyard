@@ -1,10 +1,11 @@
-"""`show`'s rows at the console's width: a table when it fits, and each row as an indented
-`key  value` block when the table would be wider, since rich would otherwise fold every
-cell of a fifteen-key job row to an ellipsis at eighty columns."""
+"""`show`'s rows and `runs`' at the console's width: a table when it fits, and each row as
+an indented `key  value` block when the table would be wider, since rich would otherwise
+fold every cell of a fifteen-key job row to an ellipsis at eighty columns."""
 
 from __future__ import annotations
 
 import io
+import shutil
 from pathlib import Path
 
 import pytest
@@ -80,6 +81,34 @@ def test_show_at_eighty_columns_prints_the_jobs_as_blocks(
     shown = runner.invoke(app, ["show", run.id, "--root", str(tmp_path)])
     header = next(line for line in shown.output.splitlines() if "purpose" in line)
     assert "job" in header and "sandbox_seconds" in header
+
+
+def test_runs_at_eighty_columns_prints_each_run_as_a_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A blueprint name as long as a real one's makes the table wider than eighty."""
+    named = tmp_path / "k40-opencode-default"
+    named.mkdir()
+    shutil.copy(DAPO / "run.toml", named / "run.toml")
+    root, opened = tmp_path / "runs", []
+    for _ in range(2):
+        with Run.open(named, root=root) as run:
+            opened.append(run)
+    monkeypatch.setenv("COLUMNS", "80")
+    listed = runner.invoke(app, ["runs", "--root", str(root)])
+    assert listed.exit_code == 0, listed.output
+    lines = listed.output.splitlines()
+    assert "…" not in listed.output and "│" not in listed.output
+    assert all(len(line) <= 80 for line in lines)
+    for run in opened:
+        note = Run.read(run.directory)
+        assert f"  id        {run.id}" in lines
+        assert f"  started   {note['started_at'][:19]}" in lines
+        assert f"  finished  {note['finished_at'][:19]}" in lines
+    assert "  kind      dapo" in lines and "  state     finished" in lines and "" in lines
+    monkeypatch.setenv("COLUMNS", "200")
+    wide = runner.invoke(app, ["runs", "--root", str(root)]).output
+    assert "┃ id" in wide and all(run.id in wide for run in opened)
 
 
 def test_the_process_section_names_the_proxy_the_backend_and_a_smoke_only_when_noted(

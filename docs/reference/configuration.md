@@ -55,8 +55,9 @@ The **For** column says when a key matters:
 | `max_tokens` | integer ≥ 1 | `8192` | served | The longest reply. A call asking for more, or naming no limit, gets this. |
 | `max_context` | integer ≥ 0 | `0` | served | The context window each call must fit, and the most tokens one trial may sample in all. `0` takes the model's from the backend. |
 | `renderer` | string | `""` | served | A tinker-cookbook renderer to use in place of the model's own. |
+| `effort` | float, 0 ≤ x < 1 | unset | served | The thinking effort for a renderer that takes one each time it builds a prompt: Inkling's `tml_v0`, which renders at its own `0.9` when this is unset. `check` prints the effort in use and blocks the key on any other renderer. Qwen3.8, GLM-5.3, GPT-OSS and Nemotron-3 have a renderer per effort level, which `renderer` picks. |
 | `cut_volatile` | boolean | `true` | served | Cut the lines the harness changes on every call from its system message, such as Claude Code's `<total_tokens>` line. |
-| `fill_context` | boolean | `false` | served | A call that would overflow the context gets a shorter `max_tokens` instead of a refusal. Also switches the harness's own compaction off, where its profile knows how. |
+| `fill_context` | boolean | `false` | served | A call that would overflow the context gets a shorter `max_tokens` instead of a refusal. Also switches the harness's own compaction off, where its profile knows how. `check` warns when `env` sets one of the profile's compaction keys to the profile's own value, such as `DISABLE_COMPACT = "1"`, without it. |
 | `check_turns` | boolean | `false` | served | Count the calls the harness made in its own log, and mask a trial whose count is more than the proxy recorded. Claude Code and opencode only. |
 
 How the served keys behave is in [The proxy](../concepts/proxy.md).

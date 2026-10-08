@@ -1,5 +1,6 @@
 """The endpoint over the wire: addresses, the token gate, both dialects, swapping, the
-run's pins over the harness's, the control route, the context length."""
+run's pins over the harness's, the control route, the context length, and the Tinker
+session closed on the way out."""
 
 from __future__ import annotations
 
@@ -38,6 +39,14 @@ async def test_a_trial_name_that_cannot_ride_in_the_path_is_refused(name: str) -
 def test_each_endpoint_has_its_own_token_and_an_empty_one_is_replaced() -> None:
     assert endpoint().token != endpoint().token
     assert endpoint(token="").token
+
+
+def test_neither_token_is_in_the_endpoints_repr() -> None:
+    """As on the run's Proxy: a traceback's locals or a log line must not carry them."""
+    made = endpoint(token="harness-secret", control_token="control-secret")
+    shown = repr(made)
+    assert "harness-secret" not in shown and "control-secret" not in shown
+    assert "Qwen/Qwen3-8B" in shown
 
 
 # ------------------------------------------------------------------------ the address
@@ -289,3 +298,41 @@ async def test_the_context_length_is_read_off_the_capabilities_or_is_none() -> N
     assert await context_of(Service(), "c/d") is None
     assert await context_of(Service(), "e/f") is None
     assert await context_of(Broken(), "a/b") is None
+
+
+# ------------------------------------------------------------------ the Tinker session
+
+
+class Service:
+    """The proxy's Tinker service as `stop` uses it: `close` noted, or raising."""
+
+    def __init__(self, fails: bool = False) -> None:
+        self.closed: list[str] = []
+        self.fails = fails
+
+    async def get_server_capabilities_async(self) -> Any:
+        return SimpleNamespace(supported_models=[])
+
+    async def close(self, status: str) -> None:
+        self.closed.append(status)
+        if self.fails:
+            raise RuntimeError("the session is already gone")
+
+
+async def test_the_proxy_closes_its_tinker_session_once_on_the_way_out() -> None:
+    """`success` even when the caller failed: the proxy's own shutdown was clean, and the
+    run closes its own session with the reason."""
+    service = Service()
+    with pytest.raises(KeyError):
+        async with endpoint(_service=service, max_context=4096) as started:
+            assert started.port and service.closed == []
+            raise KeyError("the run failed")
+    assert service.closed == ["success"]
+    assert started._service is None and started.port is None
+
+
+async def test_a_close_that_fails_still_stops_the_proxy() -> None:
+    service = Service(fails=True)
+    async with endpoint(_service=service, max_context=4096) as started:
+        pass
+    assert service.closed == ["success"] and started.port is None

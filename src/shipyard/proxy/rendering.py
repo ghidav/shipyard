@@ -1,10 +1,12 @@
 """The renderer as the app sees it: volatile lines cut from system messages, images
 refused for a model that takes none, the bridge tried, then the prompt rendered; and the
-parsed reply digested onto its record, its thinking kept for the wire."""
+parsed reply digested onto its record, its thinking kept for the wire. Beneath it, the
+run's thinking effort for a renderer that takes one at prompt time."""
 
 from __future__ import annotations
 
 import hashlib
+import inspect
 import re
 from collections.abc import Sequence
 from typing import Any
@@ -71,6 +73,44 @@ class Rendering:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
+
+
+class AtEffort:
+    """A renderer that builds every prompt at one thinking effort; everything else is the
+    inner renderer's."""
+
+    def __init__(self, inner: Any, effort: float) -> None:
+        self._inner = inner
+        self._effort = effort
+
+    def build_generation_prompt(self, messages: Any, **kwargs: Any) -> Any:
+        kwargs.setdefault("effort", self._effort)
+        return self._inner.build_generation_prompt(messages, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+def at_effort(renderer: Any, effort: float | None) -> Any:
+    """The renderer at `effort`, or as it is for None. Refuses a renderer whose prompt
+    builder has no `effort` parameter: one whose levels are renderers is chosen by name."""
+    if effort is None:
+        return renderer
+    if not takes_effort(renderer):
+        raise ValueError(
+            f"[rollout] effort = {effort:g}, and the renderer {type(renderer).__name__} takes "
+            "no thinking effort when it builds a prompt; where a model's effort levels are "
+            "renderers, [rollout] renderer picks one"
+        )
+    return AtEffort(renderer, float(effort))
+
+
+def takes_effort(renderer: Any) -> bool:
+    """Whether the renderer's prompt builder names an `effort` parameter."""
+    try:
+        return "effort" in inspect.signature(renderer.build_generation_prompt).parameters
+    except (AttributeError, TypeError, ValueError):
+        return False
 
 
 def with_call_ids(message: Any, tokens: Any, found: Exchange | None) -> Any:

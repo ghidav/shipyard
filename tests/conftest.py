@@ -1,6 +1,7 @@
 """What every test runs under: the Modal builder default a rollout sets is restored, the
 shell's Tinker and proxy variables are out, so no test reaches a backend, and the machine
-`check` reads (Harbor's extras, logins, docker) is pinned, so no finding depends on this one."""
+`check` reads (Harbor's extras, logins, docker, Modal) is pinned, so no finding depends on
+this one."""
 
 from __future__ import annotations
 
@@ -31,11 +32,13 @@ def _shell_vars_unset(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _machine_pinned(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every provider's extra installed and logged in, docker running: the tests of those
-    findings take the pins off themselves."""
+    """Every provider's extra installed and logged in, Modal never asked, docker running
+    with no leftover networks: the tests of those findings take the pins off themselves."""
     from shipyard import preflight
 
     monkeypatch.setattr(preflight, "extra_installed", lambda name: True)
     monkeypatch.setattr(preflight, "extra_missing", lambda name: [])
     monkeypatch.setattr(preflight, "logged_in", lambda name, environ: True)
+    monkeypatch.setattr(preflight, "modal_finding", lambda environ: None)
     monkeypatch.setattr(preflight, "docker_running", lambda: True)
+    monkeypatch.setattr(preflight, "leftover_networks", lambda: 0)

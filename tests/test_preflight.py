@@ -205,6 +205,43 @@ def test_check_warns_of_long_replies_over_a_tunnel_and_of_an_unprofiled_harness(
     assert not any("no profile" in f.text for f in _served(tmp_path / "t", harness="terminus-2"))
 
 
+def test_compaction_switched_off_by_hand_without_fill_context_is_warned_about(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The profile's own keys at the profile's own values: `fill_context` lays them, and
+    lets an overflowing call fill what is left instead of the 400 a harness that compacts is
+    waiting for. A key set to anything else leaves compaction on, and is not warned about."""
+    fixture_tasks(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    env = 'env = { DISABLE_COMPACT = "1", OTHER = "x" }'
+    claude = f'harness = "claude-code"\n{env}'
+    found = check(write_blueprint(tmp_path / "c", SERVED.replace('harness = "pi@0.85.1"', claude)))
+    assert (
+        Finding(
+            "warning",
+            "[rollout] env sets DISABLE_COMPACT, which switches the harness's compaction off, "
+            "but the proxy still refuses a call that overflows the context, as a harness that "
+            "compacts expects; set [rollout] fill_context = true, which sets the same keys and "
+            "gives such a call what is left",
+        )
+        in found
+    )
+    mixed = 'harness = "claude-code"\nenv = { DISABLE_COMPACT = "0", DISABLE_AUTO_COMPACT = "1" }'
+    said = check(write_blueprint(tmp_path / "m", SERVED.replace('harness = "pi@0.85.1"', mixed)))
+    assert [f.text.split(",")[0] for f in said if "compaction" in f.text] == [
+        "[rollout] env sets DISABLE_AUTO_COMPACT"
+    ]
+    on = 'harness = "claude-code"\nenv = { DISABLE_COMPACT = "0" }'
+    kept = check(write_blueprint(tmp_path / "o", SERVED.replace('harness = "pi@0.85.1"', on)))
+    assert not any("compaction" in f.text for f in kept)
+    filled = SERVED.replace('harness = "pi@0.85.1"', f"{claude}\nfill_context = true")
+    assert not any("compaction" in f.text for f in check(write_blueprint(tmp_path / "f", filled)))
+    pi = SERVED.replace("[rollout]\n", f"[rollout]\n{env}\n")
+    assert not any("compaction" in f.text for f in check(write_blueprint(tmp_path / "p", pi)))
+    hosted = HOSTED.replace('harness = "pi@0.85.1"', claude)
+    assert not any("compaction" in f.text for f in check(write_blueprint(tmp_path / "h", hosted)))
+
+
 def test_check_on_a_remote_proxy_needs_the_token_in_the_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
