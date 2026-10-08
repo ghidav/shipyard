@@ -51,8 +51,10 @@ PAUSES = (1.0, 2.0, 4.0)
 #: Settings passed to serve as flags. All other settings go in `--settings`.
 FLAGGED = ("model", "weights", "renderer", "bind", "bind_port")
 #: Seconds the proxy has to answer `/healthz` before the run is refused, and the pause
-#: between probes. A quick tunnel's name can resolve late.
-PROBE_SECONDS = 30.0
+#: between probes. A quick tunnel's name can resolve late, and a resolver that looked it up
+#: too early caches the miss for trycloudflare.com's negative TTL of 60 s, so the window
+#: outlasts that.
+PROBE_SECONDS = 120.0
 PROBE_PAUSE = 1.0
 
 
