@@ -278,6 +278,13 @@ def test_the_resolved_toml_reads_back_as_the_resolved_config_without_its_nones()
         assert "\n[recipe]\n" + f'kind = "{kind}"\n' in text
 
 
+def test_a_key_toml_cannot_leave_bare_is_quoted_so_the_output_reads_back() -> None:
+    nested = {"rollout": {"kwargs": {"models": {"Qwen/Qwen3-8B": {"limit": {"context": 16384}}}}}}
+    text = resolved.as_toml({**nested, "env": {"a.b": "x", "plain_key-1": "y"}})
+    assert '[rollout.kwargs.models."Qwen/Qwen3-8B".limit]' in text
+    assert tomllib.loads(text) == {**nested, "env": {"a.b": "x", "plain_key-1": "y"}}
+
+
 def test_toml_values_are_spelled_as_toml() -> None:
     text = resolved.as_toml(
         {

@@ -5,12 +5,16 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from shipyard.config import Blueprint, ConfigError, Finding, findings, load
+
+#: What TOML accepts as a bare key; any other key is quoted.
+BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
 
 
 @dataclass(frozen=True)
@@ -86,11 +90,17 @@ def _table(lines: list[str], name: str, body: Mapping[str, Any]) -> None:
         if value is None:
             continue
         if isinstance(value, Mapping):
-            nested.append((f"{name}.{key}", value))
+            nested.append((f"{name}.{_key(key)}", value))
             continue
-        lines.append(f"{key} = {_value(value)}")
+        lines.append(f"{_key(key)} = {_value(value)}")
     for sub, inner in nested:
         _table(lines, sub, inner)
+
+
+def _key(key: str) -> str:
+    """A key as TOML spells it: bare when it may be, else a basic string, as a model name
+    such as `Qwen/Qwen3-8B` must be."""
+    return key if BARE_KEY.fullmatch(key) else json.dumps(key)
 
 
 def _value(value: Any) -> str:
