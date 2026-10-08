@@ -7,6 +7,7 @@ epsilon on the weight's ceiling: `loss_fn_config` gets `clip_high_threshold = 1 
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from shipyard.recipes import train as loop
@@ -34,7 +35,7 @@ def preset(recipe: Any) -> Preset:
         aggregation="prompt",
         overlong_penalty=float(recipe.overlong_penalty),
         overlong_buffer=float(recipe.overlong_buffer),
-        adam=ADAM,
+        adam=replace(ADAM, warmup=int(recipe.warmup)),
         **loop.shared(recipe),
     )
 

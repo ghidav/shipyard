@@ -92,7 +92,7 @@ overlong_buffer = 0.2
 [checkpoints]
 every = 1
 ttl_hours = 24.0
-# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token budget; 1 substep; adamw betas 0.9 / 0.95, eps 1e-08, learning rate warmed up over 20 steps; degenerate groups dropped
+# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token budget; 1 substep; adamw betas 0.9 / 0.95, eps 1e-08, no warm-up (the paper's is 20 steps); degenerate groups dropped
 
 ok  recipe dapo
 ok  model Qwen/Qwen3-8B, provider tinker (served by this run)
@@ -109,7 +109,7 @@ ok  tinker serves Qwen/Qwen3-8B
 - **loss**: PPO, with the probability ratio clipped to [1 − 0.2, 1 + 0.28], each prompt's token losses averaged so every prompt weighs the same.
 - **overlong penalty**: a rollout that sampled into the last 20% of its token budget, `max_context` (12,288 here), loses up to 0.5 of its reward, the full 0.5 at the budget. See [The overlong term](../concepts/recipes.md#the-overlong-term-dapo-and-cispo).
 - **1 substep**: one optimizer step over the whole batch.
-- **adamw**: the optimizer's betas and eps, and a learning rate that rises linearly to `learning_rate` over the first 20 steps, as DAPO trains. Under this warm-up a two-step run like this one trains at 1/20 and then 2/20 of `learning_rate`: 1e-06 at step 0 and 2e-06 at step 1. The run recorded below trained at the full 2e-05 on both steps.
+- **adamw**: the optimizer's betas and eps. DAPO also warms up over 20 steps; a two-step run takes no warm-up by default and trains at the full `learning_rate` from its first step, as the run recorded below did.
 - **degenerate groups dropped**: a group whose rewards are all equal, or that has one measured member, carries no gradient and is left out.
 
 See [Recipes](../concepts/recipes.md) for `dr-grpo` and `cispo`.
@@ -174,7 +174,7 @@ One row per step, after the `at` and `seq` every metrics row starts with. A meas
 | `entropy` | mean(−μ) over the trained tokens |
 | `anchor_kl` | the KL to the starting weights, only when `kl_coef > 0` |
 | `overlong` | rollouts that sampled into the last part of their token budget, which the overlong penalty docks |
-| `learning_rate`, `substeps`, `loss_fn`, `seconds` | what the step used, the learning rate after the warm-up, and how long it took |
+| `learning_rate`, `substeps`, `loss_fn`, `seconds` | what the step used, the learning rate after any warm-up, and how long it took |
 
 ### How to read five of them
 
@@ -221,7 +221,7 @@ restore_optimizer = true
 dataset = "rg-four"
 ```
 
-The rest of the blueprint is as before. `from_checkpoint` loads the training client from that state, so `lora_rank` is not read. The first step publishes those weights for sampling and points the proxy at them; with `kl_coef > 0` the KL anchor samples them too. `check` blocks a `sampler_path` here. `restore_optimizer = true` also loads the optimizer's state, which continues the earlier run's, so the run skips the warm-up. Left `false`, the weights continue with a fresh optimizer, and the warm-up runs again. The continuation is a new run with its own id, and its steps count from 0 again.
+The rest of the blueprint is as before. `from_checkpoint` loads the training client from that state, so `lora_rank` is not read. The first step publishes those weights for sampling and points the proxy at them; with `kl_coef > 0` the KL anchor samples them too. `check` blocks a `sampler_path` here. `restore_optimizer = true` also loads the optimizer's state, which continues the earlier run's. Left `false`, the weights continue with a fresh optimizer. The continuation is a new run with its own id, and its steps count from 0 again.
 
 `rg-four` is the first four tasks of `rg-small` in name order, so the continuation runs one step. Every one of its 16 rollouts scored 1, so all four groups were degenerate and the step took no gradient:
 

@@ -98,6 +98,8 @@ class Preset:
     overlong_penalty: float = 0.0
     overlong_buffer: float = PAPER_OVERLONG_BUFFER
     adam: Adam
+    #: The warm-up the recipe's paper trains with, shown beside the run's own `warmup`.
+    paper_warmup: int = 0
     kl_coef: float
     reference: str
     learning_rate: float
@@ -162,7 +164,7 @@ def resolution(preset: Preset) -> str:
             f"{preset.overlong_buffer * 100:g}% of the token budget"
         )
     parts.append("1 substep" if preset.substeps == 1 else f"{preset.substeps} substeps by prompt")
-    parts.append(optimizer(preset.adam))
+    parts.append(optimizer(preset.adam, preset.paper_warmup))
     if preset.refill > 0:
         rounds = "round" if preset.refill == 1 else "rounds"
         parts.append(
@@ -176,9 +178,10 @@ def resolution(preset: Preset) -> str:
     return f"# {preset.name}: " + "; ".join(parts)
 
 
-def optimizer(adam: Adam) -> str:
-    """The optimizer as the resolution line states it: betas and eps, then the weight decay,
-    the gradient clipping and the warm-up when the recipe has them."""
+def optimizer(adam: Adam, paper_warmup: int = 0) -> str:
+    """The optimizer as the resolution line states it: betas and eps, then the weight decay
+    and the gradient clipping when the recipe has them, and the run's warm-up, or the
+    paper's when the run takes none."""
     said = f"adamw betas {adam.beta1} / {adam.beta2}, eps {adam.eps:g}"
     if adam.weight_decay > 0:
         said += f", weight decay {adam.weight_decay}"
@@ -187,6 +190,8 @@ def optimizer(adam: Adam) -> str:
     if adam.warmup > 0:
         steps = "step" if adam.warmup == 1 else "steps"
         said += f", learning rate warmed up over {adam.warmup} {steps}"
+    elif paper_warmup > 0:
+        said += f", no warm-up (the paper's is {paper_warmup} steps)"
     return said
 
 

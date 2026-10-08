@@ -96,7 +96,8 @@ def test_the_three_recipes_resolve_to_their_presets() -> None:
     assert (found.aggregation, found.refill) == ("prompt", 9), "DAPO Eq. 8; verl's 10 batches"
     assert found.clipping == "clip 0.2 / 0.28"
     assert (found.overlong_penalty, found.overlong_buffer) == (0.5, 0.2), "Eq. 13; 4.1"
-    assert _adam(found) == (0.9, 0.95, 1e-8, 0.0, 0.0, 20), "4.1's warm-up; the rest the cookbook's"
+    assert _adam(found) == (0.9, 0.95, 1e-8, 0.0, 0.0, 0), "the cookbook's; warm-up off"
+    assert found.paper_warmup == 20, "DAPO 4.1"
     found = dr_grpo.preset(load(root / "dr-grpo").recipe)
     assert (found.name, found.normalize, found.loss_fn) == ("dr-grpo", False, "ppo")
     assert found.loss_config == {"clip_low_threshold": 0.8, "clip_high_threshold": 1.2}
@@ -461,3 +462,13 @@ async def test_credit_refuses_rollouts_sampled_at_weights_the_trainer_has_moved_
     assert len((await credit(unstamped, preset(), _trainer(updates=5))).datums) == 2
     sampled = preset(reference="sampler")
     assert len((await credit(groups, sampled, _trainer(updates=5))).datums) == 2
+
+
+def test_warmup_is_off_by_default_and_the_key_sets_it_for_every_gradient_recipe() -> None:
+    from shipyard.config import CispoRecipe, DapoRecipe, DrGrpoRecipe
+    from shipyard.recipes import cispo, dapo, dr_grpo
+
+    for model, module in ((DapoRecipe, dapo), (DrGrpoRecipe, dr_grpo), (CispoRecipe, cispo)):
+        kind = module.__name__.rsplit(".", 1)[-1].replace("_", "-")
+        assert module.preset(model(kind=kind, learning_rate=1e-5)).adam.warmup == 0
+        assert module.preset(model(kind=kind, learning_rate=1e-5, warmup=5)).adam.warmup == 5

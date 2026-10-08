@@ -19,7 +19,7 @@ The **For** column says when a key matters:
 | `provider` | string | `"tinker"` | all | Who serves the weights. `"tinker"`: this run serves them through its proxy, from a Tinker-API backend. Anything else: the harness calls that provider itself. |
 | `from_checkpoint` | string | unset | served | A `tinker://` path to start from instead of the base model: a checkpoint's `state_path` to go on training, its `sampler_path` to measure it. `check` blocks the other one. |
 | `lora_rank` | integer | unset (32) | gradient | The LoRA rank of a new training client. Not used with `from_checkpoint`. |
-| `restore_optimizer` | boolean | `false` | gradient | With `from_checkpoint`, load the optimizer state as well as the weights. The state continues the earlier run's, so the run skips its recipe's warm-up. |
+| `restore_optimizer` | boolean | `false` | gradient | With `from_checkpoint`, load the optimizer state as well as the weights. The state continues the earlier run's, so the run skips any warm-up. |
 
 ## `[data]`
 
@@ -71,7 +71,8 @@ How the served keys behave is in [The proxy](../concepts/proxy.md).
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `learning_rate` | float > 0 | required | AdamW's learning rate, reached after the recipe's warm-up. The betas, eps, weight decay, gradient clipping and warm-up are the recipe's, from its paper ([The optimizer](../concepts/recipes.md#the-optimizer)), and are not keys. |
+| `learning_rate` | float > 0 | required | AdamW's learning rate, reached after the warm-up if any. The betas, eps, weight decay and gradient clipping are the recipe's, from its paper ([The optimizer](../concepts/recipes.md#the-optimizer)), and are not keys. |
+| `warmup` | integer ≥ 0 | `0` | Updates over which the learning rate rises linearly to `learning_rate`. Off by default, as the papers' warm-ups (DAPO §4.1: 20; FST App. D: 10) are sized for runs of hundreds of steps. |
 | `substeps` | integer ≥ 1 | `16` for `dapo` (DAPO §4.1) and `cispo` (MiniMax-M1 §3.1); `1` for `dr-grpo` (Dr. GRPO states none) and `fst` (FST App. D) | Optimizer steps per batch. The batch is split by prompt into this many parts of whole groups, or one per group carrying a gradient when it has fewer, each one `forward_backward` and one `optim_step`. Every part keeps the reference logprobs of the weights the batch was sampled at. |
 | `reference` | `"trainer"` or `"sampler"` | `"trainer"` | Where the loss's reference logprobs come from: a forward pass on the trainer, or the logprobs recorded when sampling, with no extra pass. |
 | `kl_coef` | float ≥ 0 | `0.0`, as DAPO (§2.3), Dr. GRPO (App. G) and MiniMax-M1 (§3.1) train | Weight of a per-token KL term to the run's starting weights, folded into the advantage token by token, not centred. `0` is off. |
@@ -89,9 +90,9 @@ The gradient recipes need a served model.
 | `overlong_penalty` | float ≥ 0 | `0.5` (DAPO Eq. 13: −1 on its reward of −1 or 1, Eq. 7, which is −0.5 on Harbor's 0 to 1) | The most a rollout loses from its reward for its length, reached at its token budget ([The overlong term](../concepts/recipes.md#the-overlong-term-dapo-and-cispo)). `0` is off. |
 | `overlong_buffer` | float, 0 < x ≤ 1 | `0.2` (DAPO §4.1: L_cache / L_max, 4,096 of 20,480 tokens) | The last share of the token budget over which the loss grows linearly from 0 to `overlong_penalty`. |
 
-Token losses are averaged per prompt (DAPO Eq. 8). The optimizer is AdamW warmed up over 20 steps
-(DAPO §4.1), at the cookbook's betas 0.9 / 0.95, eps 1e-8, no weight decay and no gradient
-clipping; the paper states none of these.
+Token losses are averaged per prompt (DAPO Eq. 8). The optimizer is AdamW at the cookbook's betas 0.9 /
+0.95, eps 1e-8, no weight decay and no gradient clipping; the paper states none of these, and warms
+up over 20 steps (§4.1), which `warmup = 20` reproduces.
 
 ### `dr-grpo`
 
@@ -152,7 +153,7 @@ See [gepa](../concepts/gepa.md).
 `"modules"`), `minibatch` and `patience` are as for `gepa`. The fast phase selects on the paper's anchor set.
 FST names one anchor set (§3, App. A) and no other source for the minibatches, so fst draws them
 from it too. Token losses are averaged per prompt (FST Eq. 4), whatever `slow` is. The optimizer is
-AdamW at betas 0.9 / 0.999 and no weight decay, warmed up over 10 steps (FST App. D), with eps 1e-8,
+AdamW at betas 0.9 / 0.999 and no weight decay (FST App. D, which also warms up over 10 steps; `warmup = 10` reproduces it), with eps 1e-8,
 PyTorch's and the cookbook's, and no gradient clipping, as the paper states none. See
 [fst](../concepts/recipes.md#fst).
 

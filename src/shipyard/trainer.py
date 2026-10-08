@@ -85,7 +85,7 @@ class Checkpoint:
 class Trainer:
     """A Tinker training client and what a run asks of it. `updates` counts the gradients
     applied: how credit tells whether the weights a batch was sampled at have moved, and
-    how far the recipe's warm-up has gone. `restored` is set when the optimizer state was
+    how far the run's warm-up has gone. `restored` is set when the optimizer state was
     loaded with the weights: it continues an earlier run's, so there is no warm-up."""
 
     client: Any

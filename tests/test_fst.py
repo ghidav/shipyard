@@ -60,12 +60,13 @@ def test_the_fixture_takes_the_papers_defaults() -> None:
         0.999,
         1e-8,
         0.0,
-        10,
-    ), "App. D"
+        0,
+    ), "App. D; its 10-step warm-up is the warmup key's"
+    assert found.paper_warmup == 10
     assert ADAM.grad_clip_norm == 0.0, "App. D states no gradient clipping"
     assert resolution(recipe).endswith(
         "no lower bound, averaged per prompt; 1 substep; adamw betas 0.9 / 0.999, eps 1e-08, "
-        "learning rate warmed up over 10 steps; degenerate groups dropped; "
+        "no warm-up (the paper's is 10 steps); degenerate groups dropped; "
         "kl 0.001 to the starting weights"
     )
 
@@ -251,3 +252,9 @@ def test_fst_averages_per_prompt_whatever_its_slow_loss(tmp_path: Path) -> None:
     found = preset(load(write_blueprint(tmp_path, text)).recipe)
     assert (found.aggregation, found.refill) == ("prompt", 0)
     assert (found.length_cap, found.adam) == (0.5, ADAM), "dr-grpo's cap, FST's optimizer"
+
+
+def test_fsts_warmup_key_reaches_its_slow_step(tmp_path: Path) -> None:
+    text = _text(**{'kind = "fst"': 'kind = "fst"\nwarmup = 10'})
+    found = preset(load(write_blueprint(tmp_path, text)).recipe)
+    assert (found.adam.warmup, found.adam.beta2, found.paper_warmup) == (10, 0.999, 10)

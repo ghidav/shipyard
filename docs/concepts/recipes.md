@@ -53,7 +53,7 @@ overlong_buffer = 0.2
 [checkpoints]
 every = 1
 ttl_hours = 168.0
-# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token budget; 16 substeps by prompt; adamw betas 0.9 / 0.95, eps 1e-08, learning rate warmed up over 20 steps; degenerate groups dropped and refilled from the plan, up to 9 more rounds
+# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token budget; 16 substeps by prompt; adamw betas 0.9 / 0.95, eps 1e-08, no warm-up (the paper's is 20 steps); degenerate groups dropped and refilled from the plan, up to 9 more rounds
 ```
 
 Each name resolves as follows, with the section of its paper each default comes from:
@@ -69,7 +69,7 @@ Each name resolves as follows, with the section of its paper each default comes 
 | `refill` | `9`, Alg. 1, capped as in DAPO's released recipe | `0` | `9`, §3.1, which takes DAPO's |
 | Overlong term | `overlong_penalty = 0.5`, `overlong_buffer = 0.2`, Eq. 13 and §4.1 | none, as the paper has none | as `dapo`, §3.1, which takes DAPO's |
 | Length rule | none | shipyard's own, off: `length_penalty = 0.0` | none |
-| Optimizer | AdamW, warmed up over 20 steps, §4.1 | AdamW, betas 0.9 / 0.95, gradient norm clipped at 1.0, App. G | AdamW, betas 0.9 / 0.95, eps 1e-15, §3.2 |
+| Optimizer | AdamW, §4.1 | AdamW, betas 0.9 / 0.95, gradient norm clipped at 1.0, App. G | AdamW, betas 0.9 / 0.95, eps 1e-15, §3.2 |
 | `loss_fn_config` sent | `clip_low_threshold = 0.8`, `clip_high_threshold = 1.28` | `0.8` and `1.2` | `0.0` and `4.0` |
 
 At shipyard's batch sizes the split often reaches one prompt group per substep: a batch whose 4 groups
@@ -82,7 +82,7 @@ FST uses 4. Dr. GRPO does not state how many optimizer steps it takes per rollou
 one inner update epoch and no mini-batch size), so `dr-grpo` takes one. `check` prints these lines:
 
 ```
-# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token budget; 16 substeps by prompt; adamw betas 0.9 / 0.95, eps 1e-08, learning rate warmed up over 20 steps; degenerate groups dropped and refilled from the plan, up to 9 more rounds
+# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token budget; 16 substeps by prompt; adamw betas 0.9 / 0.95, eps 1e-08, no warm-up (the paper's is 20 steps); degenerate groups dropped and refilled from the plan, up to 9 more rounds
 # dr-grpo: advantage = group mean, not divided by spread; loss = ppo, clip 0.2 / 0.2, summed over tokens; 1 substep; adamw betas 0.9 / 0.95, eps 1e-08, gradient norm clipped at 1.0; degenerate groups dropped
 # cispo: advantage = group mean, divided by spread; loss = cispo, weight truncated above 4.0, no lower bound, averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token budget; 16 substeps by prompt; adamw betas 0.9 / 0.95, eps 1e-15; degenerate groups dropped and refilled from the plan, up to 9 more rounds
 ```
@@ -146,27 +146,31 @@ answer could then score as low as a failure, or lower.
 
 Each recipe steps with AdamW as its paper sets it. Where the paper states a value, it is the paper's;
 where it states none, it is the cookbook's (`train_step` in `tinker_cookbook/rl/train.py`): betas
-0.9 / 0.95, eps 1e-8, no weight decay, no gradient clipping and no warm-up.
+0.9 / 0.95, eps 1e-8, no weight decay and no gradient clipping. The warm-up is the `warmup` key's,
+`0` by default: the papers' warm-ups are sized for runs of hundreds of steps, and a shipyard run of
+twenty steps would spend all of them below `learning_rate`.
 
-| | betas | eps | weight decay | gradient clipping | warm-up |
+| | betas | eps | weight decay | gradient clipping | the paper's warm-up |
 |---|---|---|---|---|---|
 | `dapo` | 0.9 / 0.95, cookbook's | 1e-8, cookbook's | 0, cookbook's | none: the paper states none | 20 steps, §4.1 |
 | `dr-grpo` | 0.9 / 0.95, App. G | 1e-8, cookbook's | 0, App. G | global norm 1.0, App. G, Table 6 | none: a constant rate, App. G |
-| `cispo` | 0.9 / 0.95, MiniMax-M1 §3.2 | 1e-15, §3.2 | 0, cookbook's | none: the paper states none | none, cookbook's |
+| `cispo` | 0.9 / 0.95, MiniMax-M1 §3.2 | 1e-15, §3.2 | 0, cookbook's | none: the paper states none | none stated |
 | `fst` | 0.9 / 0.999, App. D | 1e-8, cookbook's and PyTorch's | 0, App. D | none: the paper states none | 10 steps, App. D |
+
+`check` names the paper's warm-up beside a run that takes none: "no warm-up (the paper's is 20 steps)".
 
 Gradient clipping scales an optimizer step's gradient down to the given global norm when it is
 larger; Tinker takes the norm as `grad_clip_norm`. MiniMax-M1 sets eps to 1e-15 because most of its
 gradients are below 1e-14 (§3.2).
 
-The warm-up raises the learning rate linearly over the run's first N updates: update k, counted
+With `warmup = N`, the learning rate rises linearly over the run's first N updates: update k, counted
 from 0, uses `learning_rate × (k + 1) / N`, and every update from the N-th on uses `learning_rate`.
 All substeps of a step use the same rate, and the row's `learning_rate` is the rate applied. A step
 that trains nothing takes no update, so it does not move the warm-up on.
 
-A run from `from_checkpoint` with `[model] restore_optimizer = true` skips the warm-up: its
+A run from `from_checkpoint` with `[model] restore_optimizer = true` skips any warm-up: its
 optimizer state continues the earlier run's, and every update uses `learning_rate`. A run from a
-checkpoint without it, or from the base model, warms up.
+checkpoint without it, or from the base model, warms up when `warmup` is set.
 
 The optimizer is part of the name, not a key; `check` prints it on the comment line.
 
@@ -203,7 +207,8 @@ the weights have moved, the ratio moves with them, and the clip bounds act. With
 
 | Key | Default | Meaning |
 |---|---|---|
-| `learning_rate` | required, > 0 | AdamW's step size, after the recipe's warm-up (see [The optimizer](#the-optimizer)). |
+| `learning_rate` | required, > 0 | AdamW's step size, after the warm-up if any (see [The optimizer](#the-optimizer)). |
+| `warmup` | `0` | Updates over which the learning rate rises linearly to `learning_rate`. DAPO warms up over 20 (§4.1) and FST over 10 (App. D). |
 | `substeps` | `16` for `dapo` and `cispo`, `1` for `dr-grpo` and `fst` | Optimizer steps per batch, split by prompt (see [Substeps](#substeps)). |
 | `reference` | `"trainer"` | Where μ comes from. μ is the sampling logprobs that the ratio is formed against. `"trainer"` recomputes μ in one forward pass on the training engine. `"sampler"` reads the logprobs the proxy recorded and makes no extra pass. |
 | `kl_coef` | `0.0`; `0.001` for `fst` | A per-token penalty for drifting from the run's starting weights, which are the base model or `from_checkpoint`. It is subtracted from the advantage: `kl_coef × (μ − anchor)`, token by token, not centred on the step's mean. DAPO (§2.3), Dr. GRPO (App. G) and MiniMax-M1 (§3.1) train without one; FST uses 0.001 (App. D) and does not say how the term enters the loss. |
@@ -307,7 +312,7 @@ never written as 0. Every row also carries `at` and `seq`.
 | `entropy` | mean(−μ) over the trained tokens. |
 | `anchor_kl` | mean(μ − anchor), present only when `kl_coef > 0`. |
 | `overlong` | Graded rollouts that sampled into the last `overlong_buffer` of their token budget; present under `dapo` and `cispo` when the proxy reports a budget. |
-| `learning_rate`, `substeps`, `loss_fn` | As applied, `learning_rate` after the warm-up; `substeps` never exceeds the groups trained on. |
+| `learning_rate`, `substeps`, `loss_fn` | As applied, `learning_rate` after any warm-up; `substeps` never exceeds the groups trained on. |
 | `seconds` | The time taken to apply the gradient. |
 
 ## fst
@@ -338,14 +343,13 @@ reflection_model = "anthropic/claude-sonnet-5"
 `check` prints what it resolves to:
 
 ```
-# fst: cycles of 6 cispo steps, each after gepa evolves 4 texts on the next 6 batches; every group split group_size / 4 per text; advantage = group mean, divided by spread; loss = cispo, weight truncated above 4.0, no lower bound, averaged per prompt; 1 substep; adamw betas 0.9 / 0.999, eps 1e-08, learning rate warmed up over 10 steps; degenerate groups dropped; kl 0.001 to the starting weights
+# fst: cycles of 6 cispo steps, each after gepa evolves 4 texts on the next 6 batches; every group split group_size / 4 per text; advantage = group mean, divided by spread; loss = cispo, weight truncated above 4.0, no lower bound, averaged per prompt; 1 substep; adamw betas 0.9 / 0.999, eps 1e-08, no warm-up (the paper's is 10 steps); degenerate groups dropped; kl 0.001 to the starting weights
 ```
 
 The defaults are the paper's: `slow = "cispo"` with the importance weight truncated above 4.0 (App. D),
 token losses averaged per prompt (Eq. 4), `substeps = 1` (App. D: `ppo_mini_batch_size` equals
 `train_batch_size`), no refill (§2, after ScaleRL §3.2), no overlong term (see
-[The overlong term](#the-overlong-term-dapo-and-cispo)), AdamW at betas 0.9 / 0.999 with a 10-step
-warm-up (App. D), `kl_coef = 0.001`, `cycle = 6`, `population = 4`, `edits = "incremental"`, and a gepa
+[The overlong term](#the-overlong-term-dapo-and-cispo)), AdamW at betas 0.9 / 0.999 (App. D, which also warms up over 10 steps; `warmup` sets it), `kl_coef = 0.001`, `cycle = 6`, `population = 4`, `edits = "incremental"`, and a gepa
 budget of five passes over the fast phase's tasks. The fast phase scores each (task, text) pair with
 one rollout, whatever share of a group the text takes in the slow steps: App. D spends 960 metric
 calls over 192 examples, and a metric call is one rollout. Scoring the texts carried from the

@@ -40,10 +40,11 @@ SLOW = {
 #: cell: App. D's 960 metric calls over 192 examples, a metric call being one rollout.
 BUDGET_PASSES = 5
 CELL_ROLLOUTS = 1
-#: App. D: AdamW at PyTorch's betas 0.9 / 0.999, weight decay 0, a 10-step linear warm-up;
-#: eps is unstated, and 1e-8 is both PyTorch's default and the cookbook's; it states no
-#: gradient clipping, so none, the cookbook's.
-ADAM = Adam(beta1=0.9, beta2=0.999, eps=1e-8, warmup=10)
+#: App. D: AdamW at PyTorch's betas 0.9 / 0.999, weight decay 0; eps is unstated, and 1e-8
+#: is both PyTorch's default and the cookbook's; it states no gradient clipping, so none.
+#: Its 10-step warm-up is the `warmup` key's, off by default.
+ADAM = Adam(beta1=0.9, beta2=0.999, eps=1e-8)
+PAPER_WARMUP = 10
 
 
 def slow_recipe(recipe: Any) -> Any:
@@ -51,7 +52,9 @@ def slow_recipe(recipe: Any) -> Any:
     model, _ = SLOW[recipe.slow]
     knobs = {knob: getattr(recipe, knob) for knob in SLOW_KNOBS[recipe.slow]}
     knobs = {knob: value for knob, value in knobs.items() if value is not None}
-    shared = {name: getattr(recipe, name) for name in ("learning_rate", "substeps", "reference")}
+    shared = {
+        name: getattr(recipe, name) for name in ("learning_rate", "substeps", "warmup", "reference")
+    }
     return model(kind=recipe.slow, kl_coef=recipe.kl_coef, **shared, **knobs)
 
 
@@ -68,7 +71,8 @@ def preset(recipe: Any) -> Preset:
         refill=0,
         aggregation="prompt",
         overlong_penalty=0.0,
-        adam=ADAM,
+        adam=replace(ADAM, warmup=int(recipe.warmup)),
+        paper_warmup=PAPER_WARMUP,
     )
 
 

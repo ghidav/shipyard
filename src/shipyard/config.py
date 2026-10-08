@@ -129,6 +129,9 @@ class Gradient(_Table):
 
     learning_rate: float = Field(gt=0)
     substeps: int = Field(default=1, ge=1)
+    #: Steps over which the learning rate rises to `learning_rate`. Off by default: the
+    #: papers' warm-ups (DAPO's 20, FST's 10) are sized for runs of hundreds of steps.
+    warmup: int = Field(default=0, ge=0)
     reference: Literal["trainer", "sampler"] = "trainer"
     kl_coef: float = Field(default=0.0, ge=0)
     modules: str | None = None

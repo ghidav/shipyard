@@ -333,6 +333,7 @@ def test_the_resolved_config_fills_every_table_and_leads_the_recipe_with_its_kin
         "kind": "dapo",
         "learning_rate": 2e-5,
         "substeps": 16,
+        "warmup": 0,
         "reference": "trainer",
         "kl_coef": 0.0,
         "modules": None,
@@ -420,8 +421,8 @@ def test_toml_values_are_spelled_as_toml() -> None:
             "dapo",
             "# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, "
             "averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token "
-            "budget; 16 substeps by prompt; adamw betas 0.9 / 0.95, eps 1e-08, learning rate "
-            "warmed up over 20 steps; degenerate groups dropped and refilled from the plan, "
+            "budget; 16 substeps by prompt; adamw betas 0.9 / 0.95, eps 1e-08, no warm-up (the "
+            "paper's is 20 steps); degenerate groups dropped and refilled from the plan, "
             "up to 9 more rounds",
         ),
         (
@@ -477,13 +478,19 @@ def test_the_resolution_line_says_what_one_substep_and_no_refill_leave(tmp_path:
     assert report.resolution == (
         "# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, "
         "averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token "
-        "budget; 1 substep; adamw betas 0.9 / 0.95, eps 1e-08, learning rate warmed up over "
-        "20 steps; degenerate groups dropped and refilled from the plan, up to 1 more round"
+        "budget; 1 substep; adamw betas 0.9 / 0.95, eps 1e-08, no warm-up (the paper's is "
+        "20 steps); degenerate groups dropped and refilled from the plan, up to 1 more round"
     )
     text = MINIMAL.replace('kind = "dapo"', 'kind = "dapo"\nrefill = 0')
     report = resolved.report(write_blueprint(tmp_path / "off", text))
     assert report.resolution is not None
-    assert report.resolution.endswith("warmed up over 20 steps; degenerate groups dropped")
+    assert report.resolution.endswith("(the paper's is 20 steps); degenerate groups dropped")
+    text = MINIMAL.replace('kind = "dapo"', 'kind = "dapo"\nwarmup = 20')
+    report = resolved.report(write_blueprint(tmp_path / "warm", text))
+    assert (
+        report.resolution is not None
+        and "learning rate warmed up over 20 steps" in report.resolution
+    )
 
 
 def test_the_rollout_serving_keys_load_with_their_defaults(tmp_path: Path) -> None:

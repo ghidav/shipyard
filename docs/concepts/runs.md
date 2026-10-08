@@ -153,9 +153,9 @@ restore_optimizer = true
 The rest of the blueprint is as before. The new run has its own id and an empty record. Its
 batches start again from the first epoch, so change `[data] seed` for another order.
 
-With `restore_optimizer = true` the run skips its recipe's warm-up: the optimizer state continues
-the earlier run's, and every update uses `learning_rate`. Without it, the weights continue with a
-fresh optimizer and the recipe's warm-up runs again ([The optimizer](recipes.md#the-optimizer)).
+With `restore_optimizer = true` the run skips any warm-up: the optimizer state continues the
+earlier run's, and every update uses `learning_rate`. Without it, the weights continue with a fresh
+optimizer, which warms up again when `warmup` is set ([The optimizer](recipes.md#the-optimizer)).
 
 The first step publishes the loaded weights for sampling and points the proxy at them. With
 `kl_coef > 0`, the anchor of the KL term samples those same starting weights. `check` blocks a

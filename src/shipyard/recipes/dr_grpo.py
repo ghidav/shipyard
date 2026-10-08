@@ -7,6 +7,7 @@ The length rule among solved answers (`length_penalty`, `length_floor`, `length_
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from shipyard.recipes import train as loop
@@ -32,7 +33,7 @@ def preset(recipe: Any) -> Preset:
         length_penalty=float(recipe.length_penalty),
         length_floor=int(recipe.length_floor),
         length_cap=float(recipe.length_cap),
-        adam=ADAM,
+        adam=replace(ADAM, warmup=int(recipe.warmup)),
         **loop.shared(recipe),
     )
 

@@ -171,8 +171,7 @@ async def test_a_two_step_dapo_run_publishes_points_samples_credits_steps_and_ch
         assert row["kl_v1"] == pytest.approx(-0.2, abs=1e-5)
         assert row["kl_v2"] == pytest.approx(0.02, abs=1e-5)
         assert row["entropy"] == pytest.approx(0.5, abs=1e-5)
-        warmed = 2e-5 * (row["step"] + 1) / 20  # DAPO 4.1: a 20-step linear warm-up
-        assert row["learning_rate"] == pytest.approx(warmed)
+        assert row["learning_rate"] == pytest.approx(2e-5), "no warm-up by default"
         assert (row["substeps"], row["loss_fn"]) == (2, "ppo")
         assert row["seconds"] >= 0.0 and "anchor_kl" not in row
         keys = [key for key in row if key not in ("at", "seq")]
