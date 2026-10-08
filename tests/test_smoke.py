@@ -226,3 +226,5 @@ def test_the_wiring_names_the_profile_and_what_it_adds(here: Path) -> None:
     assert wiring(cfg("pi@0.85.1")) == "pi (model_api=openai-completions)"
     assert wiring(cfg("terminus-2")) == "terminus-2"
     assert wiring(cfg("swe-agent@1")) == "generic"
+    assert wiring(cfg("opencode@1.18.35")) == "opencode (provider=shipyard, opencode_config)"
+    assert wiring(cfg("claude-code")) == "claude-code (dialect=anthropic)"

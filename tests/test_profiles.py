@@ -27,7 +27,7 @@ def test_the_generic_profile_is_the_openai_wire_with_nothing_extra() -> None:
     generic = Profile()
     assert generic.dialect == "openai" and slug_of(generic) == "openai"
     assert generic.kwargs == {} and generic.env == {} and generic.volatile == ()
-    assert generic.strip_v1 is False and generic.turns is None
+    assert generic.strip_v1 is False and generic.turns is None and generic.provider is None
 
 
 def test_pi_names_its_model_api_and_terminus_is_generic() -> None:
@@ -71,6 +71,29 @@ def test_claude_code_turns_are_distinct_requests_not_assistant_lines() -> None:
     )
     assert distinct_requests(log) == 3
     assert distinct_requests("") == 0
+
+
+def test_opencode_poses_as_its_own_chat_provider_with_no_title_call() -> None:
+    """Under `openai` opencode posts to `/responses`; under its own provider, on the chat
+    package it bundles, it posts to `/chat/completions`, keyed by the env shipyard sets."""
+    profile = PROFILES["opencode"]
+    assert profile.provider == "shipyard" and slug_of(profile) == "shipyard"
+    assert profile.dialect == "openai" and profile.env == {}
+    config = profile.kwargs["opencode_config"]
+    assert config["provider"] == {
+        "shipyard": {
+            "npm": "@ai-sdk/openai-compatible",
+            "env": ["SHIPYARD_API_KEY"],
+            "options": {"baseURL": "${SHIPYARD_BASE_URL}"},
+        }
+    }
+    assert config["agent"] == {"title": {"disable": True}}
+
+
+def test_a_provider_of_the_profiles_own_wins_over_the_dialects() -> None:
+    assert slug_of(Profile(provider="mine")) == "mine"
+    assert slug_of(Profile(dialect="anthropic", provider="mine")) == "mine"
+    assert slug_of(Profile(provider="")) == "openai"
 
 
 def test_opencode_turns_are_step_start_lines_whatever_the_spacing() -> None:

@@ -10,11 +10,16 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True)
 class Profile:
-    """One harness: its dialect, the extra agent kwargs and trial env it takes, whether it
-    appends `/v1` itself, the system lines it rewrites per request, its turn counter, and
-    the reader of its log that says whether its last model call failed."""
+    """One harness: its dialect, the provider it is posed to, the extra agent kwargs and
+    trial env it takes, whether it appends `/v1` itself, the system lines it rewrites per
+    request, its turn counter, and the reader of its log that says whether its last model
+    call failed."""
 
     dialect: str = "openai"
+    #: A provider id of the profile's own, for a harness the dialect's id would route
+    #: wrong. It names the model `<provider>/<model>` and the trial env
+    #: `<PROVIDER>_BASE_URL` and `<PROVIDER>_API_KEY`.
+    provider: str | None = None
     kwargs: dict = field(default_factory=dict)
     #: Extra env for the trial. Rollout lays it only when `[rollout] fill_context` is on:
     #: it switches the harness's compaction off, which only a filled context can afford.
@@ -94,7 +99,26 @@ PROFILES: dict[str, Profile] = {
         env={"DISABLE_COMPACT": "1", "DISABLE_AUTO_COMPACT": "1"},
         turns=distinct_requests,
     ),
-    "opencode": Profile(turns=lines_with("step-start")),
+    "opencode": Profile(
+        provider="shipyard",
+        kwargs={
+            "opencode_config": {
+                # Under `openai` it posts every call to `/responses`, which the proxy does
+                # not serve; this package, which it bundles, posts to `/chat/completions`.
+                "provider": {
+                    "shipyard": {
+                        "npm": "@ai-sdk/openai-compatible",
+                        "env": ["SHIPYARD_API_KEY"],
+                        "options": {"baseURL": "${SHIPYARD_BASE_URL}"},
+                    }
+                },
+                # Its title call would be sampled from the policy and trained as a chain
+                # of its own, though no turn reads it.
+                "agent": {"title": {"disable": True}},
+            }
+        },
+        turns=lines_with("step-start"),
+    ),
     # Its model calls are litellm's in the Harbor process, from its `api_base` option and
     # the host env, so the trial env does not reach them; a per-trial kwarg is a later release.
     "terminus-2": Profile(),
@@ -113,5 +137,8 @@ def profile_for(harness: str) -> Profile:
 
 
 def slug_of(profile: Profile) -> str:
-    """The provider a harness is posed to: `anthropic` for that wire, `openai` otherwise."""
+    """The provider a harness is posed to: the profile's own when it names one, else
+    `anthropic` for that wire and `openai` otherwise."""
+    if profile.provider:
+        return profile.provider
     return "anthropic" if profile.dialect == "anthropic" else "openai"

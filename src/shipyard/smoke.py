@@ -4,6 +4,7 @@ and no reflection, then a report of what came back. A smoke run is a normal run 
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -156,10 +157,16 @@ def report(run: Run, rolled: Rollouts) -> Smoked:
 
 
 def wiring(cfg: Blueprint) -> str:
-    """The harness's profile by name with what it adds: `pi (model_api=openai-completions)`."""
+    """The harness's profile by name with what it adds: `pi (model_api=openai-completions)`;
+    a table kwarg by its name alone, `opencode (provider=shipyard, opencode_config)`."""
     name = bare_name(cfg.rollout.harness)
     profile = profile_for(cfg.rollout.harness)
-    said = [f"{key}={value}" for key, value in profile.kwargs.items()]
+    said = [
+        key if isinstance(value, Mapping) else f"{key}={value}"
+        for key, value in profile.kwargs.items()
+    ]
+    if profile.provider:
+        said.insert(0, f"provider={profile.provider}")
     if profile.dialect != "openai":
         said.insert(0, f"dialect={profile.dialect}")
     named = name if name in PROFILES else "generic"

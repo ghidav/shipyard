@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import os
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -187,8 +188,9 @@ def _trial_config(
 
 def served_config(config: TrialConfig, served: Served) -> TrialConfig:
     """This trial's config pointed at the run's proxy, at the address naming the trial:
-    the provider's own env names over the batch's env, the profile's kwargs and, in
-    allowlist mode, the proxy's host. A copy: the agent config is shared by the batch."""
+    the provider's own env names over the batch's env, the profile's kwargs laid over the
+    batch's and, in allowlist mode, the proxy's host. A copy: the agent config is shared
+    by the batch."""
     address = served.proxy.address_for(config.trial_name)
     profile = served.profile
     if profile.strip_v1:
@@ -202,13 +204,27 @@ def served_config(config: TrialConfig, served: Served) -> TrialConfig:
     }
     update: dict[str, Any] = {
         "env": env,
-        "kwargs": {**dict(config.agent.kwargs or {}), **dict(profile.kwargs)},
+        "kwargs": laid_over(config.agent.kwargs or {}, profile.kwargs),
     }
     host = served.proxy.host
     if host and allowlisted(Path(config.task.path)):
         hosts = list(config.agent.extra_allowed_hosts or [])
         update["extra_allowed_hosts"] = hosts + [host] * (host not in hosts)
     return config.model_copy(update={"agent": config.agent.model_copy(update=update)})
+
+
+def laid_over(under: Mapping[str, Any], over: Mapping[str, Any]) -> dict[str, Any]:
+    """`over` on `under`, table by table: a blueprint's `opencode_config` keeps its own
+    keys beside the profile's, and `over` wins where both set one. Every value of `over`
+    is copied, so a trial never holds the profile's own."""
+    merged = dict(under)
+    for key, value in over.items():
+        below = merged.get(key)
+        if isinstance(value, Mapping):
+            merged[key] = laid_over(below if isinstance(below, Mapping) else {}, value)
+        else:
+            merged[key] = copy.deepcopy(value)
+    return merged
 
 
 def allowlisted(task: Path) -> bool:

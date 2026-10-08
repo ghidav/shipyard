@@ -20,6 +20,7 @@ from shipyard.rollout import (
     MODAL_IMAGE_BUILDER_VERSION,
     Served,
     allowlisted,
+    laid_over,
     quiet_litellm,
     rollout,
     served_config,
@@ -272,6 +273,49 @@ def test_claude_code_is_handed_the_anthropic_wire_without_the_v1(tmp_path: Path)
     assert "DISABLE_COMPACT" not in plain.agent.env, "the profile's env only when filling"
     assert config.agent.env == {"KEEP": "1"}, "the batch's config was not written into"
     assert harbor.configs == []
+
+
+def test_opencode_gets_its_providers_env_and_keeps_a_blueprints_own_config(
+    tmp_path: Path,
+) -> None:
+    """The env the profile's opencode config names is the env the trial is handed; a
+    blueprint's own `opencode_config` keeps its keys, and the profile's win where both
+    set one."""
+    proxy = FakeProxy(origin="http://host.docker.internal:8000", token="k")
+    mine = {
+        "provider": {"shipyard": {"models": {"Qwen/Qwen3-8B": {"limit": {"context": 32768}}}}},
+        "agent": {"title": {"disable": False}, "build": {"steps": 40}},
+    }
+    config = _config(tmp_path, "alpha", harness="opencode", kwargs={"opencode_config": mine})
+    pointed = served_config(config, Served(proxy, PROFILES["opencode"]))
+    address = f"http://host.docker.internal:8000/r/trial/{config.trial_name}/v1"
+    assert pointed.agent.env == {"SHIPYARD_BASE_URL": address, "SHIPYARD_API_KEY": "k"}
+    merged = pointed.agent.kwargs["opencode_config"]
+    assert merged["provider"]["shipyard"] == {
+        "npm": "@ai-sdk/openai-compatible",
+        "env": ["SHIPYARD_API_KEY"],
+        "options": {"baseURL": "${SHIPYARD_BASE_URL}"},
+        "models": {"Qwen/Qwen3-8B": {"limit": {"context": 32768}}},
+    }
+    assert merged["agent"] == {"title": {"disable": True}, "build": {"steps": 40}}
+    assert "npm" not in str(config.agent.kwargs) and "npm" not in str(mine), "nothing written into"
+    merged["agent"]["title"]["disable"] = False
+    assert PROFILES["opencode"].kwargs["opencode_config"]["agent"]["title"]["disable"] is True
+    profile_env = PROFILES["opencode"].kwargs["opencode_config"]["provider"]["shipyard"]["env"]
+    assert merged["provider"]["shipyard"]["env"] is not profile_env, "a list is copied too"
+
+
+def test_tables_are_laid_over_key_by_key_and_anything_else_is_replaced() -> None:
+    under = {"a": {"x": 1, "y": {"p": 1}}, "b": [1], "c": {"k": 1}, "d": 1}
+    over = {"a": {"y": {"q": 2}, "z": 3}, "b": [2], "c": 5, "d": {"k": 2}}
+    assert laid_over(under, over) == {
+        "a": {"x": 1, "y": {"p": 1, "q": 2}, "z": 3},
+        "b": [2],
+        "c": 5,
+        "d": {"k": 2},
+    }
+    assert under == {"a": {"x": 1, "y": {"p": 1}}, "b": [1], "c": {"k": 1}, "d": 1}
+    assert laid_over({}, {}) == {} and laid_over({"a": 1}, {}) == {"a": 1}
 
 
 def test_a_task_in_allowlist_mode_gets_the_proxys_host(tmp_path: Path) -> None:

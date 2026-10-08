@@ -85,7 +85,9 @@ each trial gets:
 - the model name `openai/<[model] name>`.
 
 A harness whose [profile](#harness-profiles) speaks the Anthropic dialect gets `ANTHROPIC_BASE_URL`,
-`ANTHROPIC_API_KEY` and `anthropic/<[model] name>` instead. Here is a trial's
+`ANTHROPIC_API_KEY` and `anthropic/<[model] name>` instead. opencode's profile
+names a provider of its own, so opencode gets `SHIPYARD_BASE_URL`,
+`SHIPYARD_API_KEY` and `shipyard/<[model] name>`. Here is a trial's
 `config.json` from the served run above, the token elided:
 
 ```json
@@ -114,12 +116,14 @@ speaks, and what it needs beyond the model connection. Four harnesses have one:
 |---|---|---|
 | `pi` | OpenAI | the agent kwarg `model_api = "openai-completions"`; its log's last stop reason, which says whether its last call failed (see [Admission](admission.md)) |
 | `claude-code` | Anthropic | the base URL without `/v1`, which Claude Code appends itself; its per-request `<total_tokens>` system line, cut unless `[rollout] cut_volatile = false`; `DISABLE_COMPACT=1` and `DISABLE_AUTO_COMPACT=1` when `[rollout] fill_context = true`; a turn counter: distinct request ids in its log |
-| `opencode` | OpenAI | a turn counter: lines carrying `step-start` in its log |
+| `opencode` | OpenAI | the provider `shipyard` in the agent kwarg `opencode_config`: opencode's bundled `@ai-sdk/openai-compatible` package, which posts to `/chat/completions`, its base URL and key read from `SHIPYARD_BASE_URL` and `SHIPYARD_API_KEY`; `agent.title.disable = true` in the same config, so it makes no title call; a turn counter: lines carrying `step-start` in its log |
 | `terminus-2` | OpenAI | nothing |
 
 The turn counters serve `[rollout] check_turns` (see
 [Admission](admission.md)). The profile's kwargs are laid over
-`[rollout] kwargs`.
+`[rollout] kwargs` table by table: an `opencode_config` in the blueprint keeps
+its own keys, such as a model's limits under `provider.shipyard.models`, and
+the profile's keys win where both set one.
 
 !!! note "terminus-2"
     terminus-2 cannot use a served model in v1. It makes its model calls

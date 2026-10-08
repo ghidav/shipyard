@@ -164,6 +164,11 @@ async def test_a_local_sandbox_starts_serve_once_with_the_checkpoint_on_its_comm
     assert fake.closed == 1
 
 
+def test_opencode_is_named_under_its_own_provider(tmp_path: Path) -> None:
+    named = Serving(blueprint(harness="opencode@1.18.35"), tmp_path).model_name()
+    assert named == "shipyard/Qwen/Qwen3-8B"
+
+
 async def test_a_sandbox_elsewhere_gets_a_tunnel_and_claude_code_an_anthropic_name(
     fake: FakeProxy, tmp_path: Path
 ) -> None:
