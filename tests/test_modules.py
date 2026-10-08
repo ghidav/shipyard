@@ -151,7 +151,7 @@ def test_a_reserved_marker_says_the_kind_is_not_supported(
     except Inadmissible as refused:  # an Unsupported is an Inadmissible, with its kind
         assert isinstance(refused, Unsupported) and refused.kind == kind
         assert "'lakehouse'" in str(refused)
-    # Reserved wins over a skill marker beside it: the directory means to be a tool.
+    # A reserved marker wins over a skill marker beside it, so the directory is a tool.
     (home / SKILL_FILE).write_text(_skill("x", name="lakehouse"))
     with pytest.raises(Unsupported):
         seed(tmp_path)
@@ -228,8 +228,8 @@ def test_merge_fields_joins_lists_merges_dicts_and_replaces_the_rest() -> None:
 async def test_a_kinds_fields_land_on_the_agent_config_beside_the_rollouts_own(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The seam a harness or tool kind would use: fields the rollout sets itself merge
-    rather than collide, so such a kind is a class and a table row, not a rollout edit."""
+    """The seam a harness or tool kind would use: fields the rollout sets itself merge,
+    so such a kind is a class and a table row and needs no rollout edit."""
     monkeypatch.setattr(
         "shipyard.rollout.deliver",
         lambda candidate, into: {

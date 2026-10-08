@@ -1,7 +1,7 @@
 """The trainer against a fake training client: how it opens, what it publishes and saves
-at which TTL, and the step itself: pipelined substeps of whole prompt groups, the ratio
-moving from the second on, the mask kept back, the metrics read off the step's own
-logprobs."""
+at which TTL, and the step: pipelined substeps of whole prompt groups, the ratio moving
+from the second substep on, the mask withheld from the datums sent, and metrics read from
+the step's own logprobs."""
 
 from __future__ import annotations
 
@@ -207,8 +207,8 @@ async def test_the_recipes_adam_reaches_the_step_and_its_warm_up_scales_the_rate
 
 async def test_a_restored_optimizer_skips_the_warm_up_and_a_fresh_one_warms_up() -> None:
     """With the optimizer state loaded, the moments continue the earlier run's and every
-    update takes the full rate; from a checkpoint without it, or from the base, the rate
-    warms up from the first update."""
+    update takes the full rate. From a checkpoint without optimizer state, or from the base,
+    the rate warms up from the first update."""
     path = "tinker://run/weights/step-3"
     adam = Adam(beta1=0.9, beta2=0.95, eps=1e-8, warmup=4)
     opened = {
@@ -266,8 +266,8 @@ async def test_more_substeps_than_groups_runs_one_per_group() -> None:
 
 
 async def test_substeps_split_the_batch_by_prompt_group_in_order() -> None:
-    """Seven sequences of four groups: the cookbook's cut over the groups, each group whole,
-    and never more substeps than groups."""
+    """Seven sequences in four groups. The cookbook's cut keeps each group whole and makes
+    no more substeps than groups."""
     owners = (0, 0, 1, 2, 2, 2, 3)
 
     async def parts(substeps: int) -> list[list[int]]:
@@ -291,9 +291,10 @@ async def test_substeps_split_the_batch_by_prompt_group_in_order() -> None:
 
 
 async def test_every_substep_keeps_the_sampled_weights_mu_so_the_ratio_moves() -> None:
-    """Two groups credited against the trainer's forward (mu -0.5 on every target), then two
-    substeps whose weights move -0.1 per update: one reference pass for the whole step, both
-    substeps carry that mu, and the second one's ratio is exp(-0.1), not 1."""
+    """Two groups are credited against the trainer's forward (mu -0.5 on every target), then
+    trained in two substeps whose weights move -0.1 per update. One reference pass serves
+    the whole step, both substeps carry that mu, and the second substep's ratio is
+    exp(-0.1)."""
     client = FakeTrainingClient(logprob=-0.5, trained=-0.5, drift=-0.1)
     trained = Trainer(client)
 
@@ -325,8 +326,8 @@ async def test_every_substep_keeps_the_sampled_weights_mu_so_the_ratio_moves() -
 
 
 async def test_apply_reports_what_the_steps_own_logprobs_say_against_mu() -> None:
-    """mu is -0.5 on the two acted tokens, the forward pass says -0.3 there: the policy
-    moved -0.2 nats a token, and the entropy is the mean of -mu over the same tokens."""
+    """mu is -0.5 on the two acted tokens and the forward pass says -0.3 there, so the policy
+    moved -0.2 nats a token. The entropy is the mean of -mu over the same tokens."""
     trained, _ = _trainer(trained=-0.3)
     update = await trained.apply(batch(_datum(), _datum(6)), preset())
     assert update.kl_v1 == pytest.approx(-0.2, abs=1e-5)

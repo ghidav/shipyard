@@ -1,6 +1,6 @@
 """The gradient loop end to end on fakes: a two-step dapo run through `recipes.dapo.run`
-with a FakeProxy, a stand-in for Harbor's trial and a fake Tinker service; the step
-nothing could be credited in; a step refilled from the plan, and the cap on it; what cispo
+with a FakeProxy, a stand-in for Harbor's trial and a fake Tinker service; a step where
+nothing could be credited; a step refilled from the plan, and the cap on it; what cispo
 and dr-grpo resolve to; the refusals."""
 
 from __future__ import annotations
@@ -239,7 +239,7 @@ def _overlong_off(caplog: pytest.LogCaptureFixture) -> list[str]:
 async def test_the_proxys_token_budget_reaches_credit_and_the_row_counts_the_docked(
     tmp_path: Path, fakes: tuple[FakeProxy, FakeService], caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Every fake trial samples two tokens; with a budget of two, each sampled to the limit
+    """Every fake trial samples two tokens. With a budget of two, each samples to the limit
     and is docked DAPO's full penalty, which the row counts."""
     proxy, _ = fakes
     proxy.budget = 2
@@ -254,8 +254,8 @@ async def test_the_proxys_token_budget_reaches_credit_and_the_row_counts_the_doc
 async def test_an_overlong_term_with_no_budget_reported_warns_once_that_it_is_off(
     tmp_path: Path, fakes: tuple[FakeProxy, FakeService], caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A proxy that reports no token budget, as a remote one may not: nothing is docked, no
-    row counts `overlong`, and the run says once, not once a step, that the term is off."""
+    """A proxy that reports no token budget, as a remote one may not. Nothing is docked, no
+    row counts `overlong`, and the run logs once that the term is off."""
     proxy, _ = fakes
     assert proxy.budget is None
     with caplog.at_level(logging.WARNING):

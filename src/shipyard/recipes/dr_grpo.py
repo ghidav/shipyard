@@ -1,9 +1,10 @@
 """Dr. GRPO (Liu et al., arXiv 2503.20783): advantage = r - mean (no division by spread), PPO
 with one symmetric `clip` (0.2, App. G; the bounds `1 - clip` / `1 + clip` via
-`recipes.train.clipped`), token losses summed, the constant normalizer of 3.2 that Tinker's sum
-already is, AdamW as App. G sets it; degenerate groups dropped, never refilled unless asked.
-The length rule among solved answers (`length_penalty`, `length_floor`, `length_cap`;
-`credit.shaped`) is shipyard's own, off by default, as the paper has none."""
+`recipes.train.clipped`), token losses summed (Tinker's sum is the constant normalizer of
+3.2), and AdamW as App. G sets it. Degenerate groups are dropped, and refilled only when
+`refill` is set. The length rule among solved answers (`length_penalty`, `length_floor`,
+`length_cap`; `credit.shaped`) is shipyard's addition and off by default. The paper has
+none."""
 
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ if TYPE_CHECKING:
     from shipyard.run import Run
 
 #: App. G (Table 6): betas 0.9 / 0.95, weight decay 0, the gradient norm clipped at 1.0, a
-#: constant learning rate; eps is unstated, so the cookbook's.
+#: constant learning rate. Eps is unstated, so the cookbook's applies.
 ADAM = Adam(beta1=0.9, beta2=0.95, eps=1e-8, grad_clip_norm=1.0)
 
 

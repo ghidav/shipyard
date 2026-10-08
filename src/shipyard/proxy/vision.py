@@ -1,6 +1,6 @@
-"""Images and documents on the wire, carried to the model as image parts: the cookbook's
-parsers take text alone, so every image is lifted out as a sentinel before they run and
-put back as a part after, a PDF as one image per page."""
+"""Images and documents on the wire, carried to the model as image parts. The cookbook's
+parsers take text only, so each image is lifted out as a sentinel before they run and put
+back as an image part afterwards. A PDF becomes one image per page."""
 
 from __future__ import annotations
 
@@ -14,12 +14,13 @@ from typing import Any
 
 from shipyard.proxy import cookbook
 
-#: A page of a document becomes one image; a longer document is cut, and the cut is
-#: said in a text part so the model knows what it did not see.
+#: A page of a document becomes one image. A longer document is cut, and a text part
+#: says how many pages are shown.
 MAX_PAGES = 16
-#: The longest side an image is scaled down to: a vision renderer charges by area.
+#: Images are scaled down so their longest side is at most this. A vision renderer
+#: charges by area.
 MAX_SIDE = 1536
-#: The scale a PDF page is rasterised at: 2 is about 144 dpi, enough for small type.
+#: The scale a PDF page is rasterised at. 2 is about 144 dpi, enough for small type.
 PAGE_SCALE = 2.0
 
 TAG = "vision"
@@ -32,7 +33,7 @@ _DATA_URI = re.compile(r"^data:([^;,]+)(;base64)?,(.*)$", re.DOTALL)
 
 
 class Bank:
-    """The images lifted out of one request, in order, each standing in as a sentinel."""
+    """The images lifted out of one request, in order. A sentinel replaces each in the body."""
 
     def __init__(self) -> None:
         self.images: list[Any] = []
@@ -43,8 +44,8 @@ class Bank:
 
 
 def install() -> None:
-    """Wrap the cookbook's two parsers, once per process: a second install, in whatever
-    order thinking's came, finds its tag and leaves the wrap it finds."""
+    """Wrap the cookbook's two parsers, once per process. A second install finds this
+    module's tag, even under thinking's wrap, and does nothing."""
     if cookbook.wrapped_by("_parse_openai", TAG):
         return
     anthropic, openai = cookbook.private("_parse_anthropic"), cookbook.private("_parse_openai")
@@ -208,7 +209,7 @@ def fit(image: Any) -> Any:
 
 
 def pages(pdf: bytes) -> list[Any]:
-    """Every page of a PDF as an image, in order. The count is the caller's to cap."""
+    """Every page of a PDF as an image, in order. The caller caps the count."""
     import pypdfium2
 
     try:
@@ -228,8 +229,8 @@ def pages(pdf: bytes) -> list[Any]:
 
 
 def restore(parsed: Any, bank: Bank) -> Any:
-    """The parsed chat with every sentinel-bearing message split back into parts, whether
-    its content came back as text or as parts another wrap already split."""
+    """Split every sentinel-bearing message of the parsed chat back into parts. Content may
+    be text or parts that another wrap already split."""
     if not bank.images:
         return parsed
     for message in parsed.messages:
@@ -246,8 +247,8 @@ def restore(parsed: Any, bank: Bank) -> Any:
             message["content"] = parts
     system = getattr(parsed, "system_text", None)
     if isinstance(system, str) and _OPEN in system:
-        # A system prompt is rendered as text by every renderer; an image there has
-        # nowhere to go, so it is named rather than dropped in silence.
+        # A system prompt is rendered as text, so an image there cannot be shown. A note
+        # takes its place.
         parsed.system_text = _SENTINEL.sub(
             "[an image was here; images in the system prompt are not shown to the model]", system
         )
@@ -277,7 +278,7 @@ def has_images(messages: Sequence[Any]) -> bool:
 
 
 def takes_images(renderer: Any) -> bool:
-    """Whether a renderer, through any wrappers, was built with an image processor."""
+    """Whether a renderer was built with an image processor, looking through wrappers."""
     for _ in range(8):
         flag = getattr(renderer, "_has_image_processor", None)
         if flag is not None or renderer is None:
@@ -287,7 +288,7 @@ def takes_images(renderer: Any) -> bool:
 
 
 def image_key(part: dict[str, Any]) -> str:
-    """What identifies an image: a digest of its pixels, or of the string it was given as."""
+    """A digest of an image's pixels, or of the string the image was given as."""
     image = part.get("image")
     if isinstance(image, str):
         return hashlib.sha256(image.encode("utf-8")).hexdigest()[:16]

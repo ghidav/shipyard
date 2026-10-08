@@ -1,6 +1,6 @@
-"""`show`'s rows and `runs`' at the console's width: a table when it fits, and each row as
-an indented `key  value` block when the table would be wider, since rich would otherwise
-fold every cell of a fifteen-key job row to an ellipsis at eighty columns."""
+"""`show`'s rows and `runs` at the console's width: a table when it fits, otherwise each row
+as an indented `key  value` block. Rich folds every cell of a fifteen-key job row to an
+ellipsis at eighty columns."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from shipyard.run import Run
 
 DAPO = Path(__file__).parent / "blueprints" / "dapo"
 runner = CliRunner()
-#: A job row as a served run writes it now: fifteen keys with `at`.
+#: A job row as a served run writes it: fifteen keys including `at`.
 ROW = {
     "at": "2026-10-07T20:57:50.871956+00:00",
     "job": "02-eval-tinker-docker__eTNXY25-0000",
@@ -86,7 +86,7 @@ def test_show_at_eighty_columns_prints_the_jobs_as_blocks(
 def test_runs_at_eighty_columns_prints_each_run_as_a_block(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A blueprint name as long as a real one's makes the table wider than eighty."""
+    """A blueprint name of realistic length makes the table wider than eighty columns."""
     named = tmp_path / "k40-opencode-default"
     named.mkdir()
     shutil.copy(DAPO / "run.toml", named / "run.toml")

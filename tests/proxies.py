@@ -1,6 +1,6 @@
-"""The two ends of the proxy, faked: a sampling client answering a fixed text and a renderer
-of one character per token, so the reply to a request says which client served it. The
-server between them is real: aiohttp, the cookbook's app, a port the kernel chose."""
+"""Fakes for the two ends of the proxy: a sampling client answering a fixed text and a
+renderer of one character per token, so the reply to a request says which client served it.
+The server between them is real: aiohttp, the cookbook's app, and a kernel-assigned port."""
 
 from __future__ import annotations
 
@@ -81,9 +81,9 @@ def _text(content: Any) -> str:
 def endpoint(
     sampler: Any = None, *, by_path: Callable[[str | None], Any] | None = None, **overrides: Any
 ) -> Endpoint:
-    """An endpoint on loopback whose clients are fakes: `sampler` for every path, or
-    `by_path(path)` so a swap is observable. Loopback, so nothing reaches in from outside
-    and macOS asks no firewall question."""
+    """An endpoint on loopback whose clients are fakes: `sampler` serves every path, or
+    `by_path(path)` picks one per path so a swap is observable. Loopback keeps outside hosts
+    away and avoids the macOS firewall prompt."""
     fixed = sampler if sampler is not None else FakeSampler("hi")
 
     async def factory(path: str | None) -> Any:
@@ -144,7 +144,7 @@ async def ask_anthropic(started: Endpoint, trial: str, **body: Any) -> httpx.Res
 async def fetch(
     started: Endpoint, trial: str, headers: dict[str, str] | None = None, **params: str
 ) -> httpx.Response:
-    """The records fetch a run makes; the endpoint's own token unless told otherwise."""
+    """The records fetch a run makes, with the endpoint's own token unless told otherwise."""
     if headers is None:
         headers = {"Authorization": f"Bearer {started.token}"}
     async with httpx.AsyncClient() as client:
@@ -193,7 +193,7 @@ class ScriptedSampler(FakeSampler):
 
 class BridgeRenderer(FakeRenderer):
     """Thinking as `{...}` ahead of the text, a tool call as `CALL name {json}`, a tool
-    result as `tool[<id>]:text`; an assistant message re-renders UPPER-CASED behind `>` and
+    result as `tool[<id>]:text`. An assistant message re-renders UPPER-CASED behind `>` and
     closed by the stop token, so a fresh render never equals the sampled tokens."""
 
     STOP = 0

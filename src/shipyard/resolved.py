@@ -19,8 +19,8 @@ BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
 
 @dataclass(frozen=True)
 class Report:
-    """What `check` has to say: the resolved config (None when it did not load), the
-    recipe's resolution line (None but for a gradient recipe), and the findings."""
+    """What `check` reports: the resolved config (None when it did not load), the recipe's
+    resolution line (None unless the recipe is a gradient recipe), and the findings."""
 
     config: dict[str, Any] | None
     resolution: str | None
@@ -31,7 +31,7 @@ class Report:
         return any(found.level == "blocked" for found in self.findings)
 
     def text(self) -> str:
-        """The resolved TOML with the resolution line trailing it; "" when nothing loaded."""
+        """The resolved TOML followed by the resolution line; "" when nothing loaded."""
         if self.config is None:
             return ""
         toml = as_toml(self.config)
@@ -39,7 +39,8 @@ class Report:
 
 
 def report(blueprint: Path) -> Report:
-    """`check` over a blueprint path: the problems alone when it does not load."""
+    """Run `check` on a blueprint path. A blueprint that does not load yields only its
+    problems."""
     from shipyard.recipes import resolution
 
     try:
@@ -50,8 +51,8 @@ def report(blueprint: Path) -> Report:
 
 
 def resolved(loaded: Blueprint) -> dict[str, Any]:
-    """Every table as plain data with the defaults in, in the schema's order; `kind`
-    leads the recipe table as it does in the file, and a served model's renderer is the
+    """Every table as plain data with defaults filled in, in the schema's order. `kind`
+    leads the recipe table as it does in the file. For a served model, `renderer` is the
     one the proxy will load."""
     dumped = loaded.model_dump(mode="json")
     recipe = dumped["recipe"]
@@ -67,8 +68,8 @@ def served_renderer(loaded: Blueprint) -> str:
 
 
 def recommended_renderer(model: str) -> str:
-    """The cookbook's renderer for `model`, read off its model table without the network;
-    "" for a model the table does not know, which the proxy refuses when it starts."""
+    """The cookbook's renderer for `model`, read from its model table without the network.
+    "" for a model the table does not know; the proxy refuses it at start."""
     from tinker_cookbook.model_info import get_recommended_renderer_name
 
     try:

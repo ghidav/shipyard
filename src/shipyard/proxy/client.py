@@ -1,6 +1,6 @@
-"""The run's side of the proxy, whichever placement: `shipyard serve` as a subprocess on
-this machine, the same behind a Cloudflare tunnel, or one running elsewhere. A fetch
-that fails raises; an empty answer is reserved for a trial that asked for nothing."""
+"""The run's client of the proxy. The proxy is a `shipyard serve` subprocess on this
+machine, the same behind a Cloudflare tunnel, or one running elsewhere. A failed fetch
+raises. An empty answer means the trial made no requests."""
 
 from __future__ import annotations
 
@@ -19,8 +19,8 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 
-# The subprocess helpers (the first matching line, the end) are tunnel.py's, shared with
-# the serve process started here.
+# `started` (wait for a matching line) and `end` (stop a process) are defined in tunnel.py
+# and also serve the process started here.
 from shipyard.proxy.tunnel import Tunnel, end, started
 from shipyard.proxy.wire import (
     CONTROL_PATH,
@@ -35,34 +35,35 @@ from shipyard.proxy.wire import (
 
 logger = logging.getLogger(__name__)
 
-#: How `shipyard serve` is started; a test puts its stub here.
+#: The command that starts `shipyard serve`. Tests replace it with a stub.
 SERVE: list[str] = [sys.executable, "-m", "shipyard.serve"]
-#: The one line serve prints first, which names the port the kernel chose.
+#: The first line serve prints. It names the port the kernel chose.
 BANNER = re.compile(
     r"^serving (?P<model>\S+) at http://(?P<host>[^:/]+):(?P<port>\d+) "
     r"\(control: (?P<control>on|off)\)$"
 )
 STARTUP_SECONDS = 180.0
-#: A records fetch is tried this many times; a tunnel that stalls once is not a lost trial.
+#: Attempts per records fetch, so one tunnel stall does not lose a trial.
 RECORDS_ATTEMPTS = 4
 RECORDS_TIMEOUT = 120.0
 CONTROL_TIMEOUT = 120.0
 PAUSES = (1.0, 2.0, 4.0)
-#: What the serve command takes as flags; every other setting rides in `--settings`.
+#: Settings passed to serve as flags. All other settings go in `--settings`.
 FLAGGED = ("model", "weights", "renderer", "bind", "bind_port")
-#: How long the proxy has to answer `/healthz` before the run is refused, and the pause
-#: between asks: a quick tunnel's name resolves a little late.
+#: Seconds the proxy has to answer `/healthz` before the run is refused, and the pause
+#: between probes. A quick tunnel's name can resolve late.
 PROBE_SECONDS = 30.0
 PROBE_PAUSE = 1.0
 
 
 class Unreachable(RuntimeError):
-    """A proxy that does not answer where its sandboxes will dial it, before one is opened."""
+    """The proxy does not answer at the address sandboxes will dial. Raised before any
+    sandbox opens."""
 
 
 def serve_command(settings: Mapping[str, Any], *, host: str) -> list[str]:
-    """`python -m shipyard.serve` as the settings describe it: `model`, `weights`,
-    `renderer`, `bind` and `bind_port` as flags, everything else as `--settings` JSON."""
+    """The `python -m shipyard.serve` command for `settings`. `model`, `weights`,
+    `renderer`, `bind` and `bind_port` become flags. The rest go in `--settings` as JSON."""
     made = [*SERVE, "--model", str(settings["model"])]
     made += ["--bind", str(settings.get("bind") or "0.0.0.0")]
     made += ["--port", str(int(settings.get("bind_port") or 0)), "--advertise", host]
@@ -78,9 +79,9 @@ def serve_command(settings: Mapping[str, Any], *, host: str) -> list[str]:
 
 @dataclass
 class Proxy:
-    """What the run holds: the origin a sandbox dials, the loopback origin this process
-    dials for records and control, the harness token and, when it is ours, the control
-    token and the processes to stop."""
+    """A proxy as the run sees it: the origin a sandbox dials, the loopback origin this
+    process dials for records and control, the harness token and, for a proxy this run
+    started, the control token and the processes to stop."""
 
     origin: str
     token: str = field(repr=False)
@@ -88,11 +89,11 @@ class Proxy:
     loopback: str | None = None
     process: subprocess.Popen[str] | None = field(default=None, repr=False)
     tunnel: Tunnel | None = field(default=None, repr=False)
-    #: What each fetch brought beside the records, by trial: turned_away, cut, spoke.
+    #: Per trial, the counts each fetch returned with the records: turned_away, cut, spoke.
     counters: dict[str, dict[str, int]] = field(default_factory=dict, repr=False)
-    #: The tokens a trial may sample, as `/healthz` last said; None when it enforces none.
+    #: Tokens a trial may sample, as `/healthz` last reported. None when no budget is enforced.
     budget: int | None = None
-    #: A test's transport for the HTTP client; None is httpx's own.
+    #: Transport for the HTTP client, set by tests. None uses httpx's default.
     transport: Any = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -101,7 +102,7 @@ class Proxy:
 
     @property
     def host(self) -> str:
-        """The name a sandbox resolves this proxy by, for an allowlist."""
+        """The hostname a sandbox resolves for this proxy, for an allowlist."""
         return urlsplit(self.origin).hostname or ""
 
     @classmethod
@@ -114,8 +115,9 @@ class Proxy:
         log: IO[str] | None = None,
         seconds: float = STARTUP_SECONDS,
     ) -> Proxy:
-        """`shipyard serve` as a subprocess advertising `host`, its port read off its first
-        line; the tokens from the environment, or made here and handed to it."""
+        """Start `shipyard serve` as a subprocess advertising `host`. The port comes from its
+        first output line. Tokens come from the environment, or are generated here and
+        passed to it."""
         environ = dict(os.environ if environ is None else environ)
         token = environ.get(PROXY_TOKEN_ENV) or new_token()
         control = environ.get(CONTROL_TOKEN_ENV) or new_token()
@@ -153,7 +155,7 @@ class Proxy:
         log: IO[str] | None = None,
         tunnel_log: IO[str] | None = None,
     ) -> Proxy:
-        """`local` on loopback with a quick tunnel in front; the origin is the tunnel's."""
+        """`local` on loopback behind a quick tunnel. The origin is the tunnel's."""
         made = await cls.local(endpoint_settings, host="127.0.0.1", environ=environ, log=log)
         try:
             tunnel = await Tunnel.start(
@@ -167,20 +169,20 @@ class Proxy:
 
     @classmethod
     def remote(cls, url: str, token: str, control_token: str | None = None) -> Proxy:
-        """A proxy somebody else runs at `url`, behind `token`; nothing of it is stopped."""
+        """A proxy run elsewhere at `url`, behind `token`. `close` stops nothing."""
         if not url.strip():
             raise ValueError("a remote proxy needs a URL")
         if not token:
             raise ValueError(
-                f"{PROXY_TOKEN_ENV} is unset, so nothing here knows the token the harnesses "
-                f"must present to the proxy at {url}"
+                f"{PROXY_TOKEN_ENV} is unset, so the token that harnesses must present to the "
+                f"proxy at {url} is unknown"
             )
         return cls(origin=url, token=token, control_token=control_token or None)
 
     async def ready(self, seconds: float = PROBE_SECONDS) -> str:
-        """What the proxy serves, read off `/healthz` through its tunnel when it has one,
-        else on loopback (a remote one's origin), its token budget kept; `Unreachable`
-        names the address when nothing answers, before a sandbox is opened to dial it."""
+        """Return what the proxy serves, read from `/healthz` through its tunnel if it has
+        one, else on loopback (a remote proxy's origin). Keeps the token budget in `budget`.
+        Raises `Unreachable` with the address when nothing answers."""
         what, base = ("tunnel", self.origin) if self.tunnel else ("proxy", self.loopback)
         url = f"{base}{HEALTH_PATH}"
         try:
@@ -195,8 +197,8 @@ class Proxy:
         return str(answer.get("serving") or answer.get("model") or "")
 
     def gone(self) -> str | None:
-        """Why a proxy this run started can no longer answer (its tunnel or its serve process
-        exited), or None; one somebody else runs is never known to be gone."""
+        """Why a proxy this run started can no longer answer (its tunnel or serve process
+        exited), or None. A proxy run elsewhere always gives None."""
         if self.tunnel is not None and (code := self.tunnel.process.poll()) is not None:
             return f"the tunnel at {self.origin} exited with {code}"
         if self.process is not None and (code := self.process.poll()) is not None:
@@ -204,17 +206,19 @@ class Proxy:
         return None
 
     def address_for(self, trial: str) -> str:
-        """`<origin>/r/trial/<trial>/v1`; a name with `/` would file the tokens elsewhere."""
+        """`<origin>/r/trial/<trial>/v1`. Raises ValueError for a name that is empty or
+        contains `/`."""
         if not trial or "/" in trial:
             raise ValueError(
-                f"A trial name rides in the URL path, so {trial!r} cannot be addressed: "
-                "it must be non-empty and free of '/'."
+                f"{trial!r} cannot be addressed: a trial name goes in the URL path, "
+                "so it must be non-empty and contain no '/'."
             )
         return f"{self.origin}/r/trial/{trial}/v1"
 
     async def swap(self, model_path: str | None) -> None:
-        """Point the proxy at a `tinker://` path, or at its base for None, through the
-        control route; refused without the control token, since the harness's opens nothing."""
+        """Point the proxy at a `tinker://` path, or at the base model for None, through the
+        control route. Raises without the control token, which the harness token cannot
+        replace."""
         if self.control_token is None:
             raise RuntimeError(
                 f"the proxy at {self.origin} opened no control route to this run: set "
@@ -233,9 +237,10 @@ class Proxy:
             )
 
     async def records(self, trial: str) -> list[Record]:
-        """This trial's records, drained from the proxy. Up to `RECORDS_ATTEMPTS` tries over
-        a transport error or a 5xx, `again=1` after the first so a drained answer that was
-        lost on the way is re-sent; a 4xx is not retried; the last failure raises."""
+        """Fetch and drain this trial's records from the proxy. Retries up to
+        `RECORDS_ATTEMPTS` times on a transport error or a 5xx, with `again=1` after the
+        first attempt so the proxy re-sends an answer lost in transit. A 4xx is not
+        retried. The last failure raises."""
         url = f"{self.loopback}{RECORDS_PATH}/{quote(trial, safe='')}"
         params = {"delta": "1"}
         for attempt in range(RECORDS_ATTEMPTS):
@@ -254,7 +259,7 @@ class Proxy:
                 if (isinstance(failed, httpx.HTTPStatusError) and status < 500) or last:
                     raise
                 logger.warning(
-                    "records of %s: %s on try %d of %d; asking again for the same answer",
+                    "records of %s: %s on try %d of %d, retrying",
                     trial,
                     type(failed).__name__,
                     attempt + 1,
@@ -272,8 +277,8 @@ class Proxy:
         return {"Authorization": f"Bearer {self.token}"}
 
     def close(self) -> None:
-        """Stop what this run started: the tunnel, then the serve process. Synchronous, so
-        a run closing outside its loop can still call it."""
+        """Stop the tunnel, then the serve process, if this run started them. Synchronous,
+        so it can be called outside the event loop."""
         tunnel, self.tunnel = self.tunnel, None
         if tunnel is not None:
             tunnel.stop()
@@ -285,8 +290,9 @@ class Proxy:
 async def answers(
     url: str, *, seconds: float = PROBE_SECONDS, transport: Any = None
 ) -> dict[str, Any]:
-    """`url`'s JSON once it answers 200, asked again every `PROBE_PAUSE` until `seconds`
-    have passed; the last failure is raised. A name that does not resolve yet is retried."""
+    """Return `url`'s JSON once it answers 200. Retries every `PROBE_PAUSE`, including
+    when the name does not resolve yet, until `seconds` have passed. Then raises the last
+    failure."""
     deadline = time.monotonic() + seconds
     while True:
         remaining = deadline - time.monotonic()

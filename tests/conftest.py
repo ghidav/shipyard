@@ -1,7 +1,7 @@
-"""What every test runs under: the Modal builder default a rollout sets is restored, the
-shell's Tinker and proxy variables are out, so no test reaches a backend, and the machine
-`check` reads (Harbor's extras, logins, docker, Modal) is pinned, so no finding depends on
-this one."""
+"""Fixtures every test runs under. They restore the Modal builder default a rollout sets,
+remove the shell's Tinker and proxy variables so no test reaches a backend, and pin the
+machine facts `check` reads (Harbor's extras, logins, docker, Modal), so no finding depends on
+this machine."""
 
 from __future__ import annotations
 
@@ -19,8 +19,7 @@ SHELL_VARS = (
 
 @pytest.fixture(autouse=True)
 def _modal_builder_unset(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A rollout on `modal` sets the builder version in the process environment; a test
-    that did so must not leave it for the next."""
+    """Restore the builder version that a rollout on `modal` sets in the process environment."""
     monkeypatch.delenv(MODAL_IMAGE_BUILDER, raising=False)
 
 
@@ -32,8 +31,8 @@ def _shell_vars_unset(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _machine_pinned(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every provider's extra installed and logged in, Modal never asked, docker running
-    with no leftover networks: the tests of those findings take the pins off themselves."""
+    """Pin the machine: every provider's extra installed and logged in, Modal not asked,
+    docker running with no leftover networks. The tests of those findings undo the pins."""
     from shipyard import preflight
 
     monkeypatch.setattr(preflight, "extra_installed", lambda name: True)

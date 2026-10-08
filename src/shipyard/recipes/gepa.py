@@ -1,6 +1,6 @@
-"""The gepa recipe: the search over the text the harness reads, no gradient and no
-checkpoint. The seed is the blueprint's `modules/`, kept under `runs/<id>/modules/seed/`;
-the winner lands under `modules/best/` in the same layout, so it is the next seed."""
+"""The gepa recipe: a search over the text the harness reads, with no gradient and no
+checkpoint. The seed is the blueprint's `modules/`, kept under `runs/<id>/modules/seed/`.
+The winner is kept under `modules/best/` in the same layout, so it can be the next seed."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from shipyard.gepa.fitness import Outcome
     from shipyard.run import Run
 
-#: Under `runs/<id>/modules/`: the text the search started from, and the text it ends on.
+#: Directory names under `runs/<id>/modules/` for the starting text and the winner.
 SEED = "seed"
 BEST = "best"
 #: The budget when the blueprint names none, as a multiple of one pass over every task the
@@ -30,11 +30,11 @@ DEFAULT_PASSES = 2
 
 
 async def run(run: Run) -> Evolution:
-    """Seed, then evolve: every candidate scored by one job over the tasks it is asked
-    about, every rewrite a reflection trial, one row per round, the winner kept, and a
-    final row naming it. Minibatches come from the run's tasks less those `[recipe] pareto`
-    holds out, the held-out ones score what the search keeps, and `[data] seed` draws both.
-    A served policy answers through the proxy as `evaluate`'s does."""
+    """Seed, then evolve. One job scores each candidate over the tasks it is asked about,
+    and each rewrite is a reflection trial. The run logs one row per round and a final row
+    naming the winner, which is kept. Minibatches come from the run's tasks less those
+    `[recipe] pareto` holds out. The held-out tasks score what the search keeps.
+    `[data] seed` draws both. A served policy answers through the proxy, as in `evaluate`."""
     cfg = run.config
     recipe, data = cfg.recipe, cfg.data
     seeded = seed(cfg.home / recipe.modules)
@@ -43,7 +43,8 @@ async def run(run: Run) -> Evolution:
     budget = recipe.budget or DEFAULT_PASSES * len({*feedback, *pareto}) * data.group_size
 
     async def score(candidate: Candidate, over: Sequence[Path], round_index: int) -> list[Outcome]:
-        """One job over `over`, its batch index the round it serves, read back."""
+        """Sample `candidate` over `over` in one job, with the round as its batch index, and
+        return the outcomes."""
         rolled = await run.sample(
             list(over), rollouts=data.group_size, index=round_index, modules=candidate
         )

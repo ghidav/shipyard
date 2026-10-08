@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 __all__ = ["module_for", "resolution", "run_recipe"]
 
-#: The module each kind lives in: a hyphenated name imports under its underscore.
+#: The module of each kind. A hyphenated kind imports under its underscore name.
 MODULES = {kind: kind.replace("-", "_") for kind in KINDS}
 
 
@@ -27,8 +27,8 @@ async def run_recipe(run: Run) -> None:
 
 
 def resolution(recipe: Any) -> str | None:
-    """The one-line account of what a gradient recipe's knobs resolve to, for `check`;
-    None for a recipe whose module has no `preset` to resolve."""
+    """The one-line description of what a gradient recipe's knobs resolve to, printed by
+    `check`. None when the recipe's module has no `preset`."""
     module = module_for(recipe.kind)
     own = getattr(module, "resolution", None)
     if own is not None:

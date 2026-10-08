@@ -1,10 +1,9 @@
 """DAPO (Yu et al., arXiv 2503.14476): advantage = (r - mean) / spread, PPO with asymmetric
 clipping, each prompt's token losses averaged (Eq. 8), 16 substeps by prompt (4.1), degenerate
 groups dropped and refilled from the plan (dynamic sampling, Alg. 1), the soft overlong
-punishment (Eq. 13), and AdamW (4.1; its 20-step warm-up is the `warmup` key's). `clip_low` /
-`clip_high`
-(0.2 / 0.28, 4.1) are epsilons; Tinker's `ppo` takes bounds, so `loss_fn_config` gets
-`1 - clip_low` and `1 + clip_high` (`recipes.train.clipped`)."""
+punishment (Eq. 13), and AdamW (4.1; the `warmup` key sets its 20-step warm-up). `clip_low` /
+`clip_high` (0.2 / 0.28, 4.1) are epsilons. Tinker's `ppo` takes bounds, so `loss_fn_config`
+gets `1 - clip_low` and `1 + clip_high` (`recipes.train.clipped`)."""
 
 from __future__ import annotations
 
@@ -20,7 +19,7 @@ if TYPE_CHECKING:
 
 #: 4.1 states no betas, eps, weight decay or gradient clipping. The authors' released recipe
 #: (verl recipe/dapo, run_dapo_qwen2.5_32b.sh) sets weight decay 0.1 and clips the gradient
-#: norm at 1.0; betas and eps are the cookbook's. Its 20-step warm-up is the `warmup` key's.
+#: norm at 1.0. Betas and eps are the cookbook's. The `warmup` key sets the 20-step warm-up.
 ADAM = replace(COOKBOOK, weight_decay=0.1, grad_clip_norm=1.0)
 PAPER_WARMUP = 20
 

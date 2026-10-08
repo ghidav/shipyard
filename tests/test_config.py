@@ -130,8 +130,8 @@ def _cap_warnings(home: Path) -> list[str]:
 def test_the_length_cap_is_a_dr_grpo_knob_that_takes_infinity_and_warns_from_one(
     tmp_path: Path,
 ) -> None:
-    """The warning stands only while the length rule is on: with `length_penalty = 0` the
-    cap docks nothing, whatever its value."""
+    """The warning applies only while the length rule is on. With `length_penalty = 0` the
+    cap docks nothing."""
     assert load(BLUEPRINTS / "dr-grpo").recipe.length_cap == 0.5
     assert _cap_warnings(BLUEPRINTS / "dr-grpo") == []
     dr = (BLUEPRINTS / "dr-grpo" / "run.toml").read_text(encoding="utf-8")

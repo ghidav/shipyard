@@ -1,4 +1,4 @@
-"""Bars on a terminal counting each job's trials; nothing drawn anywhere else."""
+"""Bars on a terminal count each job's trials. Nothing is drawn off a terminal or under quiet."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ def test_bars_count_finished_and_masked_per_job(tmp_path: Path) -> None:
     [task] = bars.bars.tasks
     assert task.completed == 2 and task.total == 3 and task.fields["masked"] == 1
     assert "batch 0" in task.description and "run-0000" in task.description
-    bars.finished(tmp_path / "elsewhere" / "gamma__1", masked=True)  # of no job this drew
+    bars.finished(tmp_path / "elsewhere" / "gamma__1", masked=True)  # a trial of a job with no bar
     assert task.completed == 2
     bars.started("run-0001", trials=1)
     assert [t.description for t in bars.bars.tasks] == ["batch 0  run-0000", "run-0001"]

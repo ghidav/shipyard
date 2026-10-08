@@ -1,4 +1,4 @@
-"""The blueprint: what `run.toml` may say, loaded and validated into one object."""
+"""The blueprint: the keys `run.toml` accepts, loaded and validated into one object."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ REFLECTION_IMAGE = "python:3.12-slim"
 
 
 class ConfigError(ValueError):
-    """Every problem a blueprint has, one per line, so a reader fixes them in one pass."""
+    """All the problems found in a blueprint, one per line."""
 
     def __init__(self, problems: list[str]) -> None:
         self.problems = list(problems)
@@ -56,7 +56,7 @@ class Model(_Table):
 
     @property
     def served(self) -> bool:
-        """Whether this run serves the weights itself, which only Tinker's can be."""
+        """True when the provider is Tinker, the only provider whose weights this run serves."""
         return self.provider == TINKER
 
 
@@ -70,7 +70,7 @@ class Data(_Table):
     @field_validator("dataset", mode="before")
     @classmethod
     def _named(cls, value: Any) -> Any:
-        """One name or a list of names; anything else is said once, not once per shape."""
+        """A dataset name or a list of names."""
         if isinstance(value, str) or (
             isinstance(value, list) and all(isinstance(item, str) for item in value)
         ):
@@ -122,8 +122,9 @@ LENGTH_CAP = 0.5
 
 
 class Gradient(_Table):
-    """What the three gradient recipes share; each adds its own clipping and shaping knobs.
-    One substep is FST's (one mini-batch a step) and Dr. GRPO's, which states no other."""
+    """The knobs the gradient recipes share; each adds its own clipping and shaping knobs.
+    The default of one substep is FST's (one mini-batch a step) and Dr. GRPO's, which states
+    no other."""
 
     learning_rate: float = Field(gt=0)
     substeps: int = Field(default=1, ge=1)
@@ -178,9 +179,9 @@ GEPA_PATIENCE = None
 
 
 class GepaRecipe(_Table):
-    """The search's knobs: the reflector in three halves, the seed directory, the tasks held
-    out to select on, the minibatch a child is judged on, the rollouts the search may spend,
-    and how many rounds without a better Pareto mean end it."""
+    """The search's knobs: the reflector (harness, model and image), the seed modules
+    directory, the tasks held out to select on, the minibatch a child is judged on, the
+    rollout budget, and the number of rounds without a better Pareto that ends the search."""
 
     kind: Literal["gepa"]
     reflection_harness: str
@@ -196,7 +197,7 @@ class GepaRecipe(_Table):
     @field_validator("pareto", mode="before")
     @classmethod
     def _held_out(cls, value: Any) -> Any:
-        """A dataset name or a count; a boolean, a fraction or a blank name is neither."""
+        """A dataset name or a count. Booleans, fractions and blank names are rejected."""
         if value is None or (isinstance(value, str) and value.strip()):
             return value
         if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
@@ -279,7 +280,7 @@ class Blueprint(_Table):
 
     @property
     def raw(self) -> dict[str, Any]:
-        """The TOML as parsed, before defaults: what the run's verbatim copy holds."""
+        """The TOML as parsed, before defaults. The run's verbatim copy holds this."""
         return self._raw
 
     @property
@@ -289,19 +290,19 @@ class Blueprint(_Table):
 
     @property
     def home(self) -> Path:
-        """The directory the blueprint was loaded from, which `[recipe] modules` is under."""
+        """The directory the blueprint was loaded from; `[recipe] modules` is relative to it."""
         return self._home
 
 
 def config_file(path: Path) -> Path:
-    """The `run.toml` a blueprint path names: the file itself, or the one in the directory."""
+    """The `run.toml` for a blueprint path: the path if it is a file, else the `run.toml` in it."""
     path = Path(path)
     return path if path.is_file() else path / CONFIG
 
 
 def load(path: Path) -> Blueprint:
-    """The blueprint at `path`, a directory holding `run.toml` or the file itself.
-    Raises `ConfigError` listing every problem rather than the first one met."""
+    """Load the blueprint at `path`, a directory holding `run.toml` or the file.
+    Raises `ConfigError` listing every problem."""
     file = config_file(path)
     try:
         text = file.read_text(encoding="utf-8")
@@ -327,12 +328,12 @@ def modules_dir(loaded: Blueprint) -> Path | None:
 
 
 def search_sets(loaded: Blueprint) -> tuple[list[Path], list[Path]]:
-    """gepa's two task lists, GEPA's D_feedback and D_pareto (Alg. 1 line 1): the tasks its
-    minibatches are drawn from, and the tasks every candidate it keeps is scored on. A dataset
-    name is D_pareto beside the run's tasks; a count holds that many of the run's tasks out,
-    drawn with `[data] seed`, and 0 keeps every task in both (GEPA 6); unset holds out two
-    thirds, as in three of GEPA's four benchmarks. Raises ValueError when either list would
-    be empty."""
+    """gepa's two task lists, GEPA's D_feedback and D_pareto (Alg. 1 line 1). Minibatches are
+    drawn from the first. Every candidate the search keeps is scored on the second. A dataset
+    name is D_pareto, and the run's tasks are D_feedback. A count holds that many of the run's
+    tasks out, drawn with `[data] seed`. 0 keeps every task in both (GEPA 6). Unset holds out
+    two thirds, as in three of GEPA's four benchmarks. Raises ValueError when either list
+    would be empty."""
     listed = [task for name in loaded.datasets for task in tasks(name)]
     named = loaded.recipe.pareto
     if isinstance(named, str):
@@ -384,8 +385,9 @@ class Finding:
 
 
 def check(blueprint: Path) -> list[Finding]:
-    """What `shipyard check` says: blocked once per problem, else one ok line per fact.
-    Datasets are looked for under `tasks/` in the working directory, as `run` looks."""
+    """The findings `shipyard check` prints: one blocked finding per problem, else one ok
+    finding per fact. Datasets are looked up under `tasks/` in the working directory, as
+    `run` does."""
     try:
         loaded = load(blueprint)
     except ConfigError as error:
@@ -394,7 +396,7 @@ def check(blueprint: Path) -> list[Finding]:
 
 
 def findings(loaded: Blueprint) -> list[Finding]:
-    """The findings of a blueprint that loaded; the sandbox's and a served model's come
+    """The findings of a blueprint that loaded. The sandbox and served-model findings come
     from `preflight`, imported here so the CLI stays light."""
     from shipyard.preflight import findings as preflight_findings
 
@@ -443,8 +445,8 @@ def findings(loaded: Blueprint) -> list[Finding]:
 
 
 def _length_cap(recipe: Any) -> float | None:
-    """dr-grpo's cap on its length rule, as set or defaulted, while the rule is on
-    (`length_penalty > 0`); None for a recipe without the rule or with it off."""
+    """The cap on dr-grpo's length rule, as set or defaulted. None for a recipe without the
+    rule or with `length_penalty` at 0."""
     if isinstance(recipe, DrGrpoRecipe):
         penalty, cap = recipe.length_penalty, recipe.length_cap
     elif isinstance(recipe, FstRecipe) and recipe.slow == "dr-grpo":
@@ -456,8 +458,8 @@ def _length_cap(recipe: Any) -> float | None:
 
 
 def _checkpoint_finding(loaded: Blueprint) -> Finding | None:
-    """`blocked` when `from_checkpoint` is the other column of `checkpoints.jsonl`: a training
-    run resumes from a `state_path`, and anything that only samples needs a `sampler_path`."""
+    """`blocked` when `from_checkpoint` names the wrong column of `checkpoints.jsonl`. A
+    training run resumes from a `state_path`. A run that only samples needs a `sampler_path`."""
     named = loaded.model.from_checkpoint or ""
     if loaded.trains and "/sampler_weights/" in named:
         return Finding(
@@ -487,7 +489,7 @@ def _modules_finding(directory: Path) -> Finding:
 
 def _reflector_finding(recipe: GepaRecipe | FstRecipe) -> Finding:
     """`ok` naming the reflector's harness, model and image, or `blocked` for a blank
-    harness; the image is a string by schema, and Harbor pulls it at the first round."""
+    harness. The image is not checked: Harbor pulls it at the first round."""
     if not recipe.reflection_harness.strip():
         return Finding("blocked", NO_REFLECTOR)
     model = recipe.reflection_model or "the harness's own default"
@@ -498,9 +500,9 @@ def _reflector_finding(recipe: GepaRecipe | FstRecipe) -> Finding:
 
 
 def _pareto_findings(loaded: Blueprint) -> list[Finding]:
-    """A named held-out dataset's own finding, then `ok` with how the tasks split, or
-    `blocked` with why they cannot; no split line when a dataset is missing, which that
-    dataset's own finding already says."""
+    """The finding for a named held-out dataset, then `ok` with how the tasks split or
+    `blocked` with why they cannot. No split line when a dataset is missing, which that
+    dataset's finding already says."""
     named = loaded.recipe.pareto
     found = [_dataset_finding(named)] if isinstance(named, str) else []
     try:

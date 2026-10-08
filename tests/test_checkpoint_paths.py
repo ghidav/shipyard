@@ -1,5 +1,5 @@
 """`[model] from_checkpoint` is a state path for a training run and a sampler path for
-anything that only samples: `check` names the other column, the proxy of a training run
+anything that only samples. `check` names the other column, the proxy of a training run
 starts on the base model, and the KL anchor samples weights published from the state."""
 
 from __future__ import annotations

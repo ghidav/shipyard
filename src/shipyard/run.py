@@ -62,9 +62,9 @@ class Run:
 
     @classmethod
     def open(cls, blueprint: Path, *, root: Path | None = None, smoke: bool = False) -> Self:
-        """Create `<root>/<id>/`, copy `run.toml` byte for byte, keep the modules the
-        recipe carries under `modules/carried/`, and note the process (a smoke run says
-        so). Refuses a directory that exists rather than writing into another run's record."""
+        """Create `<root>/<id>/`, copy `run.toml` byte for byte, keep the recipe's modules
+        under `modules/carried/`, and write the process note (marked `smoke` for a smoke
+        run). Raises `RunRefused` if the directory exists."""
         config = load(blueprint)
         source = config_file(blueprint)
         home = source.parent
@@ -101,14 +101,14 @@ class Run:
         return record.append(self.directory / record.METRICS, {"seq": self._seq, **metrics})
 
     def note(self, **about: Any) -> None:
-        """Merge into `process.json`: a fact about this invocation, not a metric."""
+        """Merge facts about this invocation into `process.json`."""
         current = record.read_json(self.directory / record.PROCESS)
         current.update(about)
         record.write_json(self.directory / record.PROCESS, current)
 
     def reserve_job(self) -> str:
-        """The next job name, `<run id>-NNNN` counted from the rows in `jobs.jsonl`, with
-        its directory made now; one that exists already is refused, never written into."""
+        """The next job name, `<run id>-NNNN`, counted from the rows in `jobs.jsonl`.
+        Creates its directory and raises `FileExistsError` if it exists."""
         count = sum(1 for _ in record.read(self.directory / record.JOBS))
         name = f"{self.id}-{count:04d}"
         try:
@@ -126,9 +126,10 @@ class Run:
         modules: Candidate | None = None,
         purpose: str = "rollout",
     ) -> Rollouts:
-        """One Harbor job over `batch`, the recipe's batch `index`, carrying `modules` (the
-        run's own when None), stamped with the trainer's update count, every verdict on the
-        job row; a served job the proxy served nothing for then raises `NothingServed`."""
+        """Run one Harbor job over `batch`, the recipe's batch `index`, carrying `modules`
+        (the run's own when None). Stamp it with the trainer's update count and put every
+        verdict on the job row. Raises `NothingServed` for a served job the proxy served
+        nothing for."""
         cfg = self.config
         if self.serving is not None:
             first = self.serving.proxy is None
@@ -180,9 +181,9 @@ class Run:
         return rolled
 
     async def checkpoint(self, trainer: Any, tag: str, *, keep: bool = False) -> Checkpoint:
-        """Save state and sampler weights under `tag` at `[checkpoints] ttl_hours`, or with no
-        TTL when `keep` (the final weights outlive the run), and append both paths to
-        `checkpoints.jsonl`: a record naming only the sampler path can never be continued."""
+        """Save state and sampler weights under `tag` with `[checkpoints] ttl_hours`, or with
+        no TTL when `keep` (the final weights). Append both paths to `checkpoints.jsonl`; a
+        record with only the sampler path cannot be continued."""
         ttl = None if keep else self.config.checkpoints.ttl_hours
         saved = await trainer.save(tag, ttl_hours=ttl)
         named = ("tag", "state_path", "sampler_path", "ttl_hours")
@@ -193,7 +194,7 @@ class Run:
         return saved
 
     def spent(self, party: str, **counts: int) -> None:
-        """Add training counts to a party on `costs.json`; a count of nothing adds no key."""
+        """Add training counts to a party on `costs.json`. Zero counts are skipped."""
         counted = {key: int(value) for key, value in counts.items() if value}
         if not counted:
             return
@@ -210,9 +211,9 @@ class Run:
         modules: Candidate | None = None,
         purpose: str = "rollout",
     ) -> dict[str, Any]:
-        """A rollout of the policy on the record: the modules' digest when it carried
-        any, what was graded, what was masked and why, how each trial ended, and who is
-        billed for which counts (a served job from its records, the proxy's notes with it)."""
+        """Record a rollout of the policy: the modules' digest if it carried any, the graded
+        count, the masks, how each trial ended, and the party billed with its counts (from
+        the proxy's records and notes for a served job)."""
         judged = verdicts(rolled)
         if harvested is not None and self.serving is not None:
             counted, party, noted = harvested.counted, self.serving.party, harvested.noted
@@ -244,9 +245,9 @@ class Run:
         counted: Mapping[str, int] | None = None,
         **about: Any,
     ) -> dict[str, Any]:
-        """A job on the record and its costs: its purpose, its trials, what `about` says
-        of it, the tokens (`counted`, else what the harness reported) under `party`, and
-        the sandbox's seconds. A reflection passes no verdicts: nothing was graded."""
+        """Append a job row and bill it: the purpose, the trial count, `about`, the tokens
+        (`counted`, else what the harness reported) under `party`, and the sandbox's
+        seconds. A reflection records no verdicts because nothing was graded."""
         counted = reported(rolled) if counted is None else counted
         timed, seconds = sandbox_seconds(rolled)
         row = record.append(
@@ -268,7 +269,7 @@ class Run:
         return row
 
     def _bill(self, party: str, counted: Mapping[str, int], timed: int, seconds: float) -> None:
-        """The party's counts and the sandbox's seconds onto `costs.json`."""
+        """Add the party's counts and the sandbox's seconds to `costs.json`."""
         self.costs.add_party(party, **counted)
         self.costs.add_sandbox(self.config.rollout.sandbox, timed, seconds)
         record.write_json(self.directory / record.COSTS, self.costs.to_dict())
@@ -282,9 +283,9 @@ class Run:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        """Close the record whether or not the loop raised: a run that crashed still happened.
-        A signal's `KeyboardInterrupt` is recorded as `stopped: <signal>`; the proxy, if
-        this run started one, is stopped first."""
+        """Stop the proxy if this run started one, then close the record, whether or not
+        the loop raised. A `KeyboardInterrupt` from a signal is recorded as
+        `stopped: <signal>`."""
         self.progress.close()
         if self.serving is not None:
             self.serving.close()
@@ -298,19 +299,19 @@ class Run:
 
 
 def carried_modules(config: Blueprint) -> Candidate | None:
-    """The candidate a run carries into every job, seeded from `[recipe] modules`; None
-    when the key is unset, or for the one recipe that seeds its own search, gepa."""
+    """The candidate a run carries into every job, seeded from `[recipe] modules`. None
+    when the key is unset or the recipe (gepa, fst) seeds its own search."""
     return None if isinstance(config.recipe, GepaRecipe | FstRecipe) else seeded(config)
 
 
 def seeded(config: Blueprint) -> Candidate | None:
-    """The candidate `[recipe] modules` seeds, whichever recipe; None when it is unset."""
+    """The candidate `[recipe] modules` seeds, for any recipe. None when it is unset."""
     directory = modules_dir(config)
     return None if directory is None else seed(directory)
 
 
 def runs_root(flag: Path | None = None) -> Path:
-    """Where runs live: `--root`, then `SHIPYARD_RUNS`, then `./runs`; every command uses it."""
+    """Where runs live: `--root`, else `SHIPYARD_RUNS`, else `./runs`. Every command uses it."""
     if flag is not None:
         return Path(flag)
     named = os.environ.get("SHIPYARD_RUNS")
@@ -326,13 +327,13 @@ def version() -> str:
 
 
 def _run_id(name: str) -> str:
-    """`<name>__<7>`, the way Harbor names a trial: an id per run, not per blueprint."""
+    """`<name>__<7>`, named as Harbor names a trial. Each run gets a new id."""
     stem = name[:32].rstrip("_-") or "run"
     return f"{stem}__{ShortUUID().random(length=7)}"
 
 
 def _tally(values: Iterable[str | None]) -> dict[str, int]:
-    """How many of each named value, in order of first appearance; None is not a value."""
+    """Count each value, in order of first appearance. None is skipped."""
     counts: dict[str, int] = {}
     for value in values:
         if value is not None:

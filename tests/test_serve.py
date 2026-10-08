@@ -1,5 +1,5 @@
-"""`shipyard serve`: what it binds, what it advertises, what it prints, how it stops, and
-the whole process end to end on the fake sampler, with no Tinker and no tokenizer."""
+"""`shipyard serve`: what it binds, advertises and prints, how it stops, and the whole
+process end to end on the fake sampler, with no Tinker and no tokenizer."""
 
 from __future__ import annotations
 
@@ -30,7 +30,8 @@ runner = CliRunner()
 
 @dataclass
 class FakeEndpoint:
-    """`Endpoint` as serve uses it: start, a port, a banner's facts, stop, in order."""
+    """Stands in for `Endpoint` with the attributes serve uses. `called` records start and
+    stop in order."""
 
     base_model: str = "Qwen/Qwen3-8B"
     model_path: str | None = None

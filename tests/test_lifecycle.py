@@ -1,7 +1,7 @@
 """The proxy's lifecycle in a run: probed at `/healthz` through the tunnel (or on loopback)
-before the first trial, refused in words when nothing answers, and a tunnel or serve process
-that exits stops the run before the next job instead of masking a batch. A stub cloudflared
-and a stub `shipyard serve` that answers HTTP stand in for the real ones."""
+before the first trial, refused with a message when nothing answers, and a tunnel or serve
+process that exits stops the run before the next job instead of masking a batch. A stub
+cloudflared and a stub `shipyard serve` that answers HTTP stand in for the real ones."""
 
 from __future__ import annotations
 

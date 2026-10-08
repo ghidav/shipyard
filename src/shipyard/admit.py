@@ -45,8 +45,8 @@ ENDPOINT_FAILED = frozenset(
         "ApiProviderResourceNotFoundError",
     }
 )
-#: Harbor's verifier-side endings: the agent finished and the grader did not. Not the
-#: harness ending badly, so a filled context does not read them as giving up.
+#: Harbor's verifier-side endings: the agent finished and the grader did not. A filled
+#: context does not read them as the harness giving up.
 GRADER_FAILED = frozenset(
     {
         "RewardFileNotFoundError",
@@ -59,7 +59,7 @@ GRADER_FAILED = frozenset(
 
 @dataclass(frozen=True)
 class Verdict:
-    """A trial's reward or its mask, exactly one of the two, and how Harbor said it ended."""
+    """A trial's reward or its mask (exactly one is set), and how Harbor said it ended."""
 
     reward: float | None
     mask: str | None
@@ -67,15 +67,14 @@ class Verdict:
 
 
 def _ended(payload: dict[str, Any] | None) -> str | None:
-    """Harbor's `exception_info.exception_type`, or None: nothing raised, so the reason a
-    trial ended badly is read off the file rather than caught."""
+    """Harbor's `exception_info.exception_type` from a result payload, or None."""
     found = payload.get("exception_info") if payload else None
     named = found.get("exception_type") if isinstance(found, dict) else None
     return str(named) if named else None
 
 
 def endpoint_failed(why: str | None) -> bool:
-    """Whether Harbor's name for an ending says the endpoint failed, not the policy."""
+    """Whether the ending Harbor named is an endpoint failure."""
     return why is not None and (why in ENDPOINT_FAILED or why.endswith("ApiError"))
 
 
@@ -86,9 +85,9 @@ def verdict(
     asked: int | None = None,
     failed: bool = False,
 ) -> Verdict:
-    """With records, the served endings first (`served_verdict`); then no result is
-    `env_error`, the clock's cut `timeout`, an endpoint failure `api_error`, a numeric
-    `rewards.reward` the reward, anything else `grading_error`."""
+    """With records, the served endings come first (`served_verdict`). Then: no result is
+    `env_error`, the clock's cut is `timeout`, an endpoint failure is `api_error`, a
+    numeric `rewards.reward` is the reward, and anything else is `grading_error`."""
     payload = result_of(trial)
     why = _ended(payload)
     if records is not None:
@@ -116,11 +115,12 @@ def served_verdict(
     asked: int | None = None,
     failed: bool = False,
 ) -> Verdict | None:
-    """The served endings, decided before the verifier's number is read, or None: no (or
-    too few) records `env_error`, a first turn that never fit `context_overflow`, a budget
-    cut or a filled context 0, a quit on a failed call `api_error`, an image `multimodal`.
-    `failed` is the harness's log saying its last call failed: with no failure on the last
-    record, the proxy never saw it, and the trial measured the connection."""
+    """The served endings, decided before the verifier's number is read, or None. No
+    records, or too few, is `env_error`. A first turn that never fit is
+    `context_overflow`. A budget cut or a filled context scores 0. A quit on a failed call
+    is `api_error`. An image is `multimodal`. `failed` is the harness's log saying its last
+    call failed. With no failure on the last record, the proxy never saw that call and
+    the trial measured the connection."""
     if not records:
         return Verdict(None, ENV_ERROR, why)
     if asked is not None and asked > len(records):
@@ -144,8 +144,8 @@ def served_verdict(
 
 
 def verdicts(rollouts: Rollouts) -> list[Verdict]:
-    """One verdict per trial, in plan order; with the records the run attached to the
-    rollouts, each trial is judged beside its own and its harness's turn count."""
+    """One verdict per trial, in plan order. When the run attached records to the
+    rollouts, each trial is judged with its own records and its harness's turn count."""
     if rollouts.records is None:
         return [verdict(Path(trial)) for trial in rollouts.trials]
     asked, failed = rollouts.asked or {}, rollouts.failed or set()
@@ -161,13 +161,13 @@ def verdicts(rollouts: Rollouts) -> list[Verdict]:
 
 
 def scores(rollouts: Rollouts) -> list[float]:
-    """The rewards of the graded trials only: a masked trial is left out, never a zero."""
+    """The rewards of the graded trials. A masked trial is left out, not scored zero."""
     return [found.reward for found in verdicts(rollouts) if found.reward is not None]
 
 
 def results(rollouts: Rollouts) -> Iterator[tuple[Path, dict[str, Any]]]:
-    """Each trial that left a readable `result.json`, with it, in plan order: the one walk
-    every reader of a job's results takes, so none can skip a trial another counts."""
+    """Each trial that left a readable `result.json`, with its payload, in plan order.
+    Every reader of a job's results uses this walk, so none skips a trial another counts."""
     for trial in rollouts.trials:
         payload = result_of(trial)
         if payload is not None:
@@ -175,8 +175,8 @@ def results(rollouts: Rollouts) -> Iterator[tuple[Path, dict[str, Any]]]:
 
 
 def result_of(trial: Path) -> dict[str, Any] | None:
-    """The trial's `result.json` as a dict, or None when missing or unreadable: the one
-    reader of that file, so no two modules can disagree about its shape."""
+    """The trial's `result.json` as a dict, or None when missing or unreadable. Every
+    module reads the file through this function, so they agree on its shape."""
     try:
         payload = json.loads((Path(trial) / "result.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):

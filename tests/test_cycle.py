@@ -1,8 +1,8 @@
-"""The search on a fake scorer and a fake proposer: four tasks and one rule, a text scores
-1.0 on a task whose name it mentions and `BASELINE` on one it does not, so every reward
-in a case is visible in the case. Minibatches are drawn at random, so a case that needs a
-child to win its minibatch uses `Echo`, whose child names the minibatch it was shown. A text
-that names every task of a minibatch is perfect there, and its round is skipped."""
+"""The search on a fake scorer and a fake proposer: four tasks and one rule. A text scores
+1.0 on a task whose name it mentions and `BASELINE` on one it does not, so each reward in a
+case follows from the case. Minibatches are drawn at random, so a case that needs a child to
+win its minibatch uses `Echo`, whose child names the minibatch it was shown. A text that
+names every task of a minibatch is perfect there, and its round is skipped."""
 
 from __future__ import annotations
 
@@ -48,8 +48,8 @@ def seed(text: str = "", *names: str) -> Candidate:
 
 @dataclass
 class World:
-    """A scorer: 1.0 on a task the candidate's text names, `BASELINE` otherwise; what it
-    was asked, in which round, and one call per job; the feedback names the round."""
+    """A scorer: 1.0 on a task the candidate's text names, `BASELINE` otherwise. It records
+    what it was asked, in which round, and one call per job. The feedback names the round."""
 
     asked: list[tuple[str, str]] = field(default_factory=list)
     rounds: list[int] = field(default_factory=list)
@@ -72,8 +72,8 @@ class World:
 
 @dataclass
 class Table:
-    """A scorer reading each task's reward off a table, whatever the candidate: None is a
-    task with no measured rollout."""
+    """A scorer reading each task's reward off a table, for any candidate. None is a task
+    with no measured rollout."""
 
     rewards: dict[str, float | None]
 
@@ -259,7 +259,7 @@ async def test_patience_counts_rounds_in_which_the_best_pareto_mean_did_not_rise
 
 
 async def test_with_no_patience_the_budget_alone_ends_the_search() -> None:
-    """Patience is unset by default, as in GEPA's code; every round spends its parent's
+    """Patience is unset by default, as in GEPA's code. Every round spends its parent's
     rollouts, so the budget ends even a search whose reflector never answers."""
     result = await run(seed(), TASKS, write=Scripted([]), score=World(), patience=None, budget=20)
     assert result.rounds == 8 and result.spent == 20, "4 for the seed, then 2 a round"
@@ -270,7 +270,7 @@ async def test_with_no_patience_the_budget_alone_ends_the_search() -> None:
 async def test_a_round_whose_parent_is_perfect_on_its_minibatch_asks_for_no_rewrite() -> None:
     """GEPA's code skips it by default (gepa 0.1.4, api.py: skip_perfect_score = True,
     perfect_score = 1.0): no child can beat a parent at 1.0 on every task. The parent's
-    run is spent all the same."""
+    run is still spent."""
     world, log, writes = World(), Logged(), Scripted(["anything"])
     solved = seed("t1 t2 t3 t4")
     result = await run(solved, TASKS, write=writes, score=world, log=log, patience=None, budget=10)
@@ -294,7 +294,7 @@ async def test_a_round_whose_parent_is_perfect_on_its_minibatch_asks_for_no_rewr
 
 
 def test_a_minibatch_is_perfect_when_every_task_is_not_when_the_mean_is() -> None:
-    """Task by task, as GEPA's code compares each example's score; a task's score is the
+    """Task by task, as GEPA's code compares each example's score. A task's score is the
     mean over its measured rollouts."""
     one, two = (str(task) for task in TASKS[:2])
     assert perfect(TASKS[:2], [Outcome(one, 1.0), Outcome(two, 1.0)])
@@ -441,8 +441,8 @@ async def test_a_dominated_candidate_is_not_a_parent_and_the_best_has_the_top_me
 
 
 def test_a_thinly_measured_row_does_not_outrank_a_complete_one() -> None:
-    """`lucky` holds one cell at 1.0 and nothing else: on the frontier by that column,
-    and on the mean alone the winner. Coverage comes first."""
+    """`lucky` holds one cell at 1.0 and no others. It is on the frontier by that column and
+    has the higher mean, but coverage comes first."""
     broad, lucky = seed("broad"), seed("lucky")
     pool = {member.digest: member for member in (broad, lucky)}
     seen = {
@@ -459,8 +459,8 @@ def test_a_thinly_measured_row_does_not_outrank_a_complete_one() -> None:
 
 
 async def test_a_child_whose_full_evaluation_died_is_not_the_winner() -> None:
-    """The live path to that row: the child wins its minibatch, and the trials over the
-    Pareto tasks produce nothing past the two it names; it stays in the pool and on the
+    """The live path to that row. The child wins its minibatch, and the trials over the
+    Pareto tasks produce nothing past the two it names. It stays in the pool and on the
     frontier, and loses."""
 
     class Dying:

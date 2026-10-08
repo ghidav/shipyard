@@ -1,7 +1,7 @@
 """`shipyard run --smoke` on fakes: the overrides (one task, the first of the first batch,
 one rollout, one job, no gradient, checkpoint or reflection), the report's lines, the run
-directory it leaves, and the exit codes: 0 only when a trial came back with a record (served)
-or a verdict (provider-served)."""
+directory it leaves, and the exit codes. The exit code is 0 only when a trial came back with
+a record (served) or a verdict (provider-served)."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ runner = CliRunner()
 
 @pytest.fixture
 def here(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A four-task dataset, no Tinker session to be had, a wide terminal."""
+    """A four-task dataset, no Tinker session, a wide terminal."""
     for name in ("a", "b", "c", "d"):
         shutil.copytree(FIXTURES / "fixture" / "alpha", tmp_path / "tasks" / "four" / name)
     monkeypatch.chdir(tmp_path)
@@ -171,7 +171,7 @@ def test_a_provider_served_smoke_passes_on_a_verdict(here: Path, trials: FakeTri
     assert result.exit_code == 0, result.output
     lines = report_of(result.output)
     assert lines[1] == (
-        "  sandbox     modal        proxy  none (the harness calls openrouter itself)"
+        "  sandbox     modal        proxy  none (the harness calls openrouter directly)"
     )
     assert lines[2] == "  harness     pi@0.85.1    profile none (provider-served)"
     assert lines[3].endswith("records —   served openrouter   verdict 0.0")

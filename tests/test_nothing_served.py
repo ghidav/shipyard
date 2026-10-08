@@ -1,8 +1,9 @@
-"""The dead-endpoint stop, once in `Run.sample` for every recipe: a served job none of whose
-trials reached the proxy, or whose every request failed at the sampler (the weights expired
-under the run), is recorded and then stops the run with `NothingServed`; a job where some
-trials were answered is masked trial by trial; a provider-served job is never this; and a step
-whose groups are all degenerate is an untrained step, not a dead endpoint."""
+"""The dead-endpoint stop, implemented once in `Run.sample` for every recipe. A served job
+is recorded and then stops the run with `NothingServed` when none of its trials reached the
+proxy, or when every request failed at the sampler (the weights expired under the run). A
+job where some trials were answered is masked trial by trial. A provider-served job never
+stops the run this way. A step whose groups are all degenerate is an untrained step and
+does not stop the run."""
 
 from __future__ import annotations
 
@@ -106,7 +107,7 @@ async def test_a_provider_served_job_with_no_result_is_masked_not_stopped(
 async def test_a_job_whose_every_request_failed_at_the_sampler_stops_the_run(
     tmp_path: Path, proxy: FakeProxy
 ) -> None:
-    """d2ab39b's night: the proxy is reached, but expired weights poisoned its client."""
+    """The proxy is reached, but expired weights poisoned its client (d2ab39b)."""
     proxy.default = [made(error="sampler: BadRequestError", seq=n) for n in (1, 2)]
     opened = Run.open(_four(tmp_path, "evaluate", **SERVED_EVALUATE), root=tmp_path / "runs")
     opened.run_trial = FakeTrials()

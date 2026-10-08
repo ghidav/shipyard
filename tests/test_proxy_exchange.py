@@ -1,6 +1,6 @@
-"""One request through the app: the SDK's headers on the record, a retry or an idempotent
-request replayed from the stored reply and not re-sampled, whatever the budget did to its
-params in between, and the volatile cut counted once per request that left a record."""
+"""One request through the app: the SDK's headers on the record, a retry or idempotent
+request replayed from the stored reply even after a budget cut, and the volatile cut counted
+once per request that left a record."""
 
 from __future__ import annotations
 
@@ -40,8 +40,8 @@ async def test_an_idempotency_key_replays_without_a_retry_header() -> None:
 
 
 async def test_a_retry_after_a_budget_cut_still_replays() -> None:
-    """95 of a 100-token budget spent, so the retry's max_tokens would be cut from 10 to 5:
-    the key is the params as pinned, before the cut, and the stored reply is found."""
+    """With 95 of a 100-token budget spent, the retry's max_tokens would be cut from 10 to 5.
+    The key uses the params before the cut, so the stored reply is found."""
     sampler = FakeSampler("x" * 95)
     async with endpoint(sampler, max_context=100) as started:
         first = await ask(started, "t", max_tokens=10)

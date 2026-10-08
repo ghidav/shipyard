@@ -1,6 +1,7 @@
-"""What both ends of the proxy agree on without the cookbook: the record as it is kept
-and as it crosses the wire (a prompt extending an earlier record sent as that record's
-index and the new tokens, read back whole), the routes, the env names, the token."""
+"""Definitions shared by both ends of the proxy, independent of the cookbook: the record
+as stored and as sent over the wire, the routes, the env var names and the token. On the
+wire, a prompt that extends an earlier record is sent as that record's index plus the new
+tokens and is rebuilt in full on read."""
 
 from __future__ import annotations
 
@@ -9,18 +10,18 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from typing import Any
 
-#: The harness's key and the run's control key: env vars and never config keys, since the
-#: config is copied into the run directory and a secret written there is in every copy.
+#: The harness's key and the run's control key. They are env vars because the config is
+#: copied into the run directory, and a secret in the config would be copied with it.
 PROXY_TOKEN_ENV = "SHIPYARD_PROXY_TOKEN"
 CONTROL_TOKEN_ENV = "SHIPYARD_CONTROL_TOKEN"
 RECORDS_PATH = "/records"
 CONTROL_PATH = "/control/weights"
-#: The one route behind no token: what a run probes before a sandbox dials the proxy.
+#: The route that needs no token. A run probes it before a sandbox dials the proxy.
 HEALTH_PATH = "/healthz"
-#: How a record of a request the sampler failed begins its `error`: `sampler: <type>`.
+#: Prefix of `error` on a record whose request the sampler failed: `sampler: <type>`.
 SAMPLER_FAILED = "sampler: "
-#: Stands in for an image's tokens in a record's prompt ids, one per token of the chunk:
-#: the record still says how long the prompt was, and admission sets such a rollout aside.
+#: Placeholder id for an image's tokens in a record's prompt ids, one per token of the
+#: chunk. The record keeps the prompt's length, and admission sets such a rollout aside.
 IMAGE_TOKEN = -1
 
 
@@ -30,8 +31,8 @@ def new_token() -> str:
 
 @dataclass(frozen=True)
 class Record:
-    """One model call of one trial as token ids; `error` set means it was refused or failed
-    and produced nothing, kept so completeness can see the call was made."""
+    """One model call of one trial as token ids. A record with `error` set was refused or
+    failed and produced nothing. It is kept so the completeness check sees the call."""
 
     seq: int
     at: float
@@ -52,8 +53,9 @@ class Record:
 
 
 def delta_encoded(records: Sequence[Record]) -> list[dict[str, Any]]:
-    """Each record as a dict; a prompt that begins with an earlier record's prompt and
-    completion carries `prompt_from` and only the tokens after them (the longest match)."""
+    """Each record as a dict. A prompt that begins with an earlier record's prompt and
+    completion is sent as `prompt_from` (the longest such record) plus the tokens after
+    them."""
     out: list[dict[str, Any]] = []
     for index, record in enumerate(records):
         row = asdict(record)
@@ -78,8 +80,8 @@ def delta_encoded(records: Sequence[Record]) -> list[dict[str, Any]]:
 
 
 def records_of(items: Sequence[Mapping[str, Any]]) -> list[Record]:
-    """A trial's records back off the wire, in either form the route sends them. The
-    `prompt_from` link is not kept: the run finds its own prefixes over the ids."""
+    """A trial's records decoded from the wire, in either form the route sends them. The
+    `prompt_from` link is dropped. The run finds prefixes from the ids."""
     made: list[Record] = []
     for item in items:
         record = record_of(item)
@@ -87,8 +89,8 @@ def records_of(items: Sequence[Mapping[str, Any]]) -> list[Record]:
         if base is not None:
             if not 0 <= int(base) < len(made):
                 raise ValueError(
-                    f"A record off the wire extends record {base}, and only {len(made)} "
-                    "came before it: the response is not one trial's records in order."
+                    f"A record off the wire extends record {base}, but only {len(made)} "
+                    "came before it. The response is not one trial's records in order."
                 )
             before = made[int(base)]
             record = replace(
@@ -104,13 +106,13 @@ def records_of(items: Sequence[Mapping[str, Any]]) -> list[Record]:
 
 
 def record_of(payload: Mapping[str, Any]) -> Record:
-    """One record off the wire. The ids are required: defaulting them to empty would hand
-    training a turn the policy never took; every other field is an annotation."""
+    """One record off the wire. The ids are required, because empty defaults would give
+    training a turn the policy never took. Every other field is an annotation."""
     missing = [key for key in ("prompt_token_ids", "completion_token_ids") if key not in payload]
     if missing:
         raise ValueError(
             f"A record off the wire carries no {' or '.join(missing)}, so there is nothing "
-            f"in it to train on; it had {sorted(payload)}."
+            f"in it to train on. Its keys: {sorted(payload)}."
         )
     return Record(
         seq=int(payload.get("seq") or 0),
@@ -133,5 +135,5 @@ def record_of(payload: Mapping[str, Any]) -> Record:
 
 
 def _text(value: Any) -> str | None:
-    """None rather than "": an empty string is how a wire that carries nothing arrives."""
+    """The value as a string, or None when it is empty or missing."""
     return str(value) if value else None

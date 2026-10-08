@@ -1,5 +1,5 @@
-"""What the proxy keeps of every model call: the token ids per trial, with the run's
-sampling pins applied, the budget and the context fit enforced, and SDK retries replayed."""
+"""Records every model call as token ids per trial. Applies the run's sampling pins,
+enforces the budget and the context fit, and replays SDK retries."""
 
 from __future__ import annotations
 
@@ -13,17 +13,16 @@ from shipyard.proxy import cookbook
 from shipyard.proxy.bridge import Index, Reply
 from shipyard.proxy.exchange import exchange
 
-# The record and the image stand-in live in `wire`, which the run reads without the
-# cookbook; re-exported here, where the recorder makes them.
+# `Record` and `IMAGE_TOKEN` are defined in `wire`, which the run reads without the
+# cookbook. They are re-exported here.
 from shipyard.proxy.wire import IMAGE_TOKEN as IMAGE_TOKEN
 from shipyard.proxy.wire import SAMPLER_FAILED
 from shipyard.proxy.wire import Record as Record
 
 
 class Recorder:
-    """The sampling client the cookbook app calls, and the keeper of every trial's records.
-    A request with no trial in its address is served and recorded under "", never dropped
-    and never filed under the last trial seen."""
+    """The sampling client the cookbook app calls. Holds every trial's records. A request
+    with no trial in its address is served and recorded under the trial name ""."""
 
     def __init__(
         self,
@@ -41,12 +40,12 @@ class Recorder:
         self.client = client
         self.served = served
         self.temperature, self.top_p, self.top_k = temperature, top_p, top_k
-        #: The most a turn may run: a request asking more is cut to it.
+        #: Most tokens a turn may sample. A request asking for more is cut to this.
         self.max_tokens = max_tokens
         self.max_context = max_context
-        #: Sampled tokens a trial may write in all; None for no limit.
+        #: Total sampled tokens a trial may write. None for no limit.
         self.budget = budget
-        #: Whether a turn that would overrun the context is given what is left instead.
+        #: Whether a turn that would overrun the context gets the remaining context as its limit.
         self.fill_context = fill_context
         self.records: dict[str, list[Record]] = {}
         #: Per trial: requests refused (budget or context), volatile lines cut, tokens sampled.
@@ -57,15 +56,15 @@ class Recorder:
         self._replies: dict[tuple[Any, ...], asyncio.Future[Any]] = {}
         #: Per trial, the sampled replies the bridge may extend.
         self.indexes: dict[str, Index] = {}
-        #: The trials whose records were taken: nothing fetches them again.
+        #: Trials whose records were taken. No later fetch reads them.
         self.taken: set[str] = set()
 
     def index_for(self, trial: str) -> Index:
         return self.indexes.setdefault(trial, Index())
 
     def pin(self, sampling_params: Any) -> Any:
-        """The run's distribution knobs over the harness's; `max_tokens` only capped, since
-        it bounds how long a turn runs and not which token is drawn."""
+        """Apply the run's sampling parameters over the harness's. `max_tokens` is only
+        capped, because it bounds a turn's length and does not change which token is drawn."""
         update: dict[str, Any] = {}
         if self.temperature is not None:
             update["temperature"] = float(self.temperature)
@@ -85,8 +84,8 @@ class Recorder:
             return await self._sample(found, trial, prompt, num_samples, sampling_params)
         finally:
             if trial in self.taken:
-                # A call that outlived its trial's fetch, as one Harbor's clock cut can:
-                # what it left would sit in memory for the proxy's life, read by no one.
+                # A call that outlived its trial's fetch (Harbor's timeout can cut one)
+                # leaves records nobody reads, so drop them.
                 self._forget(trial)
 
     async def _sample(
@@ -94,28 +93,28 @@ class Recorder:
     ) -> Any:
         prompt_ids = ids_of(prompt)
         pinned = self.pin(sampling_params)
-        # Keyed on the params as pinned, before the budget cut: a retry arriving after the
-        # trial's count moved would otherwise be cut differently and not match its reply.
+        # Keyed on the params as pinned, before the budget cut, so a retry arriving after
+        # the trial's count moved still matches its reply.
         asked = json.dumps(_params_dict(pinned), sort_keys=True, default=str)
         keys: list[tuple[Any, ...]] = [(trial, prompt_ids, int(num_samples), asked)]
         if found is not None and found.idempotency_key:
             keys.append((trial, found.idempotency_key))
-        # A retry replays by either key; a fresh request with an idempotency key replays
-        # by that key alone, since the same prompt under a new key is a resample.
+        # A retry replays by either key. A fresh request with an idempotency key replays
+        # by that key only, since the same prompt under a new key is a resample.
         lookups = keys if found is not None and found.retry else keys[1:]
         for key in lookups:
             stored = self._replies.get(key)
             answered = await stored if stored is not None else None
             if answered is not None:
                 return answered  # the SDK sent this before: one reply, one record
-        # Fitted after the replay: a retry of the turn that spent the budget gets its reply.
+        # Fit after the replay, so a retry of the turn that spent the budget gets its reply.
         pinned = self._fitting(trial, prompt, prompt_ids, pinned, int(num_samples))
         params = _params_dict(pinned)
         pending: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
         for key in keys:
             self._replies[key] = pending
-        # Read together, before the await: a swap while this was in flight must not
-        # re-stamp the record with weights that did not answer it.
+        # Read together before the await, so a swap in flight does not stamp the record
+        # with weights that did not answer it.
         client, served = self.client, self.served
         started = time.perf_counter()
         try:
@@ -134,7 +133,7 @@ class Recorder:
         if not pending.done():
             pending.set_result(response)
         elapsed_ms = (time.perf_counter() - started) * 1000.0
-        # The cache hit describes the prompt the sequences share: spent on the first only.
+        # The cache hit describes the prompt the sequences share, so only the first carries it.
         cache_hit = int(getattr(response, "prompt_cache_hit_tokens", 0) or 0)
         for sequence in list(getattr(response, "sequences", None) or []):
             tokens = tuple(int(token) for token in sequence.tokens)
@@ -156,10 +155,10 @@ class Recorder:
     def _fitting(
         self, trial: str, prompt: Any, prompt_ids: tuple[int, ...], pinned: Any, num_samples: int
     ) -> Any:
-        """The params a request is served with, or the refusal: a trial past its budget is
-        refused (the cookbook's 400, not an overflow), a turn beyond the budget is cut to
-        its share of what is left per sample, and a prompt with no room for its reply is
-        refused as an overflow."""
+        """Return the params to serve the request with, or raise a refusal. A trial past its
+        budget gets the cookbook's 400. A turn beyond the budget is cut to its share of what
+        is left per sample. A prompt with no room for its reply is refused as a context
+        overflow."""
         if self.budget:
             spent = self.spoke.get(trial, 0)
             share = (self.budget - spent) // max(1, num_samples)
@@ -167,7 +166,7 @@ class Recorder:
                 self._refuse(trial, prompt_ids, pinned, "budget")
                 raise cookbook.refused(
                     f"This rollout has spent its budget: {spent} sampled tokens of "
-                    f"{self.budget}, the model's context length. Nothing more is served to it."
+                    f"{self.budget}, the model's context length. No further requests are served."
                 )
             if int(getattr(pinned, "max_tokens", 0) or 0) > share:
                 pinned = pinned.model_copy(update={"max_tokens": int(share)})
@@ -202,11 +201,11 @@ class Recorder:
         cached_tokens: int = 0,
         error: str | None = None,
     ) -> Record:
-        """The next record of the trial, numbered per trial from 1, refused and failed calls
-        included so the sequence says what the harness asked, not only what it was given."""
+        """Append the trial's next record, numbered from 1 per trial. Refused and failed
+        calls get records too, so the sequence shows everything the harness asked for."""
         found = exchange.get()
         if found is not None and found.cut:
-            # Counted once per request that left a record: a replayed retry cut nothing new.
+            # Counted once per request that left a record. A replayed retry cuts nothing new.
             self.cut[trial] = self.cut.get(trial, 0) + found.cut
             found.cut = 0
         self._seq[trial] = seq = self._seq.get(trial, 0) + 1
@@ -243,9 +242,9 @@ class Recorder:
         rendered: tuple[int, ...] | None = None,
         call_ids: tuple[str, ...] = (),
     ) -> None:
-        """Stamp the parsed reply's digest on record `seq` of the trial and index the
-        reply for the bridge, with its calls' ids, unless the prompt held an image, which
-        no ids rebuild."""
+        """Set the parsed reply's digest on record `seq` of the trial and index the reply,
+        with its calls' ids, for the bridge. A prompt that held an image is not indexed,
+        because no ids rebuild it."""
         records = self.records.get(trial, [])
         for at in range(len(records) - 1, -1, -1):
             if records[at].seq != seq:
@@ -265,8 +264,8 @@ class Recorder:
         return list(self.records.get(trial, []))
 
     def take(self, trial: str) -> list[Record]:
-        """This trial's records, removed with its counters and replies: a trial is read once,
-        and a proxy that only accumulated would hold every token of a long run."""
+        """Remove and return this trial's records, with its counters and replies. A trial
+        is read once, so the proxy does not keep every token of a long run."""
         if trial:
             self.taken.add(trial)
         return self._forget(trial)
@@ -280,8 +279,9 @@ class Recorder:
 
 
 def ids_of(prompt: Any) -> tuple[int, ...]:
-    """The prompt as ids, every non-text chunk as a run of `IMAGE_TOKEN` of its length:
-    `ModelInput.to_ints` refuses an image chunk, and the record still has to say how long."""
+    """The prompt as ids. Each non-text chunk becomes a run of `IMAGE_TOKEN` of the
+    chunk's length, because `ModelInput.to_ints` refuses image chunks and the record
+    must still show the length."""
     ids: list[int] = []
     for chunk in prompt.chunks:
         tokens = getattr(chunk, "tokens", None)
@@ -298,5 +298,5 @@ def _params_dict(sampling_params: Any) -> dict[str, Any]:
         return {}
     try:
         return {key: value for key, value in dump().items() if value is not None}
-    except Exception:  # noqa: BLE001 - an annotation never fails a rollout
+    except Exception:  # noqa: BLE001 - a failed annotation must not fail a rollout
         return {}

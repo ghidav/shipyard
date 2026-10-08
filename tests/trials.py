@@ -1,6 +1,6 @@
 """Trials and blueprints without Harbor: `result.json` files in the shape `TrialResult`
 dumps, a runner that stands in for `Trial.create` + `run` and writes them, and a `run.toml`
-written where a test asks."""
+writer."""
 
 from __future__ import annotations
 
@@ -19,12 +19,13 @@ T0 = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 def fixture_tasks(tmp_path: Path) -> Path:
-    """The fixture datasets copied to `<tmp>/tasks`, where a working directory reads them."""
+    """The fixture datasets copied to `<tmp>/tasks`."""
     return shutil.copytree(FIXTURES, tmp_path / "tasks")
 
 
 def write_blueprint(tmp_path: Path, text: str) -> Path:
-    """`text` as `<tmp>/bp/run.toml`; the blueprint directory, as `load` and `check` take it."""
+    """Writes `text` to `<tmp>/bp/run.toml` and returns the blueprint directory, the form
+    `load` and `check` take."""
     home = tmp_path / "bp"
     home.mkdir(parents=True)
     (home / "run.toml").write_text(text, encoding="utf-8")
@@ -98,9 +99,9 @@ def _phase(start: datetime, seconds: float) -> dict[str, str]:
 
 
 class FakeTrials:
-    """Harbor's `Trial.create` + `run`, replaced: records every config and how many ran
-    at once, and writes each trial's directory and result as `outcomes` says by task name.
-    A task in `breaks` raises instead; an outcome of None leaves the directory empty."""
+    """Stands in for Harbor's `Trial.create` + `run`. Records every config and the peak
+    concurrency, and writes each trial's directory and result as `outcomes` says by task
+    name. A task in `breaks` raises instead. An outcome of None leaves the directory empty."""
 
     def __init__(
         self,

@@ -1,9 +1,9 @@
 """CISPO (MiniMax-M1, arXiv 2506.13585): the advantage as DAPO forms it and Tinker's `cispo`
-loss, whose truncated importance weight scales the gradient without passing it; each prompt's
-token losses averaged (Eq. 4), 16 substeps by prompt, DAPO's dynamic sampling and length
+loss, whose truncated importance weight is detached from the gradient. Each prompt's token
+losses are averaged (Eq. 4), with 16 substeps by prompt, DAPO's dynamic sampling and length
 penalty (3.1), and AdamW at betas 0.9 / 0.95 and eps 1e-15 (3.2). `clip_high` (3.0) is an
-epsilon on the weight's ceiling: `loss_fn_config` gets `clip_high_threshold = 1 + clip_high`,
-`clip_low_threshold = 0`."""
+epsilon on the weight's ceiling: `loss_fn_config` gets `clip_high_threshold = 1 + clip_high`
+and `clip_low_threshold = 0`."""
 
 from __future__ import annotations
 
@@ -17,14 +17,14 @@ from shipyard.trainer import Adam
 if TYPE_CHECKING:
     from shipyard.run import Run
 
-#: 3.2 sets the betas and eps for gradients mostly below 1e-14; it states no weight decay,
-#: gradient clipping or warm-up, so those are the cookbook's: none.
+#: 3.2 sets the betas and eps for gradients mostly below 1e-14. It states no weight decay,
+#: gradient clipping or warm-up, so the cookbook's apply (none).
 ADAM = Adam(beta1=0.9, beta2=0.95, eps=1e-15)
 
 
 def preset(recipe: Any) -> Preset:
-    # No lower bound: MiniMax-M1 sets epsilon_low large and tunes epsilon_high alone without
-    # publishing it; the ceiling of 4.0 is ScaleRL's (A.17.2) and FST's (appendix D).
+    # No lower bound: MiniMax-M1 sets epsilon_low large and tunes only epsilon_high, without
+    # publishing it. The ceiling of 4.0 is ScaleRL's (A.17.2) and FST's (appendix D).
     high = round(1.0 + float(recipe.clip_high), 6)
     return Preset(
         name="cispo",

@@ -15,8 +15,8 @@ def _seen(**rows: list[Outcome]) -> dict[str, dict[str, Outcome]]:
 
 
 def test_the_frontier_keeps_a_candidate_that_wins_one_task() -> None:
-    """`wide` is better on average and on three of four tasks; `narrow` alone solves t4,
-    and a search ranking by mean would have thrown it away."""
+    """`wide` is better on average and on three of four tasks. `narrow` alone solves t4,
+    so a ranking by mean would lose it."""
     seen = _seen(
         wide=[Outcome(task, 0.9) for task in TASKS[:3]] + [Outcome("t4", 0.0)],
         narrow=[Outcome(task, 0.1) for task in TASKS[:3]] + [Outcome("t4", 0.5)],

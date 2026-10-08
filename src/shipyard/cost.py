@@ -1,4 +1,4 @@
-"""What a run spent, as counts: tokens per party and seconds per sandbox, never a total."""
+"""What a run spent, as counts: tokens per party and seconds per sandbox."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: What a party's entry counts, and nothing else: no price can be added to it.
+#: The counts a party's entry holds. No price can be added to it.
 COUNTS = ("trials", "input_tokens", "cache_tokens", "output_tokens")
 #: What training adds to the Tinker party, present only once a run has spent them.
 TRAINING_COUNTS = ("train_tokens", "reference_tokens", "anchor_tokens")
@@ -27,18 +27,19 @@ PHASES = ("environment_setup", "agent_setup", "agent_execution", "verifier")
 
 @dataclass
 class Costs:
-    """One entry per party and per sandbox, each a sum of counts; `to_dict` is `costs.json`."""
+    """One entry per party and per sandbox, each a sum of counts. `to_dict` produces
+    `costs.json`."""
 
     parties: dict[str, dict[str, int]] = field(default_factory=dict)
     sandbox: dict[str, dict[str, float]] = field(default_factory=dict)
 
     def add_party(self, name: str, **counts: int) -> None:
-        """Add to a party's counts; a key outside `COUNTS` and `TRAINING_COUNTS` is
-        refused, so no price gets in."""
+        """Add to a party's counts. Raises `ValueError` for a key outside `COUNTS` and
+        `TRAINING_COUNTS`, so no price gets in."""
         unknown = set(counts) - set(COUNTS) - set(TRAINING_COUNTS)
         if unknown:
             named = ", ".join(COUNTS + TRAINING_COUNTS)
-            raise ValueError(f"a party counts {named}; not {sorted(unknown)}")
+            raise ValueError(f"a party counts {named}; got {sorted(unknown)}")
         held = self.parties.setdefault(name, dict.fromkeys(COUNTS, 0))
         for key, value in counts.items():
             held[key] = held.get(key, 0) + int(value)
@@ -68,9 +69,9 @@ class Costs:
 
 
 def reported(rollouts: Rollouts) -> dict[str, int]:
-    """Over the trials with a result: how many (`trials`), and the `n_input_tokens` (cache
-    inside), `n_cache_tokens` and `n_output_tokens` their agents reported, summed. A trial
-    that reported nothing adds no tokens, since a zero would claim it spent none."""
+    """Sum, over the trials with a result, the trial count (`trials`) and the
+    `n_input_tokens` (cache included), `n_cache_tokens` and `n_output_tokens` their agents
+    reported. A trial that reported nothing adds no tokens."""
     totals = dict.fromkeys(COUNTS, 0)
     for trial, payload in results(rollouts):
         totals["trials"] += 1
@@ -105,7 +106,7 @@ def billed_by(rollouts: Rollouts) -> str | None:
 
 def sandbox_seconds(rollouts: Rollouts) -> tuple[int, float]:
     """How many trials left a result, and their summed container seconds. A trial with
-    no result has no time on it: writing a zero would say its container never ran."""
+    no result has no time on it."""
     trials, seconds = 0, 0.0
     for _, payload in results(rollouts):
         trials += 1

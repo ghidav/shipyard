@@ -1,5 +1,5 @@
-"""Every verdict branch, off `result.json` files in Harbor's shape; and every `ApiError`
-Harbor defines is decided as the endpoint's or the policy's."""
+"""Every verdict branch, read from `result.json` files in Harbor's shape. Every `ApiError`
+Harbor defines is classed as the endpoint's or the policy's."""
 
 from __future__ import annotations
 
@@ -80,7 +80,7 @@ def test_an_api_error_the_policy_caused_keeps_the_verifiers_number(
 
 def test_every_api_error_harbor_defines_is_decided_one_way_or_the_other() -> None:
     """A new `ApiError` subclass in Harbor fails this until someone decides whose fault
-    it is; left undecided, the suffix rule would mask a policy failure."""
+    it is. Left undecided, the suffix rule would mask a policy failure."""
     from harbor.agents.installed import base
 
     defined = {
@@ -184,7 +184,7 @@ def test_a_harness_that_quit_on_a_failed_call_is_an_api_error(tmp_path: Path) ->
     assert verdict(graded, recovered) == Verdict(0.0, None, None)
     only = [made(seq=1, error="sampler: ConnectError")]
     assert verdict(graded, only) == Verdict(None, API_ERROR, None)
-    # Budget and context endings were decided above, not here.
+    # Budget and context endings are decided above.
     assert verdict(graded, [made(seq=1), made(seq=2, error=BUDGET)]).mask is None
 
 

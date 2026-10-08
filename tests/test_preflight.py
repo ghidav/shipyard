@@ -208,9 +208,9 @@ def test_check_warns_of_long_replies_over_a_tunnel_and_of_an_unprofiled_harness(
 def test_compaction_switched_off_by_hand_without_fill_context_is_warned_about(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The profile's own keys at the profile's own values: `fill_context` lays them, and
-    lets an overflowing call fill what is left instead of the 400 a harness that compacts is
-    waiting for. A key set to anything else leaves compaction on, and is not warned about."""
+    """The profile's own keys at the profile's own values: `fill_context` sets them and lets
+    an overflowing call fill what is left, instead of the 400 that a harness that compacts
+    expects. A key set to any other value leaves compaction on and gets no warning."""
     fixture_tasks(tmp_path)
     monkeypatch.chdir(tmp_path)
     env = 'env = { DISABLE_COMPACT = "1", OTHER = "x" }'
@@ -219,10 +219,10 @@ def test_compaction_switched_off_by_hand_without_fill_context_is_warned_about(
     assert (
         Finding(
             "warning",
-            "[rollout] env sets DISABLE_COMPACT, which switches the harness's compaction off, "
-            "but the proxy still refuses a call that overflows the context, as a harness that "
-            "compacts expects; set [rollout] fill_context = true, which sets the same keys and "
-            "gives such a call what is left",
+            "[rollout] env sets DISABLE_COMPACT, which switches the harness's compaction off. "
+            "The proxy still refuses a call that overflows the context, as a harness that "
+            "compacts expects. Set [rollout] fill_context = true instead. It sets the same keys "
+            "and gives such a call what is left",
         )
         in found
     )

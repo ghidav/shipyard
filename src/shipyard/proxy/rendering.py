@@ -1,6 +1,6 @@
-"""The renderer as the app sees it: volatile lines cut from system messages, images
-refused for a model that takes none, the bridge tried, then the prompt rendered; and the
-parsed reply digested onto its record, its thinking kept for the wire."""
+"""The renderer wrapper the app uses. Before rendering it cuts volatile lines from system
+messages, refuses images for a model that takes none, and tries the bridge. After parsing
+it digests the reply onto its record and keeps the reply's thinking for the wire."""
 
 from __future__ import annotations
 
@@ -19,7 +19,8 @@ from shipyard.proxy.vision import has_images, takes_images
 
 
 class Rendering:
-    """One method in, one method out, everything else the inner renderer's."""
+    """Wraps a renderer. It overrides `build_generation_prompt` and `parse_response`.
+    Every other attribute comes from the inner renderer."""
 
     def __init__(self, inner: Any, volatile: Sequence[str] = (), recorder: Any = None) -> None:
         self._inner = inner
@@ -34,8 +35,7 @@ class Rendering:
             if found is not None:
                 found.cut = cut
         if has_images(messages) and not takes_images(self._inner):
-            # A clean 400 rather than a renderer error dressed as a 500: the harness then
-            # knows the request was the problem, and says so in its own log.
+            # Answer with a 400 so the harness sees the request was the problem.
             raise cookbook.refused(
                 "this request carries an image and the model this endpoint serves takes "
                 "none: its renderer was built without an image processor"
@@ -74,10 +74,11 @@ class Rendering:
 
 
 def with_call_ids(message: Any, tokens: Any, found: Exchange | None) -> Any:
-    """Every tool call the model wrote no id for given one, the wire's own form, before
-    the reply is digested: the cookbook keeps an id that is set, and the harness echoes it,
-    so the bridge knows the reply by its ids. Drawn from the trial, the request's digests
-    and the reply's tokens, so a replayed retry carries the ids its first answer did."""
+    """Give every tool call that has no id one, in the wire's own form, before the reply
+    is digested. The cookbook keeps an id that is set and the harness echoes it, so the
+    bridge recognises the reply by its ids. The id is derived from the trial, the
+    request's digests and the reply's tokens, so a replayed retry gets the ids its first
+    answer got."""
     calls = list(message.get("tool_calls") or [])
     if all(_call_id(call) for call in calls):
         return message
@@ -108,15 +109,16 @@ def _call_id(call: Any) -> str | None:
 
 
 def int_stops(renderer: Any) -> set[int]:
-    """The renderer's stop tokens that are token ids; a string stop has no id to find."""
+    """The renderer's stop tokens that are token ids. String stops are skipped."""
     return {int(s) for s in (renderer.get_stop_sequences() or []) if isinstance(s, int)}
 
 
 def drop_volatile(
     messages: Sequence[Any], patterns: Sequence[re.Pattern[str]]
 ) -> tuple[list[Any], int]:
-    """The messages with every match cut from their system text, copied not edited, and
-    how many were cut: a per-request line makes every prompt unique and caches nothing."""
+    """The messages with every pattern match cut from their system text, and the number of
+    matches cut. The input is copied, not modified. A per-request line makes every prompt
+    unique and defeats the cache."""
     out: list[Any] = []
     dropped = 0
     for message in messages:

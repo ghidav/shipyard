@@ -1,4 +1,4 @@
-"""Opening a run writes its definition and process note; closing it says how it ended."""
+"""Opening a run writes its definition and process note. Closing it records how it ended."""
 
 from __future__ import annotations
 
@@ -79,9 +79,9 @@ def test_exit_records_a_bare_interrupt_as_sigint(tmp_path: Path) -> None:
 
 
 async def test_run_recipe_dispatches_to_the_kind(tmp_path: Path, monkeypatch) -> None:
-    """gepa reaches its recipe, which seeds and then wants the datasets; the evaluate
-    recipe runs in `test_evaluate`, gepa in `test_gepa_recipe`, the gradient recipes in
-    `test_loop`."""
+    """The gepa kind reaches its recipe, which seeds and then needs the datasets. The
+    evaluate recipe is tested in `test_evaluate`, gepa in `test_gepa_recipe`, and the
+    gradient recipes in `test_loop`."""
     assert set(KINDS) == {"dapo", "dr-grpo", "cispo", "gepa", "fst", "evaluate"}
     monkeypatch.chdir(tmp_path)
     opened = Run.open(BLUEPRINTS / "gepa", root=tmp_path / "runs")

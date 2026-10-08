@@ -13,8 +13,8 @@ TASKS_DIR = "tasks"
 
 
 class NoSuchDataset(FileNotFoundError):
-    """Named in a blueprint, absent on disk: raised rather than yielding nothing, so a run
-    cannot finish over zero batches and report success."""
+    """A dataset named in a blueprint is absent on disk. Raised so a run cannot finish over
+    zero batches and report success."""
 
 
 def home_of(dataset: str, *, root: Path | None = None) -> Path:
@@ -44,8 +44,8 @@ def batches(
     root: Path | None = None,
 ) -> Iterator[list[Path]]:
     """The datasets' tasks, in list order, shuffled once per epoch with `seed + epoch`
-    and cut into batches of `size`; the final short batch is kept, since dropping it
-    would leave a run covering less than its dataset. A fresh generator per call."""
+    and cut into batches of `size`. The final short batch is kept so the run covers the
+    whole dataset. Returns a fresh generator per call."""
     if size < 1:
         raise ValueError(f"size must be at least 1; got {size}")
     listed = [task for dataset in datasets for task in tasks(dataset, root=root)]
@@ -53,8 +53,9 @@ def batches(
 
 
 def held_out(listed: Sequence[Path], count: int, *, seed: int) -> tuple[list[Path], list[Path]]:
-    """`listed` less `count` of its tasks drawn with `seed`, and those tasks, each in list
-    order: a set to learn from and a set held out to measure on, the same for the same seed."""
+    """Split `listed` in two, each part in list order: the tasks to learn from, and
+    `count` tasks drawn with `seed` to hold out and measure on. The same seed gives the
+    same split."""
     if not 0 <= count <= len(listed):
         raise ValueError(f"cannot hold out {count} of {len(listed)} task(s)")
     drawn = set(random.Random(seed).sample(range(len(listed)), count))
@@ -63,8 +64,8 @@ def held_out(listed: Sequence[Path], count: int, *, seed: int) -> tuple[list[Pat
 
 
 def _cut(listed: list[Path], *, size: int, seed: int, epochs: int) -> Iterator[list[Path]]:
-    """The generator half of `batches`, kept apart so a missing dataset raises at the call
-    rather than at the first batch."""
+    """The generator half of `batches`. It is separate so a missing dataset raises when
+    `batches` is called, not at the first batch."""
     for epoch in range(epochs):
         order = list(listed)
         random.Random(seed + epoch).shuffle(order)

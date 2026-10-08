@@ -1,5 +1,5 @@
-"""The records: the route a run reads them from (plain, delta, again), the wire codec, and
-the recorder's refusals and failures, each of which leaves an error record."""
+"""The route a run reads records from (plain, delta, again), the wire codec, and the
+recorder's refusals and failures. Each refusal or failure leaves an error record."""
 
 from __future__ import annotations
 
@@ -123,7 +123,7 @@ def test_a_record_off_the_wire_with_no_ids_is_refused_and_annotations_may_be_mis
 
 
 def test_every_annotation_survives_the_wire() -> None:
-    """Field by field against the dataclass, so the next field added cannot be dropped."""
+    """Compares every dataclass field, so a newly added field cannot be dropped."""
     made = planted(
         seq=7,
         at=1234.5,
@@ -288,8 +288,8 @@ async def test_a_failed_sample_leaves_a_record_and_re_raises() -> None:
 
 
 async def test_a_reply_that_lands_after_its_trial_was_taken_is_dropped() -> None:
-    """A call Harbor's clock cut mid-flight answers after the run drained its trial: the
-    harness still gets the reply, and the proxy keeps nothing nobody will fetch."""
+    """A call cut off mid-flight by Harbor's timeout can answer after the run drained its
+    trial. The harness still gets the reply and the proxy keeps no record of it."""
 
     class Held(FakeSampler):
         def __init__(self) -> None:

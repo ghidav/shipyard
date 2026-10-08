@@ -1,6 +1,7 @@
-"""Records into token sequences: the chains a harness's calls form by the token-prefix
-rule, one sequence per chain with the completions as target spans, the datum convention
-the trainer reads, and the groups a batch's rollouts fall into. No graph."""
+"""Records into token sequences. A harness's calls form chains by the token-prefix rule,
+and each chain becomes one sequence with the completions as target spans. This module also
+holds the datum convention the trainer reads and the groups a batch's rollouts fall into.
+It builds no graph."""
 
 from __future__ import annotations
 
@@ -23,8 +24,9 @@ if TYPE_CHECKING:
 @dataclass(frozen=True)
 class Sequence:
     """One chain as the trainer reads it: the last record's prompt and completion, which
-    hold every earlier prompt and completion as a prefix; `spans` where each completion
-    sits, in chain order; the sampler's logprobs there, or None when a record had none."""
+    hold every earlier prompt and completion as a prefix. `spans` are where each completion
+    sits, in chain order. `mu` holds the sampler's logprobs there, or None when a record had
+    none."""
 
     tokens: tuple[int, ...]
     spans: tuple[tuple[int, int], ...]
@@ -32,14 +34,14 @@ class Sequence:
 
     @property
     def targets(self) -> tuple[int, ...]:
-        """Every position the policy wrote, ascending; each completion exactly once."""
+        """Every position the policy wrote, ascending, each once."""
         return tuple(at for start, end in self.spans for at in range(start, end))
 
 
 @dataclass(frozen=True)
 class Member:
-    """One rollout of a group: its verdict, its sequences (none when masked), and how
-    many tokens the policy wrote across its calls, which a length rule is a rule on."""
+    """One rollout of a group: its verdict, its sequences (none when masked), and the
+    tokens the policy wrote across its calls, which the length rule measures."""
 
     verdict: Verdict
     sequences: tuple[Sequence, ...]
@@ -48,8 +50,8 @@ class Member:
 
 @dataclass(frozen=True)
 class Group:
-    """A task's rollouts, in plan order, stamped with the trainer's update count when
-    they were sampled so credit can refuse weights that moved since."""
+    """A task's rollouts in plan order, stamped with the trainer's update count at sampling,
+    so credit can refuse a batch whose weights have moved since."""
 
     task: Path
     members: tuple[Member, ...]
@@ -57,8 +59,8 @@ class Group:
 
 
 def packable(record: Record) -> bool:
-    """A refused or failed call has no completion; an image's stand-in tokens are not
-    tokens, and admission masks that rollout anyway."""
+    """A refused or failed call has no completion. An image's stand-in tokens are
+    placeholders, and admission masks that rollout anyway."""
     return (
         record.error is None
         and IMAGE_TOKEN not in record.prompt_token_ids
@@ -67,8 +69,8 @@ def packable(record: Record) -> bool:
 
 
 def chains(records: Values[Record]) -> list[list[Record]]:
-    """The token-prefix rule: a record joins the open chain whose last record's prompt
-    plus completion is a prefix of its prompt, the longest such; otherwise it opens one.
+    """The token-prefix rule. A record joins the open chain whose last record's prompt plus
+    completion is a prefix of its prompt, the longest such, and otherwise opens a chain.
     Only the order within one rollout moves; a call continues one that had finished."""
     found: list[list[Record]] = []
     for record in records:
@@ -96,7 +98,7 @@ def chains(records: Values[Record]) -> list[list[Record]]:
 
 
 def sequences(records: Values[Record]) -> list[Sequence]:
-    """One Sequence per chain; a chain in which the policy wrote nothing is left out."""
+    """One Sequence per chain. A chain in which the policy wrote nothing is left out."""
     out: list[Sequence] = []
     for chain in chains(records):
         last = chain[-1]
@@ -121,9 +123,9 @@ def _span(record: Record) -> tuple[int, int]:
 
 
 def shifted(tokens: Values[int]) -> tuple[tinker.ModelInput, TensorData]:
-    """The cookbook's shift by one, the one place it is spelled: the model reads
-    `tokens[:-1]` and predicts `tokens[1:]`, so position `j` of what it scores is about
-    `tokens[j + 1]`, and a target at `p` sits at `p - 1`."""
+    """The cookbook's shift by one, defined here. The model reads `tokens[:-1]` and predicts
+    `tokens[1:]`, so position `j` of what it scores is about `tokens[j + 1]`, and a target
+    at `p` sits at `p - 1`."""
     if len(tokens) < 2:
         raise ValueError("a sequence needs two tokens for the model to read one and predict one")
     return (
@@ -135,9 +137,9 @@ def shifted(tokens: Values[int]) -> tuple[tinker.ModelInput, TensorData]:
 def datum(
     sequence: Sequence, *, logprobs: Values[float], advantages: Values[float]
 ) -> tinker.Datum:
-    """The datum as the cookbook's `trajectory_to_data` builds one (tinker-cookbook,
-    rl/data_processing.py, Apache-2.0, reproduced here): `shifted`, with mask, logprobs
-    and advantages at each target's index - 1 and zeros elsewhere."""
+    """The datum as the cookbook's `trajectory_to_data` builds it (tinker-cookbook,
+    rl/data_processing.py, Apache-2.0, reproduced here): the `shifted` tokens, with mask,
+    logprobs and advantages at each target's index - 1 and zeros elsewhere."""
     model_input, target_tokens = shifted(sequence.tokens)
     positions = sequence.targets
     if len(logprobs) != len(positions) or len(advantages) != len(positions):
@@ -149,7 +151,7 @@ def datum(
     mask, logprob_at, advantage_at = [0.0] * width, [0.0] * width, [0.0] * width
     for at, position in enumerate(positions):
         if position == 0:
-            continue  # the first token is read, never predicted: the cookbook drops it too
+            continue  # the first token is read but not predicted; the cookbook drops it too
         mask[position - 1] = 1.0
         logprob_at[position - 1] = float(logprobs[at])
         advantage_at[position - 1] = float(advantages[at])
@@ -165,9 +167,10 @@ def datum(
 
 
 def group(rollouts: Rollouts, group_size: int) -> list[Group]:
-    """One Group per task in plan order, cut in slices of `group_size` the way the plan
-    laid the trials out; a masked member carries no sequences. Refused when the job holds
-    no records (nothing served, nothing to train on) or does not divide into groups."""
+    """One Group per task in plan order, cut in slices of `group_size` as the plan laid the
+    trials out. A masked member carries no sequences. Raises when the job holds no records
+    (nothing was served, so there is nothing to train on) or its trials do not divide into
+    groups."""
     if rollouts.records is None:
         raise ValueError(
             f"job {rollouts.job} recorded no model calls: a gradient recipe trains on the "

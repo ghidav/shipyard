@@ -1,5 +1,5 @@
-"""`Run.sample`: the job reserved by name and directory before anything runs, the row it
-appends for the job, and the counts it adds to `costs.json` after each one."""
+"""`Run.sample` reserves the job name and directory before anything runs, appends a row for
+each job, and adds the job's counts to `costs.json`."""
 
 from __future__ import annotations
 
@@ -54,7 +54,8 @@ async def test_jobs_are_named_from_the_rows_and_reserved_by_directory_first(
     rows = list(record.read(opened.directory / record.JOBS))
     assert [row["job"] for row in rows] == [first.job, second.job]
     assert [row["batch"] for row in rows] == [0, 1]
-    # A row already in `jobs.jsonl`, whoever wrote it, is counted; the batch is the caller's.
+    # Rows already in `jobs.jsonl` count toward the job number.
+    # The batch index comes from the caller.
     record.append(opened.directory / record.JOBS, {"job": "elsewhere"})
     third = await opened.sample(_batch(tmp_path, "beta"), rollouts=1, index=1)
     assert third.job == f"{opened.id}-0003" and (tmp_path / "jobs" / third.job).is_dir()
@@ -131,8 +132,8 @@ async def test_empty_maps_are_left_off_and_costs_add_up_across_jobs(
     assert "masked" not in first and "ended" not in first and first["graded"] == 2
     assert second["masked"] == {"env_error": 1} and "ended" not in second
     assert second["graded"] == 1 and second["trials"] == 2 and second["batch"] == 1
-    # No provider recorded, so the blueprint's names the party; nothing reported counts 0
-    # tokens, and the party's trials are the ones with a result, as the sandbox's are.
+    # With no provider recorded, the blueprint names the party. Unreported tokens count as 0.
+    # The party's trials and the sandbox's trials are those with a result.
     assert first["party"] == second["party"] == "openrouter"
     assert first["input_tokens"] == 0 and first["sandbox_seconds"] == 0.0
     costs = record.read_json(opened.directory / record.COSTS)
@@ -161,7 +162,7 @@ async def test_jobs_dir_comes_from_the_blueprint(
     assert rolled.trials[0].parent == Path("elsewhere/jobs") / rolled.job
     assert (tmp_path / "elsewhere" / "jobs" / rolled.job).is_dir()
     assert not (tmp_path / "jobs").exists()
-    # Nothing of shipyard's is written inside the job directory.
+    # Shipyard writes nothing inside the job directory.
     assert sorted(p.name for p in (tmp_path / "elsewhere" / "jobs" / rolled.job).iterdir()) == [
         rolled.trials[0].name
     ]

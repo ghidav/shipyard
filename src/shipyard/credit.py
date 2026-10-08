@@ -1,6 +1,7 @@
-"""Credit: which rollouts carry a gradient and how much, from the verdicts and the packed
-sequences; the reference logprobs the ratio is formed against; the KL anchor; each prompt's
-weight in the loss; the datums the step consumes, and what the batch had to leave out."""
+"""Credit turns verdicts and packed sequences into a batch. It decides which rollouts carry
+a gradient and how much, computes the reference logprobs the ratio is formed against,
+folds in the KL anchor, weights each prompt in the loss, and builds the datums the step
+consumes. The batch also counts what it left out."""
 
 from __future__ import annotations
 
@@ -20,9 +21,9 @@ if TYPE_CHECKING:
     from shipyard.recipes.train import Preset
     from shipyard.trainer import Trainer
 
-#: Guards the division when a group has no reward spread at all.
+#: Guards the division when a group has no reward spread.
 EPSILON = 1e-6
-#: Harbor's reward for a task fully solved: only solved rollouts are compared on length.
+#: Harbor's reward for a fully solved task. Only solved rollouts are compared on length.
 SOLVED = 1.0
 #: Anchor passes in flight at once.
 LOGPROB_CONCURRENCY = 16
@@ -30,12 +31,12 @@ LOGPROB_CONCURRENCY = 16
 
 @dataclass(frozen=True, kw_only=True)
 class Batch:
-    """What one step consumes and what it left out; a measure that had nothing to
-    measure is None, never zero. `credited` counts the members carrying a gradient;
-    `owners` holds, per datum, the index of the group it came from; `surplus` counts the
-    groups past a full batch, None when the batch had no size to fill; `overlong` counts
-    the graded members that sampled into the overlong buffer, None when the preset has no
-    overlong term or the token budget is unknown."""
+    """What one step consumes and what it left out. A measure with nothing to measure is
+    None. `credited` counts the members carrying a gradient. `owners` holds, per datum, the
+    index of the group it came from. `surplus` counts the groups past a full batch, and is
+    None when there was no batch size to fill. `overlong` counts the graded members that
+    sampled into the overlong buffer, and is None when the preset has no overlong term or
+    the token budget is unknown."""
 
     datums: tuple[tinker.Datum, ...]
     owners: tuple[int, ...]
@@ -61,16 +62,16 @@ class Batch:
 
     @property
     def sequences_per_rollout(self) -> float | None:
-        """The mean over the credited members; None when none was."""
+        """Mean sequences per credited member; None when no member is credited."""
         return self.sequences / self.credited if self.credited else None
 
 
 def shaped(
     rewards: Values[float], lengths: Values[int], *, penalty: float, floor: int, cap: float
 ) -> list[float]:
-    """The rewards less the length penalty on the solved rollouts: among solved answers,
-    at least two solved, docked `penalty * max(L - floor, 0) / mean solved L`, at most
-    `cap`; the rewards themselves when the penalty is off or fewer than two solved."""
+    """The rewards less the length penalty. With the penalty on and at least two rollouts
+    solved, each solved rollout is docked `penalty * max(L - floor, 0) / mean solved L`, at
+    most `cap`. Otherwise the rewards are returned unchanged."""
     if not penalty:
         return [float(one) for one in rewards]
     solved = [one >= SOLVED for one in rewards]
@@ -90,9 +91,9 @@ def shaped(
 def overlong(
     lengths: Values[int], *, penalty: float, buffer: float, budget: int | None
 ) -> list[float]:
-    """DAPO's soft overlong punishment (Eq. 13) per rollout, the sampled tokens standing for
-    the response length and the trial's token budget for L_max: 0 up to the last `buffer`
-    of the budget, then falling linearly to `-penalty` at the budget and staying there.
+    """DAPO's soft overlong punishment (Eq. 13) per rollout, with the sampled tokens as the
+    response length and the trial's token budget as L_max. The term is 0 up to the last
+    `buffer` of the budget, falls linearly to `-penalty` at the budget, and stays there.
     All zeros when the term is off or the budget is unknown."""
     if not penalty or not budget:
         return [0.0] * len(lengths)
@@ -102,15 +103,15 @@ def overlong(
 
 
 def measured(group: Group) -> list[Member]:
-    """The members with a reward and no mask: the only ones a baseline is made of."""
+    """The members with a reward and no mask. Only these form a baseline."""
     return [
         one for one in group.members if one.verdict.mask is None and one.verdict.reward is not None
     ]
 
 
 def scored(group: Group, preset: Preset) -> tuple[list[Member], list[float], list[float]]:
-    """The measured members, their rewards, and the rewards after the preset's length rule:
-    what a group is judged degenerate on. The overlong term comes after that judgement."""
+    """The measured members, their rewards, and the rewards after the preset's length rule.
+    A group is judged degenerate on the shaped rewards, before the overlong term."""
     members = measured(group)
     found = [float(one.verdict.reward) for one in members]
     wrote = [one.sampled_tokens for one in members]
@@ -119,19 +120,21 @@ def scored(group: Group, preset: Preset) -> tuple[list[Member], list[float], lis
 
 
 def flat(shaped_rewards: Values[float]) -> bool:
-    """Degenerate: a lone member, or rewards all equal; nothing to compare, no gradient."""
+    """Degenerate: a lone member or rewards all equal. There is nothing to compare, so no
+    gradient."""
     return len(shaped_rewards) < 2 or pstdev(shaped_rewards) <= EPSILON
 
 
 def carrying(groups: Values[Group], preset: Preset) -> int:
-    """How many of the groups carry a gradient, read off the verdicts alone."""
+    """How many of the groups carry a gradient, judged from the verdicts."""
     return sum(not flat(scored(group, preset)[2]) for group in groups)
 
 
 def weights(tokens: Values[int], aggregation: str) -> list[float]:
-    """Each group's factor on its tokens' advantages. Tinker sums token losses; under
-    "prompt" a group's tokens are scaled by the step's mean group size over its own, so
-    each prompt weighs the same and the sum keeps about its size. "sum" leaves them be."""
+    """Each group's factor on its tokens' advantages. Tinker sums token losses. Under
+    "prompt", a group's tokens are scaled by the step's mean group size over the group's
+    own size, so each prompt weighs the same and the sum keeps about its size. "sum" leaves
+    them unscaled."""
     if aggregation not in ("prompt", "sum"):
         raise ValueError(f"no token aggregation called {aggregation!r}; 'prompt' or 'sum'")
     sized = [one for one in tokens if one > 0]
@@ -142,7 +145,7 @@ def weights(tokens: Values[int], aggregation: str) -> list[float]:
 
 
 def advantages(shaped_rewards: Values[float], *, normalize: bool) -> list[float]:
-    """Centred on the group's mean; divided by the spread under `normalize`."""
+    """The rewards centred on the group's mean, divided by the spread under `normalize`."""
     mean, spread = fmean(shaped_rewards), pstdev(shaped_rewards)
     scale = (spread + EPSILON) if normalize else 1.0
     return [(one - mean) / scale for one in shaped_rewards]
@@ -164,8 +167,8 @@ def pinned(groups: Values[Group], trainer: Trainer | None) -> None:
 async def reference_logprobs(
     trainer: Trainer | None, sequences: Values[Sequence]
 ) -> list[list[float]]:
-    """mu at every target, from one batched forward pass on the training client, one
-    `shifted` datum per sequence: position `j` of the output scores `tokens[j + 1]`, so a
+    """mu at every target, from one batched forward pass on the training client with one
+    `shifted` datum per sequence. Position `j` of the output scores `tokens[j + 1]`, so a
     target at `p` reads `scored[p - 1]`. An unscored position is 0.0."""
     if not sequences:
         return []
@@ -191,7 +194,7 @@ async def reference_logprobs(
 
 
 def sampler_logprobs(sequence: Sequence) -> list[float]:
-    """mu as the sampler reported it, refused when a record carried none: a short list
+    """mu as the sampler reported it. Raises when a record carries none, since a short list
     would misalign every ratio after it."""
     if sequence.mu is None or len(sequence.mu) != len(sequence.targets):
         raise ValueError(
@@ -202,8 +205,8 @@ def sampler_logprobs(sequence: Sequence) -> list[float]:
 
 
 async def anchor_logprobs(anchor: Any, sequences: Values[Sequence]) -> list[list[float]]:
-    """The starting weights' logprobs at every target: one `compute_logprobs_async` over
-    the whole sequence, where position `p` scores `tokens[p]` (the cookbook's
+    """The starting weights' logprobs at every target, from one `compute_logprobs_async`
+    over the whole sequence. Position `p` scores `tokens[p]` (the cookbook's
     `incorporate_kl_penalty` alignment, `[1:]` against the targets)."""
     gate = asyncio.Semaphore(LOGPROB_CONCURRENCY)
 
@@ -227,12 +230,12 @@ async def credit(
     limit: int | None = None,
     budget: int | None = None,
 ) -> Batch:
-    """The batch: measured members only; degenerate groups dropped before any reference
-    pass, and with `limit` the groups carrying a gradient past the first `limit` left out
-    as surplus; the overlong term against the token `budget` added to the rewards of the
-    groups kept; mu from the trainer's forward or the records; the KL to the anchor folded
-    into the advantage per token when `kl_coef > 0`; each group's tokens weighted by the
-    preset's aggregation."""
+    """Build the batch from measured members only. Degenerate groups are dropped before any
+    reference pass. With `limit`, the groups carrying a gradient past the first `limit` are
+    left out as surplus. The overlong term, against the token `budget`, is added to the
+    rewards of the groups kept. mu comes from the trainer's forward or the records. When
+    `kl_coef > 0`, the KL to the anchor is folded into the advantage per token. Each group's
+    tokens are weighted by the preset's aggregation."""
     if preset.reference == "trainer":
         pinned(groups, trainer)
     docking = preset.overlong_penalty > 0 and bool(budget)
@@ -294,7 +297,7 @@ async def credit(
     for owner, member, _ in kept:
         sizes[owner] += sum(len(one.targets) for one in member.sequences)
     # The KL term is scaled with the advantage it is folded into, so kl_coef weighs it
-    # against the reward the same way in every prompt, as a loss term aggregated alike.
+    # against the reward the same way in every prompt.
     scale = weights(sizes, preset.aggregation)
     datums: list[tinker.Datum] = []
     owners: list[int] = []

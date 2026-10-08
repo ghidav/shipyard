@@ -22,8 +22,8 @@ QUIET = "SHIPYARD_QUIET"
 
 
 def reporter(console: Console | None = None) -> Reporter:
-    """Bars on a terminal; a silent reporter off one or under `SHIPYARD_QUIET=1`, so a
-    log or a pipe never fills with redrawn frames."""
+    """Bars on a terminal, a silent reporter elsewhere or under `SHIPYARD_QUIET=1`, so logs
+    and pipes get no redrawn frames."""
     console = console if console is not None else Console()
     if os.environ.get(QUIET) == "1" or not console.is_terminal:
         return Reporter()
@@ -31,7 +31,7 @@ def reporter(console: Console | None = None) -> Reporter:
 
 
 class Reporter:
-    """Told what a run's jobs do. This one says nothing; `Bars` draws."""
+    """Receives a run's job events. This base class ignores them; `Bars` draws them."""
 
     def started(self, job: str, *, trials: int, batch: int | None = None) -> None:
         """A job of `trials` planned trials has begun, for batch `batch`."""
@@ -47,8 +47,8 @@ class Reporter:
 
 
 class Bars(Reporter):
-    """A bar per job: trials finished and masked out of planned, the batch index, the
-    time elapsed; redrawn in place, as Harbor draws a job."""
+    """One bar per job: trials finished out of planned, trials masked, the batch index and
+    the elapsed time. Redrawn in place, as Harbor draws a job."""
 
     def __init__(self, console: Console) -> None:
         self.console = console
@@ -74,7 +74,7 @@ class Bars(Reporter):
         self._tasks[job] = self.bars.add_task(label, total=trials, masked=0)
 
     def finished(self, trial: Path, *, masked: bool) -> None:
-        """The job is the trial directory's parent, which is how `jobs/<job>/` is laid out."""
+        """The job is the trial directory's parent in `jobs/<job>/`."""
         job = Path(trial).parent.name
         task = self._tasks.get(job)
         if task is None:

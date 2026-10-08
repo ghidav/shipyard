@@ -1,5 +1,5 @@
-"""One request through the app, shared by the middleware, the renderer wrapper and the
-recorder, each of which sees a slice of it in the task the handler runs in."""
+"""Per-request state shared by the middleware, the renderer wrapper and the recorder.
+Each reads or writes its part in the task the handler runs in."""
 
 from __future__ import annotations
 
@@ -15,16 +15,17 @@ RETRY_HEADER = "x-stainless-retry-count"
 
 @dataclass
 class Exchange:
-    """What the three callers share: the trial off the address, the SDK's headers, and what
-    the wrapper cut or bridged."""
+    """The request state the three callers share: the trial from the address, the SDK's
+    headers, and what the wrapper cut or bridged."""
 
     trial: str = ""
-    #: `anthropic` for a request on `/messages`, `openai` otherwise: the form of the ids.
+    #: `anthropic` for a request on `/messages`, `openai` otherwise. It sets the form of
+    #: generated ids.
     wire: str = "openai"
     retry: int = 0
     idempotency_key: str | None = None
     request_id: str | None = None
-    #: Volatile lines cut from this request's system messages before rendering.
+    #: Number of volatile lines cut from this request's system messages before rendering.
     cut: int = 0
     #: Whether the prompt was built by the bridge, the digests of its messages, and the
     #: fresh render behind a bridged prompt (what a later head must equal to extend it).
@@ -33,7 +34,7 @@ class Exchange:
     rendered: tuple[int, ...] | None = None
     #: The record this request produced; None for a refused or replayed one.
     seq: int | None = None
-    #: The reply's thinking, handed back on the wire in its own form.
+    #: The reply's thinking, returned on the wire in the wire's own form.
     thinking: str = ""
 
 
@@ -47,8 +48,8 @@ def trial_in(address: str) -> str:
 
 
 def middleware() -> Any:
-    """Open an `Exchange` per request off its headers and its `/r/trial/<name>/...` address,
-    and reset it on the way out so nothing leaks into a task the loop reuses."""
+    """Open an `Exchange` per request from its headers and its `/r/trial/<name>/...`
+    address. Reset it afterwards so it does not leak into a task the loop reuses."""
 
     @web.middleware
     async def opened(request: Any, handler: Any) -> Any:

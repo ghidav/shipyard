@@ -65,7 +65,7 @@ def test_a_masked_rollout_is_absent_from_the_mean_and_a_task_nobody_measured_say
 
 def test_a_budget_cut_rollout_scores_zero_through_admission(tmp_path: Path) -> None:
     """The same reader training uses: a served rollout the proxy cut on its budget is a
-    real 0 whatever the verifier wrote, and one with no records is masked."""
+    real 0 that overrides the verifier, and one with no records is masked."""
     cut = _trial(tmp_path / "cut__1", reward=1.0, stdout="passed")
     silent = _trial(tmp_path / "silent__1", reward=1.0)
     records = {cut.name: [made(seq=1), made(seq=2, error=BUDGET)], silent.name: []}

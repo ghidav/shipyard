@@ -1,6 +1,7 @@
-"""The Tinker training side, faked: a service with the factories `Trainer.create` chooses
-between and the sampling client an anchor is, a training client that notes every call
-and every result consumed, futures answering at once; a Preset and a Batch built by name."""
+"""A fake Tinker training side: a service with the factories `Trainer.create` chooses
+between and the sampling client an anchor uses, a training client that records every call
+and every result consumed, futures that answer at once, and a Preset and a Batch built by
+name."""
 
 from __future__ import annotations
 
@@ -18,8 +19,8 @@ from shipyard.trainer import COOKBOOK
 
 
 def preset(**named: Any) -> Preset:
-    """dapo's loss and clipping with every field set, any of them overridden by name: one
-    substep, token losses summed and no refill unless a test asks for them."""
+    """dapo's loss and clipping with every field set, any of them overridden by name. The
+    defaults are one substep, summed token losses and no refill."""
     defaults = dict(
         name="dapo",
         normalize=True,
@@ -65,8 +66,8 @@ def batch(*datums: tinker.Datum, **named: Any) -> Batch:
 
 @dataclass
 class FakeFuture:
-    """What the SDK hands back from a save, a forward or an optimizer step: awaited by
-    `result_async`, which the client notes so a pipeline's order can be read off `calls`."""
+    """The SDK's future for a save, a forward or an optimizer step. `result_async` records
+    a "consumed" call on the client, so the pipeline's order shows in `calls`."""
 
     value: Any
     client: FakeTrainingClient | None = None
@@ -98,11 +99,11 @@ class FakeForwardBackward:
 
 @dataclass
 class FakeTrainingClient:
-    """`tinker.TrainingClient` with the network out: `forward` scores every position
-    `logprob` (the reference mu), or under `positional` minus the token it predicts;
-    `forward_backward` scores `trained` (pi), or raises `failing`; each `optim_step` moves
-    `trained` by `drift`, as an update moves the weights. Every call lands on `calls` in
-    order, the datums sent on `sent`."""
+    """`tinker.TrainingClient` without the network. `forward` scores every position
+    `logprob` (the reference mu), or, when `positional` is set, minus the token it predicts.
+    `forward_backward` scores `trained` (pi), or raises `failing`. Each `optim_step` moves
+    `trained` by `drift`, as an update moves the weights. Every call is appended to `calls`
+    in order and the datums sent to `sent`."""
 
     logprob: float = -0.5
     trained: float = -0.5
@@ -161,7 +162,7 @@ class FakeTrainingClient:
 
 
 class FlatAnchor:
-    """A sampling client on the starting weights, scoring every token `logprob`; the first
+    """A sampling client on the starting weights, scoring every token `logprob`. The first
     position is unscored, as `compute_logprobs` leaves it."""
 
     def __init__(self, logprob: float = -0.1) -> None:
@@ -182,9 +183,9 @@ def capable(*models: tuple[str, bool]) -> GetServerCapabilitiesResponse:
 
 @dataclass
 class FakeService:
-    """`tinker.ServiceClient` in what a run asks of it: the three training factories (the
-    `user_metadata` each was given on `metadata`), the anchor's sampling client, the
-    capabilities (`None` raises, which must not stop a run), and `close` with its status."""
+    """`tinker.ServiceClient` as far as a run uses it: the three training factories (the
+    `user_metadata` each received is kept on `metadata`), the anchor's sampling client, the
+    capabilities (`None` raises, which a run must survive), and `close` with its status."""
 
     client: FakeTrainingClient = field(default_factory=FakeTrainingClient)
     capabilities: GetServerCapabilitiesResponse | None = None

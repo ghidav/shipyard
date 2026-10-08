@@ -1,6 +1,6 @@
-"""A model's thinking on the wire, both ways: handed to the harness in its wire's own form
-and read back from whatever the harness kept of it, so a history that re-sends a reply's
-thinking digests as that reply and the bridge can match it."""
+"""A model's thinking on the wire, in both directions. Replies carry the thinking to the
+harness in the wire's own form. The proxy reads back whatever thinking the harness kept in
+a request's history, so the history digests as that reply and the bridge can match it."""
 
 from __future__ import annotations
 
@@ -21,11 +21,11 @@ _OPEN = "\x00shipyard-thinking:"
 _CLOSE = "\x00"
 _SENTINEL = re.compile(re.escape(_OPEN) + r"(\d+)" + re.escape(_CLOSE))
 
-#: The OpenAI-wire fields reasoning may come back in, read in this order, the first found.
+#: The OpenAI-wire fields that may carry reasoning. The first one set is used.
 OPENAI_FIELDS = ("reasoning_content", "reasoning", "reasoning_text")
 DETAILS = "reasoning_details"
-#: What a reply carries: `reasoning`, which pi, litellm and OpenRouter's SDK all read, and
-#: one `reasoning_details` entry, which OpenRouter's SDK prefers and sends back.
+#: A reply carries `reasoning`, which pi, litellm and OpenRouter's SDK all read, and one
+#: `reasoning_details` entry, which OpenRouter's SDK prefers and sends back.
 REPLY_FIELD = "reasoning"
 
 
@@ -41,13 +41,13 @@ def thinking_of(message: Any) -> str:
 
 
 def signature(thinking: str) -> str:
-    """What stands for an Anthropic signature on a block this proxy wrote: a digest of
-    the text, which a client keeps whole and the proxy never checks."""
+    """The Anthropic signature for a thinking block this proxy writes: a digest of the
+    text. A client sends it back unchanged and the proxy does not verify it."""
     return base64.b64encode(hashlib.sha256(thinking.encode("utf-8")).digest()).decode("ascii")
 
 
 def current() -> str:
-    """The thinking of the reply the running request is answering with."""
+    """The thinking of the reply to the current request."""
     found = exchange.get()
     return found.thinking if found is not None else ""
 
@@ -56,9 +56,10 @@ def current() -> str:
 
 
 def install() -> None:
-    """Wrap the cookbook's parsers and its stream writer, once per process, so a thinking
-    block never reaches the cookbook's parser, which refuses it. The keepalive's stream
-    wrap goes in first, beneath this one, so a stream it opened takes the chunks made here."""
+    """Wrap the cookbook's parsers and its stream writer, once per process. The cookbook's
+    parser refuses thinking blocks, so the wrap swaps them for sentinel text before the
+    parser runs and restores them afterwards. The keepalive's stream wrap goes in first,
+    beneath this one, so a stream it opened takes the chunks made here."""
     keepalive.install()
     if cookbook.wrapped_by("_parse_openai", TAG):
         return
@@ -85,8 +86,8 @@ def install() -> None:
 
 
 def middleware() -> Any:
-    """Put the reply's thinking on a JSON answer before it is sent; a stream is written
-    inside the handler, where the `_serve_sse` wrap does the same."""
+    """Add the reply's thinking to a JSON response. The `_serve_sse` wrap does the same
+    for a stream, which the handler writes itself."""
 
     @web.middleware
     async def thought(request: Any, handler: Any) -> Any:
@@ -109,8 +110,8 @@ def _placed(text: str, bank: list[str]) -> dict[str, str]:
 
 
 def lift_anthropic(body: dict[str, Any], bank: list[str]) -> dict[str, Any]:
-    """The body with each assistant `thinking` block replaced by a sentinel text block and
-    each `redacted_thinking` block dropped: it carries nothing a model could read."""
+    """The body with each assistant `thinking` block replaced by a sentinel text block.
+    `redacted_thinking` blocks are dropped because they hold nothing a model can read."""
     messages = body.get("messages")
     if not isinstance(messages, list):
         return body
@@ -155,7 +156,7 @@ def lift_openai(body: dict[str, Any], bank: list[str]) -> dict[str, Any]:
 
 
 def _reasoning(message: dict[str, Any]) -> str:
-    """An OpenAI-wire message's reasoning, whichever field it came back in, read once."""
+    """An OpenAI-wire message's reasoning, from the first field that carries it."""
     for name in OPENAI_FIELDS:
         value = message.get(name)
         if isinstance(value, str) and value:
@@ -172,7 +173,7 @@ def _reasoning(message: dict[str, Any]) -> str:
 
 
 def restore(parsed: Any, bank: list[str]) -> Any:
-    """The parsed chat with every sentinel turned back into a thinking part, in place."""
+    """Turn every sentinel in the parsed chat back into a thinking part, in place."""
     if not bank:
         return parsed
     for message in parsed.messages:
@@ -208,7 +209,7 @@ def _split(text: str, bank: list[str]) -> list[dict[str, str]]:
 
 
 def answered(payload: dict[str, Any], thinking: str) -> dict[str, Any]:
-    """A JSON response body with the reply's thinking on it, in its wire's form."""
+    """A JSON response body with the reply's thinking added in the wire's form."""
     if not thinking:
         return payload
     if payload.get("type") == "message" and isinstance(payload.get("content"), list):
@@ -231,8 +232,8 @@ def _fields(thinking: str) -> dict[str, Any]:
 
 def streamed(chunks: Sequence[bytes], thinking: str) -> list[bytes]:
     """A stream's events with the reply's thinking ahead of its text: a `thinking` block
-    on the Anthropic wire, a reasoning delta on the OpenAI one; a stream this does not
-    recognise passes through as it came."""
+    on the Anthropic wire, a reasoning delta on the OpenAI wire. A stream in another
+    format passes through unchanged."""
     if not chunks:
         return list(chunks)
     if chunks[0].startswith(b"event:"):
@@ -283,8 +284,8 @@ def _thinking_block(thinking: str) -> list[bytes]:
 
 
 def _openai_stream(chunks: Sequence[bytes], thinking: str) -> list[bytes]:
-    """The reasoning first, before the chunk that opens the text: OpenRouter's SDK shows
-    no `reasoning` that arrives once text has started."""
+    """The reasoning goes before the chunk that opens the text, because OpenRouter's SDK
+    does not show `reasoning` that arrives after text has started."""
     head = chunks[0].decode("utf-8")
     try:
         first = json.loads(head[len("data: ") :])

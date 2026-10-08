@@ -1,6 +1,6 @@
-"""The reflector as a Harbor trial: a task Harbor itself loads, the traces and the
-component as files, the instruction naming the artifact, the artifact read back and
-checked, and the job recorded as a reflection under the provider's party."""
+"""The reflector as a Harbor trial: a task that Harbor loads, the traces and the component
+as files, an instruction that names the artifact, the artifact read back and checked, and
+the job recorded as a reflection under the provider's party."""
 
 from __future__ import annotations
 
@@ -244,8 +244,8 @@ def test_a_trial_that_wrote_nothing_declines_and_one_that_died_says_so(
 
 
 class Reflector:
-    """Harbor's trial replaced: notes the config and publishes `answer` as the artifact,
-    with a result naming the provider and the tokens the harness reported."""
+    """Stands in for Harbor's trial: records the config, publishes `answer` as the artifact,
+    and writes a result with the provider and the token counts."""
 
     def __init__(self, answer: str | None = REWRITTEN) -> None:
         self.configs: list[TrialConfig] = []

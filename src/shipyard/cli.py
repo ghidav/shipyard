@@ -53,8 +53,8 @@ SmokeOption = Annotated[
     bool,
     typer.Option(
         "--smoke",
-        help="one task, one rollout, no gradient, checkpoint or reflection: the sampling "
-        "path end to end, then a report; exits 0 only if a trial came back",
+        help="one task, one rollout, no gradient, checkpoint or reflection. Runs the "
+        "sampling path end to end, prints a report, and exits 0 only if a trial came back",
     ),
 ]
 
@@ -69,7 +69,7 @@ MARKS = {
 
 @app.callback()
 def main() -> None:
-    """Post-training on Harbor jobs: a blueprint is a config, a run is its record."""
+    """Post-training on Harbor jobs, configured by a blueprint and recorded as a run."""
     load_dotenv(Path.cwd() / ".env", override=False)  # the shell wins over the file
     logging.basicConfig(
         level=logging.INFO,
@@ -82,8 +82,8 @@ def main() -> None:
 def check(
     blueprint: BlueprintArgument, as_json: JsonOption = False, verbose: VerboseOption = False
 ) -> None:
-    """Whether a blueprint could run: the config as resolved, then every problem at once,
-    before anything is spent; the `ok` lines only under --verbose."""
+    """Check whether a blueprint can run, before anything is spent. Prints the resolved
+    config, then every problem at once. The `ok` lines print only under --verbose."""
     found = resolved.report(blueprint)
     if as_json:
         report = {"config": found.config, "findings": [asdict(f) for f in found.findings]}
@@ -97,8 +97,8 @@ def check(
 
 @app.command()
 def run(blueprint: BlueprintArgument, root: RootOption = None, smoke: SmokeOption = False) -> None:
-    """Check the blueprint, open a run, hand it to its recipe (or, with --smoke, sample one
-    trial and report it), and record how it ended."""
+    """Check the blueprint, open a run, execute its recipe (with --smoke, sample one trial
+    and report it), and record how it ended."""
     findings = config.check(blueprint)
     _print_findings([found for found in findings if found.level != "ok"])
     if _blocked(findings):
@@ -125,14 +125,14 @@ def run(blueprint: BlueprintArgument, root: RootOption = None, smoke: SmokeOptio
     except KeyboardInterrupt:
         code = 130
     except (SmokeFailed, NothingServed, ProxyGone, Unreachable):
-        code = 1  # a stop that says why in one line: the run's error, printed below
+        code = 1  # the run's error, printed below, says why
     except Exception:
         traceback.print_exc()
         code = 1
     finally:
         restore()
     note = Run.read(opened.directory)
-    if note.get("error"):  # the one text `__exit__` recorded, not a second composition
+    if note.get("error"):  # the text `__exit__` recorded
         style = "yellow" if code == 130 else "red"
         console.print(f"[{style}]{escape(str(note['error']))}[/]", highlight=False, soft_wrap=True)
     console.print(f"{opened.id}  {styled(state_of(note))}", highlight=False)
@@ -140,7 +140,7 @@ def run(blueprint: BlueprintArgument, root: RootOption = None, smoke: SmokeOptio
 
 
 def _smoke(opened: Run) -> None:
-    """The smoke job and its report; a job that brought nothing back raises after it."""
+    """Run the smoke job and print its report. Raises if no trial came back."""
     smoked = asyncio.run(smoke_job(opened))
     for line in smoked.lines():
         console.print(line, markup=False, highlight=False, soft_wrap=True)
@@ -152,9 +152,9 @@ def _smoke(opened: Run) -> None:
     add_help_option=False,
 )
 def serve(ctx: typer.Context) -> None:
-    """Serve a Tinker model to a harness in a sandbox; `shipyard serve --help` lists the flags.
-    They are argparse's, in `shipyard.serve`, so a container entrypoint and this verb parse
-    one list and not two."""
+    """Serve a Tinker model to a harness in a sandbox. `shipyard serve --help` lists the
+    flags. `shipyard.serve` defines them with argparse, so a container entrypoint and this
+    command parse the same flags."""
     from shipyard.serve import main as serve_main
 
     raise typer.Exit(serve_main(list(ctx.args)))
@@ -162,8 +162,8 @@ def serve(ctx: typer.Context) -> None:
 
 @app.command()
 def runs(root: RootOption = None) -> None:
-    """Every run under the root, newest first: a table, or a block per run when the table
-    is wider than the console."""
+    """List every run under the root, newest first, as a table, or as a block per run when
+    the table is wider than the console."""
     found = [(directory.name, Run.read(directory)) for directory in _run_dirs(runs_root(root))]
     if not found:
         console.print("[dim](no runs)[/dim]")
@@ -194,7 +194,7 @@ def show(
     full: FullOption = False,
     as_json: SectionsOption = False,
 ) -> None:
-    """One run, section by section: process, metrics, jobs, checkpoints, costs."""
+    """Show one run, section by section: process, metrics, jobs, checkpoints, costs."""
     directory = runs_root(root) / run_id
     if not (directory / record.CONFIG).is_file():
         console.print(
@@ -228,8 +228,8 @@ def _run_dirs(root: Path) -> list[Path]:
 
 def _stop_on_signals() -> Callable[[], None]:
     """Make SIGTERM and SIGHUP raise `KeyboardInterrupt(<name>)` in the main thread, as
-    Ctrl-C does, so the recipe unwinds and `Run.__exit__` records the stop; returns the
-    restorer of the previous handlers."""
+    Ctrl-C does, so the recipe unwinds and `Run.__exit__` records the stop. Returns a
+    function that restores the previous handlers."""
 
     def stop(signum: int, _frame: Any) -> None:
         raise KeyboardInterrupt(signal.Signals(signum).name)

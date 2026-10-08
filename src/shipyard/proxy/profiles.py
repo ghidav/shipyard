@@ -1,5 +1,5 @@
 """Per-harness profiles: which wire a harness speaks and what it needs beyond Harbor's
-model connection. A harness nobody has watched gets the generic profile, not a guess."""
+model connection. A harness without a profile gets the generic one."""
 
 from __future__ import annotations
 
@@ -12,33 +12,35 @@ from dataclasses import dataclass, field
 class Profile:
     """One harness: its dialect, the provider it is posed to, the extra agent kwargs and
     trial env it takes, whether it appends `/v1` itself, the system lines it rewrites per
-    request, its turn counter, and the reader of its log that says whether its last model
-    call failed."""
+    request, its turn counter, and a log reader that reports whether its last model call
+    failed."""
 
     dialect: str = "openai"
-    #: A provider id of the profile's own, for a harness the dialect's id would route
-    #: wrong. It names the model `<provider>/<model>` and the trial env
-    #: `<PROVIDER>_BASE_URL` and `<PROVIDER>_API_KEY`.
+    #: A provider id for a harness the dialect's id would route wrongly. It forms the model
+    #: name `<provider>/<model>` and the trial env `<PROVIDER>_BASE_URL` and
+    #: `<PROVIDER>_API_KEY`.
     provider: str | None = None
     kwargs: dict = field(default_factory=dict)
-    #: Extra env for the trial. Rollout lays it only when `[rollout] fill_context` is on:
-    #: it switches the harness's compaction off, which only a filled context can afford.
+    #: Extra env for the trial. It turns off the harness's compaction, so rollout sets it
+    #: only when `[rollout] fill_context` is on, which gives an overflowing call what is
+    #: left of the context.
     env: dict = field(default_factory=dict)
     strip_v1: bool = False
     volatile: tuple[str, ...] = ()
     turns: Callable[[str], int] | None = None
-    #: Read on every trial, whatever `check_turns` says: a last call that failed where the
-    #: proxy never saw it (on the way, or refused before recording) must not be graded.
+    #: Read on every trial, regardless of `check_turns`. A last call that failed where the
+    #: proxy never saw it (in transit, or refused before recording) must not be graded.
     failed_last: Callable[[str], bool] | None = None
 
 
-#: The model Claude Code names on an assistant message it wrote itself, without a model.
+#: The model name Claude Code gives an assistant message it wrote locally, with no model call.
 SYNTHETIC_MODEL = "<synthetic>"
 
 
 def distinct_requests(text: str) -> int:
-    """Claude Code's stream-json log: one API reply per distinct request id. Not one per
-    assistant line, which it writes once per content block, and never a synthetic one."""
+    """Count the API replies in Claude Code's stream-json log, one per distinct request id.
+    Claude Code writes one assistant line per content block, so lines are not counted.
+    Synthetic messages are skipped."""
     seen: set[str] = set()
     for line in text.splitlines():
         if '"assistant"' not in line:
@@ -59,8 +61,8 @@ def distinct_requests(text: str) -> int:
 
 
 def last_assistant_failed(text: str) -> bool:
-    """pi's JSON log: whether its last assistant `message_end` stopped on `error`. pi writes
-    that when it gives up on a call, and exits 0 all the same."""
+    """Whether the last assistant `message_end` in pi's JSON log stopped on `error`. pi
+    writes that when it gives up on a call, and it still exits 0."""
     stop = None
     for line in text.splitlines():
         if '"message_end"' not in line:
@@ -77,8 +79,9 @@ def last_assistant_failed(text: str) -> bool:
 
 
 def lines_with(*markers: str) -> Callable[[str], int]:
-    """Count the lines carrying every marker, whitespace ignored: a count that fell to zero
-    when a harness started pretty-printing would disable a guard rather than fail it."""
+    """Count the lines that contain every marker, ignoring whitespace. A harness that
+    starts pretty-printing would otherwise drop the count to zero and silently disable the
+    guard."""
 
     def count(text: str) -> int:
         return sum(
@@ -119,26 +122,27 @@ PROFILES: dict[str, Profile] = {
         },
         turns=lines_with("step-start"),
     ),
-    # Its model calls are litellm's in the Harbor process, from its `api_base` option and
-    # the host env, so the trial env does not reach them; a per-trial kwarg is a later release.
+    # Its model calls are litellm's, made in the Harbor process from its `api_base` option
+    # and the host env, so the trial env does not reach them. A per-trial kwarg comes in a
+    # later release.
     "terminus-2": Profile(),
 }
 
 
 def bare_name(harness: str) -> str:
-    """`pi@0.85.1` as `pi`; an import path with a colon (`acp:x.y:Z@1`) is left whole."""
+    """Strip the version: `pi@0.85.1` becomes `pi`. An import path with a colon
+    (`acp:x.y:Z@1`) is returned whole."""
     return harness if ":" in harness else harness.partition("@")[0]
 
 
 def profile_for(harness: str) -> Profile:
-    """The profile of `harness` by its bare name; the generic one for a harness nobody has
-    profiled."""
+    """The profile of `harness` by its bare name, or the generic profile if there is none."""
     return PROFILES.get(bare_name(harness).strip(), Profile())
 
 
 def slug_of(profile: Profile) -> str:
-    """The provider a harness is posed to: the profile's own when it names one, else
-    `anthropic` for that wire and `openai` otherwise."""
+    """The provider a harness is posed to: the profile's `provider` if set, else
+    `anthropic` for the Anthropic dialect and `openai` otherwise."""
     if profile.provider:
         return profile.provider
     return "anthropic" if profile.dialect == "anthropic" else "openai"

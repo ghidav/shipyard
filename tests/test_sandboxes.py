@@ -1,8 +1,8 @@
-"""`check`'s sandbox findings: Harbor's extra and the credentials for a provider elsewhere
-(the table confirmed against the installed Harbor), Modal's verdict on its token, a short
+"""`check`'s sandbox findings: Harbor's extra, the credentials for a provider elsewhere
+(the table is confirmed against the installed Harbor), Modal's verdict on its token, a short
 setup time, a run secret in `[rollout] env`, a key `.env` assigns twice, docker for a docker
-sandbox or the tunnel's image, and the trial networks hard-killed runs left. The conftest
-pins this machine's facts; each test here takes off the pin it tests."""
+sandbox or the tunnel image, and the trial networks that hard-killed runs left behind. The
+conftest pins this machine's facts. Each test removes the pin for the fact it tests."""
 
 from __future__ import annotations
 
@@ -258,7 +258,8 @@ def test_a_key_dotenv_assigns_twice_is_named_and_its_values_never_are(
     assert problems(check(blueprint(here, "docker"))) == [
         "warning  .env assigns TINKER_API_KEY twice; the last one wins"
     ]
-    # The CLI loads `.env` under the shell, so the shell's are set and nothing leaks out.
+    # The CLI loads `.env` under the shell's variables, so the shell values win and the
+    # `.env` values stay out of the output.
     for name in ("TINKER_API_KEY", "ANTHROPIC_API_KEY", "COLUMNS"):
         monkeypatch.setenv(name, "200" if name == "COLUMNS" else "from-the-shell")
     shown = runner.invoke(app, ["check", str(blueprint(here, "docker"))]).output
@@ -309,9 +310,9 @@ def test_docker_running_asks_the_daemon(tmp_path: Path, monkeypatch: pytest.Monk
 
 
 class FakeModal(ModuleType):
-    """The `modal` module as the read uses it: `App.lookup` raising what `failure` names,
-    or, for "hangs", waiting until `answer` is set; each call noted, and the two exception
-    types."""
+    """Stands in for the `modal` module. `App.lookup` raises the error `failure` names, or
+    waits until `answer` is set when `failure` is "hangs". It records each call and provides
+    the two exception types."""
 
     def __init__(self, failure: str | None = None) -> None:
         super().__init__("modal")
@@ -349,7 +350,7 @@ class FakeModal(ModuleType):
 
 @pytest.fixture
 def asked(here: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """The Modal read unpinned, over no profile file and no Modal variables."""
+    """The real Modal lookup, with no profile file and no Modal variables."""
     monkeypatch.setattr(preflight, "modal_finding", modal_finding)
     for name in ("MODAL_CONFIG_PATH", "MODAL_PROFILE"):
         monkeypatch.delenv(name, raising=False)
@@ -397,8 +398,8 @@ def test_a_refused_token_from_the_environment_names_dotenv_and_the_profile_it_sh
 def test_the_profiles_own_token_id_in_the_environment_shadows_nothing(
     asked: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Ids alone are compared, and no secret is read: an environment holding the profile's
-    own token id, or no token id at all, names no profile to fall back on."""
+    """Only ids are compared and no secret is read. An environment with the profile's own
+    token id, or with no token id, shadows no profile."""
     (Path.home() / ".modal.toml").write_text('[default]\ntoken_id = "ak-good"\n', "utf-8")
     monkeypatch.setenv("MODAL_TOKEN_ID", "ak-good")
     monkeypatch.setenv("MODAL_TOKEN_SECRET", "as-other")
@@ -436,7 +437,7 @@ def test_a_refused_profile_is_named_in_the_file_modal_config_path_names(
 def test_modal_that_does_not_answer_is_given_up_on_as_a_warning(
     asked: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A lookup that hangs costs `check` the bound and no more: 15 s, here made short."""
+    """A lookup that hangs delays `check` by the 15 s bound, shortened here."""
     assert preflight.MODAL_SECONDS == 15
     monkeypatch.setattr(preflight, "MODAL_SECONDS", 0.5)
     fake = faked(monkeypatch, "hangs")

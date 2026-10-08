@@ -1,5 +1,5 @@
-"""What `runs` and `show` read off a run directory and how `show` prints it: a run's
-state, its whole record as plain data, and each section at the console's width."""
+"""Read a run directory for `runs` and `show` and print it: a run's state, its whole record
+as plain data, and each section at the console's width."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from shipyard import record
 console = Console()
 
 STYLES = {"running": "cyan", "finished": "green", "failed": "red", "died": "yellow"}
-#: What `show` prints of the process note, as `label: key`.
+#: The process-note fields `show` prints, as `label: key`.
 FACTS = {
     "pid": "pid",
     "started": "started_at",
@@ -28,19 +28,19 @@ FACTS = {
     "blueprint": "blueprint",
     "directory": "directory",
 }
-#: What `show` prints of the process note only when the run noted it.
+#: The process-note fields `show` prints only when the run recorded them.
 NOTED = {"smoke": "smoke", "proxy": "proxy", "backend": "tinker_base_url"}
 #: How many job rows `show` prints without `--full`.
 LAST_JOBS = 10
-#: The columns a table of rows leads with, never wrapped.
+#: The columns a table of rows leads with. They are not wrapped.
 PINNED = ("name", "at")
 #: Wide enough to measure a table at its natural width; the console's own clamps it.
 UNBOUNDED = 10_000
 
 
 def alive(pid: int | None) -> bool:
-    """Whether that process exists: signal 0 delivers nothing, and a `PermissionError`
-    means it is there under another user."""
+    """Whether the process exists. Signal 0 delivers nothing; a `PermissionError` means the
+    process belongs to another user."""
     if not pid:
         return False
     try:
@@ -55,8 +55,8 @@ def alive(pid: int | None) -> bool:
 
 
 def state_of(note: dict[str, Any]) -> str:
-    """`failed`, `finished`, `running` or `died`: a note with no finish and no live
-    process was killed, which must not look like one still working."""
+    """`failed`, `finished`, `running` or `died`. A note with no finish time and no live
+    process is `died`."""
     if note.get("failed"):
         return "failed"
     if note.get("finished_at"):
@@ -67,7 +67,7 @@ def state_of(note: dict[str, Any]) -> str:
 def sections(directory: Path) -> dict[str, Any]:
     """The whole record as plain data, one entry per section `show` prints: the process
     note with its state, the metrics count and last row, every job and checkpoint row,
-    and the costs document. A section whose file is absent is None, not empty."""
+    and the costs document. A section whose file is absent is None."""
     directory = Path(directory)
     note = record.read_json(directory / record.PROCESS)
     costs = directory / record.COSTS
@@ -103,7 +103,7 @@ def styled(state: str) -> str:
 
 
 def print_run(run_id: str, found: dict[str, Any], *, full: bool) -> None:
-    """`sections` as `show` prints them: the process note, the metrics' last row, the job
+    """Print `sections` as `show` does: the process note, the metrics' last row, the job
     rows (the last few unless `full`), every checkpoint row, and the costs."""
     console.print(f"[bold cyan]{escape(run_id)}[/bold cyan]", highlight=False)
     _print_process(found["process"])
@@ -142,8 +142,8 @@ def _print_metrics(metrics: dict[str, Any]) -> None:
 
 
 def print_rows(name: str, section: dict[str, Any], limit: int | None) -> None:
-    """The row count and a table of the rows, the last `limit` of them when that cuts, or
-    each row as a block when the table does not fit."""
+    """Print the row count and a table of the rows, only the last `limit` of them when there
+    are more, or each row as a block when the table does not fit."""
     count, rows = section["count"], section["rows"]
     shown = rows if limit is None or count <= limit else rows[-limit:]
     cut = f" (last {len(shown)}; --full for all)" if len(shown) < count else ""
@@ -156,9 +156,9 @@ def print_rows(name: str, section: dict[str, Any], limit: int | None) -> None:
 
 
 def fitted(table: Table, rows: list[dict[str, str]], *, indent: int = 0) -> None:
-    """The table when it fits the console, else each row as a block of `key  value` lines,
-    the values already marked up or escaped: a table wider than the console would fold its
-    cells to "…", which cannot be pasted whole."""
+    """Print the table if it fits the console, else each row as a block of `key  value`
+    lines. The values must already be marked up or escaped. A table wider than the console
+    folds its cells to "…", which cannot be pasted whole."""
     natural = console.measure(table, options=console.options.update_width(UNBOUNDED)).maximum
     if natural + indent <= console.width:
         console.print(Padding(table, (0, 0, 0, indent), expand=False))
@@ -172,8 +172,8 @@ def fitted(table: Table, rows: list[dict[str, str]], *, indent: int = 0) -> None
 
 
 def _columns(rows: list[dict[str, Any]]) -> list[str]:
-    """Every key the rows carry: `name`, `at`, then the rest in row order, so a reader
-    sees whatever later blocks record without the CLI knowing the keys."""
+    """Every key the rows carry: `name`, `at`, then the rest in row order, so keys that
+    later blocks record show up without the CLI listing them."""
     seen = list(dict.fromkeys(key for row in rows for key in row))
     pinned = [key for key in PINNED if key in seen]
     return pinned + [key for key in seen if key not in pinned]
@@ -198,7 +198,7 @@ def _cell(key: str, row: dict[str, Any]) -> str:
 
 
 def _text(value: Any) -> str:
-    """Strings verbatim, nothing as a dash, anything else as compact JSON."""
+    """Strings verbatim, None as a dash, anything else as compact JSON."""
     if value is None:
         return "—"
     return value if isinstance(value, str) else json.dumps(value)

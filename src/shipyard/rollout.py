@@ -45,9 +45,10 @@ DELIVERED = "modules"
 
 @dataclass(frozen=True)
 class Rollouts:
-    """A finished job: its name, one directory per planned trial, what each one was, and,
-    once the run has harvested them, the proxy's records and the harness's turn counts by
-    trial name, which admission reads beside each `result.json`."""
+    """A finished job: its name, one directory per planned trial, and the plan (task and
+    rollout index of each). Once the run has harvested the job it also holds the proxy's
+    records and the harness's turn counts by trial name, which admission reads beside
+    each `result.json`."""
 
     job: str
     trials: list[Path]
@@ -66,7 +67,7 @@ class Rollouts:
 @dataclass(frozen=True)
 class Served:
     """How a trial reaches the run's own proxy: the proxy (an address per trial, the token,
-    the host), the harness's profile, and whether the profile's env is laid on too."""
+    the host), the harness's profile, and whether to apply the profile's env."""
 
     proxy: Proxy
     profile: Profile = field(default_factory=Profile)
@@ -93,9 +94,10 @@ async def rollout(
     served: Served | None = None,
     modules: Candidate | None = None,
 ) -> Rollouts:
-    """Every task `rollouts` times, `concurrency` trials at once, back in plan order, the
-    `modules` delivered under the job's directory and named on the agent config. A trial
-    whose runner raised keeps its slot: no result there, which admission masks."""
+    """Run every task `rollouts` times, `concurrency` trials at once, and return them in
+    plan order. Deliver `modules` under the job's directory and name them on the agent
+    config. A trial whose runner raised keeps its slot with no result, which admission
+    masks."""
     if rollouts < 1:
         raise ValueError(f"rollouts must be at least 1; got {rollouts}")
     if concurrency < 1:
@@ -139,8 +141,8 @@ async def rollout(
             except asyncio.CancelledError:
                 task = asyncio.current_task()
                 if task is None or task.cancelling():
-                    raise  # ours: the run is stopping, and every trial with it
-                # A cancellation not ours is one trial's failure, not the batch's.
+                    raise  # ours: the run is stopping
+                # A cancellation not ours fails only this trial.
                 logger.warning("trial %s ended in a cancellation it did not own", trial_dir.name)
             except Exception:
                 logger.exception("trial %s could not run", trial_dir.name)
@@ -153,8 +155,8 @@ async def rollout(
 
 
 def quiet_litellm() -> None:
-    """Stop litellm printing its provider list for every model name it cannot place,
-    once per trial, to stdout, over the bars. Idempotent; a no-op without litellm."""
+    """Stop litellm printing its provider list to stdout, over the progress bars, for
+    every model name it cannot place. Idempotent; a no-op without litellm."""
     try:
         import litellm
     except ImportError:  # pragma: no cover - Harbor depends on it
@@ -163,8 +165,8 @@ def quiet_litellm() -> None:
 
 
 async def _run_trial(config: TrialConfig) -> Any:
-    """Harbor's trial, created and awaited here; imported late, since it drags the agents,
-    the backends and the registry in for a caller that may never open a container."""
+    """Create and run Harbor's trial. Imported late because it pulls in the agents, the
+    backends and the registry."""
     from harbor.trial.trial import Trial
 
     quiet_litellm()
@@ -175,8 +177,9 @@ async def _run_trial(config: TrialConfig) -> Any:
 def _trial_config(
     task: Path, *, trials_dir: Path, agent: AgentConfig, sandbox: str, verify: bool
 ) -> TrialConfig:
-    """`trial_name` is left empty so Harbor names it `<task>__<7 chars>` as `harbor run`
-    does; `delete=True` is Harbor's default said out loud, since a run opens thousands."""
+    """`trial_name` is left empty so Harbor names it `<task>__<7 chars>`, as `harbor run`
+    does. `delete=True` is Harbor's default, set explicitly because a run opens thousands
+    of trials."""
     return TrialConfig(
         task=TaskConfig(path=task),
         trials_dir=trials_dir,
@@ -187,10 +190,10 @@ def _trial_config(
 
 
 def served_config(config: TrialConfig, served: Served) -> TrialConfig:
-    """This trial's config pointed at the run's proxy, at the address naming the trial:
-    the provider's own env names over the batch's env, the profile's kwargs laid over the
-    batch's and, in allowlist mode, the proxy's host. A copy: the agent config is shared
-    by the batch."""
+    """A copy of this trial's config pointed at the run's proxy, at the address naming
+    the trial. The provider's env names override the batch's env, the profile's kwargs are
+    laid over the batch's, and in allowlist mode the proxy's host is added. The agent
+    config is shared by the batch, hence the copy."""
     address = served.proxy.address_for(config.trial_name)
     profile = served.profile
     if profile.strip_v1:
@@ -214,9 +217,9 @@ def served_config(config: TrialConfig, served: Served) -> TrialConfig:
 
 
 def laid_over(under: Mapping[str, Any], over: Mapping[str, Any]) -> dict[str, Any]:
-    """`over` on `under`, table by table: a blueprint's `opencode_config` keeps its own
-    keys beside the profile's, and `over` wins where both set one. Every value of `over`
-    is copied, so a trial never holds the profile's own."""
+    """Merge `over` onto `under`, table by table, so a blueprint's `opencode_config` keeps
+    its own keys beside the profile's. `over` wins where both set one. Values of `over`
+    are deep-copied so trials do not share the profile's objects."""
     merged = dict(under)
     for key, value in over.items():
         below = merged.get(key)
@@ -229,8 +232,8 @@ def laid_over(under: Mapping[str, Any], over: Mapping[str, Any]) -> dict[str, An
 
 def allowlisted(task: Path) -> bool:
     """Whether the task's agent phase runs in Harbor's allowlist network mode: the
-    `[agent]` override when it names a mode, else the `[environment]` baseline. A task
-    whose `task.toml` cannot be read is not, and Harbor says why at trial time."""
+    `[agent]` override when it names a mode, else the `[environment]` baseline. False for
+    a task whose `task.toml` cannot be read; Harbor says why at trial time."""
     try:
         config = TaskToml.model_validate_toml((task / "task.toml").read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001 - not this module's refusal to make
@@ -241,8 +244,8 @@ def allowlisted(task: Path) -> bool:
 
 
 def _harness_at_version(harness: str) -> tuple[str, str | None]:
-    """`pi@0.85.1` as the halves Harbor takes: the agent's name, and the version as its
-    `version` kwarg; a name with a colon is whole, and has no version."""
+    """Split `pi@0.85.1` into the halves Harbor takes: the agent's name and the version,
+    passed as its `version` kwarg. A name with a colon has no version."""
     name = bare_name(harness)
     version = harness[len(name) + 1 :] if name != harness else ""
     return name, version or None

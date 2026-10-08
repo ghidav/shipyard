@@ -95,8 +95,8 @@ async def test_a_batch_with_nothing_graded_has_no_mean(
 async def test_a_served_model_runs_through_its_proxy_and_is_judged_by_its_records(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Four tasks, two per batch: `a` graded 1 with two turns, `b` cut by its budget (0
-    whatever the verifier wrote), `c` timed out, `d` never came up (no records, no result)."""
+    """Four tasks, two per batch: `a` graded 1 with two turns, `b` cut by its budget (0,
+    overriding the verifier), `c` timed out, `d` never came up (no records, no result)."""
     monkeypatch.chdir(tmp_path)
     fake = FakeProxy(
         answers={

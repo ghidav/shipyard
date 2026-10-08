@@ -85,8 +85,8 @@ def test_another_slow_recipe_takes_its_own_knobs(tmp_path: Path) -> None:
 )
 def test_slow_knobs_are_each_slow_recipes_own_fields_and_fsts(slow: str, recipe: type) -> None:
     """A knob a slow recipe gains must reach fst's list and its fields, or fst cannot set
-    it; `refill` and the overlong term alone stay out, since a slow step trains on the batch
-    it sampled, with no overlong term."""
+    it. `refill` and the overlong term stay out: a slow step trains on the batch it sampled,
+    with no overlong term."""
     outside = {"refill", "overlong_penalty", "overlong_buffer"}
     own = set(recipe.model_fields) - set(Gradient.model_fields) - {"kind"} - outside
     assert own == set(SLOW_KNOBS[slow])
@@ -196,7 +196,7 @@ async def test_a_cycle_evolves_two_texts_then_splits_every_group_across_them(
 async def test_the_fast_phase_scores_each_cell_with_one_rollout_on_five_passes(
     tmp_path: Path,
 ) -> None:
-    """FST App. D: 960 metric calls over 192 examples, one rollout each, whatever share of
+    """FST App. D: 960 metric calls over 192 examples, one rollout each, at any share of
     the group a text takes in the slow steps (here two of four)."""
     for name in ("a", "b", "c", "d"):
         shutil.copytree(FIXTURES / "fixture" / "alpha", tmp_path / "tasks" / "four" / name)

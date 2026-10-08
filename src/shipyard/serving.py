@@ -1,6 +1,6 @@
-"""The run's serving half: where the proxy goes for this sandbox, when it starts and
-stops, what each job's records cost, and whose weights answered them. `Run` holds one
-of these and delegates; nothing here opens a sandbox or takes a gradient."""
+"""The run's serving half: where the proxy runs for this sandbox, when it starts and
+stops, what each job's records cost, and whose weights answered them. `Run` holds a
+`Serving` and delegates to it."""
 
 from __future__ import annotations
 
@@ -34,13 +34,12 @@ TUNNEL_LOG = "tunnel.log"
 
 
 class ProxyGone(RuntimeError):
-    """The proxy this run started exited under it: the run stops rather than send the next
-    batch to an address nothing answers, which would come back as a batch of masks."""
+    """The proxy this run started has exited, so the run stops."""
 
 
 class NothingServed(RuntimeError):
-    """A served job the proxy served nothing for: an endpoint that is dead, unreachable or
-    refused by its sampler, not a batch of failed rollouts to mask and carry on from."""
+    """A served job the proxy served nothing for: the endpoint is dead, unreachable or
+    refused by its sampler. The run stops instead of masking the batch."""
 
     def __init__(self, message: str, rolled: Rollouts | None = None) -> None:
         super().__init__(message)
@@ -50,7 +49,7 @@ class NothingServed(RuntimeError):
 
 def placement(rollout: Rollout) -> str:
     """`remote` for a named `endpoint_url`, `local` for a sandbox on this machine, else
-    `tunnel`: a sandbox elsewhere has no route back to a proxy in this process."""
+    `tunnel`. A sandbox elsewhere has no route back to a proxy in this process."""
     if rollout.endpoint_url.strip():
         return "remote"
     return "local" if rollout.sandbox in LOCAL_SANDBOXES else "tunnel"
@@ -58,7 +57,7 @@ def placement(rollout: Rollout) -> str:
 
 def backend(environ: Mapping[str, str] | None = None) -> str:
     """The party sampling is billed to: `tinker`, or `tinker@<host>` under a
-    `TINKER_BASE_URL`, so a run on another backend is not filed under Tinker's bill."""
+    `TINKER_BASE_URL`. A run on another backend is not filed under Tinker's bill."""
     environ = os.environ if environ is None else environ
     host = urlsplit(environ.get("TINKER_BASE_URL") or "").hostname
     return f"{TINKER}@{host}" if host else TINKER
@@ -73,17 +72,17 @@ def tinker_base_url(environ: Mapping[str, str] | None = None) -> str:
 
 
 def start_weights(cfg: Blueprint) -> str | None:
-    """The checkpoint the proxy starts on: a sampling run's `from_checkpoint` (a sampler
-    path); none for a training run, whose `from_checkpoint` is a state path Tinker cannot
-    sample and whose first step points the proxy at the weights it publishes."""
+    """The checkpoint the proxy starts on. A sampling run's `from_checkpoint` is a sampler
+    path. A training run's is a state path Tinker cannot sample, so it starts on none and
+    its first step points the proxy at the weights it publishes."""
     return None if cfg.trains else (cfg.model.from_checkpoint or None)
 
 
 def endpoint_settings(cfg: Blueprint, *, run: str | None = None) -> dict[str, Any]:
-    """What `shipyard serve` is handed: the model and its checkpoint, the bind, the
-    renderer, and every `[rollout]` knob the endpoint pins; volatile lines
-    unless the run keeps them. Named, the run tags the proxy's Tinker session, as the
-    trainer's is tagged."""
+    """The settings passed to `shipyard serve`: the model and its checkpoint, the bind, the
+    renderer, every `[rollout]` knob the endpoint pins, and the volatile lines unless the
+    run keeps them. With `run` set, the proxy's Tinker session is tagged with it, as the
+    trainer's is."""
     rollout, profile = cfg.rollout, profile_for(cfg.rollout.harness)
     tagged = {"metadata": {"shipyard_run": run, "shipyard_recipe": cfg.recipe.kind}} if run else {}
     return {
@@ -104,7 +103,7 @@ def endpoint_settings(cfg: Blueprint, *, run: str | None = None) -> dict[str, An
 
 
 def volatile_for(rollout: Rollout, profile: Profile) -> tuple[str, ...]:
-    """The profile's known lines under `cut_volatile`; nothing otherwise."""
+    """The profile's volatile lines when `cut_volatile` is set, else none."""
     return tuple(profile.volatile) if rollout.cut_volatile else ()
 
 
@@ -119,8 +118,8 @@ class Harvest:
 
 @dataclass
 class Serving:
-    """One run's proxy: started by the first job, stopped with the run; the served path it
-    was told, so a batch answered by other weights is refused rather than measured."""
+    """One run's proxy. The first job starts it and the run stops it. It remembers the
+    served path it was told, so a batch answered by other weights is refused."""
 
     config: Blueprint
     directory: Path
@@ -148,7 +147,7 @@ class Serving:
         return self.proxy.budget if self.proxy is not None else None
 
     def model_name(self) -> str:
-        """`<slug>/<model>`: the provider pose the harness's wire expects."""
+        """`<slug>/<model>`, the name the harness's wire expects."""
         return f"{slug_of(self.profile)}/{self.config.model.name}"
 
     def served(self) -> Served:
@@ -157,9 +156,10 @@ class Serving:
         return Served(self.proxy, self.profile, fill_context=self.config.rollout.fill_context)
 
     async def start(self) -> Proxy:
-        """The proxy for this placement, once, with `/healthz` answering where a sandbox
-        will dial it (through the tunnel): local or tunnelled with the checkpoint on its
-        command line, remote pointed through its control route or left as it stands."""
+        """Start the proxy for this placement, once, and wait until `/healthz` answers at
+        the address a sandbox will dial (through the tunnel). A local or tunnelled proxy
+        gets the checkpoint on its command line. A remote one is pointed through its
+        control route, or left as it is."""
         if self.proxy is not None:
             return self.proxy
         cfg, weights = self.config, start_weights(self.config)
@@ -181,7 +181,7 @@ class Serving:
                     f"{CONTROL_TOKEN_ENV}, or start it with --weights"
                 )
             else:
-                # Unpointed, it must still serve what this run measures: the base model.
+                # No checkpoint: the base model is what this run measures.
                 self.told, self.pointed = None, True
             return self.proxy
         log = self._log(PROXY_LOG)
@@ -201,8 +201,8 @@ class Serving:
         return self.proxy
 
     def alive(self) -> None:
-        """Raise `ProxyGone` when the tunnel or the serve process this run started has
-        exited: asked before every job after the first, and before every re-point."""
+        """Raise `ProxyGone` when the tunnel or serve process this run started has exited.
+        Called before every job after the first and before every re-point."""
         why = self.proxy.gone() if self.proxy is not None else None
         if why:
             raise ProxyGone(f"the proxy is no longer reachable: {why}")
@@ -222,8 +222,9 @@ class Serving:
         return opened
 
     async def harvest(self, rolled: Rollouts) -> Harvest:
-        """Every trial's records off the proxy, one `requests.jsonl` row each, the turn
-        counts off the harness's log when asked, and the served path checked."""
+        """Fetch every trial's records from the proxy and write one `requests.jsonl` row
+        per record. Count turns from the harness's log when `check_turns` is set. Check
+        the served path."""
         proxy = self.proxy
         if proxy is None:
             raise RuntimeError("nothing was served; there are no records to harvest")
@@ -272,7 +273,7 @@ class Serving:
         return Harvest(replace(rolled, records=taken, asked=asked, failed=failed), counted, noted)
 
     def close(self) -> None:
-        """Stop the proxy and the tunnel; synchronous, for a run closing outside its loop."""
+        """Stop the proxy and the tunnel. Synchronous, for a run closing outside its loop."""
         proxy, self.proxy = self.proxy, None
         if proxy is not None:
             proxy.close()
@@ -282,9 +283,10 @@ class Serving:
 
 
 def served_nothing(rolled: Rollouts) -> str | None:
-    """Why the proxy served a harvested job nothing, or None: no trial reached it, or every
-    request that did failed at the sampler (weights expired, a poisoned client). A job with
-    one answered or refused request is not this; its silent trials are masked one by one."""
+    """Why the proxy served a harvested job nothing, or None. Either no trial reached it,
+    or every request that did failed at the sampler (weights expired, a poisoned client).
+    A job with one answered or refused request is not this case; its silent trials are
+    masked one by one."""
     taken = rolled.records
     if taken is None or not rolled.trials:
         return None
@@ -318,8 +320,8 @@ def _row(job: str, trial: str, item: Record, hit: int) -> dict[str, Any]:
 
 
 def turns_asked(trial: Path, harness: str, counter: Any) -> int | None:
-    """How many turns the harness asked for, counted off `agent/<harness>.txt`; None when
-    it left no such log, which is not a claim that it asked for nothing."""
+    """How many turns the harness asked for, counted from `agent/<harness>.txt`. None
+    (not 0) when it left no such log."""
     text = harness_log(trial, harness)
     return None if text is None else int(counter(text))
 
@@ -336,11 +338,10 @@ def harness_log(trial: Path, harness: str) -> str | None:
 
 def answered_by_ours(job: str, taken: Mapping[str, Sequence[Record]], told: str | None) -> None:
     """Raise unless every record of `job` was served from the path this run told its
-    proxy: the records carry it so a proxy re-pointed under a batch is caught here."""
+    proxy. The records carry that path, so a proxy re-pointed mid-batch is caught here."""
     answered = {item.served for records in taken.values() for item in records if item.served}
     if answered - {told}:
         raise ValueError(
             f"job {job} was served from {sorted(answered)}, but this run pointed its proxy "
-            f"at {told}: something re-pointed it while the batch was in flight, so those "
-            "turns did not come from this run's weights"
+            f"at {told}. Something re-pointed it while the batch was in flight."
         )

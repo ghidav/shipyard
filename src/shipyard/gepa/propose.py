@@ -1,6 +1,6 @@
-"""Asking for a rewrite: what a proposer is shown about one component, and what it hands
-back. What makes the search work is the feedback: a number says a text was worse, the
-traces say why, and nothing a reflector learns survives unless it writes it into the text."""
+"""Asking for a rewrite: what a proposer is shown about one component and what it returns.
+The traces drive the search: a score says a text was worse, the traces say why. A
+reflector's findings survive only if it writes them into the text."""
 
 from __future__ import annotations
 
@@ -14,9 +14,9 @@ from shipyard.modules import Candidate, Module
 
 @dataclass(frozen=True)
 class Reflection:
-    """What the proposer is shown: the candidate, which of its components to rewrite, and
-    how that candidate did on the tasks the round is about. Its own outcomes, not another
-    text's: a reflector shown someone else's traces is asked to fix what it did not do."""
+    """What the proposer is shown: the candidate, the component to rewrite, and how that
+    candidate did on the round's tasks. The outcomes must be the candidate's own: traces of
+    another text would have the reflector fix what this text did not do."""
 
     candidate: Candidate
     component: str
@@ -28,26 +28,26 @@ class Reflection:
 
 
 class Proposer(Protocol):
-    """Turns a reflection into the component's new module, or None to decline: nothing in
-    the traces asked for a change, the model refused, the trial failed. A decline is an
-    answer the search counts; a raise is read as one too."""
+    """Turns a reflection into the component's new module, or None to decline (the traces
+    call for no change, the model refused, or the trial failed). The search counts a
+    decline, and an exception counts as one."""
 
     async def __call__(self, reflection: Reflection) -> Module | None: ...
 
 
 def component_for(turn: int, names: Sequence[str]) -> str:
-    """The component the `turn`-th rewrite asked for changes: round-robin, so every one is
-    attended to in turn rather than whichever was rewritten first and so has evidence. A
-    round skipped for a perfect parent asks for none and takes no turn."""
+    """The component the `turn`-th rewrite changes. Components rotate round-robin, so each
+    gets its turn. A round skipped for a perfect parent asks for no rewrite and takes no
+    turn."""
     return names[turn % len(names)]
 
 
 async def propose(
     parent: Candidate, component: str, outcomes: Iterable[Outcome], write: Proposer
 ) -> Candidate | None:
-    """One rewrite of `component`, as the child it makes, or None: the parent lacks the
-    component, the proposer declined, or what came back was blank or the same files. A
-    blank is a decline, not a deletion, since the two cannot be told apart here."""
+    """One rewrite of `component`, as the child it makes, or None when the parent lacks the
+    component, the proposer declined, or the result is blank or has the same files. A blank
+    result counts as a decline; it cannot be told from a deletion here."""
     module = parent.components.get(component)
     if module is None:
         return None

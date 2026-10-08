@@ -1,6 +1,6 @@
-"""The run's serving half: where the proxy goes for each sandbox, what it is started with,
-what each job's records cost and leave in `requests.jsonl`, the served-path refusal, and
-the run stopping its proxy on the way out."""
+"""The run's serving half: where the proxy goes for each sandbox, its start settings, the
+token counts and `requests.jsonl` rows from each job's records, the served-path refusal, and
+the run stopping its proxy on exit."""
 
 from __future__ import annotations
 
@@ -325,8 +325,8 @@ async def test_a_batch_answered_by_other_weights_is_refused(
 async def test_a_remote_proxy_this_run_did_not_point_must_serve_the_base_model(
     fake: FakeProxy, tmp_path: Path
 ) -> None:
-    """With no control route the run cannot point it, so it measures the base model, and a
-    batch answered by any checkpoint is refused rather than filed as the base's."""
+    """With no control route the run cannot point the proxy, so it measures the base model.
+    A batch answered by any checkpoint is refused."""
     fake.answers = {"alpha": [made(served="tinker://theirs/step-5")]}
     environ = {PROXY_TOKEN_ENV: "t"}
     held = Serving(blueprint(endpoint_url="https://p.example"), tmp_path, environ=environ)

@@ -1,5 +1,5 @@
-"""`shipyard serve`: the proxy as a process of its own, for a run whose sandbox is not on
-this machine. Prints one line a run parses, then serves until SIGTERM or SIGINT."""
+"""`shipyard serve` runs the proxy as its own process, for a run whose sandbox is not on
+this machine. It prints one line a run parses, then serves until SIGTERM or SIGINT."""
 
 from __future__ import annotations
 
@@ -19,9 +19,9 @@ from shipyard.proxy.wire import CONTROL_TOKEN_ENV, PROXY_TOKEN_ENV, new_token
 
 #: Test-only: serve on a fake sampling client and renderer, with no Tinker and no tokenizer.
 FAKE_SAMPLER_ENV = "SHIPYARD_FAKE_SAMPLER"
-#: Binds meaning "every interface", the right thing to listen on and nothing to dial.
+#: Bind values that mean every interface. Fine to listen on, but not an address to dial.
 WILDCARD_BINDS = frozenset({"0.0.0.0", "::", "*", ""})
-#: What the flags decide and `--settings` may not name.
+#: Endpoint fields set by flags. `--settings` may not name them.
 SET_HERE = frozenset(
     {"base_model", "model_path", "renderer", "host", "bind", "bind_port", "token"}
     | {"control_token", "client_factory"}
@@ -29,15 +29,15 @@ SET_HERE = frozenset(
 
 
 def advertised(bind: str, advertise: str | None) -> str:
-    """The name a sandbox resolves this proxy by. A wildcard bind with nothing named is
-    refused: a URL saying 0.0.0.0 reaches nothing, and the harness fails per request."""
+    """The name a sandbox resolves this proxy by. A wildcard bind with no `--advertise`
+    raises, because a URL with 0.0.0.0 reaches nothing and every harness request fails."""
     if advertise:
         return advertise
     if bind in WILDCARD_BINDS:
         raise ValueError(
-            f"A bind of {bind!r} is every interface, which nothing can dial. Name how this "
-            "proxy is reached with --advertise: host.docker.internal when its port is "
-            "published on the machine the sandbox's Docker runs on, or its hostname."
+            f"A bind of {bind!r} listens on every interface, and a sandbox cannot dial that. "
+            "Name how this proxy is reached with --advertise: host.docker.internal when its "
+            "port is published on the machine the sandbox's Docker runs on, or its hostname."
         )
     return bind
 
@@ -54,8 +54,9 @@ def endpoint_for(
     token: str | None,
     control_token: str | None,
 ) -> Endpoint:
-    """The endpoint the flags describe. `--settings` carries the run's other `[rollout]`
-    keys; a key that is not an Endpoint field, or one the flags decide, is refused."""
+    """Build the endpoint the flags describe. `--settings` carries the run's other
+    `[rollout]` keys. A key that is not an Endpoint field, or that a flag already sets,
+    raises ValueError."""
     named: dict[str, Any] = {
         "base_model": model,
         "model_path": weights or None,
@@ -73,7 +74,7 @@ def endpoint_for(
         if foreign:
             raise ValueError(
                 f"--settings names {', '.join(foreign)}, which this endpoint does not take "
-                f"from a run; it takes {', '.join(sorted(taken))}."
+                f"from a run. It takes {', '.join(sorted(taken))}."
             )
         named.update(settings)
         if "volatile" in named:
@@ -85,7 +86,7 @@ def endpoint_for(
 
 def fake_parts() -> tuple[Callable[[str | None], Any], Any]:
     """A sampling client that echoes the prompt's tokens as the completion, and a renderer
-    of one character per token, so a scripted test runs serve for real without Tinker."""
+    with one character per token. A scripted test can run serve with them, without Tinker."""
     from types import SimpleNamespace
 
     import tinker
@@ -125,21 +126,22 @@ def fake_parts() -> tuple[Callable[[str | None], Any], Any]:
 
 
 def banner(endpoint: Endpoint) -> str:
-    """The one line a run parses: what is served, where, and that control is open."""
+    """The first line serve prints, which a run parses: what is served, where, and
+    whether control is on."""
     served = endpoint.model_path or endpoint.base_model
     control = "on" if endpoint.control_token else "off"
     return f"serving {served} at http://{endpoint.host}:{endpoint.port} (control: {control})"
 
 
 def say(line: str) -> None:
-    """Stdout, flushed: a pipe is block-buffered, and the address must not sit in it."""
+    """Print to stdout and flush, because a pipe is block-buffered."""
     print(line, flush=True)
 
 
 @contextlib.contextmanager
 def stopping_on_signals(stop: asyncio.Event) -> Iterator[None]:
-    """SIGINT and SIGTERM set `stop` while entered, through the loop so the wait wakes;
-    taken off again on the way out for a caller that keeps running."""
+    """Set `stop` on SIGINT or SIGTERM while entered. The handlers go through the event
+    loop so the wait wakes, and are removed on exit for a caller that keeps running."""
     loop = asyncio.get_running_loop()
     installed = []
     try:
@@ -159,8 +161,8 @@ async def serve(
     stop: asyncio.Event | None = None,
     generated: Mapping[str, str] | None = None,
 ) -> None:
-    """Start, print the banner first and then every token generated here, wait for `stop`,
-    and close the endpoint whatever happened: the socket and the Tinker session both."""
+    """Start the endpoint, print the banner and then each token generated here, wait for
+    `stop`, and close the endpoint (socket and Tinker session) on exit or error."""
     stop = asyncio.Event() if stop is None else stop
     await endpoint.start()
     try:
@@ -173,8 +175,9 @@ async def serve(
 
 
 def tokens_from_env(environ: Mapping[str, str] = os.environ) -> tuple[str, str, dict[str, str]]:
-    """The harness token and the control token: from the env, else generated and returned
-    as lines to print, since a value only this process holds is no use to the launcher."""
+    """Return `(token, control, generated)`. A token comes from the env, else it is
+    generated here and listed in `generated` for the caller to print, so the launcher can
+    read it."""
     generated: dict[str, str] = {}
     token = environ.get(PROXY_TOKEN_ENV) or ""
     if not token:
@@ -191,11 +194,13 @@ def parser() -> argparse.ArgumentParser:
         description="Serve a Tinker model to a harness in a sandbox, recording what it sampled.",
     )
     made.add_argument("--model", required=True, help="the base model the weights are of")
-    made.add_argument("--weights", help="a tinker:// path to serve; without one, the base model")
+    made.add_argument("--weights", help="a tinker:// path to serve (default: the base model)")
     made.add_argument("--bind", default="0.0.0.0", help="the interface to listen on")
     made.add_argument("--port", type=int, default=0, help="the port to listen on; 0 for any")
-    made.add_argument("--advertise", help="the name a sandbox reaches this by, if not the bind")
-    made.add_argument("--renderer", metavar="NAME", help="a cookbook renderer, not the model's")
+    made.add_argument("--advertise", help="the name a sandbox reaches this by (default: the bind)")
+    made.add_argument(
+        "--renderer", metavar="NAME", help="a cookbook renderer that overrides the model's default"
+    )
     made.add_argument(
         "--settings",
         type=json.loads,
@@ -207,7 +212,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """The process: build the endpoint, serve until signalled; 2 when it cannot be built."""
+    """Build the endpoint and serve until signalled. Returns 2 when it cannot be built."""
     args = parser().parse_args(argv)
     token, control, generated = tokens_from_env()
     try:

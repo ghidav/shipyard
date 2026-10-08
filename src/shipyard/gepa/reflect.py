@@ -1,6 +1,6 @@
-"""The reflector as a Harbor trial: a synthetic task holding the component's files and one
-trace per outcome, an agent told to write the rewrite to `/logs/artifacts/<marker>`, and
-the artifact read back as a `Module` that the kind's `check` admits or declines."""
+"""The reflector as a Harbor trial. A synthetic task holds the component's files and one
+trace per outcome. The agent writes the rewrite to `/logs/artifacts/<marker>`, and the
+artifact is read back as a `Module` that the kind's `check` admits or declines."""
 
 from __future__ import annotations
 
@@ -22,30 +22,31 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: Where the reflector writes the new version: Harbor's conventional publish directory,
-#: collected into every trial's `artifacts/logs/artifacts/` without being declared
-#: (harbor/models/trial/paths.py, `EnvironmentPaths.artifacts_dir`).
+#: Where the reflector writes the new version. Harbor collects this directory into every
+#: trial's `artifacts/logs/artifacts/` without a declaration (harbor/models/trial/paths.py,
+#: `EnvironmentPaths.artifacts_dir`).
 PUBLISH = "/logs/artifacts"
 COLLECTED = ("artifacts", "logs", "artifacts")
-#: The reflector's harness installs itself into an image that carries none: Harbor's
+#: The reflector's harness installs itself into an image that carries none. Harbor's
 #: 360 s is six short of what a Node harness takes on `python:3.12-slim`.
 SETUP_TIMEOUT = 1800.0
-#: In the container's workdir: the component's directory, the traces, the kind's contract.
+#: Under the container's workdir: the component's directory, the traces, the kind's
+#: reference.
 WORKDIR = "/app"
 CURRENT = "current"
 TRACES = "traces"
 REFERENCE = "reference.md"
 TASK_NAME = "shipyard/reflection"
-#: Closing tags a reflector leaves on the last line of a file that are not the file.
+#: Closing tags a reflector sometimes leaves on the last line of a file.
 CLOSING_TAGS = ("</content>", "</file>", "</document>")
 
 
 def reflect(
     run: Run, *, harness: str, model: str | None, image: str, incremental: bool = False
 ) -> Proposer:
-    """A `Proposer` running one trial per proposal under `run`: the reflection `harness`
-    answering from `model` in `image`, asked for the smallest change when `incremental`.
-    Every failure is a decline, since losing a search to one container would be worse."""
+    """A `Proposer` that runs one trial per proposal under `run`. The trial runs `harness`
+    with `model` in `image` and asks for the smallest change when `incremental`. Every
+    failure is a decline, so one failed container cannot end a search."""
     if not harness.strip():
         raise ValueError(
             "the reflector needs a harness: Harbor reads an unnamed agent as its oracle, and "
@@ -70,9 +71,10 @@ def reflect(
 async def _job(
     run: Run, task: Path, *, harness: str, model: str | None, about: Reflection
 ) -> Rollouts:
-    """One job under the run that is not a rollout of the policy: through `rollout` and
-    not `Run.sample`, so nothing points it at the run's proxy, delivers the candidate to
-    it or bills it as sampling; recorded as a `reflection` under the provider's party."""
+    """One job under the run that is not a rollout of the policy. It goes through `rollout`,
+    not `Run.sample`, so it is not pointed at the run's proxy, does not deliver the
+    candidate and is not billed as sampling. It is recorded as a `reflection` under the
+    provider's party."""
     cfg = run.config
     job = run.reserve_job()
     rolled = await rollout(
@@ -99,16 +101,17 @@ async def _job(
 
 
 def party_of(model: str | None) -> str:
-    """Whose bill a reflection is when Harbor recorded no provider: the model's prefix."""
+    """The party billed for a reflection when Harbor recorded no provider: the model's
+    prefix, or "unknown"."""
     if model and "/" in model:
         return model.split("/", 1)[0]
     return "unknown"
 
 
 def task_for(reflection: Reflection, home: Path, *, image: str, incremental: bool) -> Path:
-    """The reflection as a Harbor task under `home`: `task.toml` naming the prebuilt
+    """Write the reflection as a Harbor task under `home`: `task.toml` naming the prebuilt
     image (so `environment/` is uploaded into the workdir), the component's files under
-    `current/<name>/`, a trace per outcome, the kind's reference, and the instruction."""
+    `current/<name>/`, a trace per outcome, the kind's reference and the instruction."""
     module = reflection.module
     kind = KINDS[module.kind]
     task = home / "reflection"
@@ -156,8 +159,8 @@ def _trace(outcome: Outcome) -> str:
 def instruction(
     *, name: str, marker: str, beside: list[str], reference: bool, incremental: bool
 ) -> str:
-    """What the reflector is asked: the goal, where everything is, that those directories
-    are all there is, to keep what works, and where to write the answer."""
+    """The reflector's prompt: the goal, where the files are, that those directories hold
+    everything it has, what to keep and where to write the answer."""
     current, traces = f"{WORKDIR}/{CURRENT}/{name}", f"{WORKDIR}/{TRACES}"
     return (
         f"Improve `{current}/{marker}` so that an assistant given it does better on tasks "
@@ -201,9 +204,10 @@ def instruction(
 
 
 def written(rolled: Rollouts, module: Module) -> Module | None:
-    """The rewrite the trial published, as a module of the same name and kind, or None:
-    no marker under the artifacts (one directory holding it is read, two are not), or
-    a rewrite the kind's `check` refuses, each logged with its cause."""
+    """The rewrite the trial published, as a module of the same name and kind, or None when
+    the artifacts hold no marker or the kind's `check` refuses the rewrite. Each case is
+    logged with its cause. A marker inside exactly one subdirectory is read; inside two,
+    neither is."""
     if not rolled.trials:
         return None
     trial = Path(rolled.trials[0])
@@ -229,8 +233,8 @@ def written(rolled: Rollouts, module: Module) -> Module | None:
 
 
 def _say_why_not(trial: Path, published: Path, marker: str) -> None:
-    """A trial that died is said at warning, one that wrote the wrong thing too; one that
-    read the traces and wrote nothing has declined, which the search counts."""
+    """Log why a trial published no rewrite. A trial that died or wrote the wrong files is
+    logged at warning. A trial that wrote nothing has declined, which the search counts."""
     ended = verdict(trial).ended
     if ended:
         logger.warning("the reflection trial failed: %s; see %s", ended, trial)
@@ -241,9 +245,9 @@ def _say_why_not(trial: Path, published: Path, marker: str) -> None:
 
 
 def unwrapped(text: str) -> str:
-    """The file without a wrapper the reflector put around it: a closing tag alone on the
-    last line, a fence pair around the whole text, or a lone fence on the last line. A
-    fence closing a block the text opened is the text's own."""
+    """The file with any wrapper the reflector put around it removed: a closing tag alone
+    on the last line, a fence pair around the whole text, or a lone fence on the last
+    line. A fence that closes a block the text opened belongs to the text."""
     lines = text.splitlines()
     kept = list(lines)
     while kept and kept[-1].strip() in CLOSING_TAGS:
@@ -260,5 +264,5 @@ def unwrapped(text: str) -> str:
 
 
 def _slug(task: str) -> str:
-    """A task reference as something that can be a filename."""
+    """A task reference as a filename."""
     return "".join(character if character.isalnum() else "-" for character in task).strip("-")

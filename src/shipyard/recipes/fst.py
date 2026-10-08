@@ -1,7 +1,7 @@
 """Fast-slow training (Tiwari, Sareen, Agrawal et al., arXiv 2605.12484): the weights and a
 population of K texts co-evolve in cycles. Each cycle runs gepa against the current weights
 on the next `cycle` batches, seeded with the last population, and keeps the top K of its
-frontier; the next `cycle` steps sample every task's group as group_size / K rollouts per
+frontier. The next `cycle` steps sample every task's group as group_size / K rollouts per
 text, normalised as one group, and update the weights with the slow recipe."""
 
 from __future__ import annotations
@@ -30,25 +30,26 @@ from shipyard.trainer import SERVE_TTL, Adam
 if TYPE_CHECKING:
     from shipyard.run import Run
 
-#: The slow recipe each `slow` names: its config model and its module.
+#: The config model and module of the slow recipe each `slow` value names.
 SLOW = {
     "dapo": (DapoRecipe, dapo),
     "dr-grpo": (DrGrpoRecipe, dr_grpo),
     "cispo": (CispoRecipe, cispo),
 }
-#: Gepa's budget per cycle in passes over the anchor tasks, one rollout per (task, text)
-#: cell: App. D's 960 metric calls over 192 examples, a metric call being one rollout.
+#: Gepa's budget per cycle, in passes over the anchor tasks with one rollout per (task, text)
+#: cell. App. D uses 960 metric calls over 192 examples, a metric call being one rollout.
 BUDGET_PASSES = 5
 CELL_ROLLOUTS = 1
-#: App. D: AdamW at PyTorch's betas 0.9 / 0.999, weight decay 0; eps is unstated, and 1e-8
-#: is both PyTorch's default and the cookbook's; it states no gradient clipping, so none.
-#: Its 10-step warm-up is the `warmup` key's, off by default.
+#: App. D: AdamW at PyTorch's betas 0.9 / 0.999, weight decay 0. Eps is unstated, and 1e-8 is
+#: PyTorch's default and the cookbook's. No gradient clipping is stated, so none is used.
+#: The `warmup` key sets the 10-step warm-up, which is off by default.
 ADAM = Adam(beta1=0.9, beta2=0.999, eps=1e-8)
 PAPER_WARMUP = 10
 
 
 def slow_recipe(recipe: Any) -> Any:
-    """The slow recipe's own config, from the knobs fst shares with it and the ones it set."""
+    """The slow recipe's config, built from the knobs fst shares with it plus the slow
+    recipe's own knobs that are set."""
     model, _ = SLOW[recipe.slow]
     knobs = {knob: getattr(recipe, knob) for knob in SLOW_KNOBS[recipe.slow]}
     knobs = {knob: value for knob, value in knobs.items() if value is not None}
@@ -59,11 +60,11 @@ def slow_recipe(recipe: Any) -> Any:
 
 
 def preset(recipe: Any) -> Preset:
-    """The slow recipe's preset, under fst's name, with FST's optimizer (App. D), averaged
-    per prompt (Eq. 4), and with neither refill nor overlong penalty whatever the slow
-    recipe: FST follows ScaleRL (section 2), whose zero-variance filtering drops flat groups
-    without resampling and which controls length by interruption, not by a reward term
-    (ScaleRL 2, A.10)."""
+    """The slow recipe's preset under fst's name, with FST's optimizer (App. D), per-prompt
+    averaging (Eq. 4), and no refill or overlong penalty for any slow recipe. FST
+    follows ScaleRL (section 2): zero-variance filtering drops flat groups without
+    resampling, and length is controlled by interruption with no reward term (ScaleRL 2,
+    A.10)."""
     _, module = SLOW[recipe.slow]
     return replace(
         module.preset(slow_recipe(recipe)),
@@ -87,9 +88,9 @@ def resolution(recipe: Any) -> str:
 
 
 async def run(run: Run) -> None:
-    """Seed, then per cycle a fast phase and `cycle` slow steps until the batches run out;
-    each cycle's population kept under `modules/cycle-<n>/<rank>`, the last one's first
-    under `modules/best/`."""
+    """Seed, then per cycle run a fast phase and `cycle` slow steps until the batches run
+    out. Each cycle's population is kept under `modules/cycle-<n>/<rank>` and the last
+    cycle's first member under `modules/best/`."""
     cfg = run.config
     recipe, data = cfg.recipe, cfg.data
     if data.group_size % recipe.population:
@@ -137,17 +138,17 @@ async def fast(
     index: int,
     write: Any,
 ) -> list[Candidate]:
-    """One fast phase under the weights the proxy now serves: gepa on the lookahead's tasks
-    (the first `anchor` of them when set), seeded with the population, every (task, text)
-    cell scored with one rollout, its top K back. The anchor set is the Pareto tasks; FST
-    names one anchor set (§3, App. A) and no other source for the minibatches, so fst draws
-    them from it too."""
+    """One fast phase under the weights the proxy now serves. Run gepa on the lookahead's
+    tasks (the first `anchor` of them when set), seeded with the population, score every
+    (task, text) cell with one rollout, and return the top K. The anchor set is the Pareto
+    tasks. FST names one anchor set (§3, App. A) and no other source for minibatches, so fst
+    draws minibatches from it too."""
     recipe, data = run.config.recipe, run.config.data
     tasks = list(dict.fromkeys(task for batch in lookahead for task in batch))
     tasks = tasks[: recipe.anchor] if recipe.anchor else tasks
     cells = CELL_ROLLOUTS
 
-    # Measuring the population carried in is on top of the budget, past the first member.
+    # Scoring the carried-in population is added to the budget, except for its first member.
     carried = len({member.digest for member in population}) - 1
 
     async def score(candidate: Candidate, over: Sequence[Path], round_index: int) -> Any:
@@ -182,8 +183,9 @@ async def fast(
 async def sampled(
     run: Run, population: Sequence[Candidate], share: int, tasks: Sequence[Path], index: int
 ) -> Rollouts:
-    """A slow step's batch: one job per text at `share` rollouts a task, one after another
-    (a job's name is reserved in order), merged into one group per task."""
+    """A slow step's batch: one job per text at `share` rollouts per task. The jobs run one
+    after another because a job's name is reserved in order, and are merged into one group
+    per task."""
     parts = [
         await run.sample(tasks, rollouts=share, index=index, modules=member)
         for member in population
@@ -192,8 +194,9 @@ async def sampled(
 
 
 def merged(parts: Sequence[Rollouts], share: int) -> Rollouts:
-    """The jobs of one step as one: task i's group is its `share` trials from each job in
-    turn, so credit normalises prompt and sampling variation together, as the paper does."""
+    """Merge the jobs of one step into one. Task i's group is its `share` trials from each
+    job in turn, so credit normalises prompt and sampling variation together, as the paper
+    does."""
     first = parts[0]
     if any(len(part.trials) != len(first.trials) for part in parts):
         raise ValueError("the jobs of one step planned different numbers of trials")

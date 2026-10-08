@@ -13,8 +13,8 @@ if TYPE_CHECKING:
 
 
 async def run(run: Run) -> None:
-    """One job per batch, each trial's verdict read, the mean of the graded logged per
-    batch and once over the run; a masked trial is left out, never counted as a 0."""
+    """Run one job per batch and log the mean of the graded trials per batch and once over
+    the run. A masked trial is left out of the mean."""
     cfg = run.config
     data = cfg.data
     rewards: list[float] = []
@@ -46,5 +46,5 @@ async def run(run: Run) -> None:
 
 
 def mean(values: list[float]) -> float | None:
-    """The mean, or None of nothing: a 0 there would read as a policy that failed."""
+    """The mean, or None for no values, since a 0 would read as a policy that failed."""
     return fmean(values) if values else None

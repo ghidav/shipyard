@@ -1,5 +1,5 @@
-"""What `rollout` hands Harbor and what it leaves on disk: configs in plan order, one
-agent per batch, a slot kept for a trial that could not run, the semaphore honoured."""
+"""What `rollout` passes to Harbor and leaves on disk: configs in plan order, one agent per
+batch, a slot kept for a trial that could not run, and the concurrency semaphore."""
 
 from __future__ import annotations
 
@@ -121,7 +121,7 @@ async def test_a_trial_that_could_not_run_keeps_its_slot(tmp_path: Path) -> None
         ["alpha"] * 2 + ["beta"] * 2 + ["gamma"] * 2
     )
     assert [trial.is_dir() for trial in found.trials] == [True, True, False, False, True, True]
-    # Nothing of ours in the job directory: only what Harbor's stand-in wrote.
+    # The job directory holds only what Harbor's stand-in wrote.
     job_dir = tmp_path / "jobs" / "run-0000"
     assert sorted(p.name for p in job_dir.iterdir()) == sorted(
         trial.name for trial in found.trials if trial.is_dir()
@@ -227,8 +227,8 @@ def _task_toml(tmp_path: Path, name: str, text: str) -> Path:
 
 
 async def test_every_trial_is_pointed_at_the_address_that_names_it(tmp_path: Path) -> None:
-    """One address per trial, over the batch's env; the shared agent config is copied,
-    so no trial is handed another's address."""
+    """One address per trial, layered over the batch's env. The shared agent config is
+    copied for each trial, so no trial gets another's address."""
     harbor = FakeTrials()
     proxy = FakeProxy(origin="http://host.docker.internal:8000", token="secret")
     found = await _rollout(
@@ -278,9 +278,8 @@ def test_claude_code_is_handed_the_anthropic_wire_without_the_v1(tmp_path: Path)
 def test_opencode_gets_its_providers_env_and_keeps_a_blueprints_own_config(
     tmp_path: Path,
 ) -> None:
-    """The env the profile's opencode config names is the env the trial is handed; a
-    blueprint's own `opencode_config` keeps its keys, and the profile's win where both
-    set one."""
+    """The trial gets the env that the profile's opencode config names. A blueprint's own
+    `opencode_config` keeps its keys, and the profile's keys win where both set one."""
     proxy = FakeProxy(origin="http://host.docker.internal:8000", token="k")
     mine = {
         "provider": {"shipyard": {"models": {"Qwen/Qwen3-8B": {"limit": {"context": 32768}}}}},

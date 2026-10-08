@@ -1,5 +1,5 @@
-"""The quick tunnel as a subprocess: found on PATH or through docker, its origin read off
-its output, stopped with the run, and refused in words when nothing here can open one."""
+"""The quick tunnel as a subprocess: found on PATH or through docker, its origin read from
+its output, stopped with the run, and a clear error when nothing here can open one."""
 
 from __future__ import annotations
 
@@ -108,8 +108,8 @@ async def test_the_origin_is_read_off_the_output_and_stop_ends_the_process(
 async def test_the_quick_tunnel_services_own_host_is_not_an_origin(
     stub: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """cloudflared names `api.trycloudflare.com` when it could not get a tunnel: that error
-    is what the run reports, not a tunnel at the API's host that then does not answer."""
+    """cloudflared prints `api.trycloudflare.com` when it could not get a tunnel. The run
+    reports that error and does not treat the API's host as a tunnel origin."""
     monkeypatch.setenv("STUB_MODE", "refused")
     with pytest.raises(RuntimeError, match="exited with 1") as caught:
         await Tunnel.start(7004)

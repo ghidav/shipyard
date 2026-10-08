@@ -26,8 +26,9 @@ def now() -> str:
 
 
 def append(path: Path, row: dict[str, Any]) -> dict[str, Any]:
-    """One line, stamped `at`, opened per call and flushed before returning, no fsync.
-    A cut last line gets its newline first, so the new row is not welded onto it."""
+    """Append one row as a JSON line, stamped `at`. The file is opened per call and
+    flushed before returning, without fsync. If the last line was cut short, a newline is
+    written first so the new row stays on its own line."""
     stamped = {"at": now(), **row}
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
@@ -66,8 +67,8 @@ def read(path: Path) -> Iterator[dict[str, Any]]:
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
-    """A whole document, written beside the file and renamed over it, so a reader sees
-    the old document or the new one and never half of either."""
+    """Write a whole document beside the file and rename it over, so a reader sees either
+    the old document or the new one."""
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".writing")
     temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")

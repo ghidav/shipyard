@@ -1,6 +1,6 @@
-"""Message digests and the narrow bridge: a prompt whose history quotes a reply this
-proxy sampled is built from that reply's tokens, with only the tail after it rendered
-anew, so a tool loop trains as one sequence and not as its re-rendered square."""
+"""Message digests and the bridge. A prompt whose history quotes a reply this proxy
+sampled is built from that reply's tokens. Only the tail after the reply is rendered
+anew, so a tool loop trains as one sequence."""
 
 from __future__ import annotations
 
@@ -22,19 +22,20 @@ def _field(value: Any, name: str) -> Any:
 
 
 def _call(call: Any) -> list[str]:
-    """A tool call by its name and id. The id says which reply made the call, so a call
-    the harness rewrote before echoing it (a default filled in, a type coerced) is still
-    that reply's: the harness runs what it rewrote, and the model reads what it wrote."""
+    """A tool call as its name and id. The id identifies the reply that made the call, so a
+    call the harness rewrote before echoing it (a default filled in, a type coerced)
+    still matches that reply."""
     function = _field(call, "function")
     named = function if function is not None else call
     return [str(_field(named, "name") or ""), str(_field(call, "id") or "")]
 
 
 def normalize(message: Any) -> dict[str, Any]:
-    """What identifies a message: role, text with its whitespace left out (a harness may
-    drop a block of it), thinking (a harness that strips it has changed the message),
+    """The fields that identify a message: role, text with whitespace removed (a harness
+    may drop a block of it), thinking (a harness that strips it has changed the message),
     images by their pixels, tool calls by name and id (`with_call_ids` gives every call
-    an id), a tool result's tool name. Not a call's arguments, nor a result's call id."""
+    an id), and a tool result's tool name. Call arguments and a result's call id are
+    left out."""
     content = _field(message, "content")
     text: list[str] = []
     thinking: list[str] = []
@@ -74,8 +75,8 @@ def digests_of(messages: Sequence[Any]) -> tuple[str, ...]:
 
 
 def chains(digests: Sequence[str]) -> list[str]:
-    """The chain of every prefix, rolled: the key of `digests[:i]` extends the key of
-    `digests[:i-1]`, so every prefix of a history is keyed in one pass."""
+    """The key of every prefix of the digests. The key of `digests[:i]` extends the key of
+    `digests[:i-1]`, so one pass keys every prefix."""
     out: list[str] = []
     last = ""
     for one in digests:
@@ -93,9 +94,9 @@ def chain(digests: Sequence[str]) -> str:
 
 @dataclass(frozen=True)
 class Reply:
-    """A sampled reply as the bridge needs it: its call's prompt and completion ids,
-    whether the completion closed on a stop token, and the fresh render of the call's
-    messages, which is its prompt unless that prompt was bridged too."""
+    """A sampled reply: its call's prompt and completion ids, whether the completion ended
+    on a stop token, and the fresh render of the call's messages. The render equals the
+    prompt unless the prompt was bridged."""
 
     prompt_ids: tuple[int, ...]
     completion_ids: tuple[int, ...]
@@ -104,11 +105,11 @@ class Reply:
 
 
 class Index:
-    """One trial's sampled replies, each under the chain of digests that leads to it. Two
-    different replies to one history that share a call id (a model that writes its own
-    numbers a call alike in every sample, as Kimi's do), or that make no call and say the
-    same, are both ambiguous: an echo of one that the harness trimmed may match the other,
-    so neither is bridged from."""
+    """One trial's sampled replies, each keyed by the chain of digests that leads to it.
+    Two different replies to one history are ambiguous when they share a call id (some
+    models, such as Kimi, number a call the same way in every sample) or when they make no
+    call and say the same thing. A trimmed echo of one may match the other, so the bridge
+    uses neither."""
 
     def __init__(self) -> None:
         self._replies: dict[str, Reply] = {}
@@ -138,8 +139,8 @@ class Index:
         self._replies[key] = reply
 
     def find(self, digests: Sequence[str]) -> tuple[int, Reply] | None:
-        """The longest prefix of the digests that ends in a sampled reply: where that
-        reply sits among the messages, and the reply; None when it ends in two."""
+        """The longest prefix of the digests that ends in a sampled reply, as that reply's
+        position among the messages and the reply. None when the reply is ambiguous."""
         keys = chains(digests)
         for end in range(len(keys), 0, -1):
             if keys[end - 1] in self._ambiguous:
@@ -167,8 +168,7 @@ def bridge(
     digests: Sequence[str] | None = None,
 ) -> Bridged | None:
     """The prompt built from a quoted reply's tokens (the stored prompt and completion, its
-    stop, the tail's ids), or None to render afresh: each `return None` below is one of
-    the six reasons, in order."""
+    stop, the tail's ids), or None when the caller must render afresh."""
     digests = digests_of(messages) if digests is None else digests
     found = index.find(digests)
     if found is None:
@@ -176,7 +176,7 @@ def bridge(
     at, reply = found
     if at < 1 or not tail_extends(messages[at + 1 :]):
         return None
-    # The template drops earlier thinking at a new user turn: render it the template's way.
+    # The template drops earlier thinking at a new user turn. Render such a prompt afresh.
     if getattr(renderer, "strip_thinking_from_history", False) and any(
         str(_field(message, "role") or "") == "user" for message in messages[at + 1 :]
     ):
@@ -198,9 +198,9 @@ def bridge(
 
 
 def tail_extends(tail: Sequence[Any]) -> bool:
-    """prime-rl's tail rule: tool results, optionally closed by one user message, and
-    nothing else. An assistant message there would be re-tokenized, and nothing there
-    is a resample, not an extension."""
+    """prime-rl's tail rule: the tail is tool results, optionally followed by one user
+    message. An assistant message in the tail would be re-tokenized. An empty tail means
+    the call is a resample, so it returns False."""
     roles = [str(_field(message, "role") or "") for message in tail]
     if not roles:
         return False
@@ -209,8 +209,8 @@ def tail_extends(tail: Sequence[Any]) -> bool:
 
 
 def ids_in(prompt: Any) -> tuple[int, ...] | None:
-    """A rendered prompt as ids, or None when a chunk is not text: an image chunk has
-    no ids to compare with or to splice onto."""
+    """A rendered prompt as ids, or None when a chunk is not text. An image chunk has no
+    ids to compare or splice."""
     ids: list[int] = []
     for chunk in getattr(prompt, "chunks", None) or []:
         tokens = getattr(chunk, "tokens", None)

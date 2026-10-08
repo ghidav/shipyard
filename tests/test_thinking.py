@@ -1,6 +1,6 @@
-"""The model's thinking on the wire: handed to the harness in its wire's form, read back
-from whatever the harness kept, and bridged only when kept as written. Through the real
-app on both wires, renderer and sampler faked; one test runs the real Qwen3 renderer."""
+"""The model's thinking on the wire: sent to the harness in the wire's form, read back from
+what the harness kept, and bridged only when kept as written. The tests use the real app on
+both wires with a fake renderer and sampler. One test runs the real Qwen3 renderer."""
 
 from __future__ import annotations
 

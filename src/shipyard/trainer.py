@@ -1,5 +1,5 @@
-"""The training client over the Tinker SDK: opened on a base model or a saved state, the
-weights published for the proxy, a checkpoint saved, the step taken, the session closed."""
+"""The training client over the Tinker SDK. It opens on a base model or a saved state,
+publishes weights for the proxy, saves checkpoints, takes a step, and closes the session."""
 
 from __future__ import annotations
 
@@ -21,9 +21,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: Tinker's own default rank, for a blueprint that names none.
+#: Tinker's default rank, used when the blueprint names none.
 DEFAULT_LORA_RANK = 32
-#: How long a step's published sampler weights are kept: they outlive the batch sampled
+#: How long a step's published sampler weights are kept. They outlive the batch sampled
 #: from them, and a crashed run's leftovers expire on their own.
 SERVE_TTL = 12 * 3600
 SECONDS_PER_HOUR = 3600
@@ -32,8 +32,8 @@ SECONDS_PER_HOUR = 3600
 @dataclass(frozen=True)
 class Adam:
     """AdamW as a recipe's paper sets it: the betas, eps, the decoupled weight decay, the
-    global gradient norm each step is clipped to (Tinker's `grad_clip_norm`, 0: none), and
-    the `warmup` steps over which the learning rate rises linearly to its value (0: none)."""
+    global gradient norm each step is clipped to (Tinker's `grad_clip_norm`; 0 is none), and
+    the `warmup` steps over which the learning rate rises linearly to its value (0 is none)."""
 
     beta1: float
     beta2: float
@@ -43,22 +43,24 @@ class Adam:
     warmup: int = 0
 
     def rate(self, learning_rate: float, done: int) -> float:
-        """The learning rate of the update after `done` updates: `(done + 1) / warmup` of it
-        through the warm-up, so the first update moves the weights too, then all of it."""
+        """The learning rate for the update after `done` updates: `(done + 1) / warmup` of
+        `learning_rate` during the warm-up, so the first update moves the weights, and all
+        of `learning_rate` afterwards."""
         if done >= self.warmup:
             return learning_rate
         return learning_rate * (done + 1) / self.warmup
 
 
-#: Adam as the cookbook's `train_step` sets it (no weight decay, no gradient clipping, no
-#: warm-up), for whatever a paper leaves unstated; the SDK's own `eps` default is 1e-12.
+#: Adam as the cookbook's `train_step` sets it (no weight decay, gradient clipping or
+#: warm-up), for whatever a paper leaves unstated. The SDK's `eps` default is 1e-12.
 COOKBOOK = Adam(beta1=0.9, beta2=0.95, eps=1e-8)
 
 
 @dataclass(frozen=True)
 class Update:
-    """What one `apply` did: the tokens through `forward_backward`, the substeps run, the
-    knobs, and what the step's own logprobs said against mu (None where unreadable)."""
+    """What one `apply` did: the tokens sent through `forward_backward`, the substeps run,
+    the learning rate and loss function, and the KL and entropy of the step's own logprobs against
+    mu (None where unreadable)."""
 
     train_tokens: int
     substeps: int
@@ -73,7 +75,7 @@ class Update:
 @dataclass(frozen=True)
 class Checkpoint:
     """A durable save: the state path a training client is rebuilt from, the sampler path
-    rollouts are served from, and the TTL in hours, None being kept until deleted."""
+    rollouts are served from, and the TTL in hours (None: kept until deleted)."""
 
     tag: str
     state_path: str
@@ -83,10 +85,11 @@ class Checkpoint:
 
 @dataclass
 class Trainer:
-    """A Tinker training client and what a run asks of it. `updates` counts the gradients
-    applied: how credit tells whether the weights a batch was sampled at have moved, and
-    how far the run's warm-up has gone. `restored` is set when the optimizer state was
-    loaded with the weights: it continues an earlier run's, so there is no warm-up."""
+    """A Tinker training client. `updates` counts the gradients applied. Credit reads it to
+    tell whether the weights a batch was sampled at have moved, and `Adam.rate` reads it to
+    tell how far the run's warm-up has gone. `restored` is set when the optimizer state was
+    loaded with the weights. The run then continues an earlier run's optimizer state and has
+    no warm-up."""
 
     client: Any
     updates: int = 0
@@ -103,10 +106,10 @@ class Trainer:
         restore_optimizer: bool = False,
         metadata: dict[str, str] | None = None,
     ) -> Trainer:
-        """A LoRA on `base_model`, or the weights at `from_checkpoint` (the SDK's `from_state`
-        loads no optimizer state; `restore_optimizer` asks for the one that does, and the
-        trainer is then `restored`), tagged `metadata` on Tinker's side; the capabilities are
-        read before a session spends."""
+        """Open a LoRA on `base_model`, or the weights at `from_checkpoint`, tagged with
+        `metadata` on Tinker's side. The SDK's `from_state` loads no optimizer state;
+        `restore_optimizer` uses the variant that does, and the trainer is then `restored`.
+        The server's capabilities are checked before the session spends anything."""
         try:
             await server_has(service, base_model)
             if from_checkpoint:
@@ -127,8 +130,9 @@ class Trainer:
         return cls(client, service=service, restored=bool(from_checkpoint) and restore_optimizer)
 
     async def publish(self, name: str, *, ttl_seconds: int = SERVE_TTL) -> str:
-        """The current weights at a `tinker://` path a proxy anywhere resolves, kept for
-        `ttl_seconds`: `save_weights_for_sampler_async`, whose own default is forever."""
+        """Save the current weights as sampler weights and return their `tinker://` path,
+        which a proxy anywhere can resolve. They are kept for `ttl_seconds`.
+        `save_weights_for_sampler_async` keeps them forever by default."""
         future = await self.client.save_weights_for_sampler_async(
             name, ttl_seconds=int(ttl_seconds)
         )
@@ -136,7 +140,8 @@ class Trainer:
         return str(saved.path)
 
     async def save(self, tag: str, *, ttl_hours: float | None = None) -> Checkpoint:
-        """State and sampler weights under `tag` with one TTL; None is the SDK's keep-forever."""
+        """Save state and sampler weights under `tag` with one TTL. None keeps them forever
+        (the SDK default)."""
         if ttl_hours is not None and ttl_hours < MIN_TTL_HOURS:
             raise ValueError(
                 f"ttl_hours = {ttl_hours}: Tinker keeps a checkpoint for an hour at least"
@@ -151,20 +156,21 @@ class Trainer:
         return Checkpoint(tag, str(state.path), str(weights.path), ttl_hours)
 
     async def apply(self, batch: Batch, preset: Preset) -> Update:
-        """The gradient over the batch's datums in `substeps` parts of whole groups, never
-        more parts than groups; refused empty: a step that trained on nothing must not
-        read like one that trained. Every part carries credit's mu, the logprobs of the
-        weights the batch was sampled at, so the ratio moves from the second part on."""
+        """Take the gradient over the batch's datums in `substeps` parts of whole groups, with
+        at most one part per group. Raise on an empty batch, so a step that trained on
+        nothing does not read like one that trained. Every part carries credit's mu, the
+        logprobs of the weights the batch was sampled at, so the ratio moves from the second
+        part on."""
         # Reproduces `train_step` of tinker_cookbook/rl/train.py (Thinking Machines Lab,
-        # Apache-2.0): each substep's forward_backward and optim_step are enqueued before
-        # the substep before it is consumed; the per-datum training logprobs are read off
-        # `loss_fn_outputs[i]["logprobs"]` as its `_training_logprobs_from_fwd_bwd` does,
-        # and `mask` is stripped from what is sent as its `_remove_mask` does.
+        # Apache-2.0). Each substep's forward_backward and optim_step are enqueued before the
+        # previous substep is consumed. Per-datum training logprobs are read from
+        # `loss_fn_outputs[i]["logprobs"]`, as its `_training_logprobs_from_fwd_bwd` does, and
+        # `mask` is stripped from what is sent, as its `_remove_mask` does.
         began = time.monotonic()
         if not batch.datums:
             raise ValueError("the batch holds no datums; the loop logs such a step untrained")
         groups = grouped(batch.datums, batch.owners)
-        # The papers' mini-batches are sets of prompts: a group is never cut across two.
+        # The papers' mini-batches are sets of prompts, so a group is not split across parts.
         parts = min(preset.substeps, len(groups))
         split_parts = [[one for group in part for one in group] for part in split(groups, parts)]
         datums = [one for part in split_parts for one in part]
@@ -185,8 +191,8 @@ class Trainer:
             weight_decay=optimizer.weight_decay,
             grad_clip_norm=optimizer.grad_clip_norm,
         )
-        # Before the call and never rolled back: a substep that fails after the first
-        # leaves optimizer steps landed, and this count is what guards credit's mu.
+        # Incremented before the call and not rolled back. A substep that fails after the
+        # first leaves optimizer steps landed, and credit's mu guard reads this count.
         self.updates += 1
         trained: list[torch.Tensor] = []
         forward, optim = await self._enqueue(split_parts[0], preset, adam)
@@ -214,7 +220,7 @@ class Trainer:
         )
 
     async def _enqueue(self, part: list[Any], preset: Preset, adam: Any) -> tuple[Any, Any]:
-        """One substep submitted: its forward_backward, then its optim_step."""
+        """Submit one substep: forward_backward, then optim_step."""
         forward = await self.client.forward_backward_async(
             [_unmasked(one) for one in part],
             loss_fn=preset.loss_fn,
@@ -223,8 +229,8 @@ class Trainer:
         return forward, await self.client.optim_step_async(adam)
 
     async def close(self, status: str = "success", detail: str | None = None) -> None:
-        """Finish the session, whose heartbeat otherwise runs as long as the process does;
-        idempotent, and quiet about a session the server has finished already."""
+        """Finish the session, whose heartbeat otherwise runs for the life of the process.
+        Idempotent, and quiet when the server has already finished the session."""
         service, self.service = self.service, None
         if service is None:
             return
@@ -245,8 +251,8 @@ def grouped(datums: Values[Any], owners: Values[int]) -> list[list[Any]]:
 
 
 def split(items: list[Any], parts: int) -> list[list[Any]]:
-    """`parts` slices in order, their sizes differing by at most one: the cut of the
-    cookbook's `split_list` (`np.linspace(0, len, parts + 1).astype(int)`), its float
+    """`parts` slices in order, with sizes differing by at most one. This is the cut of the
+    cookbook's `split_list` (`np.linspace(0, len, parts + 1).astype(int)`), with its float
     arithmetic kept so a batch splits as it did under the cookbook."""
     step = len(items) / parts
     edges = [int(index * step) for index in range(parts)] + [len(items)]
@@ -254,7 +260,7 @@ def split(items: list[Any], parts: int) -> list[list[Any]]:
 
 
 def _unmasked(datum: Any) -> tinker.Datum:
-    """The datum without `mask`, which is this side's bookkeeping and no loss input."""
+    """The datum without `mask`, which only this side uses."""
     return tinker.Datum(
         model_input=datum.model_input,
         loss_fn_inputs={key: value for key, value in datum.loss_fn_inputs.items() if key != "mask"},
@@ -263,8 +269,8 @@ def _unmasked(datum: Any) -> tinker.Datum:
 
 def _observed(datums: Values[Any], trained: Values[Any]) -> dict[str, float]:
     """kl_v1 = mean(mu - pi), kl_v2 = half the mean square, entropy = mean(-mu) over the
-    acted tokens (the cookbook's `compute_kl_sample_train`); {} wherever a datum carries
-    no mu or mask or the logprobs do not line up, never a failure of the step."""
+    acted tokens (the cookbook's `compute_kl_sample_train`). Returns {} when a datum carries
+    no mu or mask or the logprobs do not line up."""
     if len(trained) != len(datums):
         return {}
     try:
@@ -288,6 +294,6 @@ def _observed(datums: Values[Any], trained: Values[Any]) -> dict[str, float]:
             "kl_v2": float(0.5 * (moved**2).mean()),
             "entropy": float(-sampled.mean()),
         }
-    except Exception:  # noqa: BLE001 - a number beside the step, not the step
+    except Exception:  # noqa: BLE001 - these numbers are extras and must not fail the step
         logger.warning("could not read the step's own logprobs; the row goes without them")
         return {}
