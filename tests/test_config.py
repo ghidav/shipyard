@@ -421,9 +421,9 @@ def test_toml_values_are_spelled_as_toml() -> None:
             "dapo",
             "# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, "
             "averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token "
-            "budget; 16 substeps by prompt; adamw betas 0.9 / 0.95, eps 1e-08, no warm-up (the "
-            "paper's is 20 steps); degenerate groups dropped and refilled from the plan, "
-            "up to 9 more rounds",
+            "budget; 16 substeps by prompt; adamw betas 0.9 / 0.95, eps 1e-08, weight decay "
+            "0.1, gradient norm clipped at 1.0, no warm-up (the paper's is 20 steps); degenerate "
+            "groups dropped and refilled from the plan, up to 9 more rounds",
         ),
         (
             "dr-grpo",
@@ -478,8 +478,9 @@ def test_the_resolution_line_says_what_one_substep_and_no_refill_leave(tmp_path:
     assert report.resolution == (
         "# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, "
         "averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token "
-        "budget; 1 substep; adamw betas 0.9 / 0.95, eps 1e-08, no warm-up (the paper's is "
-        "20 steps); degenerate groups dropped and refilled from the plan, up to 1 more round"
+        "budget; 1 substep; adamw betas 0.9 / 0.95, eps 1e-08, weight decay 0.1, gradient norm "
+        "clipped at 1.0, no warm-up (the paper's is 20 steps); degenerate groups dropped and "
+        "refilled from the plan, up to 1 more round"
     )
     text = MINIMAL.replace('kind = "dapo"', 'kind = "dapo"\nrefill = 0')
     report = resolved.report(write_blueprint(tmp_path / "off", text))

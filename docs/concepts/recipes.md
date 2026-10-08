@@ -53,7 +53,7 @@ overlong_buffer = 0.2
 [checkpoints]
 every = 1
 ttl_hours = 168.0
-# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token budget; 16 substeps by prompt; adamw betas 0.9 / 0.95, eps 1e-08, no warm-up (the paper's is 20 steps); degenerate groups dropped and refilled from the plan, up to 9 more rounds
+# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token budget; 16 substeps by prompt; adamw betas 0.9 / 0.95, eps 1e-08, weight decay 0.1, gradient norm clipped at 1.0, no warm-up (the paper's is 20 steps); degenerate groups dropped and refilled from the plan, up to 9 more rounds
 ```
 
 Each name resolves as follows, with the section of its paper each default comes from:
@@ -69,7 +69,7 @@ Each name resolves as follows, with the section of its paper each default comes 
 | `refill` | `9`, Alg. 1, capped as in DAPO's released recipe | `0` | `9`, §3.1, which takes DAPO's |
 | Overlong term | `overlong_penalty = 0.5`, `overlong_buffer = 0.2`, Eq. 13 and §4.1 | none, as the paper has none | as `dapo`, §3.1, which takes DAPO's |
 | Length rule | none | shipyard's own, off: `length_penalty = 0.0` | none |
-| Optimizer | AdamW, §4.1 | AdamW, betas 0.9 / 0.95, gradient norm clipped at 1.0, App. G | AdamW, betas 0.9 / 0.95, eps 1e-15, §3.2 |
+| Optimizer | AdamW, weight decay 0.1, gradient norm clipped at 1.0, DAPO's released recipe | AdamW, betas 0.9 / 0.95, gradient norm clipped at 1.0, App. G | AdamW, betas 0.9 / 0.95, eps 1e-15, §3.2 |
 | `loss_fn_config` sent | `clip_low_threshold = 0.8`, `clip_high_threshold = 1.28` | `0.8` and `1.2` | `0.0` and `4.0` |
 
 At shipyard's batch sizes the split often reaches one prompt group per substep: a batch whose 4 groups
@@ -82,7 +82,7 @@ FST uses 4. Dr. GRPO does not state how many optimizer steps it takes per rollou
 one inner update epoch and no mini-batch size), so `dr-grpo` takes one. `check` prints these lines:
 
 ```
-# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token budget; 16 substeps by prompt; adamw betas 0.9 / 0.95, eps 1e-08, no warm-up (the paper's is 20 steps); degenerate groups dropped and refilled from the plan, up to 9 more rounds
+# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token budget; 16 substeps by prompt; adamw betas 0.9 / 0.95, eps 1e-08, weight decay 0.1, gradient norm clipped at 1.0, no warm-up (the paper's is 20 steps); degenerate groups dropped and refilled from the plan, up to 9 more rounds
 # dr-grpo: advantage = group mean, not divided by spread; loss = ppo, clip 0.2 / 0.2, summed over tokens; 1 substep; adamw betas 0.9 / 0.95, eps 1e-08, gradient norm clipped at 1.0; degenerate groups dropped
 # cispo: advantage = group mean, divided by spread; loss = cispo, weight truncated above 4.0, no lower bound, averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token budget; 16 substeps by prompt; adamw betas 0.9 / 0.95, eps 1e-15; degenerate groups dropped and refilled from the plan, up to 9 more rounds
 ```
@@ -145,14 +145,15 @@ answer could then score as low as a failure, or lower.
 ### The optimizer
 
 Each recipe steps with AdamW as its paper sets it. Where the paper states a value, it is the paper's;
-where it states none, it is the cookbook's (`train_step` in `tinker_cookbook/rl/train.py`): betas
+where it states none, it is the authors' released recipe's when that sets one (DAPO's weight decay and
+gradient clipping), else the cookbook's (`train_step` in `tinker_cookbook/rl/train.py`): betas
 0.9 / 0.95, eps 1e-8, no weight decay and no gradient clipping. The warm-up is the `warmup` key's,
 `0` by default: the papers' warm-ups are sized for runs of hundreds of steps, and a shipyard run of
 twenty steps would spend all of them below `learning_rate`.
 
 | | betas | eps | weight decay | gradient clipping | the paper's warm-up |
 |---|---|---|---|---|---|
-| `dapo` | 0.9 / 0.95, cookbook's | 1e-8, cookbook's | 0, cookbook's | none: the paper states none | 20 steps, §4.1 |
+| `dapo` | 0.9 / 0.95, cookbook's | 1e-8, cookbook's | 0.1, DAPO's released recipe | global norm 1.0, DAPO's released recipe | 20 steps, §4.1 |
 | `dr-grpo` | 0.9 / 0.95, App. G | 1e-8, cookbook's | 0, App. G | global norm 1.0, App. G, Table 6 | none: a constant rate, App. G |
 | `cispo` | 0.9 / 0.95, MiniMax-M1 §3.2 | 1e-15, §3.2 | 0, cookbook's | none: the paper states none | none stated |
 | `fst` | 0.9 / 0.999, App. D | 1e-8, cookbook's and PyTorch's | 0, App. D | none: the paper states none | 10 steps, App. D |

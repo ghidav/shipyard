@@ -96,7 +96,7 @@ def test_the_three_recipes_resolve_to_their_presets() -> None:
     assert (found.aggregation, found.refill) == ("prompt", 9), "DAPO Eq. 8; verl's 10 batches"
     assert found.clipping == "clip 0.2 / 0.28"
     assert (found.overlong_penalty, found.overlong_buffer) == (0.5, 0.2), "Eq. 13; 4.1"
-    assert _adam(found) == (0.9, 0.95, 1e-8, 0.0, 0.0, 0), "the cookbook's; warm-up off"
+    assert _adam(found) == (0.9, 0.95, 1e-8, 0.1, 1.0, 0), "DAPO's released recipe; warm-up off"
     assert found.paper_warmup == 20, "DAPO 4.1"
     found = dr_grpo.preset(load(root / "dr-grpo").recipe)
     assert (found.name, found.normalize, found.loss_fn) == ("dr-grpo", False, "ppo")

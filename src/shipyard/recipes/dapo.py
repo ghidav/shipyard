@@ -18,9 +18,10 @@ from shipyard.trainer import COOKBOOK
 if TYPE_CHECKING:
     from shipyard.run import Run
 
-#: 4.1 states no betas, eps, weight decay or gradient clipping: those are the cookbook's,
-#: which clips no gradient. Its 20-step warm-up is the `warmup` key's, off by default.
-ADAM = COOKBOOK
+#: 4.1 states no betas, eps, weight decay or gradient clipping. The authors' released recipe
+#: (verl recipe/dapo, run_dapo_qwen2.5_32b.sh) sets weight decay 0.1 and clips the gradient
+#: norm at 1.0; betas and eps are the cookbook's. Its 20-step warm-up is the `warmup` key's.
+ADAM = replace(COOKBOOK, weight_decay=0.1, grad_clip_norm=1.0)
 PAPER_WARMUP = 20
 
 

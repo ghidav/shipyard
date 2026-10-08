@@ -3,7 +3,7 @@
 `dapo` is a gradient recipe: it changes the policy's weights from the rewards its rollouts earn. A rollout is one trial seen from training: the model calls the proxy recorded, and the reward the task gave. This tutorial trains Qwen/Qwen3-8B with pi on eight Reasoning Gym tasks, four tasks per step and four attempts per task.
 
 !!! note "A real run"
-    The metrics, the checkpoints and the costs below are from one run of this blueprint, `dapo-docker__Su3tmfE`, and from its continuation, `dapo-continue__ZCdgppB`. That run took one substep per step, refilled nothing, summed its token losses over the step, trained at its full learning rate from step 0 and docked no rollout for its length. The `check` output is what `check` prints for this blueprint. Two steps are far too few to show a policy improving. The run shows what a step does and what it records.
+    The metrics, the checkpoints and the costs below are from one run of this blueprint, `dapo-docker__Su3tmfE`, and from its continuation, `dapo-continue__ZCdgppB`. That run took one substep per step, refilled nothing, summed its token losses over the step, trained at its full learning rate from step 0 with no weight decay or gradient clipping, and docked no rollout for its length. The `check` output is what `check` prints for this blueprint. Two steps are far too few to show a policy improving. The run shows what a step does and what it records.
 
 ## The dataset
 
@@ -92,7 +92,7 @@ overlong_buffer = 0.2
 [checkpoints]
 every = 1
 ttl_hours = 24.0
-# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token budget; 1 substep; adamw betas 0.9 / 0.95, eps 1e-08, no warm-up (the paper's is 20 steps); degenerate groups dropped
+# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token budget; 1 substep; adamw betas 0.9 / 0.95, eps 1e-08, weight decay 0.1, gradient norm clipped at 1.0, no warm-up (the paper's is 20 steps); degenerate groups dropped
 
 ok  recipe dapo
 ok  model Qwen/Qwen3-8B, provider tinker (served by this run)
@@ -109,7 +109,7 @@ ok  tinker serves Qwen/Qwen3-8B
 - **loss**: PPO, with the probability ratio clipped to [1 − 0.2, 1 + 0.28], each prompt's token losses averaged so every prompt weighs the same.
 - **overlong penalty**: a rollout that sampled into the last 20% of its token budget, `max_context` (12,288 here), loses up to 0.5 of its reward, the full 0.5 at the budget. See [The overlong term](../concepts/recipes.md#the-overlong-term-dapo-and-cispo).
 - **1 substep**: one optimizer step over the whole batch.
-- **adamw**: the optimizer's betas and eps. DAPO also warms up over 20 steps; a two-step run takes no warm-up by default and trains at the full `learning_rate` from its first step, as the run recorded below did.
+- **adamw**: the optimizer's betas and eps, and the weight decay of 0.1 and gradient clipping at a norm of 1.0 that DAPO's released recipe uses. DAPO also warms up over 20 steps; a two-step run takes no warm-up by default and trains at the full `learning_rate` from its first step, as the run recorded below did.
 - **degenerate groups dropped**: a group whose rewards are all equal, or that has one measured member, carries no gradient and is left out.
 
 See [Recipes](../concepts/recipes.md) for `dr-grpo` and `cispo`.

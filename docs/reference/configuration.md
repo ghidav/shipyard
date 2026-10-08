@@ -90,8 +90,9 @@ The gradient recipes need a served model.
 | `overlong_buffer` | float, 0 < x ≤ 1 | `0.2` (DAPO §4.1: L_cache / L_max, 4,096 of 20,480 tokens) | The last share of the token budget over which the loss grows linearly from 0 to `overlong_penalty`. |
 
 Token losses are averaged per prompt (DAPO Eq. 8). The optimizer is AdamW at the cookbook's betas 0.9 /
-0.95, eps 1e-8, no weight decay and no gradient clipping; the paper states none of these, and warms
-up over 20 steps (§4.1), which `warmup = 20` reproduces.
+0.95 and eps 1e-8, with weight decay 0.1 and the gradient norm clipped at 1.0, from DAPO's released
+recipe (verl `recipe/dapo`); the paper states none of these. It warms up over 20 steps (§4.1), which
+`warmup = 20` reproduces.
 
 ### `dr-grpo`
 
