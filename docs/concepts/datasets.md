@@ -103,7 +103,9 @@ group_size = 4
 epochs = 2
 ```
 
-`evaluate` and the gradient recipes go through the batches in order. `gepa` does not use
+`evaluate` and the gradient recipes go through the batches in order. A `dapo` or `cispo` step
+short of groups that carry a gradient takes the next batches too, so its run has fewer steps than
+batches ([Dynamic sampling](recipes.md#dynamic-sampling)). `gepa` does not use
 them: it measures each candidate on a minibatch of the tasks, or on all of them
 ([gepa](gepa.md)). Of `[data]`, it reads only `dataset` and `group_size`.
 

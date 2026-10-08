@@ -70,8 +70,9 @@ A served run also notes `proxy` at its first job: the proxy's `placement` (`loca
 or `remote`) and the `origin` its sandboxes dialled. `shipyard show` prints it, and prints
 `tinker_base_url` as `backend`.
 
-A `jobs.jsonl` row says what one Harbor job was and what it cost. `purpose` is `rollout`, or
-`reflection` for a `gepa` reflector. `served` is `tinker` when the proxy answered and
+A `jobs.jsonl` row says what one Harbor job was and what it cost. `purpose` is `rollout`,
+`refill` for a step's extra sampling round ([Recipes](recipes.md#dynamic-sampling)), or `reflection`
+for a `gepa` reflector. `served` is `tinker` when the proxy answered and
 `provider` otherwise. `masked` counts masked trials by reason ([Admission](admission.md)),
 and `ended` counts the exceptions Harbor recorded on trials, by type; each appears only when it
 has something to count. The token and sandbox counts are explained in [Costs](costs.md).

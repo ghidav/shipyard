@@ -1,6 +1,8 @@
-"""CISPO: the advantage as DAPO forms it and Tinker's `cispo` loss, whose truncated importance
-weight scales the gradient without passing it. `clip_high` (0.2) is an epsilon on the weight's
-ceiling: `loss_fn_config` gets `clip_high_threshold = 1 + clip_high`, `clip_low_threshold = 0`."""
+"""CISPO (MiniMax-M1, arXiv 2506.13585): the advantage as DAPO forms it and Tinker's `cispo`
+loss, whose truncated importance weight scales the gradient without passing it; each prompt's
+token losses averaged (Eq. 4), 16 substeps by prompt and DAPO's dynamic sampling (3.1).
+`clip_high` (3.0) is an epsilon on the weight's ceiling: `loss_fn_config` gets
+`clip_high_threshold = 1 + clip_high`, `clip_low_threshold = 0`."""
 
 from __future__ import annotations
 
@@ -14,8 +16,8 @@ if TYPE_CHECKING:
 
 
 def preset(recipe: Any) -> Preset:
-    # No lower bound: the MiniMax-M1 paper sets epsilon_low large and tunes epsilon_high
-    # alone, without publishing its value.
+    # No lower bound: MiniMax-M1 sets epsilon_low large and tunes epsilon_high alone without
+    # publishing it; the ceiling of 4.0 is ScaleRL's (A.17.2) and FST's (appendix D).
     high = round(1.0 + float(recipe.clip_high), 6)
     return Preset(
         name="cispo",
@@ -23,6 +25,7 @@ def preset(recipe: Any) -> Preset:
         loss_fn="cispo",
         loss_config={"clip_low_threshold": 0.0, "clip_high_threshold": high},
         clipping=f"weight truncated above {high}, no lower bound",
+        aggregation="prompt",
         **loop.shared(recipe),
     )
 

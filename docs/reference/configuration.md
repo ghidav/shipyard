@@ -71,9 +71,9 @@ How the served keys behave is in [The proxy](../concepts/proxy.md).
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `learning_rate` | float > 0 | required | Adam's learning rate. |
-| `substeps` | integer ≥ 1 | `1` | Optimizer steps per batch. The batch is split into this many parts, or one per sequence when it has fewer sequences, each one `forward_backward` and one `optim_step`. |
+| `substeps` | integer ≥ 1 | `16` for `dapo` (DAPO §4.1) and `cispo` (MiniMax-M1 §3.1); `1` for `dr-grpo` (Dr. GRPO states none) and `fst` (FST App. D) | Optimizer steps per batch. The batch is split by prompt into this many parts of whole groups, or one per group carrying a gradient when it has fewer, each one `forward_backward` and one `optim_step`. Every part keeps the reference logprobs of the weights the batch was sampled at. |
 | `reference` | `"trainer"` or `"sampler"` | `"trainer"` | Where the loss's reference logprobs come from: a forward pass on the trainer, or the logprobs recorded when sampling, with no extra pass. |
-| `kl_coef` | float ≥ 0 | `0.0` | Weight of a per-token KL term to the run's starting weights, folded into the advantage. `0` is off. |
+| `kl_coef` | float ≥ 0 | `0.0`, as DAPO (§2.3), Dr. GRPO (App. G) and MiniMax-M1 (§3.1) train | Weight of a per-token KL term to the run's starting weights, folded into the advantage. `0` is off. |
 | `modules` | string | unset | A modules directory, relative to the blueprint, carried into every job ([Modules](../concepts/modules.md)). |
 
 The gradient recipes need a served model.
@@ -82,22 +82,31 @@ The gradient recipes need a served model.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `clip_low` | float, 0 < x < 1 | `0.2` | The ratio's lower bound is `1 - clip_low`. |
-| `clip_high` | float > 0 | `0.28` | The ratio's upper bound is `1 + clip_high`. |
+| `clip_low` | float, 0 < x < 1 | `0.2` (DAPO §4.1) | The ratio's lower bound is `1 - clip_low`. |
+| `clip_high` | float > 0 | `0.28` (DAPO §4.1) | The ratio's upper bound is `1 + clip_high`. |
+| `refill` | integer ≥ 0 | `9` (DAPO Alg. 1; ten generation batches a step in DAPO's released recipe) | The most extra batches a step samples from the plan while fewer than `batch_size` groups carry a gradient ([Dynamic sampling](../concepts/recipes.md#dynamic-sampling)). `0` is off. |
+
+Token losses are averaged per prompt (DAPO Eq. 8).
 
 ### `dr-grpo`
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `clip` | float, 0 < x < 1 | `0.2` | The ratio's bounds are `1 - clip` and `1 + clip`. |
+| `clip` | float, 0 < x < 1 | `0.2` (Dr. GRPO App. G) | The ratio's bounds are `1 - clip` and `1 + clip`. |
 | `length_penalty` | float ≥ 0 | `0.0` | When at least two answers in a group are solved, each solved one loses `length_penalty × (length - length_floor) / mean solved length`, at most 0.5. `0` is off. |
 | `length_floor` | integer ≥ 0 | `0` | Tokens of an answer the length penalty does not count. |
+| `refill` | integer ≥ 0 | `0` (Dr. GRPO states no dynamic sampling, App. G) | As for `dapo`. |
+
+Token losses are summed (Dr. GRPO §3.2).
 
 ### `cispo`
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `clip_high` | float > 0 | `0.2` | The importance weight is cut above `1 + clip_high`. It has no lower bound. |
+| `clip_high` | float > 0 | `3.0` (ScaleRL App. A.17.2, FST App. D) | The importance weight is cut above `1 + clip_high`. It has no lower bound. |
+| `refill` | integer ≥ 0 | `9` (MiniMax-M1 §3.1, which takes DAPO's dynamic sampling) | As for `dapo`. |
+
+Token losses are averaged per prompt (MiniMax-M1 Eq. 4).
 
 ### `gepa`
 
@@ -118,13 +127,13 @@ See [gepa](../concepts/gepa.md).
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `slow` | `"dapo"`, `"dr-grpo"` or `"cispo"` | `"cispo"` | The gradient recipe each slow step uses. Its own knobs (`clip_low`, `clip_high`, `clip`, `length_penalty`, `length_floor`) are accepted when they belong to it, with its defaults, except `clip_high` under `cispo`, which is `3.0` here. |
-| `cycle` | integer ≥ 1 | `6` | Slow steps per cycle, and the batches each fast phase looks ahead. |
-| `population` | integer ≥ 1 | `4` | Texts kept per cycle. It must divide `group_size`. |
+| `slow` | `"dapo"`, `"dr-grpo"` or `"cispo"` | `"cispo"` (FST App. D) | The gradient recipe each slow step uses, with its loss and aggregation. Its own knobs (`clip_low`, `clip_high`, `clip`, `length_penalty`, `length_floor`) are accepted when they belong to it, with its defaults. `refill` is not a key of `fst`: a slow step trains on the batch it sampled. |
+| `cycle` | integer ≥ 1 | `6` (FST App. D) | Slow steps per cycle, and the batches each fast phase looks ahead. |
+| `population` | integer ≥ 1 | `4` (FST App. E, the light recipe) | Texts kept per cycle. It must divide `group_size`. |
 | `anchor` | integer ≥ 1 | unset | The fast phase evolves on the first `anchor` tasks of the lookahead; unset is all of them. |
-| `kl_coef` | float ≥ 0 | `0.001` | As above, with the paper's default. |
+| `kl_coef` | float ≥ 0 | `0.001` (FST App. D) | As above. |
 | `budget` | integer ≥ 1 | unset | Rollouts each fast phase may spend. Unset is five passes: 5 × its tasks × `group_size / population`. One more pass per text carried from the previous cycle, beyond the first, is added on top to score them. |
-| `edits` | `"rewrite"` or `"incremental"` | `"incremental"` | As for `gepa`, with the paper's default. |
+| `edits` | `"rewrite"` or `"incremental"` | `"incremental"` (FST App. E) | As for `gepa`. |
 
 `reflection_harness` (required), `reflection_model`, `reflection_image`, `modules` (the seed, default
 `"modules"`), `minibatch` and `patience` are as for `gepa`. See [fst](../concepts/recipes.md#fst).

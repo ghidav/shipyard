@@ -1,5 +1,6 @@
-"""What a rollout is worth under each preset, what the batch leaves out and says so,
-where mu comes from, the KL anchor, and the refusal of weights that moved."""
+"""What a rollout is worth under each preset, what the batch leaves out and says so, each
+prompt's weight in the loss, where mu comes from, the KL anchor, and the refusal of
+weights that moved."""
 
 from __future__ import annotations
 
@@ -9,7 +10,15 @@ import pytest
 import tinker
 
 from shipyard.admit import Verdict
-from shipyard.credit import LENGTH_CAP, advantages, credit, reference_logprobs, shaped
+from shipyard.credit import (
+    LENGTH_CAP,
+    advantages,
+    carrying,
+    credit,
+    reference_logprobs,
+    shaped,
+    weights,
+)
 from shipyard.pack import Group, Member, Sequence
 from shipyard.recipes import cispo, dapo, dr_grpo
 from shipyard.recipes.train import row
@@ -81,18 +90,21 @@ def test_the_three_recipes_resolve_to_their_presets() -> None:
     assert (found.name, found.normalize, found.loss_fn) == ("dapo", True, "ppo")
     assert found.loss_config == {"clip_low_threshold": 0.8, "clip_high_threshold": 1.28}
     assert (found.length_penalty, found.kl_coef, found.reference) == (0.0, 0.0, "trainer")
-    assert (found.learning_rate, found.substeps) == (2e-5, 1)
+    assert (found.learning_rate, found.substeps) == (2e-5, 16), "DAPO 4.1"
+    assert (found.aggregation, found.refill) == ("prompt", 9), "DAPO Eq. 8; verl's 10 batches"
     assert found.clipping == "clip 0.2 / 0.28"
     found = dr_grpo.preset(load(root / "dr-grpo").recipe)
     assert (found.name, found.normalize, found.loss_fn) == ("dr-grpo", False, "ppo")
     assert found.loss_config == {"clip_low_threshold": 0.8, "clip_high_threshold": 1.2}
     assert (found.length_penalty, found.length_floor) == (0.2, 0)
+    assert (found.substeps, found.aggregation, found.refill) == (1, "sum", 0)
     assert found.clipping == "clip 0.2 / 0.2"
     found = cispo.preset(load(root / "cispo").recipe)
     assert (found.name, found.normalize, found.loss_fn) == ("cispo", True, "cispo")
-    assert found.loss_config == {"clip_low_threshold": 0.0, "clip_high_threshold": 1.2}
+    assert found.loss_config == {"clip_low_threshold": 0.0, "clip_high_threshold": 4.0}
     assert found.reference == "sampler"
-    assert found.clipping == "weight truncated above 1.2, no lower bound"
+    assert (found.substeps, found.aggregation, found.refill) == (16, "prompt", 9)
+    assert found.clipping == "weight truncated above 4.0, no lower bound"
 
 
 async def test_dapo_divides_by_the_spread_and_dr_grpo_does_not() -> None:
@@ -106,6 +118,48 @@ async def test_dapo_divides_by_the_spread_and_dr_grpo_does_not() -> None:
         pytest.approx([1.0, -1.0], abs=1e-3)
     )
     assert advantages([0.51, 0.50], normalize=False) == pytest.approx([0.005, -0.005])
+
+
+# ------------------------------------------------------------ the prompt's weight
+
+
+def _long(reward: float) -> Member:
+    """A member whose one sequence has six targets, three times `_member`'s two."""
+    return _member(reward, sequences=[_sequence(action=(10, 11, 12, 13, 14, 15))])
+
+
+async def test_prompt_aggregation_weighs_every_prompt_the_same_and_sum_by_its_tokens() -> None:
+    """A group of 2 + 2 targets and one of 6 + 6: the step's mean group is 8 tokens, so the
+    first is scaled by 2 and the second by 2/3, and each then carries 8 token-advantages."""
+    groups = [_group(_member(1.0), _member(0.0)), _group(_long(1.0), _long(0.0), task="u")]
+    summed = await credit(groups, preset(), _trainer())
+    assert [_advantage_of(one) for one in summed.datums] == pytest.approx(
+        [1.0, -1.0, 1.0, -1.0], abs=1e-4
+    ), "a sum: the longer prompt weighs three times the shorter"
+    averaged = await credit(groups, preset(aggregation="prompt"), _trainer())
+    found = [_advantage_of(one) for one in averaged.datums]
+    assert found == pytest.approx([2.0, -2.0, 2 / 3, -2 / 3], abs=1e-4)
+    per_group = [sum(abs(a) for a in _credited(one)) for one in averaged.datums]
+    assert per_group[0] + per_group[1] == pytest.approx(per_group[2] + per_group[3], abs=1e-3)
+    assert sum(per_group) == pytest.approx(16.0, abs=1e-3), "the step's total is kept"
+    assert averaged.owners == (0, 0, 1, 1)
+    assert weights([4, 12], "prompt") == pytest.approx([2.0, 2 / 3])
+    assert weights([4, 12], "sum") == [1.0, 1.0] and weights([], "prompt") == []
+    assert weights([0, 4], "prompt") == [1.0, 1.0], "a group with no tokens trains nothing"
+    with pytest.raises(ValueError, match="no token aggregation called 'mean'"):
+        weights([4], "mean")
+
+
+async def test_prompt_aggregation_scales_the_kl_term_with_the_advantage() -> None:
+    anchor = FlatAnchor(-0.1)
+    groups = [_group(_member(1.0), _member(0.0)), _group(_long(1.0), _long(0.0), task="u")]
+    found = await credit(groups, preset(aggregation="prompt", kl_coef=0.5), _trainer(), anchor)
+    # mu is minus the token (-10, -11); the short group's factor is 2.
+    gaps = [-10.0 + 0.1, -11.0 + 0.1]
+    assert _credited(found.datums[0]) == pytest.approx(
+        [2 * (1.0 - 0.5 * g) for g in gaps], abs=1e-4
+    )
+    assert found.anchor_kl is not None, "the measure itself is not scaled"
 
 
 # ------------------------------------------------------------ degenerate groups
@@ -161,6 +215,25 @@ async def test_nothing_measured_reports_no_reward_rather_than_a_zero() -> None:
         "degenerate": 0,
         "sequences": 0,
     }
+
+
+async def test_a_full_batch_leaves_the_groups_past_its_size_out_as_surplus() -> None:
+    trainer = _trainer()
+    groups = [
+        _group(_member(1.0), _member(1.0), task="flat"),
+        _group(_member(1.0), _member(0.0), task="a"),
+        _group(_member(0.0), _member(1.0), task="b"),
+        _group(_member(1.0), _member(0.0), task="c"),
+    ]
+    assert carrying(groups, preset()) == 3
+    found = await credit(groups, preset(), trainer, limit=2)
+    assert (found.groups, found.degenerate, found.surplus, found.credited) == (4, 1, 1, 4)
+    assert found.owners == (0, 0, 1, 1) and found.rollouts == 8 and found.graded == 8
+    (forward,) = [call for call in trainer.client.calls if call[0] == "forward"]
+    assert len(forward[1]) == 4, "no reference pass bought for the surplus group"
+    assert found.reward_mean == pytest.approx(5 / 8), "the surplus was graded all the same"
+    assert (await credit(groups, preset(), _trainer())).surplus is None
+    assert row(0, found, None)["surplus"] == 1
 
 
 def test_sequences_per_rollout_averages_over_the_credited_members() -> None:

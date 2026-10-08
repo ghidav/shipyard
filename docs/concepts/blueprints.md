@@ -117,7 +117,7 @@ unset and has no default, such as `[rollout] timeout`, gets no line.
 [checkpoints]
 every = 1
 ttl_hours = 168.0
-# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28; degenerate groups dropped
+# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, averaged per prompt; 16 substeps by prompt; degenerate groups dropped and refilled from the plan, up to 9 more rounds
 ```
 
 **The findings.** Each is `ok`, `warning` or `blocked`. The `ok` lines are hidden unless you

@@ -5,9 +5,13 @@ silent failure it prevents. The concept pages hold the mechanics.
 
 ## Recipes
 
-**A recipe is a name: `dapo`, `dr-grpo` and `cispo` each fix the advantage, the loss and the
-clipping, and `check` prints what the name resolves to.**
+**A recipe is a name: `dapo`, `dr-grpo` and `cispo` each fix the advantage, the loss, the
+clipping and how token losses add up, and `check` prints what the name resolves to.**
 A combination nobody has validated would train without complaint and look like a result.
+
+**A gradient recipe's defaults are its paper's, and the docs name the section each comes from, or
+say that the paper states none.**
+A default chosen elsewhere would make a run that looks like the paper's train like something else.
 
 **Knobs are epsilons, and Tinker gets bounds: `clip_low = 0.2` reaches `loss_fn_config` as
 `clip_low_threshold = 0.8`.**
@@ -44,9 +48,19 @@ the reference pass.**
 It carries no gradient, and a step left with nothing logs `trained: false`, so it never reads like one
 that trained.
 
-**Substeps draw on the whole batch: it is shuffled, the same way in every process, before it is
-split.**
-Unshuffled, each substep would follow the gradient of only a few tasks.
+**Substeps split the batch by prompt, never into more parts than groups, and every substep keeps μ
+from the weights the batch was sampled at.**
+The papers' mini-batches are sets of prompts; and with μ read again before each substep, the ratio
+would stay 1 and the clipping would never act.
+
+**`dapo`, `cispo` and `fst` average each prompt's token losses; `dr-grpo` keeps Tinker's sum.**
+Summed, a prompt whose rollouts wrote long answers would outweigh the others, and nothing would say
+so.
+
+**A `dapo` or `cispo` step short of groups with a gradient samples the plan's next batch, and trains
+on `batch_size` groups at most.**
+Otherwise a step would train on whatever few groups were left, and the size of its batch would drift
+with how easy its tasks were.
 
 **A checkpoint saves the state and the sampler weights, and a `final` one is always saved.**
 A record that named only the sampler path could be measured again but never continued.

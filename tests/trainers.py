@@ -17,28 +17,33 @@ from shipyard.recipes.train import Preset
 
 
 def preset(**named: Any) -> Preset:
-    """The dapo fixture's Preset with every field set, any of them overridden by name."""
+    """dapo's loss and clipping with every field set, any of them overridden by name: one
+    substep, token losses summed and no refill unless a test asks for them."""
     defaults = dict(
         name="dapo",
         normalize=True,
         loss_fn="ppo",
         loss_config={"clip_low_threshold": 0.8, "clip_high_threshold": 1.28},
         clipping="clip 0.2 / 0.28",
+        aggregation="sum",
         length_penalty=0.0,
         length_floor=0,
         kl_coef=0.0,
         reference="trainer",
         learning_rate=2e-5,
         substeps=1,
+        refill=0,
     )
     return Preset(**{**defaults, **named})
 
 
 def batch(*datums: tinker.Datum, **named: Any) -> Batch:
-    """A Batch over `datums`, one credited rollout and sequence each, any count overridden."""
+    """A Batch over `datums`, one credited rollout, sequence and group each, any count
+    overridden."""
     count = len(datums)
     defaults = dict(
         datums=tuple(datums),
+        owners=tuple(range(count)),
         groups=1,
         rollouts=count,
         graded=count,
@@ -93,11 +98,13 @@ class FakeForwardBackward:
 class FakeTrainingClient:
     """`tinker.TrainingClient` with the network out: `forward` scores every position
     `logprob` (the reference mu), or under `positional` minus the token it predicts;
-    `forward_backward` scores `trained` (pi), or raises `failing`. Every call lands on
-    `calls` in order, the datums sent on `sent`."""
+    `forward_backward` scores `trained` (pi), or raises `failing`; each `optim_step` moves
+    `trained` by `drift`, as an update moves the weights. Every call lands on `calls` in
+    order, the datums sent on `sent`."""
 
     logprob: float = -0.5
     trained: float = -0.5
+    drift: float = 0.0
     positional: bool = False
     failing: Exception | None = None
     calls: list[tuple[Any, ...]] = field(default_factory=list)
@@ -137,6 +144,7 @@ class FakeTrainingClient:
 
     async def optim_step_async(self, adam_params: Any) -> Any:
         self.calls.append(("optim_step", adam_params))
+        self.trained += self.drift
         return FakeFuture(FakeOptimStep({"lr": adam_params.learning_rate}), self, "optim")
 
     async def save_state_async(self, name: str, ttl_seconds: int | None = None) -> Any:

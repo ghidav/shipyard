@@ -39,7 +39,12 @@ def test_the_fixture_takes_the_papers_defaults() -> None:
     found = preset(recipe)
     assert (found.name, found.loss_fn) == ("fst", "cispo")
     assert found.loss_config == {"clip_low_threshold": 0.0, "clip_high_threshold": 4.0}
+    assert (found.substeps, found.aggregation, found.refill) == (1, "prompt", 0), "App. D, Eq. 4"
     assert resolution(recipe).startswith("# fst: cycles of 2 cispo steps")
+    assert resolution(recipe).endswith(
+        "no lower bound, averaged per prompt; 1 substep; degenerate groups dropped; "
+        "kl 0.001 to the starting weights"
+    )
 
 
 def test_another_slow_recipe_takes_its_own_knobs(tmp_path: Path) -> None:
@@ -47,6 +52,7 @@ def test_another_slow_recipe_takes_its_own_knobs(tmp_path: Path) -> None:
     found = preset(load(write_blueprint(tmp_path, text)).recipe)
     assert found.loss_fn == "ppo"
     assert found.loss_config == {"clip_low_threshold": 0.8, "clip_high_threshold": 1.3}
+    assert (found.substeps, found.refill) == (1, 0), "fst's own step, not dapo's"
 
 
 def test_a_knob_of_another_slow_recipe_is_refused(tmp_path: Path) -> None:
@@ -143,3 +149,10 @@ async def test_a_cycle_evolves_two_texts_then_splits_every_group_across_them(
     assert [seed(kept / "cycle-0" / rank).digest for rank in ("0", "1")] == population
     assert seed(kept / "best").digest == population[0]
     assert Run.read(opened.directory)["kind"] == "fst"
+
+
+def test_fst_averages_per_prompt_whatever_its_slow_loss(tmp_path: Path) -> None:
+    """FST aggregates at the prompt level (Eq. 4); a dr-grpo step on its own sums."""
+    text = _text(**{'kind = "fst"': 'kind = "fst"\nslow = "dr-grpo"'})
+    found = preset(load(write_blueprint(tmp_path, text)).recipe)
+    assert (found.aggregation, found.refill) == ("prompt", 0)

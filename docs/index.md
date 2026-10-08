@@ -33,8 +33,8 @@ kind = "evaluate"
 runs/02-eval-tinker-docker__eTNXY25/
 ├── run.toml         the blueprint, copied byte for byte
 ├── process.json     when it ran and how it ended
-├── metrics.jsonl    a row per batch, then one for the run
-├── jobs.jsonl       a row per Harbor job, one job per batch
+├── metrics.jsonl    a row per step or batch, then one for the run
+├── jobs.jsonl       a row per Harbor job
 ├── requests.jsonl   a row per model call
 ├── costs.json       tokens per party, sandbox seconds
 └── proxy.log        what the proxy, the process serving the weights, printed
@@ -66,16 +66,16 @@ The **recipe** is the `[recipe] kind`: what the run does with its batches.
 | `kind` | What it does | Model |
 |---|---|---|
 | `evaluate` | measures: the mean reward per batch and over the run | any |
-| `dapo` | trains: reward minus the group mean, divided by the spread; PPO loss, clip 0.2 / 0.28 | Tinker-served |
+| `dapo` | trains: reward minus the group mean, divided by the spread; PPO loss, clip 0.2 / 0.28; degenerate groups refilled from the next batches | Tinker-served |
 | `dr-grpo` | trains: reward minus the group mean, not divided; PPO loss, clip 0.2; an optional length rule | Tinker-served |
-| `cispo` | trains: dapo's advantage; CISPO loss, weight truncated above 1.2 | Tinker-served |
+| `cispo` | trains: dapo's advantage and refill; CISPO loss, weight truncated above 4.0 | Tinker-served |
 | `gepa` | evolves the skills the harness reads; no gradient | any |
 | `fst` | both, in cycles: gepa on the next batches, then steps with every group split across the top skills | Tinker-served |
 
 `shipyard check` prints what a gradient recipe resolves to, on one comment line after the config:
 
 ```
-# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28; degenerate groups dropped
+# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, averaged per prompt; 16 substeps by prompt; degenerate groups dropped and refilled from the plan, up to 9 more rounds
 ```
 
 [Recipes](concepts/recipes.md) has every knob.

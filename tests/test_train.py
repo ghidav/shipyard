@@ -1,18 +1,30 @@
 """The trainer against a fake training client: how it opens, what it publishes and saves
-at which TTL, and the step itself: pipelined substeps, the mask kept back, the metrics
-read off the step's own logprobs."""
+at which TTL, and the step itself: pipelined substeps of whole prompt groups, the ratio
+moving from the second on, the mask kept back, the metrics read off the step's own
+logprobs."""
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
 import tinker
 import torch
 
-from shipyard.pack import Sequence, datum
+from shipyard.admit import Verdict
+from shipyard.credit import credit
+from shipyard.pack import Group, Member, Sequence, datum
 from shipyard.recipes.train import row
-from shipyard.trainer import DEFAULT_LORA_RANK, SERVE_TTL, Trainer, Update, _observed, split
+from shipyard.trainer import (
+    DEFAULT_LORA_RANK,
+    SERVE_TTL,
+    Trainer,
+    Update,
+    _observed,
+    grouped,
+    split,
+)
 from tests.trainers import FakeService, FakeTrainingClient, batch, capable, preset
 
 MODEL = "Qwen/Qwen3-8B"
@@ -187,33 +199,74 @@ async def test_apply_sends_the_datums_without_their_mask() -> None:
     assert sent.loss_fn_inputs["advantages"].tolist() == [0.0, 0.0, 1.0, 1.0]
 
 
-async def test_more_substeps_than_datums_runs_one_per_datum() -> None:
+async def test_more_substeps_than_groups_runs_one_per_group() -> None:
     trained, client = _trainer()
     update = await trained.apply(batch(_datum(), _datum()), preset(substeps=5))
     assert update.substeps == 2 and _kinds(client).count("optim_step") == 2
+    trained, client = _trainer()
+    one_group = batch(_datum(), _datum(), _datum(), owners=(0, 0, 0))
+    update = await trained.apply(one_group, preset(substeps=16))
+    assert update.substeps == 1, "a group is never cut across two substeps"
+    assert [call[1] for call in client.calls if call[0] == "forward_backward"] == [[3, 3, 3]]
 
 
-async def test_substeps_draw_on_the_whole_batch_the_same_way_every_time() -> None:
-    async def halves() -> list[list[int]]:
+async def test_substeps_split_the_batch_by_prompt_group_in_order() -> None:
+    """Seven sequences of four groups: the cookbook's cut over the groups, each group whole,
+    and never more substeps than groups."""
+    owners = (0, 0, 1, 2, 2, 2, 3)
+
+    async def parts(substeps: int) -> list[list[int]]:
         trained, client = _trainer()
-        found = batch(*(_datum(tokens) for tokens in range(3, 19)))
-        await trained.apply(found, preset(substeps=2))
+        found = batch(*(_datum(tokens) for tokens in range(3, 10)), owners=owners)
+        update = await trained.apply(found, preset(substeps=substeps))
+        assert update.substeps == min(substeps, 4) and update.train_tokens == sum(range(2, 9))
         return [call[1] for call in client.calls if call[0] == "forward_backward"]
 
-    first, second = await halves()
-    assert sorted(first + second) == list(range(2, 18)), "every datum once"
-    assert first != list(range(2, 10)), "not the batch's own order"
-    assert min(first) < 10 <= max(first), "each substep draws on both halves"
-    assert await halves() == [first, second]
-    trained, client = _trainer()
-    await trained.apply(batch(*(_datum(tokens) for tokens in range(3, 11))), preset())
-    assert [call[1] for call in client.calls if call[0] == "forward_backward"] == [
-        list(range(2, 10))
-    ]
+    assert await parts(1) == [[2, 3, 4, 5, 6, 7, 8]]
+    assert await parts(2) == [[2, 3, 4], [5, 6, 7, 8]]
+    assert await parts(3) == [[2, 3], [4], [5, 6, 7, 8]]
+    assert await parts(16) == [[2, 3], [4], [5, 6, 7], [8]]
+    assert grouped(["a", "b", "c", "d"], [1, 0, 1, 2]) == [["a", "c"], ["b"], ["d"]]
+    with pytest.raises(ValueError, match="names a group for 1 of its 2"):
+        grouped(["a", "b"], [0])
     # The cookbook's cut: the shorter parts first.
     assert split([1, 2, 3, 4, 5], 2) == [[1, 2], [3, 4, 5]] and split([1, 2], 2) == [[1], [2]]
     assert split(list(range(7)), 3) == [[0, 1], [2, 3], [4, 5, 6]]
     assert split(list(range(10)), 4) == [[0, 1], [2, 3, 4], [5, 6], [7, 8, 9]]
+
+
+async def test_every_substep_keeps_the_sampled_weights_mu_so_the_ratio_moves() -> None:
+    """Two groups credited against the trainer's forward (mu -0.5 on every target), then two
+    substeps whose weights move -0.1 per update: one reference pass for the whole step, both
+    substeps carry that mu, and the second one's ratio is exp(-0.1), not 1."""
+    client = FakeTrainingClient(logprob=-0.5, trained=-0.5, drift=-0.1)
+    trained = Trainer(client)
+
+    def member(reward: float) -> Member:
+        return Member(
+            Verdict(reward, None, None), (Sequence((1, 2, 3, 10, 11), ((3, 5),), None),), 2
+        )
+
+    groups = [Group(Path(task), (member(1.0), member(0.0)), 0) for task in ("a", "b")]
+    found = await credit(groups, preset(), trained)
+    assert found.owners == (0, 0, 1, 1)
+    update = await trained.apply(found, preset(substeps=2))
+    assert [kind for kind in _kinds(client) if kind != "consumed"] == [
+        "forward",
+        "forward_backward",
+        "optim_step",
+        "forward_backward",
+        "optim_step",
+    ], "mu is read once, before the first update, and never again"
+    steps = [one for one in client.sent if "advantages" in one.loss_fn_inputs]
+    assert len(steps) == 4
+    for one in steps:
+        assert one.loss_fn_inputs["logprobs"].tolist() == [0.0, 0.0, -0.5, -0.5]
+    # pi was -0.5 in the first substep and -0.6 in the second: ratios 1 and exp(-0.1).
+    assert update.substeps == 2
+    assert update.kl_v1 == pytest.approx((0.0 + 0.1) / 2, abs=1e-5)
+    assert update.kl_v2 == pytest.approx(0.5 * (0.0 + 0.01) / 2, abs=1e-5)
+    assert trained.updates == 1, "one step, however many substeps"
 
 
 async def test_apply_reports_what_the_steps_own_logprobs_say_against_mu() -> None:

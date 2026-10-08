@@ -1,6 +1,6 @@
 """Credit: which rollouts carry a gradient and how much, from the verdicts and the packed
-sequences; the reference logprobs the ratio is formed against; the KL anchor; the datums
-the step consumes, and what the batch had to leave out to get them."""
+sequences; the reference logprobs the ratio is formed against; the KL anchor; each prompt's
+weight in the loss; the datums the step consumes, and what the batch had to leave out."""
 
 from __future__ import annotations
 
@@ -34,14 +34,18 @@ LOGPROB_CONCURRENCY = 16
 @dataclass(frozen=True, kw_only=True)
 class Batch:
     """What one step consumes and what it left out; a measure that had nothing to
-    measure is None, never zero. `credited` counts the members carrying a gradient."""
+    measure is None, never zero. `credited` counts the members carrying a gradient;
+    `owners` holds, per datum, the index of the group it came from; `surplus` counts the
+    groups past a full batch, None when the batch had no size to fill."""
 
     datums: tuple[tinker.Datum, ...]
+    owners: tuple[int, ...]
     groups: int
     rollouts: int
     graded: int
     masked: int
     degenerate: int
+    surplus: int | None = None
     credited: int
     sequences: int
     reward_mean: float | None
@@ -88,6 +92,38 @@ def measured(group: Group) -> list[Member]:
     return [
         one for one in group.members if one.verdict.mask is None and one.verdict.reward is not None
     ]
+
+
+def scored(group: Group, preset: Preset) -> tuple[list[Member], list[float], list[float]]:
+    """The measured members, their rewards, and the rewards as the preset shapes them."""
+    members = measured(group)
+    found = [float(one.verdict.reward) for one in members]
+    wrote = [one.sampled_tokens for one in members]
+    penalty, floor = preset.length_penalty, preset.length_floor
+    return members, found, shaped(found, wrote, penalty=penalty, floor=floor)
+
+
+def flat(shaped_rewards: Values[float]) -> bool:
+    """Degenerate: a lone member, or rewards all equal; nothing to compare, no gradient."""
+    return len(shaped_rewards) < 2 or pstdev(shaped_rewards) <= EPSILON
+
+
+def carrying(groups: Values[Group], preset: Preset) -> int:
+    """How many of the groups carry a gradient, read off the verdicts alone."""
+    return sum(not flat(scored(group, preset)[2]) for group in groups)
+
+
+def weights(tokens: Values[int], aggregation: str) -> list[float]:
+    """Each group's factor on its tokens' advantages. Tinker sums token losses; under
+    "prompt" a group's tokens are scaled by the step's mean group size over its own, so
+    each prompt weighs the same and the sum keeps about its size. "sum" leaves them be."""
+    if aggregation not in ("prompt", "sum"):
+        raise ValueError(f"no token aggregation called {aggregation!r}; 'prompt' or 'sum'")
+    sized = [one for one in tokens if one > 0]
+    if aggregation == "sum" or not sized:
+        return [1.0] * len(tokens)
+    mean = fmean(sized)
+    return [mean / one if one > 0 else 1.0 for one in tokens]
 
 
 def advantages(shaped_rewards: Values[float], *, normalize: bool) -> list[float]:
@@ -172,39 +208,46 @@ async def credit(
     preset: Preset,
     trainer: Trainer | None = None,
     anchor: Any = None,  # a `tinker.SamplingClient` on the starting weights
+    *,
+    limit: int | None = None,
 ) -> Batch:
     """The batch: measured members only; degenerate groups dropped before any reference
-    pass; mu from the trainer's forward or the records; the KL to the anchor folded into
-    the advantage per token when `kl_coef > 0`."""
+    pass, and with `limit` the groups carrying a gradient past the first `limit` left out
+    as surplus; mu from the trainer's forward or the records; the KL to the anchor folded
+    into the advantage per token when `kl_coef > 0`; each group's tokens weighted by the
+    preset's aggregation."""
     if preset.reference == "trainer":
         pinned(groups, trainer)
-    rollouts = graded = dropped = 0
+    rollouts = graded = dropped = surplus = 0
     rewards: list[float] = []
     spreads: list[float] = []
     lengths: list[int] = []
-    kept: list[tuple[Member, float]] = []
+    kept: list[tuple[int, Member, float]] = []
+    owned: list[int] = []
     for group in groups:
-        members = measured(group)
+        members, found, shaped_rewards = scored(group, preset)
         rollouts += len(group.members)
         graded += len(members)
         if not members:
             continue
-        found = [float(one.verdict.reward) for one in members]
-        wrote = [one.sampled_tokens for one in members]
-        shaped_rewards = shaped(
-            found, wrote, penalty=preset.length_penalty, floor=preset.length_floor
-        )
-        spread = pstdev(shaped_rewards) if len(shaped_rewards) > 1 else 0.0
         rewards.extend(found)
-        lengths.extend(wrote)
-        spreads.append(spread)
-        if len(shaped_rewards) < 2 or spread <= EPSILON:
-            dropped += 1  # degenerate: a lone member or a flat group carries no gradient
+        lengths.extend(one.sampled_tokens for one in members)
+        spreads.append(pstdev(shaped_rewards) if len(shaped_rewards) > 1 else 0.0)
+        if flat(shaped_rewards):
+            dropped += 1
             continue
+        if limit is not None and len(owned) >= limit:
+            surplus += 1  # the batch is full: DAPO keeps a constant number of prompts
+            continue
+        owner = len(owned)
+        owned.append(owner)
         kept.extend(
-            zip(members, advantages(shaped_rewards, normalize=preset.normalize), strict=True)
+            (owner, member, advantage)
+            for member, advantage in zip(
+                members, advantages(shaped_rewards, normalize=preset.normalize), strict=True
+            )
         )
-    sequences = [one for member, _ in kept for one in member.sequences]
+    sequences = [one for _, member, _ in kept for one in member.sequences]
     # The token counters bill what is sent: the shifted input to the trainer's forward,
     # the whole sequence to the anchor.
     if preset.reference == "sampler":
@@ -219,25 +262,36 @@ async def credit(
             raise ValueError(f"kl_coef = {preset.kl_coef} needs the starting weights to anchor to")
         anchored = await anchor_logprobs(anchor, sequences)
         anchor_tokens = sum(len(one.tokens) for one in sequences)
+    sizes = [0] * len(owned)
+    for owner, member, _ in kept:
+        sizes[owner] += sum(len(one.targets) for one in member.sequences)
+    # The KL term is scaled with the advantage it is folded into, so kl_coef weighs it
+    # against the reward the same way in every prompt, as a loss term aggregated alike.
+    scale = weights(sizes, preset.aggregation)
     datums: list[tinker.Datum] = []
+    owners: list[int] = []
     gaps: list[float] = []
     cursor = 0
-    for member, advantage in kept:
+    for owner, member, advantage in kept:
         for sequence in member.sequences:
             per_token = [advantage] * len(sequence.targets)
             if anchored is not None:
                 gap = [a - b for a, b in zip(mu[cursor], anchored[cursor], strict=True)]
                 per_token = [a - preset.kl_coef * g for a, g in zip(per_token, gap, strict=True)]
                 gaps.extend(gap)
+            per_token = [scale[owner] * one for one in per_token]
             datums.append(datum(sequence, logprobs=mu[cursor], advantages=per_token))
+            owners.append(owner)
             cursor += 1
     return Batch(
         datums=tuple(datums),
+        owners=tuple(owners),
         groups=len(groups),
         rollouts=rollouts,
         graded=graded,
         masked=rollouts - graded,
         degenerate=dropped,
+        surplus=surplus if limit is not None else None,
         credited=len(kept),
         sequences=len(sequences),
         reward_mean=fmean(rewards) if rewards else None,

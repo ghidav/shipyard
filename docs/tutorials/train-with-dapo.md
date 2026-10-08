@@ -3,7 +3,7 @@
 `dapo` is a gradient recipe: it changes the policy's weights from the rewards its rollouts earn. A rollout is one trial seen from training: the model calls the proxy recorded, and the reward the task gave. This tutorial trains Qwen/Qwen3-8B with pi on eight Reasoning Gym tasks, four tasks per step and four attempts per task.
 
 !!! note "A real run"
-    The blueprint, the `check` output, the metrics, the checkpoints and the costs below are from one run of this blueprint, `dapo-docker__Su3tmfE`, and from its continuation, `dapo-continue__ZCdgppB`. Two steps are far too few to show a policy improving. The run shows what a step does and what it records.
+    The metrics, the checkpoints and the costs below are from one run of this blueprint, `dapo-docker__Su3tmfE`, and from its continuation, `dapo-continue__ZCdgppB`. That run took one substep per step, refilled nothing and summed its token losses over the step. The `check` output is what `check` prints for this blueprint. Two steps are far too few to show a policy improving. The run shows what a step does and what it records.
 
 ## The dataset
 
@@ -42,6 +42,8 @@ timeout = 600
 [recipe]
 kind = "dapo"
 learning_rate = 2e-5
+substeps = 1
+refill = 0
 
 [checkpoints]
 every = 1
@@ -49,6 +51,11 @@ ttl_hours = 24
 ```
 
 A group is the `group_size` rollouts of one task in one step. Their rewards are compared with each other, so a group needs more than one member. Eight tasks at four per step make two steps. `learning_rate` has no default for a gradient recipe. `lora_rank` is the rank of the LoRA adapter trained on the base model; 32 is also the default.
+
+Two recipe keys set dapo's defaults aside:
+
+- **`substeps = 1`.** One optimizer step per batch. dapo's default is 16, as in its paper, with each substep taking whole groups and never more substeps than groups that carry a gradient.
+- **`refill = 0`.** Each step trains on the groups its own batch leaves. dapo's default, 9, samples the plan's next batches while fewer than `batch_size` groups carry a gradient; over eight tasks, a first step short of groups would sample the second batch too and leave the run one step. See [Dynamic sampling](../concepts/recipes.md#dynamic-sampling).
 
 Two rollout keys matter for these tasks:
 
@@ -78,11 +85,12 @@ reference = "trainer"
 kl_coef = 0.0
 clip_low = 0.2
 clip_high = 0.28
+refill = 0
 
 [checkpoints]
 every = 1
 ttl_hours = 24.0
-# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28; degenerate groups dropped
+# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, averaged per prompt; 1 substep; degenerate groups dropped
 
 ok  recipe dapo
 ok  model Qwen/Qwen3-8B, provider tinker (served by this run)
@@ -96,7 +104,8 @@ ok  tinker serves Qwen/Qwen3-8B
 `renderer = "qwen3"` is the renderer the proxy will load for the model. The comment line says what the name `dapo` resolves to:
 
 - **advantage**: each rollout's reward minus its group's mean, divided by the group's spread (standard deviation).
-- **loss**: PPO, with the probability ratio clipped to [1 − 0.2, 1 + 0.28].
+- **loss**: PPO, with the probability ratio clipped to [1 − 0.2, 1 + 0.28], each prompt's token losses averaged so every prompt weighs the same.
+- **1 substep**: one optimizer step over the whole batch.
 - **degenerate groups dropped**: a group whose rewards are all equal, or that has one measured member, carries no gradient and is left out.
 
 See [Recipes](../concepts/recipes.md) for `dr-grpo` and `cispo`.
@@ -104,9 +113,9 @@ See [Recipes](../concepts/recipes.md) for `dr-grpo` and `cispo`.
 ## What one step does
 
 1. **Publish.** The current weights are saved for sampling as `sample-<step>`, kept for 12 hours, and the proxy is pointed at them.
-2. **Sample.** One Harbor job runs `group_size` trials of each task in the batch. The proxy records every model call.
+2. **Sample.** One Harbor job runs `group_size` trials of each task in the batch. The proxy records every model call. With `refill` above 0, a step short of groups with a gradient samples the plan's next batch as well.
 3. **Credit.** Masked rollouts are set aside (see [Admission](../concepts/admission.md)). Each group's advantages are formed and degenerate groups are dropped. With `reference = "trainer"`, the reference logprobs are recomputed on the training engine, and credit refuses a batch if the weights moved since it was sampled.
-4. **Apply.** The credited sequences are split into `substeps` parts, each one forward-backward pass and one Adam step.
+4. **Apply.** The credited groups are split into `substeps` parts, each one forward-backward pass and one Adam step.
 5. **Log** one row to `metrics.jsonl`.
 6. **Checkpoint** when `step + 1` is a multiple of `[checkpoints] every`, and only after a step that trained.
 

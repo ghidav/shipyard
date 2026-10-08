@@ -1,6 +1,8 @@
-"""Dr. GRPO: advantage = r - mean (no division by spread), PPO with one symmetric `clip`
-(0.2; the bounds `1 - clip` / `1 + clip` via `recipes.train.clipped`), the length rule among
-solved answers (`length_penalty`, `length_floor`; `credit.shaped`) here only; degenerate dropped."""
+"""Dr. GRPO (Liu et al., arXiv 2503.20783): advantage = r - mean (no division by spread), PPO
+with one symmetric `clip` (0.2, App. G; the bounds `1 - clip` / `1 + clip` via
+`recipes.train.clipped`), token losses summed, the constant normalizer of 3.2 that Tinker's sum
+already is; the length rule among solved answers (`length_penalty`, `length_floor`;
+`credit.shaped`) here only; degenerate groups dropped, never refilled unless asked."""
 
 from __future__ import annotations
 
@@ -20,6 +22,7 @@ def preset(recipe: Any) -> Preset:
         loss_fn="ppo",
         loss_config=loop.clipped(float(recipe.clip), float(recipe.clip)),
         clipping=f"clip {recipe.clip} / {recipe.clip}",
+        aggregation="sum",
         length_penalty=float(recipe.length_penalty),
         length_floor=int(recipe.length_floor),
         **loop.shared(recipe),

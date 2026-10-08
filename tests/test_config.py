@@ -54,8 +54,9 @@ def test_dapo_fixture_defaults() -> None:
     found = load(BLUEPRINTS / "dapo")
     assert found.model.served and found.model.provider == "tinker"
     assert found.recipe.kind == "dapo" and found.recipe.learning_rate == 2e-5
-    assert found.recipe.reference == "trainer" and found.recipe.substeps == 1
+    assert found.recipe.reference == "trainer" and found.recipe.substeps == 16
     assert found.recipe.clip_low == 0.2 and found.recipe.clip_high == 0.28
+    assert found.recipe.refill == 9
     assert found.recipe.kl_coef == 0.0 and found.recipe.modules is None
     assert found.rollout.sandbox == "docker" and found.rollout.max_tokens == 8192
     assert found.rollout.env == {}
@@ -65,8 +66,24 @@ def test_dr_grpo_and_cispo_fixtures_carry_their_own_knobs() -> None:
     found = load(BLUEPRINTS / "dr-grpo").recipe
     assert found.kind == "dr-grpo" and found.clip == 0.2
     assert found.length_penalty == 0.2 and found.length_floor == 0
+    assert (found.substeps, found.refill) == (1, 0), "Dr. GRPO: one epoch, no refill"
     found = load(BLUEPRINTS / "cispo").recipe
-    assert found.kind == "cispo" and found.clip_high == 0.2 and found.reference == "sampler"
+    assert found.kind == "cispo" and found.reference == "sampler"
+    assert found.clip_high == 3.0, "ScaleRL A.17.2 and FST appendix D: a ceiling of 4.0"
+    assert (found.substeps, found.refill) == (16, 9), "MiniMax-M1 3.1"
+
+
+def test_substeps_and_refill_are_knobs_and_fst_takes_no_refill(tmp_path: Path) -> None:
+    text = MINIMAL.replace("learning_rate = 2e-5", "learning_rate = 2e-5\nsubsteps = 2\nrefill = 0")
+    found = load(write_blueprint(tmp_path / "set", text)).recipe
+    assert (found.substeps, found.refill) == (2, 0)
+    bad = MINIMAL.replace("learning_rate = 2e-5", "learning_rate = 2e-5\nrefill = -1")
+    assert _problems(tmp_path / "bad", bad) == [
+        "[recipe] refill: Input should be greater than or equal to 0"
+    ]
+    fst = (BLUEPRINTS / "fst" / "run.toml").read_text(encoding="utf-8")
+    fst = fst.replace('kind = "fst"', 'kind = "fst"\nrefill = 2')
+    assert _problems(tmp_path / "fst", fst) == ["[recipe] refill: unknown key"]
 
 
 def test_gepa_fixture_defaults() -> None:
@@ -238,12 +255,13 @@ def test_the_resolved_config_fills_every_table_and_leads_the_recipe_with_its_kin
     assert found["recipe"] == {
         "kind": "dapo",
         "learning_rate": 2e-5,
-        "substeps": 1,
+        "substeps": 16,
         "reference": "trainer",
         "kl_coef": 0.0,
         "modules": None,
         "clip_low": 0.2,
         "clip_high": 0.28,
+        "refill": 9,
     }
     assert found["checkpoints"] == {"every": 1, "ttl_hours": 168.0}
 
@@ -321,19 +339,21 @@ def test_toml_values_are_spelled_as_toml() -> None:
     [
         (
             "dapo",
-            "# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28; "
-            "degenerate groups dropped",
+            "# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, "
+            "averaged per prompt; 16 substeps by prompt; degenerate groups dropped and "
+            "refilled from the plan, up to 9 more rounds",
         ),
         (
             "dr-grpo",
             "# dr-grpo: advantage = group mean, not divided by spread; loss = ppo, "
-            "clip 0.2 / 0.2; length penalty 0.2 over 0 tokens among solved answers; "
-            "degenerate groups dropped",
+            "clip 0.2 / 0.2, summed over tokens; length penalty 0.2 over 0 tokens among "
+            "solved answers; 1 substep; degenerate groups dropped",
         ),
         (
             "cispo",
             "# cispo: advantage = group mean, divided by spread; loss = cispo, "
-            "weight truncated above 1.2, no lower bound; degenerate groups dropped",
+            "weight truncated above 4.0, no lower bound, averaged per prompt; 16 substeps by "
+            "prompt; degenerate groups dropped and refilled from the plan, up to 9 more rounds",
         ),
         ("gepa", None),
         ("evaluate", None),
@@ -356,7 +376,21 @@ def test_the_resolution_line_names_a_kl_anchor_when_asked(tmp_path: Path) -> Non
     text = MINIMAL.replace('kind = "dapo"', 'kind = "dapo"\nkl_coef = 0.05')
     report = resolved.report(write_blueprint(tmp_path, text))
     assert report.resolution is not None
-    assert report.resolution.endswith("degenerate groups dropped; kl 0.05 to the starting weights")
+    assert report.resolution.endswith("up to 9 more rounds; kl 0.05 to the starting weights")
+
+
+def test_the_resolution_line_says_what_one_substep_and_no_refill_leave(tmp_path: Path) -> None:
+    text = MINIMAL.replace('kind = "dapo"', 'kind = "dapo"\nsubsteps = 1\nrefill = 1')
+    report = resolved.report(write_blueprint(tmp_path / "one", text))
+    assert report.resolution == (
+        "# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, "
+        "averaged per prompt; 1 substep; degenerate groups dropped and refilled from the "
+        "plan, up to 1 more round"
+    )
+    text = MINIMAL.replace('kind = "dapo"', 'kind = "dapo"\nrefill = 0')
+    report = resolved.report(write_blueprint(tmp_path / "off", text))
+    assert report.resolution is not None
+    assert report.resolution.endswith("; 16 substeps by prompt; degenerate groups dropped")
 
 
 def test_the_rollout_serving_keys_load_with_their_defaults(tmp_path: Path) -> None:

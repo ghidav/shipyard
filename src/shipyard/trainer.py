@@ -4,7 +4,6 @@ weights published for the proxy, a checkpoint saved, the step taken, the session
 from __future__ import annotations
 
 import logging
-import random
 import time
 from collections.abc import Sequence as Values
 from dataclasses import dataclass
@@ -124,23 +123,24 @@ class Trainer:
         return Checkpoint(tag, str(state.path), str(weights.path), ttl_hours)
 
     async def apply(self, batch: Batch, preset: Preset) -> Update:
-        """The gradient over the batch's datums in `substeps` parts, refused empty: a step
-        that trained on nothing must not read like one that trained."""
+        """The gradient over the batch's datums in `substeps` parts of whole groups, never
+        more parts than groups; refused empty: a step that trained on nothing must not
+        read like one that trained. Every part carries credit's mu, the logprobs of the
+        weights the batch was sampled at, so the ratio moves from the second part on."""
         # Reproduces `train_step` of tinker_cookbook/rl/train.py (Thinking Machines Lab,
         # Apache-2.0): each substep's forward_backward and optim_step are enqueued before
         # the substep before it is consumed; the per-datum training logprobs are read off
         # `loss_fn_outputs[i]["logprobs"]` as its `_training_logprobs_from_fwd_bwd` does,
         # and `mask` is stripped from what is sent as its `_remove_mask` does.
         began = time.monotonic()
-        datums = list(batch.datums)
-        if not datums:
+        if not batch.datums:
             raise ValueError("the batch holds no datums; the loop logs such a step untrained")
+        groups = grouped(batch.datums, batch.owners)
+        # The papers' mini-batches are sets of prompts: a group is never cut across two.
+        parts = min(preset.substeps, len(groups))
+        split_parts = [[one for group in part for one in group] for part in split(groups, parts)]
+        datums = [one for part in split_parts for one in part]
         train_tokens = sum(int(one.model_input.length) for one in datums)
-        parts = min(preset.substeps, len(datums))
-        if parts > 1:
-            # A batch arrives task by task; shuffled, every substep draws on every task,
-            # and the same batch splits the same way in any process.
-            random.Random(f"{len(datums)}:{train_tokens}").shuffle(datums)
         adam = tinker.AdamParams(
             learning_rate=preset.learning_rate, beta1=BETA1, beta2=BETA2, eps=EPS
         )
@@ -148,7 +148,6 @@ class Trainer:
         # leaves optimizer steps landed, and this count is what guards credit's mu.
         self.updates += 1
         trained: list[torch.Tensor] = []
-        split_parts = split(datums, parts)
         forward, optim = await self._enqueue(split_parts[0], preset, adam)
         for index in range(parts):
             following = (
@@ -192,6 +191,16 @@ class Trainer:
             await service.close(status, detail)
         except Exception:  # noqa: BLE001 - a session that will not finish is not a run failure
             logger.warning("could not finish the Tinker session", exc_info=True)
+
+
+def grouped(datums: Values[Any], owners: Values[int]) -> list[list[Any]]:
+    """The datums gathered by the group they came from, groups in the batch's order."""
+    if len(owners) != len(datums):
+        raise ValueError(f"the batch names a group for {len(owners)} of its {len(datums)} datum(s)")
+    found: dict[int, list[Any]] = {}
+    for owner, one in zip(owners, datums, strict=True):
+        found.setdefault(owner, []).append(one)
+    return list(found.values())
 
 
 def split(items: list[Any], parts: int) -> list[list[Any]]:

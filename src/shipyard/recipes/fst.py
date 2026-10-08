@@ -35,9 +35,6 @@ SLOW = {
     "dr-grpo": (DrGrpoRecipe, dr_grpo),
     "cispo": (CispoRecipe, cispo),
 }
-#: The paper's CISPO (appendix D): clip_low = 1.0, clip_high = 3.0 as epsilons, so no floor
-#: and a ceiling of 4.0 on the importance weight.
-PAPER_CLIP_HIGH = 3.0
 #: Gepa's budget per cycle in passes over the anchor tasks: the paper's 960 metric calls
 #: over 192 examples.
 BUDGET_PASSES = 5
@@ -48,16 +45,16 @@ def slow_recipe(recipe: Any) -> Any:
     model, _ = SLOW[recipe.slow]
     knobs = {knob: getattr(recipe, knob) for knob in SLOW_KNOBS[recipe.slow]}
     knobs = {knob: value for knob, value in knobs.items() if value is not None}
-    if recipe.slow == "cispo":
-        knobs.setdefault("clip_high", PAPER_CLIP_HIGH)
     shared = {name: getattr(recipe, name) for name in ("learning_rate", "substeps", "reference")}
     return model(kind=recipe.slow, kl_coef=recipe.kl_coef, **shared, **knobs)
 
 
 def preset(recipe: Any) -> Preset:
-    """The slow recipe's preset, under fst's name."""
+    """The slow recipe's preset, under fst's name, without refill and averaged per prompt
+    whatever the slow loss: FST follows ScaleRL (section 2), whose zero-variance filtering
+    drops flat groups without resampling, and aggregates at the prompt level (Eq. 4)."""
     _, module = SLOW[recipe.slow]
-    return replace(module.preset(slow_recipe(recipe)), name="fst")
+    return replace(module.preset(slow_recipe(recipe)), name="fst", refill=0, aggregation="prompt")
 
 
 def resolution(recipe: Any) -> str:
