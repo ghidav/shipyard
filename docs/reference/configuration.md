@@ -54,7 +54,7 @@ The **For** column says when a key matters:
 | `top_k` | integer | `-1` | served | Set on every call, overriding the harness's value. `-1` is off. |
 | `max_tokens` | integer ≥ 1 | `8192` | served | The longest reply. A call asking for more, or naming no limit, gets this. |
 | `max_context` | integer ≥ 0 | `0` | served | The context window each call must fit, and the most tokens one trial may sample in all. `0` takes the model's from the backend. |
-| `renderer` | string | `""` | served | A tinker-cookbook renderer to use in place of the model's own. A family whose thinking comes in levels (Qwen3.8, GLM-5.3, GPT-OSS, Nemotron-3) has a renderer per level, and this picks one. |
+| `renderer` | string | `""` | served | A tinker-cookbook renderer to use in place of the model's own. A family whose thinking comes in levels (Qwen3.8, GLM-5.3, GPT-OSS, Nemotron-3) has a renderer per level, and this picks one. Inkling's levels are named `tml_v0_effort_<e>`, such as `tml_v0_effort_0.7`, with `e` in [0, 1); plain `tml_v0` renders at its default, 0.9. |
 | `cut_volatile` | boolean | `true` | served | Cut the lines the harness changes on every call from its system message, such as Claude Code's `<total_tokens>` line. |
 | `fill_context` | boolean | `false` | served | A call that would overflow the context gets a shorter `max_tokens` instead of a refusal. Also switches the harness's own compaction off, where its profile knows how. `check` warns when `env` sets one of the profile's compaction keys to the profile's own value, such as `DISABLE_COMPACT = "1"`, without it. |
 | `check_turns` | boolean | `false` | served | Count the calls the harness made in its own log, and mask a trial whose count is more than the proxy recorded. Claude Code and opencode only. |

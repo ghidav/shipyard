@@ -3,6 +3,7 @@ cookbook rename fails at import time."""
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import httpx
@@ -79,16 +80,45 @@ def too_long(message: str) -> Exception:
     )
 
 
+#: Inkling's renderer takes its thinking effort when it builds each prompt, so its levels are
+#: named here, as the cookbook names Qwen3.8's: `tml_v0_effort_0.7` is `tml_v0` at 0.7.
+#: Plain `tml_v0` builds at the renderer's own default.
+EFFORT_RENDERER = re.compile(r"^(tml_v0)_effort_(\d*\.?\d+)$")
+
+
+class AtEffort:
+    """A renderer that builds every prompt at one thinking effort. Everything else is the
+    inner renderer's."""
+
+    def __init__(self, inner: Any, effort: float) -> None:
+        self._inner = inner
+        self.effort = effort
+
+    def build_generation_prompt(self, messages: Any, **kwargs: Any) -> Any:
+        kwargs.setdefault("effort", self.effort)
+        return self._inner.build_generation_prompt(messages, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
 def renderer_for(base_model: str, name: str | None = None) -> Any:
     """The cookbook renderer for the model, or the renderer named `name`, built on the
-    model's tokenizer and image processor. Fetches the tokenizer over the network."""
+    model's tokenizer and image processor. `tml_v0_effort_<e>` is `tml_v0` at effort `e`.
+    Fetches the tokenizer over the network."""
     chosen = name or get_recommended_renderer_name(base_model)
-    return get_renderer(
+    effort = None
+    if matched := EFFORT_RENDERER.match(chosen):
+        chosen, effort = matched.group(1), float(matched.group(2))
+        if not 0.0 <= effort < 1.0:
+            raise ValueError(f"renderer {name}: the effort must be in [0, 1), got {effort:g}")
+    renderer = get_renderer(
         chosen,
         get_tokenizer(base_model),
         image_processor=image_processor_for(base_model),
         model_name=base_model,
     )
+    return renderer if effort is None else AtEffort(renderer, effort)
 
 
 def image_processor_for(base_model: str) -> Any:
