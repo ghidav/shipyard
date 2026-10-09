@@ -9,17 +9,18 @@ A module is a directory of text a trial carries into its container. This version
 
 ## The seed skill
 
-A blueprint's modules live beside its `run.toml`, one directory per module:
+A blueprint's modules live beside its `run.toml`, each skill in its own directory under `skills/`:
 
 ```
 blueprints/gepa-docker/
 ├── run.toml
 └── modules/
-    └── solving/
-        └── SKILL.md
+    └── skills/
+        └── solving/
+            └── SKILL.md
 ```
 
-```markdown title="blueprints/gepa-docker/modules/solving/SKILL.md"
+```markdown title="blueprints/gepa-docker/modules/skills/solving/SKILL.md"
 ---
 name: solving
 description: How to answer a reasoning puzzle so the checker accepts it.
@@ -214,7 +215,7 @@ In `jobs.jsonl`, a job that scored a candidate has `purpose` `rollout` and the c
 
 The run keeps the seed under `runs/<id>/modules/seed/` and the winner under `runs/<id>/modules/best/`. Here the two are the same text. The winner is the pool's candidate measured on the most Pareto tasks, then with the highest mean.
 
-Both use the blueprint's own layout, `<module>/SKILL.md`, so the winner can serve as a seed. Copy `modules/best/` into a blueprint's `modules/` to search again from it or to carry it into another recipe:
+Both use the blueprint's own layout, `skills/<name>/SKILL.md`, so the winner can serve as a seed. Copy `modules/best/` into a blueprint's `modules/` to search again from it or to carry it into another recipe:
 
 ```toml
 [recipe]
