@@ -1,8 +1,9 @@
 # Modules
 
-A module is text that a rollout carries into its container. In v1 the only kind of module is the skill:
-a document the harness reads before it starts work. A candidate is a set of named modules with one
-digest. A rollout carries at most one candidate.
+A module is text that a rollout carries into its container. In v1 there are two kinds. A skill is a
+document the harness can open while it works. A prompt is text placed before every task's
+instruction. A candidate is a set of named modules with one digest. A rollout carries at most one
+candidate.
 
 ## A module is a directory
 
@@ -12,6 +13,7 @@ marker file inside it names the module's kind:
 | Marker | Kind | In v1 |
 |---|---|---|
 | `SKILL.md` | skill | delivered |
+| `PROMPT.md` | prompt | delivered |
 | `server.py` | tool | refused |
 | `agent.py` | harness | refused |
 
@@ -63,6 +65,39 @@ The harness must declare skill support in Harbor. Harbor refuses a trial whose h
 [admission](admission.md) masks that trial. `pi`, `claude-code`, `opencode` and `terminus-2` declare
 it; `check` does not test this.
 
+## Prompts
+
+A prompt is a directory holding `PROMPT.md` and nothing else. Its text goes at the start of the
+harness's first message, before the task's own instruction, in every task the candidate is carried
+into:
+
+```
+modules/
+└── guidance/
+    └── PROMPT.md
+```
+
+A harness decides whether to open a skill, and a model may never do so. A prompt is always read,
+because it is part of the task. It also reaches any harness Harbor installs, including those that take
+no skills.
+
+A candidate carries at most one prompt, beside any number of skills.
+
+## How a prompt reaches the container
+
+Before each job, shipyard writes the prompt as a Jinja template to
+`jobs/<job>/modules/prompt/template.j2`: the text inside a raw block, then `{{ instruction }}`. It then
+names the template in the agent's `prompt_template_path` kwarg. Harbor renders every task's
+instruction through it, so the harness receives the text, a blank line, and then the instruction. The
+raw block keeps any `{{ }}` or `{% %}` in the text as plain text.
+
+When `[rollout.kwargs]` names its own `prompt_template_path` and the modules hold a prompt, the
+prompt's template wins. `check` warns about this:
+
+```
+warning  [rollout.kwargs] prompt_template_path: the prompt in the modules is delivered as the prompt template, so this one is not used where the prompt is carried
+```
+
 ## Carrying modules
 
 `[recipe] modules` names a directory relative to the blueprint. A gradient recipe or `evaluate` carries
@@ -98,7 +133,9 @@ blocked  [recipe] modules: 'myagent' is a harness module, and harness modules ar
 
 These cases are refused too:
 
-- A subdirectory with no marker.
+- A subdirectory with no marker, or with two.
+- A prompt with an empty text, a file beside `PROMPT.md`, or `{% endraw %}` in its text.
+- A candidate with two prompts.
 - A directory with no subdirectories, or a path that does not exist.
 - A file that is not UTF-8 text.
 
@@ -111,7 +148,7 @@ Each kind of module is a class with four members:
 | `marker` | Names the file that marks a module of this kind. |
 | `check(module)` | Returns why the module cannot be delivered, or `None`. |
 | `deliver(modules, into)` | Writes the modules under `into` and returns the agent-config fields that carry them. |
-| `reference()` | Returns what the gepa reflector is told about the kind, or `None` for skills. |
+| `reference()` | Returns what the gepa reflector is told about the kind, or `None` when there is nothing to add. |
 
 The kinds live in the `KINDS` table in `shipyard.modules`. A new kind is a class plus a row in that
 table.

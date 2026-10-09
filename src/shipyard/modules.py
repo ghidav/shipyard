@@ -1,11 +1,12 @@
 """Modules: the text a rollout carries into its container. A module is read from a
 directory, written back to one, and delivered the way Harbor takes it. This version has
-one kind, skills. A tool (`server.py`) or harness (`agent.py`) kind would implement the
-`Kind` protocol."""
+two kinds, skills and prompts. A tool (`server.py`) or harness (`agent.py`) kind would
+implement the `Kind` protocol."""
 
 from __future__ import annotations
 
 import hashlib
+import re
 import shutil
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -14,6 +15,12 @@ from typing import Any, Protocol
 
 #: Marks a directory as a skill. The directory name is the module name.
 SKILL_FILE = "SKILL.md"
+#: Marks a directory as a prompt.
+PROMPT_FILE = "PROMPT.md"
+#: The template a prompt is delivered as, under the job's modules directory.
+PROMPT_TEMPLATE = "prompt/template.j2"
+#: The end of a Jinja raw block, which a prompt's text may not contain.
+END_RAW = re.compile(r"{%-?\s*endraw\s*-?%}")
 #: Markers of kinds this version does not deliver, so `seed` can report them as
 #: unsupported.
 RESERVED = {"server.py": "tool", "agent.py": "harness"}
@@ -142,8 +149,51 @@ class Skill:
         return None
 
 
+class Prompt:
+    """Text placed before the task's instruction in the harness's first message: `PROMPT.md`.
+    Harbor's `prompt_template_path` delivers it, so it reaches any harness Harbor installs,
+    whether or not that harness reads skills."""
+
+    marker = PROMPT_FILE
+
+    def check(self, module: Module) -> str | None:
+        """Require one file of text with no Jinja raw-block end, since the text is delivered
+        inside one and nothing else is."""
+        if set(module.files) != {PROMPT_FILE}:
+            return f"a prompt is its {PROMPT_FILE} alone, and nothing beside it is delivered"
+        if not module.text.strip():
+            return "the text is empty"
+        if END_RAW.search(module.text):
+            return "it contains `{% endraw %}`, which would end the block it is delivered in"
+        return None
+
+    def deliver(self, modules: Sequence[Module], into: Path) -> dict[str, Any]:
+        """Write the template Harbor renders each task's instruction through: the text kept
+        raw, then the instruction. Return it as the agent's `prompt_template_path`."""
+        if len(modules) > 1:
+            names = ", ".join(sorted(module.name for module in modules))
+            raise Inadmissible(f"a candidate carries one prompt, and this one has {names}")
+        template = (into / PROMPT_TEMPLATE).resolve()
+        template.parent.mkdir(parents=True, exist_ok=True)
+        text = "{% raw %}" + preamble(modules[0]) + "{% endraw %}{{ instruction }}"
+        template.write_text(text, encoding="utf-8")
+        return {"kwargs": {"prompt_template_path": str(template)}}
+
+    def reference(self) -> str | None:
+        return (
+            f"`{PROMPT_FILE}` is given to the assistant at the start of every task, in its first "
+            "message, before the task's own instruction. It is the same text for every task, "
+            "so it should hold what helps across them, written to the assistant.\n"
+        )
+
+
+def preamble(module: Module) -> str:
+    """What a prompt puts before the instruction: its text, then a blank line."""
+    return module.text.strip() + "\n\n"
+
+
 #: The kinds this version delivers, by name. A new kind is a class plus a row here.
-KINDS: dict[str, Kind] = {"skill": Skill()}
+KINDS: dict[str, Kind] = {"skill": Skill(), "prompt": Prompt()}
 #: Each kind's marker mapped to its name.
 MARKERS = {kind.marker: name for name, kind in KINDS.items()}
 
@@ -177,6 +227,8 @@ def _component(home: Path) -> Module:
     claimed = [kind for marker, kind in MARKERS.items() if (home / marker).is_file()]
     if not claimed:
         raise Inadmissible(f"{home.name!r} holds no {' or '.join(MARKERS)}, so its kind is unknown")
+    if len(claimed) > 1:
+        raise Inadmissible(f"{home.name!r} is marked as {' and '.join(claimed)}; a module is one")
     module = Module(home.name, claimed[0], read(home))
     refused = KINDS[module.kind].check(module)
     if refused:

@@ -4,12 +4,14 @@ refused and why, and the carrying path: `Run.open` keeps the blueprint's modules
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 from typing import Any
 
 import pytest
 from harbor.models.trial.config import AgentConfig
+from harbor.utils.templating import render_prompt_template
 from typer.testing import CliRunner
 
 from shipyard import record
@@ -18,6 +20,7 @@ from shipyard.config import Finding, check
 from shipyard.modules import (
     KINDS,
     MARKERS,
+    PROMPT_FILE,
     RESERVED,
     SKILL_FILE,
     Candidate,
@@ -28,6 +31,7 @@ from shipyard.modules import (
     deliver,
     keep,
     merge_fields,
+    preamble,
     read,
     seed,
     write,
@@ -157,11 +161,80 @@ def test_a_reserved_marker_says_the_kind_is_not_supported(
         seed(tmp_path)
 
 
-def test_the_kinds_table_holds_skills_alone() -> None:
-    assert list(KINDS) == ["skill"] and KINDS["skill"].marker == SKILL_FILE
+def test_the_kinds_table_holds_skills_and_prompts() -> None:
+    assert list(KINDS) == ["skill", "prompt"]
+    assert (KINDS["skill"].marker, KINDS["prompt"].marker) == (SKILL_FILE, PROMPT_FILE)
     assert KINDS["skill"].reference() is None
-    assert MARKERS == {"SKILL.md": "skill"} == {k.marker: name for name, k in KINDS.items()}
+    assert "before the task's own instruction" in (KINDS["prompt"].reference() or "")
+    assert MARKERS == {"SKILL.md": "skill", "PROMPT.md": "prompt"}
+    assert MARKERS == {k.marker: name for name, k in KINDS.items()}
     assert RESERVED == {"server.py": "tool", "agent.py": "harness"}
+
+
+# ------------------------------------------------------------------------ prompts
+
+
+def _prompt(text: str = "Use the project's own python.\n", *, name: str = "guidance") -> Module:
+    return Module(name, "prompt", {PROMPT_FILE: text})
+
+
+def test_a_prompt_seeds_from_its_directory(tmp_path: Path) -> None:
+    (tmp_path / "guidance").mkdir()
+    (tmp_path / "guidance" / PROMPT_FILE).write_text("Run the tests.\n")
+    (module,) = seed(tmp_path).components.values()
+    assert (module.name, module.kind, module.text) == ("guidance", "prompt", "Run the tests.\n")
+
+
+@pytest.mark.parametrize(
+    ("files", "why"),
+    [
+        ({PROMPT_FILE: "  \n"}, "the text is empty"),
+        ({PROMPT_FILE: "go", "notes.md": "x"}, "nothing beside it is delivered"),
+        ({PROMPT_FILE: "a {% endraw %} b"}, "`{% endraw %}`"),
+        ({PROMPT_FILE: "a {%- endraw -%} b"}, "`{% endraw %}`"),
+    ],
+)
+def test_a_prompt_is_refused_when_it_cannot_be_delivered_as_written(
+    tmp_path: Path, files: dict[str, str], why: str
+) -> None:
+    write(files, into=tmp_path / "guidance")
+    with pytest.raises(
+        Inadmissible, match="'guidance' cannot be delivered as a prompt: .*" + re.escape(why)
+    ):
+        seed(tmp_path)
+
+
+def test_a_directory_marked_as_two_kinds_is_refused(tmp_path: Path) -> None:
+    write({PROMPT_FILE: "go", SKILL_FILE: _skill("go")}, into=tmp_path / "both")
+    with pytest.raises(Inadmissible, match="'both' is marked as skill and prompt"):
+        seed(tmp_path)
+
+
+def test_a_prompt_is_delivered_as_harbors_prompt_template(tmp_path: Path) -> None:
+    """Harbor renders the instruction through the template: the text exactly, a blank line,
+    then the instruction. Jinja syntax in the text stays text."""
+    text = "Use {{ python }} and {% if x %}this{% endif %}.\n\n"
+    fields = deliver(Candidate({"guidance": _prompt(text)}), tmp_path / "into")
+    template = Path(fields["kwargs"]["prompt_template_path"])
+    assert template == (tmp_path / "into" / "prompt" / "template.j2").resolve()
+    rendered = render_prompt_template(template, "Fix the bug.\n")
+    assert rendered == "Use {{ python }} and {% if x %}this{% endif %}.\n\nFix the bug.\n"
+    assert rendered == preamble(_prompt(text)) + "Fix the bug.\n"
+
+
+def test_a_prompt_rides_with_skills_and_lays_over_the_blueprints_kwargs(tmp_path: Path) -> None:
+    candidate = Candidate({"guidance": _prompt(), "solving": _module()})
+    fields: dict[str, Any] = {"kwargs": {"version": "1.0", "prompt_template_path": "theirs.j2"}}
+    merge_fields(fields, deliver(candidate, tmp_path / "into"))
+    assert fields["skills"] == [str((tmp_path / "into" / "skills").resolve())]
+    assert fields["kwargs"]["version"] == "1.0"
+    assert fields["kwargs"]["prompt_template_path"].endswith("prompt/template.j2")
+
+
+def test_a_candidate_carries_one_prompt(tmp_path: Path) -> None:
+    two = Candidate({"a": _prompt(name="a"), "b": _prompt("Other.\n", name="b")})
+    with pytest.raises(Inadmissible, match="a candidate carries one prompt, and this one has a, b"):
+        deliver(two, tmp_path / "into")
 
 
 # ------------------------------------------------------------------------ digests
@@ -379,6 +452,34 @@ async def test_a_handed_candidate_wins_over_the_carried_one(
     assert sorted(p.name for p in root.iterdir()) == ["planning"]
     assert _rows(opened)[0]["modules"] == other.digest != opened.carried.digest
     assert rolled.job == f"{opened.id}-0000"
+
+
+async def test_sample_hands_a_prompt_to_harbor_as_the_agents_prompt_template(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    opened = Run.open(_carrying(tmp_path), root=tmp_path / "runs")
+    opened.run_trial = runner = FakeTrials()
+    prompted = Candidate({}).with_component("guidance", _prompt("Run the tests.\n"))
+    rolled = await opened.sample(_batch(tmp_path, "alpha"), rollouts=1, index=0, modules=prompted)
+    kwargs = runner.configs[0].agent.kwargs
+    template = (tmp_path / "jobs" / rolled.job / DELIVERED / "prompt" / "template.j2").resolve()
+    assert kwargs == {"version": "0.85.1", "prompt_template_path": str(template)}
+    assert render_prompt_template(template, "Fix it.") == "Run the tests.\n\nFix it."
+    assert runner.configs[0].agent.skills == [], "a prompt is not a skill"
+    assert _rows(opened)[0]["modules"] == prompted.digest
+
+
+def test_check_warns_when_a_prompt_replaces_the_blueprints_template(tmp_path: Path) -> None:
+    text = CARRYING.replace("[recipe]", '[rollout.kwargs]\nprompt_template_path = "t.j2"\n[recipe]')
+    home = write_blueprint(tmp_path, text)
+    write({PROMPT_FILE: "Run the tests.\n"}, into=home / "modules" / "guidance")
+    found = [one.text for one in check(home) if one.level == "warning"]
+    assert any(one.startswith("[rollout.kwargs] prompt_template_path: the prompt") for one in found)
+    shutil.rmtree(home / "modules" / "guidance")
+    shutil.copytree(VALID, home / "modules", dirs_exist_ok=True)
+    found = [one.text for one in check(home) if one.level == "warning"]
+    assert not any("prompt_template_path" in one for one in found), "skills leave it alone"
 
 
 def test_a_gradient_recipe_carries_and_a_gepa_run_seeds_its_own(tmp_path: Path) -> None:

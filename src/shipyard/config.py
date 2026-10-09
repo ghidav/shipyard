@@ -414,6 +414,8 @@ def findings(loaded: Blueprint) -> list[Finding]:
         found.append(checkpoint)
     if (directory := modules_dir(loaded)) is not None:
         found.append(_modules_finding(directory))
+        if (template := _template_finding(loaded, directory)) is not None:
+            found.append(template)
     if isinstance(loaded.recipe, GepaRecipe | FstRecipe):
         found.append(_reflector_finding(loaded.recipe))
     if isinstance(loaded.recipe, GepaRecipe):
@@ -484,6 +486,24 @@ def _modules_finding(directory: Path) -> Finding:
         return Finding("blocked", f"[recipe] modules: {refused}")
     return Finding(
         "ok", f"modules: {len(candidate)} component(s) under {directory} ({candidate.digest})"
+    )
+
+
+def _template_finding(loaded: Blueprint, directory: Path) -> Finding | None:
+    """`warning` when the modules hold a prompt and `[rollout.kwargs]` names a prompt
+    template: the prompt's template replaces it in every rollout that carries the prompt."""
+    if "prompt_template_path" not in loaded.rollout.kwargs:
+        return None
+    try:
+        kinds = {one.kind for one in seed(directory).components.values()}
+    except Inadmissible:
+        return None  # the modules finding says why
+    if "prompt" not in kinds:
+        return None
+    return Finding(
+        "warning",
+        "[rollout.kwargs] prompt_template_path: the prompt in the modules is delivered as the "
+        "prompt template, so this one is not used where the prompt is carried",
     )
 
 
