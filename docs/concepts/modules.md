@@ -1,30 +1,37 @@
 # Modules
 
-A module is text that a rollout carries into its container. In v1 the only kind of module is the skill:
-a document the harness reads before it starts work. A candidate is a set of named modules with one
-digest. A rollout carries at most one candidate.
+A module is text that a rollout carries into its container. In v1 there are two kinds. A skill is a
+document the harness can open while it works. A prompt is text placed before every task's
+instruction. A candidate is a set of named modules with one digest. A rollout carries at most one
+candidate.
 
-## A module is a directory
+## The layout
 
-A modules directory holds one subdirectory per module. The subdirectory's name is the module's name. A
-marker file inside it names the module's kind:
-
-| Marker | Kind | In v1 |
-|---|---|---|
-| `SKILL.md` | skill | delivered |
-| `server.py` | tool | refused |
-| `agent.py` | harness | refused |
-
-Every file in the subdirectory travels with the module, at any depth, except dot-files, `__pycache__`
-and `.DS_Store`. Every file must be UTF-8 text. A blueprint with one skill:
+A modules directory has one layout. A prompt sits at the top, and each skill has a directory under
+`skills/`:
 
 ```
-blueprints/05-gepa-docker/
+blueprints/my-run/
 ├── run.toml
 └── modules/
-    └── solving/
-        └── SKILL.md
+    ├── PROMPT.md
+    └── skills/
+        └── solving/
+            ├── SKILL.md
+            └── examples/
+                └── worked.md
 ```
+
+| Path | Kind | Component | In v1 |
+|---|---|---|---|
+| `PROMPT.md` | prompt | `prompt` | delivered |
+| `skills/<name>/`, holding `SKILL.md` | skill | `<name>` | delivered |
+| `tools/` | tool | | refused |
+| `harness/` | harness | | refused |
+
+Both parts are optional, but the directory must hold at least one module. Nothing else may sit at the
+top. A skill takes every file in its directory with it, at any depth, except dot-files, `__pycache__`
+and `.DS_Store`. Every file must be UTF-8 text.
 
 The digest is a sha256 prefix computed over every file of every module.
 
@@ -63,6 +70,34 @@ The harness must declare skill support in Harbor. Harbor refuses a trial whose h
 [admission](admission.md) masks that trial. `pi`, `claude-code`, `opencode` and `terminus-2` declare
 it; `check` does not test this.
 
+## Prompts
+
+A prompt is `PROMPT.md` at the top of the modules directory. Its text goes at the start of the
+harness's first message, before the task's own instruction, in every task the candidate is carried
+into.
+
+A harness decides whether to open a skill, and a model may never do so. A prompt is always read,
+because it is part of the task. It also reaches any harness Harbor installs, including those that take
+no skills.
+
+A candidate carries at most one prompt, beside any number of skills. When gepa rewrites a prompt,
+only `PROMPT.md` is kept.
+
+## How a prompt reaches the container
+
+Before each job, shipyard writes the prompt as a Jinja template to
+`jobs/<job>/modules/prompt/template.j2`: the text inside a raw block, then `{{ instruction }}`. It then
+names the template in the agent's `prompt_template_path` kwarg. Harbor renders every task's
+instruction through it, so the harness receives the text, a blank line, and then the instruction. The
+raw block keeps any `{{ }}` or `{% %}` in the text as plain text.
+
+When `[rollout.kwargs]` names its own `prompt_template_path` and the modules hold a prompt, the
+prompt's template wins. `check` warns about this:
+
+```
+warning  [rollout.kwargs] prompt_template_path: the prompt in the modules is delivered as the prompt template, so this one is not used where the prompt is carried
+```
+
 ## Carrying modules
 
 `[recipe] modules` names a directory relative to the blueprint. A gradient recipe or `evaluate` carries
@@ -88,30 +123,36 @@ job row matches that copy.
 
 ## Refusals
 
-`check` blocks a modules directory that cannot be delivered and names the module and the reason. Tools
-and harnesses are refused by name:
+`check` blocks a modules directory that cannot be delivered and names the entry and the reason. The
+directories kept for tools and harnesses are refused by name:
 
 ```
-blocked  [recipe] modules: 'search' is a tool module, and tool modules are not supported in this version
-blocked  [recipe] modules: 'myagent' is a harness module, and harness modules are not supported in this version
+blocked  [recipe] modules: 'tools' is for tool modules, and tool modules are not supported in this version
+blocked  [recipe] modules: 'harness' is for harness modules, and harness modules are not supported in this version
 ```
 
 These cases are refused too:
 
-- A subdirectory with no marker.
-- A directory with no subdirectories, or a path that does not exist.
+- Anything else at the top, such as a skill's directory outside `skills/`:
+  `'solving' is not part of the layout: a modules directory holds PROMPT.md and skills/<name>/SKILL.md`.
+- A directory under `skills/` without a `SKILL.md`.
+- A skill named `prompt` beside a `PROMPT.md`, since both would be the component `prompt`.
+- A prompt with an empty text, or with `{% endraw %}` in it.
+- A directory holding no module, or a path that does not exist.
 - A file that is not UTF-8 text.
 
 ## The Kind protocol
 
-Each kind of module is a class with four members:
+Each kind of module is a class with six members:
 
 | Member | What it does |
 |---|---|
 | `marker` | Names the file that marks a module of this kind. |
+| `alone` | Whether the marker is the whole module, so nothing beside it is read, kept or delivered. |
+| `home(name)` | Returns where a module of this kind lives in the layout, `""` for the top. |
 | `check(module)` | Returns why the module cannot be delivered, or `None`. |
 | `deliver(modules, into)` | Writes the modules under `into` and returns the agent-config fields that carry them. |
-| `reference()` | Returns what the gepa reflector is told about the kind, or `None` for skills. |
+| `reference()` | Returns what the gepa reflector is told about the kind, or `None` when there is nothing to add. |
 
 The kinds live in the `KINDS` table in `shipyard.modules`. A new kind is a class plus a row in that
 table.

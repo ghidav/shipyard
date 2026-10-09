@@ -4,12 +4,14 @@ refused and why, and the carrying path: `Run.open` keeps the blueprint's modules
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 from typing import Any
 
 import pytest
 from harbor.models.trial.config import AgentConfig
+from harbor.utils.templating import render_prompt_template
 from typer.testing import CliRunner
 
 from shipyard import record
@@ -17,9 +19,11 @@ from shipyard.cli import app
 from shipyard.config import Finding, check
 from shipyard.modules import (
     KINDS,
-    MARKERS,
+    PROMPT,
+    PROMPT_FILE,
     RESERVED,
     SKILL_FILE,
+    SKILLS_DIR,
     Candidate,
     Inadmissible,
     Module,
@@ -28,6 +32,7 @@ from shipyard.modules import (
     deliver,
     keep,
     merge_fields,
+    preamble,
     read,
     seed,
     write,
@@ -75,21 +80,41 @@ def _files(home: Path) -> dict[str, str]:
 # ------------------------------------------------------------------- seed and keep
 
 
-def test_a_valid_directory_seeds_one_component_per_subdirectory() -> None:
+def test_a_valid_directory_seeds_one_component_per_skill() -> None:
     candidate = seed(VALID)
     assert list(candidate.components) == ["solving"] and len(candidate) == 1
     module = candidate.components["solving"]
     assert (module.name, module.kind) == ("solving", "skill")
-    assert module.text == (VALID / "solving" / SKILL_FILE).read_text(encoding="utf-8")
+    assert module.text == (VALID / SKILLS_DIR / "solving" / SKILL_FILE).read_text(encoding="utf-8")
     assert list(module.files) == [SKILL_FILE, "examples/worked.md"]
     assert len(candidate.digest) == 16 and len(module.digest) == 16
 
 
-def test_keep_writes_the_layout_seed_reads_so_a_winner_is_a_seed(tmp_path: Path) -> None:
-    candidate = seed(VALID)
+def test_the_layout_holds_a_prompt_at_the_top_and_skills_beneath(tmp_path: Path) -> None:
+    write({PROMPT_FILE: "Run the tests.\n"}, into=tmp_path)
+    shutil.copytree(VALID / SKILLS_DIR, tmp_path / SKILLS_DIR)
+    candidate = seed(tmp_path)
+    assert list(candidate.components) == [PROMPT, "solving"]
+    prompt = candidate.components[PROMPT]
+    assert (prompt.name, prompt.kind, prompt.files) == (
+        PROMPT,
+        "prompt",
+        {PROMPT_FILE: "Run the tests.\n"},
+    )
+
+
+@pytest.mark.parametrize("prompted", [False, True])
+def test_keep_writes_the_layout_seed_reads_so_a_winner_is_a_seed(
+    tmp_path: Path, prompted: bool
+) -> None:
+    home = tmp_path / "modules"
+    shutil.copytree(VALID, home)
+    if prompted:
+        write({PROMPT_FILE: "Run the tests.\n"}, into=home)
+    candidate = seed(home)
     kept = tmp_path / "kept"
     keep(candidate, kept)
-    assert _files(kept) == _files(VALID)
+    assert _files(kept) == _files(home)
     again = seed(kept)
     assert again == candidate and again.digest == candidate.digest
 
@@ -98,13 +123,30 @@ def test_a_missing_or_empty_directory_is_refused(tmp_path: Path) -> None:
     with pytest.raises(Inadmissible, match="no modules at"):
         seed(tmp_path / "none")
     (tmp_path / "empty").mkdir()
-    with pytest.raises(Inadmissible, match="no components under"):
+    with pytest.raises(Inadmissible, match="no modules under"):
         seed(tmp_path / "empty")
-    # A file at the root and a dot-directory are not components.
-    (tmp_path / "empty" / "README.md").write_text("about these modules")
+    # Dot-files and an empty skills directory hold no module.
     (tmp_path / "empty" / ".hidden" / "x").mkdir(parents=True)
-    with pytest.raises(Inadmissible, match="no components under"):
+    (tmp_path / "empty" / SKILLS_DIR).mkdir()
+    with pytest.raises(Inadmissible, match="no modules under"):
         seed(tmp_path / "empty")
+
+
+@pytest.mark.parametrize(
+    ("entry", "why"),
+    [
+        ("README.md", "'README.md' is not part of the layout"),
+        ("solving/SKILL.md", "'solving' is not part of the layout"),
+        ("SKILL.md", "'SKILL.md' is not part of the layout"),
+        ("PROMPT.md/x.md", "'PROMPT.md' is not part of the layout"),
+    ],
+)
+def test_an_entry_outside_the_layout_is_refused(tmp_path: Path, entry: str, why: str) -> None:
+    """A skill directly under modules/, the layout before skills/, is refused, not guessed."""
+    shutil.copytree(VALID, tmp_path / "modules")
+    write({entry: _skill("x")}, into=tmp_path / "modules")
+    with pytest.raises(Inadmissible, match=re.escape(why) + ": a modules directory holds"):
+        seed(tmp_path / "modules")
 
 
 # ------------------------------------------------------------------ what is refused
@@ -132,36 +174,100 @@ def test_a_skill_without_frontmatter_is_refused_at_the_seed_by_name() -> None:
         seed(FIXTURES / "bare")
 
 
-def test_an_unknown_marker_is_refused_by_name() -> None:
-    with pytest.raises(Inadmissible, match="'solving' holds no SKILL.md"):
+def test_a_skill_directory_without_its_marker_is_refused_by_name() -> None:
+    with pytest.raises(Inadmissible, match="'skills/solving' holds no SKILL.md"):
         seed(FIXTURES / "unknown")
 
 
-@pytest.mark.parametrize(("marker", "kind"), list(RESERVED.items()))
-def test_a_reserved_marker_says_the_kind_is_not_supported(
-    tmp_path: Path, marker: str, kind: str
+@pytest.mark.parametrize(("directory", "kind"), list(RESERVED.items()))
+def test_a_reserved_directory_says_the_kind_is_not_supported(
+    tmp_path: Path, directory: str, kind: str
 ) -> None:
-    home = tmp_path / "lakehouse"
-    home.mkdir()
-    (home / marker).write_text("print('hello')\n")
+    write({"lakehouse/server.py": "print('hello')\n"}, into=tmp_path / directory)
     with pytest.raises(Unsupported, match=f"{kind} modules are not supported in this version"):
         seed(tmp_path)
     try:
         seed(tmp_path)
     except Inadmissible as refused:  # an Unsupported is an Inadmissible, with its kind
         assert isinstance(refused, Unsupported) and refused.kind == kind
-        assert "'lakehouse'" in str(refused)
-    # A reserved marker wins over a skill marker beside it, so the directory is a tool.
-    (home / SKILL_FILE).write_text(_skill("x", name="lakehouse"))
-    with pytest.raises(Unsupported):
+        assert f"{directory!r}" in str(refused)
+
+
+def test_the_kinds_table_holds_skills_and_prompts() -> None:
+    assert list(KINDS) == ["skill", "prompt"]
+    skill, prompt = KINDS["skill"], KINDS["prompt"]
+    assert (skill.marker, skill.alone, skill.home("solving")) == (
+        SKILL_FILE,
+        False,
+        "skills/solving",
+    )
+    assert (prompt.marker, prompt.alone, prompt.home(PROMPT)) == (PROMPT_FILE, True, "")
+    assert skill.reference() is None
+    assert "before the task's own instruction" in (prompt.reference() or "")
+    assert RESERVED == {"tools": "tool", "harness": "harness"}
+
+
+# ------------------------------------------------------------------------ prompts
+
+
+def _prompt(text: str = "Use the project's own python.\n", *, name: str = PROMPT) -> Module:
+    return Module(name, "prompt", {PROMPT_FILE: text})
+
+
+@pytest.mark.parametrize(
+    ("text", "why"),
+    [
+        ("  \n", "the text is empty"),
+        ("a {% endraw %} b", "`{% endraw %}`"),
+        ("a {%- endraw -%} b", "`{% endraw %}`"),
+    ],
+)
+def test_a_prompt_is_refused_when_it_cannot_be_delivered_as_written(
+    tmp_path: Path, text: str, why: str
+) -> None:
+    write({PROMPT_FILE: text}, into=tmp_path)
+    with pytest.raises(
+        Inadmissible, match="'prompt' cannot be delivered as a prompt: .*" + re.escape(why)
+    ):
         seed(tmp_path)
 
 
-def test_the_kinds_table_holds_skills_alone() -> None:
-    assert list(KINDS) == ["skill"] and KINDS["skill"].marker == SKILL_FILE
-    assert KINDS["skill"].reference() is None
-    assert MARKERS == {"SKILL.md": "skill"} == {k.marker: name for name, k in KINDS.items()}
-    assert RESERVED == {"server.py": "tool", "agent.py": "harness"}
+def test_a_prompt_is_its_marker_alone() -> None:
+    refused = KINDS["prompt"].check(Module(PROMPT, "prompt", {PROMPT_FILE: "go", "notes.md": "x"}))
+    assert refused is not None and "nothing beside it is delivered" in refused
+
+
+def test_a_skill_may_not_take_the_prompts_name(tmp_path: Path) -> None:
+    write({PROMPT_FILE: "go", f"{SKILLS_DIR}/{PROMPT}/{SKILL_FILE}": _skill("x")}, into=tmp_path)
+    with pytest.raises(Inadmissible, match="'skills/prompt' takes the name of the PROMPT.md"):
+        seed(tmp_path)
+
+
+def test_a_prompt_is_delivered_as_harbors_prompt_template(tmp_path: Path) -> None:
+    """Harbor renders the instruction through the template: the text exactly, a blank line,
+    then the instruction. Jinja syntax in the text stays text."""
+    text = "Use {{ python }} and {% if x %}this{% endif %}.\n\n"
+    fields = deliver(Candidate({PROMPT: _prompt(text)}), tmp_path / "into")
+    template = Path(fields["kwargs"]["prompt_template_path"])
+    assert template == (tmp_path / "into" / "prompt" / "template.j2").resolve()
+    rendered = render_prompt_template(template, "Fix the bug.\n")
+    assert rendered == "Use {{ python }} and {% if x %}this{% endif %}.\n\nFix the bug.\n"
+    assert rendered == preamble(_prompt(text)) + "Fix the bug.\n"
+
+
+def test_a_prompt_rides_with_skills_and_lays_over_the_blueprints_kwargs(tmp_path: Path) -> None:
+    candidate = Candidate({PROMPT: _prompt(), "solving": _module()})
+    fields: dict[str, Any] = {"kwargs": {"version": "1.0", "prompt_template_path": "theirs.j2"}}
+    merge_fields(fields, deliver(candidate, tmp_path / "into"))
+    assert fields["skills"] == [str((tmp_path / "into" / "skills").resolve())]
+    assert fields["kwargs"]["version"] == "1.0"
+    assert fields["kwargs"]["prompt_template_path"].endswith("prompt/template.j2")
+
+
+def test_a_candidate_carries_one_prompt(tmp_path: Path) -> None:
+    two = Candidate({"a": _prompt(name="a"), "b": _prompt("Other.\n", name="b")})
+    with pytest.raises(Inadmissible, match="a candidate carries one prompt, and this one has a, b"):
+        deliver(two, tmp_path / "into")
 
 
 # ------------------------------------------------------------------------ digests
@@ -202,7 +308,7 @@ def test_deliver_names_the_skills_root_harbor_takes_and_writes_every_file(
     fields = deliver(candidate, into)
     root = (into / "skills").resolve()
     assert fields == {"skills": [str(root)]} and root.is_absolute()
-    assert _files(root / "solving") == _files(VALID / "solving")
+    assert _files(root / "solving") == _files(VALID / SKILLS_DIR / "solving")
     assert not stale.exists(), "emptied first: one candidate's text never beside another's"
     # The field is Harbor's: `AgentConfig.skills` takes the root as it is.
     assert AgentConfig(name="pi", **fields).skills == [str(root)]
@@ -335,7 +441,7 @@ async def test_open_keeps_the_carried_modules_once_and_sample_delivers_them_per_
         root = (tmp_path / "jobs" / job / DELIVERED / "skills").resolve()
         assert config.agent.skills == [str(root)]
         assert config.agent.name == "pi" and config.agent.kwargs == {"version": "0.85.1"}
-        assert _files(root / "solving") == _files(VALID / "solving")
+        assert _files(root / "solving") == _files(VALID / SKILLS_DIR / "solving")
     rows = _rows(opened)
     assert [row["modules"] for row in rows] == [opened.carried.digest] * 2
     assert list(rows[0])[:7] == ["at", "job", "purpose", "trials", "batch", "tasks", "modules"]
@@ -381,12 +487,42 @@ async def test_a_handed_candidate_wins_over_the_carried_one(
     assert rolled.job == f"{opened.id}-0000"
 
 
+async def test_sample_hands_a_prompt_to_harbor_as_the_agents_prompt_template(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    opened = Run.open(_carrying(tmp_path), root=tmp_path / "runs")
+    opened.run_trial = runner = FakeTrials()
+    prompted = Candidate({}).with_component("guidance", _prompt("Run the tests.\n"))
+    rolled = await opened.sample(_batch(tmp_path, "alpha"), rollouts=1, index=0, modules=prompted)
+    kwargs = runner.configs[0].agent.kwargs
+    template = (tmp_path / "jobs" / rolled.job / DELIVERED / "prompt" / "template.j2").resolve()
+    assert kwargs == {"version": "0.85.1", "prompt_template_path": str(template)}
+    assert render_prompt_template(template, "Fix it.") == "Run the tests.\n\nFix it."
+    assert runner.configs[0].agent.skills == [], "a prompt is not a skill"
+    assert _rows(opened)[0]["modules"] == prompted.digest
+
+
+def test_check_warns_when_a_prompt_replaces_the_blueprints_template(tmp_path: Path) -> None:
+    text = CARRYING.replace("[recipe]", '[rollout.kwargs]\nprompt_template_path = "t.j2"\n[recipe]')
+    home = write_blueprint(tmp_path, text)
+    write({PROMPT_FILE: "Run the tests.\n"}, into=home / "modules")
+    found = [one.text for one in check(home) if one.level == "warning"]
+    assert any(one.startswith("[rollout.kwargs] prompt_template_path: the prompt") for one in found)
+    (home / "modules" / PROMPT_FILE).unlink()
+    shutil.copytree(VALID, home / "modules", dirs_exist_ok=True)
+    found = [one.text for one in check(home) if one.level == "warning"]
+    assert not any("prompt_template_path" in one for one in found), "skills leave it alone"
+
+
 def test_a_gradient_recipe_carries_and_a_gepa_run_seeds_its_own(tmp_path: Path) -> None:
     text = (BLUEPRINTS / "dapo" / "run.toml").read_text(encoding="utf-8")
     home = _carrying(tmp_path, text.replace("[recipe]", '[recipe]\nmodules = "modules"'))
     opened = Run.open(home, root=tmp_path / "runs")
     assert opened.carried == seed(VALID)
-    assert (opened.directory / record.MODULES / CARRIED / "solving" / SKILL_FILE).is_file()
+    assert (
+        opened.directory / record.MODULES / CARRIED / SKILLS_DIR / "solving" / SKILL_FILE
+    ).is_file()
     gepa = Run.open(BLUEPRINTS / "gepa", root=tmp_path / "runs")
     assert gepa.config.recipe.modules == "modules" and gepa.carried is None
     assert not (gepa.directory / record.MODULES).exists()
@@ -424,7 +560,7 @@ def test_check_reports_the_modules_it_seeds(
     [
         (None, "no modules at"),
         (FIXTURES / "bare", "'solving' cannot be delivered as a skill: it does not open with"),
-        (FIXTURES / "unknown", "'solving' holds no SKILL.md"),
+        (FIXTURES / "unknown", "'skills/solving' holds no SKILL.md"),
     ],
 )
 def test_check_blocks_a_seed_it_cannot_read(
@@ -444,11 +580,10 @@ def test_check_blocks_a_reserved_kind_by_name(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     home = _carrying(tmp_path, modules=None)
-    (home / "modules" / "lakehouse").mkdir(parents=True)
-    (home / "modules" / "lakehouse" / "server.py").write_text("print('x')\n")
+    write({"lakehouse/server.py": "print('x')\n"}, into=home / "modules" / "tools")
     [blocked] = [f.text for f in check(home) if f.level == "blocked"]
     assert blocked == (
-        "[recipe] modules: 'lakehouse' is a tool module, and tool modules are not "
+        "[recipe] modules: 'tools' is for tool modules, and tool modules are not "
         "supported in this version"
     )
 

@@ -138,6 +138,7 @@ def task_for(reflection: Reflection, home: Path, *, image: str, incremental: boo
             beside=beside,
             reference=bool(reference),
             incremental=incremental,
+            alone=kind.alone,
         ),
         encoding="utf-8",
     )
@@ -157,10 +158,17 @@ def _trace(outcome: Outcome) -> str:
 
 
 def instruction(
-    *, name: str, marker: str, beside: list[str], reference: bool, incremental: bool
+    *,
+    name: str,
+    marker: str,
+    beside: list[str],
+    reference: bool,
+    incremental: bool,
+    alone: bool = False,
 ) -> str:
     """The reflector's prompt: the goal, where the files are, that those directories hold
-    everything it has, what to keep and where to write the answer."""
+    everything it has, what to keep and where to write the answer. When the marker stands
+    alone, it is the only file written back."""
     current, traces = f"{WORKDIR}/{CURRENT}/{name}", f"{WORKDIR}/{TRACES}"
     return (
         f"Improve `{current}/{marker}` so that an assistant given it does better on tasks "
@@ -196,10 +204,15 @@ def instruction(
         "is lost unless you write it into the file, and so is anything already in there that "
         "is working: a rewrite that drops a working instruction to make room for a new one "
         "trades one failure for another.\n\n"
-        f"Write the new `{marker}` to `{PUBLISH}/{marker}`. Whatever else you want kept goes "
-        f"beside it under `{PUBLISH}`, at the same relative paths it has now; a file you do "
-        "not write is a file the next assistant will not have. What lands there is given "
-        "verbatim to the next assistant."
+        f"Write the new `{marker}` to `{PUBLISH}/{marker}`. "
+        + (
+            "It is the only file delivered. "
+            if alone
+            else f"Whatever else you want kept goes beside it under `{PUBLISH}`, at the same "
+            "relative paths it has now; a file you do not write is a file the next assistant "
+            "will not have. "
+        )
+        + "What lands there is given verbatim to the next assistant."
     )
 
 
@@ -222,7 +235,7 @@ def written(rolled: Rollouts, module: Module) -> Module | None:
     if not found.is_file():
         _say_why_not(trial, published, marker)
         return None
-    files = read(published)
+    files = {marker: found.read_text(encoding="utf-8")} if kind.alone else read(published)
     files[marker] = unwrapped(files[marker])
     rewritten = Module(module.name, module.kind, files)
     refused = kind.check(rewritten)

@@ -1,22 +1,35 @@
-"""Modules: the text a rollout carries into its container. A module is read from a
-directory, written back to one, and delivered the way Harbor takes it. This version has
-one kind, skills. A tool (`server.py`) or harness (`agent.py`) kind would implement the
-`Kind` protocol."""
+"""Modules: the text a rollout carries into its container. A modules directory has one
+layout, `PROMPT.md` and `skills/<name>/SKILL.md`, which `seed` reads and `keep` writes back.
+Each module is delivered the way Harbor takes it. This version has two kinds, prompts and
+skills. A tool or harness kind would implement the `Kind` protocol and claim its reserved
+directory."""
 
 from __future__ import annotations
 
 import hashlib
+import re
 import shutil
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
 
-#: Marks a directory as a skill. The directory name is the module name.
+#: The prompt, at the top of the modules directory, and the name of its component.
+PROMPT_FILE = "PROMPT.md"
+PROMPT = "prompt"
+#: Where the skills live, one directory each, named after the skill.
+SKILLS_DIR = "skills"
+#: Marks a skill's directory.
 SKILL_FILE = "SKILL.md"
-#: Markers of kinds this version does not deliver, so `seed` can report them as
-#: unsupported.
-RESERVED = {"server.py": "tool", "agent.py": "harness"}
+#: The layout, as refusals state it.
+LAYOUT = f"{PROMPT_FILE} and {SKILLS_DIR}/<name>/{SKILL_FILE}"
+#: The template a prompt is delivered as, under the job's modules directory.
+PROMPT_TEMPLATE = "prompt/template.j2"
+#: The end of a Jinja raw block, which a prompt's text may not contain.
+END_RAW = re.compile(r"{%-?\s*endraw\s*-?%}")
+#: Top-level directories kept for kinds this version does not deliver, so `seed` can
+#: report them as unsupported.
+RESERVED = {"tools": "tool", "harness": "harness"}
 #: Files a module directory may hold that nobody wrote. `read` skips them.
 INCIDENTAL = ("__pycache__", ".DS_Store")
 
@@ -31,7 +44,7 @@ class Unsupported(Inadmissible):
     def __init__(self, kind: str, name: str) -> None:
         self.kind = kind
         super().__init__(
-            f"{name!r} is a {kind} module, and {kind} modules are not supported in this version"
+            f"{name!r} is for {kind} modules, and {kind} modules are not supported in this version"
         )
 
 
@@ -76,10 +89,16 @@ class Candidate:
 
 
 class Kind(Protocol):
-    """What a kind of module defines: its marker, which modules are admissible, how a set
-    of them reaches the container, and what a reflector is told about the kind."""
+    """What a kind of module defines: its marker, where a module of it lives in the layout,
+    whether the marker is all of it, which modules are admissible, how a set of them reaches
+    the container, and what a reflector is told about the kind."""
 
     marker: str
+    #: The marker is the whole module: nothing beside it is read, kept or delivered.
+    alone: bool
+
+    # The module's directory under the modules directory, "" for the top.
+    def home(self, name: str) -> str: ...
 
     def check(self, module: Module) -> str | None: ...
 
@@ -97,6 +116,10 @@ class Skill:
     plus any files beside it."""
 
     marker = SKILL_FILE
+    alone = False
+
+    def home(self, name: str) -> str:
+        return f"{SKILLS_DIR}/{name}"
 
     def check(self, module: Module) -> str | None:
         """Require frontmatter with `name` and `description`. Harbor does not check it, and
@@ -142,53 +165,126 @@ class Skill:
         return None
 
 
+class Prompt:
+    """Text placed before the task's instruction in the harness's first message: `PROMPT.md`.
+    Harbor's `prompt_template_path` delivers it, so it reaches any harness Harbor installs,
+    whether or not that harness reads skills."""
+
+    marker = PROMPT_FILE
+    alone = True
+
+    def home(self, name: str) -> str:
+        return ""
+
+    def check(self, module: Module) -> str | None:
+        """Require one file of text with no Jinja raw-block end, since the text is delivered
+        inside one and nothing else is."""
+        if set(module.files) != {PROMPT_FILE}:
+            return f"a prompt is its {PROMPT_FILE} alone, and nothing beside it is delivered"
+        if not module.text.strip():
+            return "the text is empty"
+        if END_RAW.search(module.text):
+            return "it contains `{% endraw %}`, which would end the block it is delivered in"
+        return None
+
+    def deliver(self, modules: Sequence[Module], into: Path) -> dict[str, Any]:
+        """Write the template Harbor renders each task's instruction through: the text kept
+        raw, then the instruction. Return it as the agent's `prompt_template_path`."""
+        if len(modules) > 1:
+            names = ", ".join(sorted(module.name for module in modules))
+            raise Inadmissible(f"a candidate carries one prompt, and this one has {names}")
+        template = (into / PROMPT_TEMPLATE).resolve()
+        template.parent.mkdir(parents=True, exist_ok=True)
+        text = "{% raw %}" + preamble(modules[0]) + "{% endraw %}{{ instruction }}"
+        template.write_text(text, encoding="utf-8")
+        return {"kwargs": {"prompt_template_path": str(template)}}
+
+    def reference(self) -> str | None:
+        return (
+            f"`{PROMPT_FILE}` is given to the assistant at the start of every task, in its first "
+            "message, before the task's own instruction. It is the same text for every task, "
+            "so it should hold what helps across them, written to the assistant.\n"
+        )
+
+
+def preamble(module: Module) -> str:
+    """What a prompt puts before the instruction: its text, then a blank line."""
+    return module.text.strip() + "\n\n"
+
+
 #: The kinds this version delivers, by name. A new kind is a class plus a row here.
-KINDS: dict[str, Kind] = {"skill": Skill()}
-#: Each kind's marker mapped to its name.
-MARKERS = {kind.marker: name for name, kind in KINDS.items()}
+KINDS: dict[str, Kind] = {"skill": Skill(), "prompt": Prompt()}
 
 
 def seed(directory: Path) -> Candidate:
-    """The candidate a directory holds: one component per subdirectory, named after it and
-    holding a kind's marker, each checked. A reserved marker, no marker, an empty directory
-    or a failed check raises `Inadmissible` naming the component and the reason."""
+    """The candidate a modules directory holds, each module checked: `PROMPT.md` is the
+    component `prompt`, and each `skills/<name>/` holding `SKILL.md` is the component `<name>`.
+    Anything else at the top, a reserved directory, a skill without its marker, an empty
+    directory or a failed check raises `Inadmissible` naming the entry and the reason."""
     directory = Path(directory)
-    known = " or ".join(MARKERS)
     if not directory.is_dir():
-        raise Inadmissible(
-            f"no modules at {directory}: a directory holding one subdirectory per "
-            f"component, each with a {known} inside it"
-        )
-    components = {
-        home.name: _component(home)
-        for home in sorted(directory.iterdir())
-        if home.is_dir() and not home.name.startswith(".")
-    }
+        raise Inadmissible(f"no modules at {directory}: a directory holding {LAYOUT}")
+    components: dict[str, Module] = {}
+    for entry in _entries(directory):
+        if entry.name in RESERVED:
+            raise Unsupported(RESERVED[entry.name], entry.name)
+        if entry.name == PROMPT_FILE and entry.is_file():
+            components[PROMPT] = _checked(Module(PROMPT, "prompt", {PROMPT_FILE: _text(entry)}))
+        elif entry.name == SKILLS_DIR and entry.is_dir():
+            for home in _entries(entry):
+                if not (home / SKILL_FILE).is_file():
+                    raise Inadmissible(
+                        f"'{SKILLS_DIR}/{home.name}' holds no {SKILL_FILE}; each entry under "
+                        f"{SKILLS_DIR}/ is a skill's directory"
+                    )
+                if home.name in components:
+                    raise Inadmissible(
+                        f"'{SKILLS_DIR}/{home.name}' takes the name of the {PROMPT_FILE} component"
+                    )
+                components[home.name] = _checked(Module(home.name, "skill", read(home)))
+        else:
+            raise Inadmissible(
+                f"{entry.name!r} is not part of the layout: a modules directory holds {LAYOUT}"
+            )
     if not components:
-        raise Inadmissible(f"no components under {directory}: no subdirectory holds a {known}")
+        raise Inadmissible(f"no modules under {directory}: it holds neither {LAYOUT}")
     return Candidate(components)
 
 
-def _component(home: Path) -> Module:
-    """The checked module a component directory holds; its marker tells the kind."""
-    for marker, kind in RESERVED.items():
-        if (home / marker).is_file():
-            raise Unsupported(kind, home.name)
-    claimed = [kind for marker, kind in MARKERS.items() if (home / marker).is_file()]
-    if not claimed:
-        raise Inadmissible(f"{home.name!r} holds no {' or '.join(MARKERS)}, so its kind is unknown")
-    module = Module(home.name, claimed[0], read(home))
+def _entries(directory: Path) -> list[Path]:
+    """The directory's entries in name order, without dot-files or incidental files."""
+    return [
+        entry
+        for entry in sorted(directory.iterdir())
+        if not entry.name.startswith(".") and entry.name not in INCIDENTAL
+    ]
+
+
+def _text(file: Path) -> str:
+    """A module file's text. Raises `Inadmissible` for a file that is not UTF-8."""
+    try:
+        return file.read_text(encoding="utf-8")
+    except UnicodeDecodeError as refused:
+        raise Inadmissible(
+            f"{file.name!r} is not UTF-8 text, and a module is delivered as text"
+        ) from refused
+
+
+def _checked(module: Module) -> Module:
+    """The module, or `Inadmissible` naming it and why its kind refuses it."""
     refused = KINDS[module.kind].check(module)
     if refused:
-        raise Inadmissible(f"{home.name!r} cannot be delivered as a {module.kind}: {refused}")
+        raise Inadmissible(f"{module.name!r} cannot be delivered as a {module.kind}: {refused}")
     return module
 
 
 def keep(candidate: Candidate, into: Path) -> None:
-    """Write the candidate in the layout `seed` reads, `<into>/<name>/<files>`, so that a
-    winner can serve as a seed."""
-    for name, module in candidate.components.items():
-        write(module.files, into=Path(into) / name)
+    """Write the candidate in the layout `seed` reads, so that a winner can serve as a seed.
+    A kind whose marker stands alone keeps only its marker."""
+    for module in candidate.components.values():
+        kind = KINDS[module.kind]
+        files = {kind.marker: module.text} if kind.alone else module.files
+        write(files, into=Path(into) / kind.home(module.name))
 
 
 def deliver(candidate: Candidate, into: Path) -> dict[str, Any]:

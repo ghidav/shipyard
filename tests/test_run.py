@@ -87,7 +87,9 @@ async def test_run_recipe_dispatches_to_the_kind(tmp_path: Path, monkeypatch) ->
     opened = Run.open(BLUEPRINTS / "gepa", root=tmp_path / "runs")
     with pytest.raises(NoSuchDataset, match="aime-train"):
         await run_recipe(opened)
-    assert (opened.directory / record.MODULES / "seed" / "solving" / "SKILL.md").is_file()
+    assert (
+        opened.directory / record.MODULES / "seed" / "skills" / "solving" / "SKILL.md"
+    ).is_file()
 
 
 def test_open_refuses_an_existing_directory(tmp_path: Path, monkeypatch) -> None:

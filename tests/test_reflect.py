@@ -27,7 +27,7 @@ from shipyard.gepa.reflect import (
     unwrapped,
     written,
 )
-from shipyard.modules import KINDS, SKILL_FILE, Candidate, Module
+from shipyard.modules import KINDS, PROMPT, PROMPT_FILE, SKILL_FILE, Candidate, Module
 from shipyard.rollout import Rollouts
 from shipyard.run import Run
 from tests.trials import write_blueprint, write_result
@@ -132,6 +132,10 @@ def test_the_reference_is_written_only_when_the_kind_has_one(
 
     class Contracted:
         marker = "AGENT.md"
+        alone = False
+
+        def home(self, name: str) -> str:
+            return f"agents/{name}"
 
         def check(self, module: Module) -> str | None:
             return None
@@ -178,6 +182,23 @@ def test_the_rewrite_is_read_back_as_a_module_of_the_same_name_and_kind(tmp_path
     assert found is not None and (found.name, found.kind) == ("solving", "skill")
     assert found.files == {SKILL_FILE: REWRITTEN, "examples/worked.md": "the corrected example"}
     assert found.digest != _module().digest
+
+
+def test_a_prompts_rewrite_is_its_marker_alone(tmp_path: Path) -> None:
+    """A prompt is delivered as its text and nothing else, so the reflector is told so, and
+    anything it writes beside `PROMPT.md` is left behind rather than refused."""
+    prompt = Module(PROMPT, "prompt", {PROMPT_FILE: "Run the tests.\n"})
+    task = task_for(_reflection(prompt), tmp_path / "task", image="i", incremental=True)
+    text = (task / "instruction.md").read_text()
+    assert f"Improve `/app/current/{PROMPT}/{PROMPT_FILE}`" in text
+    assert "It is the only file delivered." in text and "goes beside it" not in text
+    trial = tmp_path / "reflection__abc"
+    _published(trial, PROMPT_FILE).write_text("Run the tests, then read their output.\n")
+    _published(trial, "notes.md").write_text("why I changed it")
+    found = written(_rollouts(trial), prompt)
+    assert found is not None and found.files == {
+        PROMPT_FILE: "Run the tests, then read their output.\n"
+    }
 
 
 def test_a_rewrite_that_fails_the_kinds_check_is_declined_and_said(
