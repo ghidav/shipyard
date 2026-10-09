@@ -5,28 +5,33 @@ document the harness can open while it works. A prompt is text placed before eve
 instruction. A candidate is a set of named modules with one digest. A rollout carries at most one
 candidate.
 
-## A module is a directory
+## The layout
 
-A modules directory holds one subdirectory per module. The subdirectory's name is the module's name. A
-marker file inside it names the module's kind:
-
-| Marker | Kind | In v1 |
-|---|---|---|
-| `SKILL.md` | skill | delivered |
-| `PROMPT.md` | prompt | delivered |
-| `server.py` | tool | refused |
-| `agent.py` | harness | refused |
-
-Every file in the subdirectory travels with the module, at any depth, except dot-files, `__pycache__`
-and `.DS_Store`. Every file must be UTF-8 text. A blueprint with one skill:
+A modules directory has one layout. A prompt sits at the top, and each skill has a directory under
+`skills/`:
 
 ```
-blueprints/05-gepa-docker/
+blueprints/my-run/
 ├── run.toml
 └── modules/
-    └── solving/
-        └── SKILL.md
+    ├── PROMPT.md
+    └── skills/
+        └── solving/
+            ├── SKILL.md
+            └── examples/
+                └── worked.md
 ```
+
+| Path | Kind | Component | In v1 |
+|---|---|---|---|
+| `PROMPT.md` | prompt | `prompt` | delivered |
+| `skills/<name>/`, holding `SKILL.md` | skill | `<name>` | delivered |
+| `tools/` | tool | | refused |
+| `harness/` | harness | | refused |
+
+Both parts are optional, but the directory must hold at least one module. Nothing else may sit at the
+top. A skill takes every file in its directory with it, at any depth, except dot-files, `__pycache__`
+and `.DS_Store`. Every file must be UTF-8 text.
 
 The digest is a sha256 prefix computed over every file of every module.
 
@@ -67,21 +72,16 @@ it; `check` does not test this.
 
 ## Prompts
 
-A prompt is a directory holding `PROMPT.md` and nothing else. Its text goes at the start of the
+A prompt is `PROMPT.md` at the top of the modules directory. Its text goes at the start of the
 harness's first message, before the task's own instruction, in every task the candidate is carried
-into:
-
-```
-modules/
-└── guidance/
-    └── PROMPT.md
-```
+into.
 
 A harness decides whether to open a skill, and a model may never do so. A prompt is always read,
 because it is part of the task. It also reaches any harness Harbor installs, including those that take
 no skills.
 
-A candidate carries at most one prompt, beside any number of skills.
+A candidate carries at most one prompt, beside any number of skills. When gepa rewrites a prompt,
+only `PROMPT.md` is kept.
 
 ## How a prompt reaches the container
 
@@ -123,29 +123,33 @@ job row matches that copy.
 
 ## Refusals
 
-`check` blocks a modules directory that cannot be delivered and names the module and the reason. Tools
-and harnesses are refused by name:
+`check` blocks a modules directory that cannot be delivered and names the entry and the reason. The
+directories kept for tools and harnesses are refused by name:
 
 ```
-blocked  [recipe] modules: 'search' is a tool module, and tool modules are not supported in this version
-blocked  [recipe] modules: 'myagent' is a harness module, and harness modules are not supported in this version
+blocked  [recipe] modules: 'tools' is for tool modules, and tool modules are not supported in this version
+blocked  [recipe] modules: 'harness' is for harness modules, and harness modules are not supported in this version
 ```
 
 These cases are refused too:
 
-- A subdirectory with no marker, or with two.
-- A prompt with an empty text, a file beside `PROMPT.md`, or `{% endraw %}` in its text.
-- A candidate with two prompts.
-- A directory with no subdirectories, or a path that does not exist.
+- Anything else at the top, such as a skill's directory outside `skills/`:
+  `'solving' is not part of the layout: a modules directory holds PROMPT.md and skills/<name>/SKILL.md`.
+- A directory under `skills/` without a `SKILL.md`.
+- A skill named `prompt` beside a `PROMPT.md`, since both would be the component `prompt`.
+- A prompt with an empty text, or with `{% endraw %}` in it.
+- A directory holding no module, or a path that does not exist.
 - A file that is not UTF-8 text.
 
 ## The Kind protocol
 
-Each kind of module is a class with four members:
+Each kind of module is a class with six members:
 
 | Member | What it does |
 |---|---|
 | `marker` | Names the file that marks a module of this kind. |
+| `alone` | Whether the marker is the whole module, so nothing beside it is read, kept or delivered. |
+| `home(name)` | Returns where a module of this kind lives in the layout, `""` for the top. |
 | `check(module)` | Returns why the module cannot be delivered, or `None`. |
 | `deliver(modules, into)` | Writes the modules under `into` and returns the agent-config fields that carry them. |
 | `reference()` | Returns what the gepa reflector is told about the kind, or `None` when there is nothing to add. |
