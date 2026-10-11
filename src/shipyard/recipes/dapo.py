@@ -3,15 +3,15 @@ clipping, each prompt's token losses averaged (Eq. 8), 16 substeps by prompt (4.
 groups dropped and refilled from the plan (dynamic sampling, Alg. 1), the soft overlong
 punishment (Eq. 13), and AdamW (4.1; the `warmup` key sets its 20-step warm-up). `clip_low` /
 `clip_high` (0.2 / 0.28, 4.1) are epsilons. Tinker's `ppo` takes bounds, so `loss_fn_config`
-gets `1 - clip_low` and `1 + clip_high` (`recipes.train.clipped`)."""
+gets `1 - clip_low` and `1 + clip_high` (`gradient.clipped`)."""
 
 from __future__ import annotations
 
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from shipyard.recipes import train as loop
-from shipyard.recipes.train import Preset
+from shipyard import gradient
+from shipyard.gradient import Preset
 from shipyard.trainer import COOKBOOK
 
 if TYPE_CHECKING:
@@ -29,16 +29,16 @@ def preset(recipe: Any) -> Preset:
         name="dapo",
         normalize=True,
         loss_fn="ppo",
-        loss_config=loop.clipped(float(recipe.clip_low), float(recipe.clip_high)),
+        loss_config=gradient.clipped(float(recipe.clip_low), float(recipe.clip_high)),
         clipping=f"clip {recipe.clip_low} / {recipe.clip_high}",
         aggregation="prompt",
         overlong_penalty=float(recipe.overlong_penalty),
         overlong_buffer=float(recipe.overlong_buffer),
         adam=replace(ADAM, warmup=int(recipe.warmup)),
         paper_warmup=PAPER_WARMUP,
-        **loop.shared(recipe),
+        **gradient.shared(recipe),
     )
 
 
 async def run(run: Run) -> None:
-    await loop.train(run, preset(run.config.recipe))
+    await gradient.train(run, preset(run.config.recipe))

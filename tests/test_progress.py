@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from rich.console import Console
 
-from shipyard.ui import QUIET, Bars, Reporter, reporter
+from shipyard.progress import QUIET, Bars, Reporter, reporter
 
 
 def test_the_reporter_is_silent_off_a_terminal_and_under_quiet(

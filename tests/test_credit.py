@@ -21,9 +21,9 @@ from shipyard.credit import (
     shaped,
     weights,
 )
+from shipyard.gradient import row
 from shipyard.pack import Group, Member, Sequence
 from shipyard.recipes import cispo, dapo, dr_grpo
-from shipyard.recipes.train import row
 from shipyard.trainer import Trainer
 from tests.trainers import FakeTrainingClient, FlatAnchor, batch, preset
 

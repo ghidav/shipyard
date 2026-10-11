@@ -32,7 +32,8 @@ A learning rate tuned with one set of betas, eps and warm-up trains differently 
 ## Training
 
 **The step is shipyard's own, over the Tinker SDK. The cookbook is imported in one adapter module,
-for the renderers and the proxy app only.**
+for the renderers and the proxy app only, plus one lazy lookup of its model table when `check`
+names the renderer it would pick.**
 A cookbook release cannot change the loss under a run, and shipyard sends the same datums and loss
 config to any backend that `TINKER_BASE_URL` names.
 

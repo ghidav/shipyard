@@ -14,8 +14,8 @@ import torch
 
 from shipyard.admit import Verdict
 from shipyard.credit import credit
+from shipyard.gradient import row
 from shipyard.pack import Group, Member, Sequence, datum
-from shipyard.recipes.train import row
 from shipyard.trainer import (
     COOKBOOK,
     DEFAULT_LORA_RANK,
