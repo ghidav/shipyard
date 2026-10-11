@@ -13,17 +13,16 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from shipyard import record
+from shipyard import gradient, record
 from shipyard.config import SLOW_KNOBS, CispoRecipe, DapoRecipe, DrGrpoRecipe
 from shipyard.data import batches
 from shipyard.gepa.cycle import evolve
 from shipyard.gepa.outcomes import outcomes
 from shipyard.gepa.reflect import reflect
+from shipyard.gradient import Preset
 from shipyard.modules import Candidate, keep, seed
 from shipyard.recipes import cispo, dapo, dr_grpo
-from shipyard.recipes import train as loop
 from shipyard.recipes.gepa import BEST, SEED
-from shipyard.recipes.train import Preset
 from shipyard.rollout import Rollouts
 from shipyard.trainer import SERVE_TTL, Adam
 
@@ -79,7 +78,7 @@ def preset(recipe: Any) -> Preset:
 
 def resolution(recipe: Any) -> str:
     """The comment line `check` prints: the cycle, the population, then the slow recipe's."""
-    slow = loop.resolution(preset(recipe)).removeprefix("# fst: ")
+    slow = gradient.resolution(preset(recipe)).removeprefix("# fst: ")
     return (
         f"# fst: cycles of {recipe.cycle} {recipe.slow} steps, each after gepa evolves "
         f"{recipe.population} texts on the next {recipe.cycle} batches; every group split "
@@ -112,8 +111,8 @@ async def run(run: Run) -> None:
     )
     planned = list(batches(cfg.datasets, size=data.batch_size, seed=data.seed, epochs=data.epochs))
     index = 0
-    async with loop.training(run, slow) as (trainer, anchor):
-        serving = loop.serving_of(run, slow)
+    async with gradient.training(run, slow) as (trainer, anchor):
+        serving = gradient.serving_of(run, slow)
         for cycle, start in enumerate(range(0, len(planned), recipe.cycle)):
             lookahead = planned[start : start + recipe.cycle]
             await serving.point(await trainer.publish(f"fast-{cycle}", ttl_seconds=SERVE_TTL))
@@ -123,7 +122,7 @@ async def run(run: Run) -> None:
             sample = partial(sampled, run, population, share)
             for tasks in lookahead:
                 about = {"cycle": cycle}
-                await loop.step(
+                await gradient.step(
                     run, trainer, anchor, slow, tasks, index, sample=sample, about=about
                 )
                 index += 1

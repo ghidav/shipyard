@@ -15,11 +15,12 @@ from typing import TYPE_CHECKING, Any, Self
 
 from shortuuid import ShortUUID
 
-from shipyard import record, ui
+from shipyard import record
 from shipyard.admit import verdicts
 from shipyard.config import Blueprint, FstRecipe, GepaRecipe, config_file, load, modules_dir
 from shipyard.cost import Costs, billed_by, reported, sandbox_seconds
 from shipyard.modules import Candidate, keep, seed
+from shipyard.progress import Reporter, reporter
 from shipyard.rollout import Rollouts, Runner, rollout
 from shipyard.serving import Harvest, NothingServed, Serving, served_nothing, tinker_base_url
 
@@ -50,7 +51,7 @@ class Run:
         self.carried = carried
         self.costs = Costs.from_dict(record.read_json(directory / record.COSTS))
         self.jobs_dir = Path(config.rollout.jobs_dir)
-        self.progress: ui.Reporter = ui.reporter()
+        self.progress: Reporter = reporter()
         #: How one trial is run; None is Harbor's `Trial`. A test hands in its own.
         self.run_trial: Runner | None = None
         #: The proxy and its records, for a run serving its own weights; else None.

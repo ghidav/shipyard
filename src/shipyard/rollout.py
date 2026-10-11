@@ -26,9 +26,9 @@ from shipyard.modules import Candidate, deliver, merge_fields
 from shipyard.proxy.profiles import Profile, bare_name, slug_of
 
 if TYPE_CHECKING:
+    from shipyard.progress import Reporter
     from shipyard.proxy.client import Proxy
     from shipyard.proxy.wire import Record
-    from shipyard.ui import Reporter
 
 logger = logging.getLogger(__name__)
 

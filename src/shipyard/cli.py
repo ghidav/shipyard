@@ -153,9 +153,9 @@ def _smoke(opened: Run) -> None:
 )
 def serve(ctx: typer.Context) -> None:
     """Serve a Tinker model to a harness in a sandbox. `shipyard serve --help` lists the
-    flags. `shipyard.serve` defines them with argparse, so a container entrypoint and this
+    flags. `shipyard.proxy.serve` defines them with argparse, so a container entrypoint and this
     command parse the same flags."""
-    from shipyard.serve import main as serve_main
+    from shipyard.proxy.serve import main as serve_main
 
     raise typer.Exit(serve_main(list(ctx.args)))
 

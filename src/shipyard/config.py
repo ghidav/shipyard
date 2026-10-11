@@ -397,7 +397,7 @@ def check(blueprint: Path) -> list[Finding]:
 
 def findings(loaded: Blueprint) -> list[Finding]:
     """The findings of a blueprint that loaded. The sandbox and served-model findings come
-    from `preflight`, imported here so the CLI stays light."""
+    from `preflight`, imported here because `preflight` imports this module."""
     from shipyard.preflight import findings as preflight_findings
 
     model, rollout = loaded.model, loaded.rollout
