@@ -14,7 +14,7 @@ from tinker import TensorData
 from tinker.types import GetServerCapabilitiesResponse, SupportedModel
 
 from shipyard.credit import Batch
-from shipyard.recipes.train import Preset
+from shipyard.gradient import Preset
 from shipyard.trainer import COOKBOOK
 
 

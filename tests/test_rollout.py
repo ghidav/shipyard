@@ -13,7 +13,7 @@ import pytest
 from harbor.models.environment_type import EnvironmentType
 from harbor.models.trial.config import TrialConfig
 
-from shipyard import ui
+from shipyard.progress import Reporter
 from shipyard.proxy.profiles import PROFILES, Profile
 from shipyard.rollout import (
     MODAL_IMAGE_BUILDER,
@@ -171,7 +171,7 @@ async def test_the_modal_builder_is_set_unless_the_shell_chose(
 async def test_every_finished_trial_is_reported_to_the_progress_with_its_mask(
     tmp_path: Path,
 ) -> None:
-    class Counting(ui.Reporter):
+    class Counting(Reporter):
         def __init__(self) -> None:
             self.seen: dict[Path, bool] = {}
 

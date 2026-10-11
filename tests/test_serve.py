@@ -19,8 +19,8 @@ import pytest
 from typer.testing import CliRunner
 
 import shipyard
-from shipyard import serve as serving
 from shipyard.cli import app
+from shipyard.proxy import serve
 from shipyard.proxy.endpoint import Endpoint
 from shipyard.proxy.wire import records_of
 from tests.proxies import endpoint
@@ -53,7 +53,7 @@ async def run_briefly(fake: Any, **overrides: Any) -> list[str]:
     stop = asyncio.Event()
     stop.set()
     printed: list[str] = []
-    await serving.serve(fake, out=printed.append, stop=stop, **overrides)
+    await serve.serve(fake, out=printed.append, stop=stop, **overrides)
     return printed
 
 
@@ -62,13 +62,13 @@ async def run_briefly(fake: Any, **overrides: Any) -> list[str]:
 
 def test_a_wildcard_bind_with_nothing_named_is_refused() -> None:
     with pytest.raises(ValueError, match="--advertise"):
-        serving.advertised("0.0.0.0", None)
-    assert serving.advertised("10.0.0.4", None) == "10.0.0.4"
-    assert serving.advertised("0.0.0.0", "shipyard-proxy") == "shipyard-proxy"
+        serve.advertised("0.0.0.0", None)
+    assert serve.advertised("10.0.0.4", None) == "10.0.0.4"
+    assert serve.advertised("0.0.0.0", "shipyard-proxy") == "shipyard-proxy"
 
 
 def test_the_flags_default_to_every_interface_and_any_port() -> None:
-    args = serving.parser().parse_args(["--model", "a/b"])
+    args = serve.parser().parse_args(["--model", "a/b"])
     assert (args.bind, args.port, args.advertise, args.weights, args.renderer) == (
         "0.0.0.0",
         0,
@@ -77,12 +77,12 @@ def test_the_flags_default_to_every_interface_and_any_port() -> None:
         None,
     )
     assert args.settings is None
-    parsed = serving.parser().parse_args(["--model", "a/b", "--settings", '{"top_p": 0.5}'])
+    parsed = serve.parser().parse_args(["--model", "a/b", "--settings", '{"top_p": 0.5}'])
     assert parsed.settings == {"top_p": 0.5}
 
 
 def test_main_says_what_is_wrong_rather_than_serving_nowhere(capsys: Any) -> None:
-    assert serving.main(["--model", "a/b"]) == 2
+    assert serve.main(["--model", "a/b"]) == 2
     assert "--advertise" in capsys.readouterr().out
 
 
@@ -100,7 +100,7 @@ def build(**overrides: Any) -> Endpoint:
         token="k",
         control_token="c",
     )
-    return serving.endpoint_for("Qwen/Qwen3-8B", **{**named, **overrides})
+    return serve.endpoint_for("Qwen/Qwen3-8B", **{**named, **overrides})
 
 
 def test_the_flags_reach_the_real_endpoint() -> None:
@@ -141,13 +141,13 @@ def test_settings_carry_the_runs_other_keys_and_nothing_else() -> None:
 
 
 def test_the_tokens_come_from_the_env_or_are_generated_and_said() -> None:
-    token, control, generated = serving.tokens_from_env({"SHIPYARD_PROXY_TOKEN": "t"})
+    token, control, generated = serve.tokens_from_env({"SHIPYARD_PROXY_TOKEN": "t"})
     assert token == "t" and control and generated == {"SHIPYARD_CONTROL_TOKEN": control}
-    token, control, generated = serving.tokens_from_env(
+    token, control, generated = serve.tokens_from_env(
         {"SHIPYARD_PROXY_TOKEN": "", "SHIPYARD_CONTROL_TOKEN": "c"}
     )
     assert token and control == "c" and generated == {"SHIPYARD_PROXY_TOKEN": token}
-    assert serving.tokens_from_env({})[2].keys() == {
+    assert serve.tokens_from_env({})[2].keys() == {
         "SHIPYARD_PROXY_TOKEN",
         "SHIPYARD_CONTROL_TOKEN",
     }
@@ -172,7 +172,7 @@ async def test_a_token_the_caller_supplied_is_not_printed_back() -> None:
 
 async def test_the_banner_names_the_real_endpoints_port() -> None:
     async with endpoint(control_token="c") as started:
-        line, port = serving.banner(started), started.port
+        line, port = serve.banner(started), started.port
     assert line == f"serving Qwen/Qwen3-8B at http://127.0.0.1:{port} (control: on)"
 
 
@@ -183,7 +183,7 @@ async def test_the_endpoint_closes_even_when_printing_raises() -> None:
         raise RuntimeError("the log went away")
 
     with pytest.raises(RuntimeError, match="the log went away"):
-        await serving.serve(fake, out=fail)
+        await serve.serve(fake, out=fail)
     assert fake.called == ["start", "stop"]
 
 
@@ -192,7 +192,7 @@ async def test_the_endpoint_closes_even_when_printing_raises() -> None:
 
 async def test_a_sigterm_is_what_ends_it_and_the_handlers_come_off_again() -> None:
     stop = asyncio.Event()
-    with serving.stopping_on_signals(stop):
+    with serve.stopping_on_signals(stop):
         signal.raise_signal(signal.SIGTERM)
         await asyncio.wait_for(stop.wait(), timeout=2)
     assert stop.is_set()
@@ -243,7 +243,15 @@ def test_serve_runs_for_real_on_the_fake_sampler(tmp_path: Path) -> None:
         "PYTHONUNBUFFERED": "1",
     }
     process = subprocess.Popen(
-        [sys.executable, "-m", "shipyard.serve", "--model", "Qwen/Qwen3-8B", "--bind", "127.0.0.1"],
+        [
+            sys.executable,
+            "-m",
+            "shipyard.proxy.serve",
+            "--model",
+            "Qwen/Qwen3-8B",
+            "--bind",
+            "127.0.0.1",
+        ],
         env=env,
         cwd=tmp_path,
         stdout=subprocess.PIPE,
@@ -310,7 +318,7 @@ def test_serve_runs_for_real_on_the_fake_sampler(tmp_path: Path) -> None:
 
 
 async def test_the_fake_parts_echo_and_render_by_character() -> None:
-    make, renderer = serving.fake_parts()
+    make, renderer = serve.fake_parts()
     prompt = renderer.build_generation_prompt([{"role": "user", "content": "ab"}])
     assert prompt.to_ints() == [ord("a"), ord("b")]
     echo = await make("tinker://x")

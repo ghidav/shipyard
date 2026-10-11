@@ -10,8 +10,8 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from shipyard.recipes import train as loop
-from shipyard.recipes.train import Preset
+from shipyard import gradient
+from shipyard.gradient import Preset
 from shipyard.trainer import Adam
 
 if TYPE_CHECKING:
@@ -36,9 +36,9 @@ def preset(recipe: Any) -> Preset:
         overlong_penalty=float(recipe.overlong_penalty),
         overlong_buffer=float(recipe.overlong_buffer),
         adam=replace(ADAM, warmup=int(recipe.warmup)),
-        **loop.shared(recipe),
+        **gradient.shared(recipe),
     )
 
 
 async def run(run: Run) -> None:
-    await loop.train(run, preset(run.config.recipe))
+    await gradient.train(run, preset(run.config.recipe))

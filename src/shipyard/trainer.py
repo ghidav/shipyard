@@ -17,7 +17,7 @@ from shipyard.session import quietly_closed, server_has
 
 if TYPE_CHECKING:
     from shipyard.credit import Batch
-    from shipyard.recipes.train import Preset
+    from shipyard.gradient import Preset
 
 logger = logging.getLogger(__name__)
 

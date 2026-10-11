@@ -36,6 +36,6 @@ def resolution(recipe: Any) -> str | None:
     found = getattr(module, "preset", None)
     if found is None:
         return None
-    from shipyard.recipes import train as loop
+    from shipyard import gradient
 
-    return loop.resolution(found(recipe))
+    return gradient.resolution(found(recipe))

@@ -18,7 +18,7 @@ from tinker import TensorData
 from shipyard.pack import Group, Member, Sequence, datum, shifted
 
 if TYPE_CHECKING:
-    from shipyard.recipes.train import Preset
+    from shipyard.gradient import Preset
     from shipyard.trainer import Trainer
 
 #: Guards the division when a group has no reward spread.

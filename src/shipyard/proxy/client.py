@@ -36,7 +36,7 @@ from shipyard.proxy.wire import (
 logger = logging.getLogger(__name__)
 
 #: The command that starts `shipyard serve`. Tests replace it with a stub.
-SERVE: list[str] = [sys.executable, "-m", "shipyard.serve"]
+SERVE: list[str] = [sys.executable, "-m", "shipyard.proxy.serve"]
 #: The first line serve prints. It names the port the kernel chose.
 BANNER = re.compile(
     r"^serving (?P<model>\S+) at http://(?P<host>[^:/]+):(?P<port>\d+) "
@@ -64,7 +64,7 @@ class Unreachable(RuntimeError):
 
 
 def serve_command(settings: Mapping[str, Any], *, host: str) -> list[str]:
-    """The `python -m shipyard.serve` command for `settings`. `model`, `weights`,
+    """The `python -m shipyard.proxy.serve` command for `settings`. `model`, `weights`,
     `renderer`, `bind` and `bind_port` become flags. The rest go in `--settings` as JSON."""
     made = [*SERVE, "--model", str(settings["model"])]
     made += ["--bind", str(settings.get("bind") or "0.0.0.0")]
