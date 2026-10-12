@@ -4,22 +4,22 @@ enforces the budget and the context fit, and replays SDK retries."""
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import time
 from dataclasses import replace
-from functools import lru_cache
 from typing import Any
 
 from shipyard.proxy import cookbook
 from shipyard.proxy.bridge import Index, Reply
 from shipyard.proxy.exchange import exchange
 
-# `Record` and `IMAGE_TOKEN` are defined in `wire`, which the run reads without the
-# cookbook. They are re-exported here.
+# `Record`, `IMAGE_TOKEN` and the two readers of a prompt are defined in `wire`, which the
+# run reads without the cookbook. They are re-exported here.
 from shipyard.proxy.wire import IMAGE_TOKEN as IMAGE_TOKEN
-from shipyard.proxy.wire import SAMPLER_FAILED, Picture
+from shipyard.proxy.wire import SAMPLER_FAILED, Picture, pictured
 from shipyard.proxy.wire import Record as Record
+from shipyard.proxy.wire import ids_of as ids_of
+from shipyard.proxy.wire import pictures_of as pictures_of
 
 
 class Recorder:
@@ -249,19 +249,20 @@ class Recorder:
         call_ids: tuple[str, ...] = (),
     ) -> None:
         """Set the parsed reply's digest on record `seq` of the trial and index the reply,
-        with its calls' ids, for the bridge. A prompt that held an image is not indexed,
-        because no ids rebuild it."""
+        with its calls' ids, for the bridge. A prompt with an image the record did not keep
+        is not indexed, because nothing rebuilds it."""
         records = self.records.get(trial, [])
         for at in range(len(records) - 1, -1, -1):
             if records[at].seq != seq:
                 continue
             record = records[at] = replace(records[at], reply_digest=reply_digest)
-            if IMAGE_TOKEN not in record.prompt_token_ids:
+            if pictured(record):
                 reply = Reply(
                     prompt_ids=record.prompt_token_ids,
                     completion_ids=record.completion_token_ids,
                     ended_with_stop=ended_with_stop,
                     rendered=record.prompt_token_ids if rendered is None else rendered,
+                    pictures=record.images,
                 )
                 self.index_for(trial).add(record.prompt_digests, reply_digest, reply, call_ids)
             return
@@ -282,47 +283,6 @@ class Recorder:
         for counter in (self.turned_away, self.cut, self.spoke, self._seq, self.indexes):
             counter.pop(trial, None)
         return self.records.pop(trial, [])
-
-
-def ids_of(prompt: Any) -> tuple[int, ...]:
-    """The prompt as ids. Each non-text chunk becomes a run of `IMAGE_TOKEN` of the
-    chunk's length, because `ModelInput.to_ints` refuses image chunks and the record
-    must still show the length."""
-    ids: list[int] = []
-    for chunk in prompt.chunks:
-        tokens = getattr(chunk, "tokens", None)
-        if tokens is not None:
-            ids.extend(int(token) for token in tokens)
-        else:
-            ids.extend([IMAGE_TOKEN] * int(getattr(chunk, "length", 0) or 0))
-    return tuple(ids)
-
-
-def pictures_of(prompt: Any) -> tuple[Picture, ...]:
-    """The prompt's images, each at the offset its `IMAGE_TOKEN` run has in `ids_of`. A
-    chunk that carries no bytes (an asset pointer) leaves no picture, and admission sets
-    the rollout aside."""
-    found: list[Picture] = []
-    at = 0
-    for chunk in prompt.chunks:
-        tokens = getattr(chunk, "tokens", None)
-        if tokens is not None:
-            at += len(tokens)
-            continue
-        length = int(getattr(chunk, "length", 0) or 0)
-        data = getattr(chunk, "data", None)
-        if isinstance(data, bytes | bytearray) and length:
-            encoded = _encoded(bytes(data))
-            found.append(Picture(at, length, str(getattr(chunk, "format", "jpeg")), encoded))
-        at += length
-    return tuple(found)
-
-
-@lru_cache(maxsize=256)
-def _encoded(data: bytes) -> str:
-    """The bytes as base64, one string per distinct image: a harness re-sends the same image
-    with every call of a trial, and the records then share it instead of each holding a copy."""
-    return base64.b64encode(data).decode("ascii")
 
 
 def _params_dict(sampling_params: Any) -> dict[str, Any]:

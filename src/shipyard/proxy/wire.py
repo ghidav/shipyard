@@ -5,9 +5,11 @@ tokens and is rebuilt in full on read."""
 
 from __future__ import annotations
 
+import base64
 import secrets
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
+from functools import lru_cache
 from typing import Any
 
 #: The harness's key and the run's control key. They are env vars because the config is
@@ -89,6 +91,83 @@ def pictured(record: Record) -> bool:
         return False
     kept = {(one.offset, one.length) for one in record.images}
     return all(run in kept for run in image_runs(record.prompt_token_ids))
+
+
+def ids_of(prompt: Any) -> tuple[int, ...]:
+    """The prompt as ids. Each non-text chunk becomes a run of `IMAGE_TOKEN` of the
+    chunk's length, because `ModelInput.to_ints` refuses image chunks and the record
+    must still show the length."""
+    ids: list[int] = []
+    for chunk in prompt.chunks:
+        tokens = getattr(chunk, "tokens", None)
+        if tokens is not None:
+            ids.extend(int(token) for token in tokens)
+        else:
+            ids.extend([IMAGE_TOKEN] * int(getattr(chunk, "length", 0) or 0))
+    return tuple(ids)
+
+
+def pictures_of(prompt: Any) -> tuple[Picture, ...]:
+    """The prompt's images, each at the offset its `IMAGE_TOKEN` run has in `ids_of`. A
+    chunk that carries no bytes (an asset pointer) leaves no picture, and admission sets
+    the rollout aside."""
+    found: list[Picture] = []
+    at = 0
+    for chunk in prompt.chunks:
+        tokens = getattr(chunk, "tokens", None)
+        if tokens is not None:
+            at += len(tokens)
+            continue
+        length = int(getattr(chunk, "length", 0) or 0)
+        data = getattr(chunk, "data", None)
+        if isinstance(data, bytes | bytearray) and length:
+            encoded = _encoded(bytes(data))
+            found.append(Picture(at, length, str(getattr(chunk, "format", "jpeg")), encoded))
+        at += length
+    return tuple(found)
+
+
+@lru_cache(maxsize=256)
+def _encoded(data: bytes) -> str:
+    """The bytes as base64, one string per distinct image: a harness re-sends the same image
+    with every call of a trial, and the records then share it instead of each holding a copy."""
+    return base64.b64encode(data).decode("ascii")
+
+
+def model_input(tokens: Sequence[int], images: Sequence[Picture] = ()) -> Any:
+    """The tokens as the model reads them, a `tinker.ModelInput`: text chunks, with an
+    image chunk in place of each `IMAGE_TOKEN` run. Without images, `from_ints`. Raises
+    when a run has no picture, or a picture no run, since the model would then read a
+    prompt the policy never saw."""
+    import tinker
+
+    if not images:
+        if IMAGE_TOKEN in tokens:
+            raise ValueError("a sequence with an image's tokens needs the picture behind them")
+        return tinker.ModelInput.from_ints(list(tokens))
+    placed = sorted(images, key=lambda one: one.offset)
+    runs = image_runs(tokens)
+    if [(one.offset, one.length) for one in placed] != runs:
+        raise ValueError(
+            f"the pictures sit at {[(one.offset, one.length) for one in placed]} but the "
+            f"image tokens at {runs}"
+        )
+    chunks: list[Any] = []
+    at = 0
+    for picture in placed:
+        if picture.offset > at:
+            chunks.append(tinker.types.EncodedTextChunk(tokens=list(tokens[at : picture.offset])))
+        chunks.append(
+            tinker.types.ImageChunk(
+                data=base64.b64decode(picture.data),
+                format=picture.format,  # type: ignore[arg-type]
+                expected_tokens=picture.length,
+            )
+        )
+        at = picture.offset + picture.length
+    if at < len(tokens):
+        chunks.append(tinker.types.EncodedTextChunk(tokens=list(tokens[at:])))
+    return tinker.ModelInput(chunks=chunks)
 
 
 def delta_encoded(records: Sequence[Record]) -> list[dict[str, Any]]:

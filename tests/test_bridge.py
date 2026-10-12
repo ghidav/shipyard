@@ -4,10 +4,13 @@ a renderer whose fresh render never equals the sampled tokens."""
 
 from __future__ import annotations
 
+import base64
+import io
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import tinker
 from PIL import Image
 
 from shipyard.proxy.bridge import (
@@ -17,12 +20,12 @@ from shipyard.proxy.bridge import (
     chain,
     digest,
     digests_of,
-    ids_in,
     tail_extends,
 )
 from shipyard.proxy.cookbook import ToolCall
 from shipyard.proxy.exchange import Exchange, exchange
 from shipyard.proxy.recorder import IMAGE_TOKEN, Recorder
+from shipyard.proxy.wire import Picture, ids_of, model_input, pictured, pictures_of
 from tests.proxies import (
     TOOLS_ANTHROPIC,
     TOOLS_OPENAI,
@@ -194,7 +197,7 @@ def test_nothing_after_the_reply_or_no_reply_at_all_renders_afresh() -> None:
     assert bridge([*history, {"role": "user", "content": "more"}], renderer, Index()) is None
 
 
-def test_a_renderer_without_token_stops_or_a_prompt_with_an_image_chunk_cannot_be_bridged() -> None:
+def test_a_renderer_without_token_stops_cannot_be_bridged() -> None:
     renderer = BridgeRenderer()
     history = [{"role": "user", "content": "go"}, {"role": "assistant", "content": "hi"}]
     index = _indexed(renderer, history, "hi", ended=False)
@@ -202,29 +205,120 @@ def test_a_renderer_without_token_stops_or_a_prompt_with_an_image_chunk_cannot_b
     assert bridge(messages, renderer, index) is not None
     renderer.get_stop_sequences = lambda: ["</s>"]  # type: ignore[method-assign]
     assert bridge(messages, renderer, index) is None
-    assert (
-        ids_in(SimpleNamespace(chunks=[SimpleNamespace(tokens=[1]), SimpleNamespace(length=2)]))
-        is None
+    assert ids_of(
+        SimpleNamespace(chunks=[SimpleNamespace(tokens=[1]), SimpleNamespace(length=2)])
+    ) == (
+        1,
+        IMAGE_TOKEN,
+        IMAGE_TOKEN,
     )
-    assert ids_in(SimpleNamespace(chunks=[SimpleNamespace(tokens=[1, 2])])) == (1, 2)
 
 
-def test_a_record_whose_prompt_held_an_image_is_never_indexed() -> None:
+def test_a_record_whose_image_was_not_kept_is_never_indexed_and_a_kept_one_is() -> None:
     recorder = Recorder(object())
     found = Exchange(trial="t", prompt_digests=("a",))
     token = exchange.set(found)
+    shot = Picture(1, 1, "png", "cG5n")
     try:
         recorder._add("t", (1, IMAGE_TOKEN), {}, None, completion=(3,))
         recorder._add("t", (1, 2), {}, None, completion=(3,))
+        recorder._add("t", (1, IMAGE_TOKEN, 2), {}, None, completion=(3,), images=(shot,))
     finally:
         exchange.reset(token)
     recorder.reply("t", 1, "r1", ended_with_stop=True)
-    assert len(recorder.index_for("t")) == 0
+    assert len(recorder.index_for("t")) == 0, "no picture, nothing rebuilds the prompt"
     recorder.reply("t", 2, "r2", ended_with_stop=True)
     assert len(recorder.index_for("t")) == 1
-    assert [r.reply_digest for r in recorder.records_for("t")] == ["r1", "r2"]
+    recorder.reply("t", 3, "r3", ended_with_stop=True)
+    assert len(recorder.index_for("t")) == 2, "a kept image is bridgeable"
+    assert [r.reply_digest for r in recorder.records_for("t")] == ["r1", "r2", "r3"]
     recorder.reply("t", 9, "nobody", ended_with_stop=True)
-    assert len(recorder.index_for("t")) == 1
+    assert len(recorder.index_for("t")) == 2
+
+
+class PicturingRenderer(BridgeRenderer):
+    """The bridge renderer with an image chunk of three tokens for each image part, built
+    from the image's bytes (a PIL image or a string)."""
+
+    _has_image_processor = True
+    WIDTH = 3
+
+    def build_generation_prompt(self, messages: list[dict[str, Any]]) -> tinker.ModelInput:
+        chunks: list[Any] = []
+        text: list[int] = []
+        for message in messages:
+            content = message.get("content")
+            parts = content if isinstance(content, list) else []
+            images = [p for p in parts if isinstance(p, dict) and p.get("type") == "image"]
+            if message.get("role") == "user" and images:
+                text += ids("user:")
+                for part in images:
+                    chunks.append(tinker.types.EncodedTextChunk(tokens=list(text)))
+                    text = []
+                    chunks.append(
+                        tinker.types.ImageChunk(
+                            data=_bytes(part["image"]), format="png", expected_tokens=self.WIDTH
+                        )
+                    )
+                text += [*ids(_text(content)), ord("\n")]
+            else:
+                text += super().build_generation_prompt([message]).to_ints()[:-1]
+        chunks.append(tinker.types.EncodedTextChunk(tokens=[*text, ord(">")]))
+        return tinker.ModelInput(chunks=chunks)
+
+
+def _bytes(image: Any) -> bytes:
+    if isinstance(image, str):
+        return image.encode()
+    sink = io.BytesIO()
+    image.save(sink, format="PNG")
+    return sink.getvalue()
+
+
+def _text(content: Any) -> str:
+    return "".join(
+        str(p.get("text", "")) for p in content if isinstance(p, dict) and p.get("type") == "text"
+    )
+
+
+def test_an_image_in_the_head_and_one_in_the_tail_bridge_with_their_pictures() -> None:
+    renderer = PicturingRenderer()
+    seen = {"type": "image", "image": "cat.png"}
+    history = [
+        {"role": "user", "content": [seen, {"type": "text", "text": "go"}]},
+        {"role": "assistant", "content": "hi"},
+    ]
+    prompt = renderer.build_generation_prompt(history[:-1])
+    head, shots = ids_of(prompt), pictures_of(prompt)
+    assert head == (*ids("user:"), *[IMAGE_TOKEN] * 3, *ids("go\n>")) and len(shots) == 1
+    index = Index()
+    index.add(
+        digests_of(history[:-1]), digest(history[-1]), Reply(head, ids("hi"), False, head, shots)
+    )
+    more = {"type": "image", "image": "dog.png"}
+    messages = [*history, {"role": "user", "content": [more, {"type": "text", "text": "more"}]}]
+    built = bridge(messages, renderer, index)
+    assert built is not None
+    tail = (*ids("\nuser:"), *[IMAGE_TOKEN] * 3, *ids("more\n>"))
+    assert built.ids == (*head, *ids("hi"), STOP, *tail)
+    dog_at = len(head) + len(ids("hi")) + 1 + len(ids("\nuser:"))
+    assert built.pictures == (
+        shots[0],
+        Picture(dog_at, 3, "png", base64.b64encode(b"dog.png").decode()),
+    )
+    assert built.rendered == ids_of(renderer.build_generation_prompt(messages))
+    rebuilt = model_input(built.ids, built.pictures)
+    kinds = [(type(c).__name__, c.length) for c in rebuilt.chunks]
+    assert kinds == [
+        ("EncodedTextChunk", len(ids("user:"))),
+        ("ImageChunk", 3),
+        ("EncodedTextChunk", len(ids("go\n>")) + len(ids("hi")) + 1 + len(ids("\nuser:"))),
+        ("ImageChunk", 3),
+        ("EncodedTextChunk", len(ids("more\n>"))),
+    ]
+    # Another picture in the head is another message: no bridge, and no wrong splice.
+    other = [{"role": "user", "content": [more, {"type": "text", "text": "go"}]}, *messages[1:]]
+    assert bridge(other, renderer, index) is None
 
 
 # ------------------------------------------------------------- the rule, over the wire
@@ -365,6 +459,41 @@ async def test_a_refused_request_leaves_a_record_with_its_digests_and_no_reply()
         (record,) = started.records_for("t")
     assert record.error == "context" and record.reply_digest is None
     assert record.prompt_digests == digests_of([{"role": "user", "content": "go"}])
+
+
+async def test_an_image_prompt_bridges_over_the_wire_and_the_sampler_gets_the_chunk() -> None:
+    sampler = ScriptedSampler("", answers=["hi", "bye"])
+    picture = Image.new("RGB", (8, 8), "blue")
+    sink = io.BytesIO()
+    picture.save(sink, format="PNG")
+    url = f"data:image/png;base64,{base64.b64encode(sink.getvalue()).decode()}"
+    async with endpoint(sampler, renderer=PicturingRenderer()) as started:
+        history: list[dict[str, Any]] = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": url}},
+                    {"type": "text", "text": "go"},
+                ],
+            }
+        ]
+        first = await ask(started, "t", messages=history)
+        assert first.status_code == 200, first.text
+        history += [{"role": "assistant", "content": "hi"}, {"role": "user", "content": "more"}]
+        second = await ask(started, "t", messages=history)
+        assert second.status_code == 200, second.text
+        one, two = started.records_for("t")
+    assert [r.bridged for r in (one, two)] == [False, True]
+    assert pictured(one) and pictured(two) and one.images == two.images
+    assert one.images[0].offset == len(ids("user:")) and one.images[0].length == 3
+    assert two.prompt_token_ids == (*one.prompt_token_ids, *ids("hi"), STOP, *ids("\nuser:more\n>"))
+    given = sampler.prompts[1]
+    assert [type(c).__name__ for c in given.chunks] == [
+        "EncodedTextChunk",
+        "ImageChunk",
+        "EncodedTextChunk",
+    ]
+    assert given.chunks[1].expected_tokens == 3 and ids_of(given) == two.prompt_token_ids
 
 
 @pytest.mark.parametrize("stream", [False, True])

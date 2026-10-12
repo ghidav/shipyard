@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from shipyard.proxy.vision import image_key
+from shipyard.proxy.wire import Picture, ids_of, pictures_of
 
 # ----------------------------------------------------------------------- the digest
 
@@ -95,13 +96,14 @@ def chain(digests: Sequence[str]) -> str:
 @dataclass(frozen=True)
 class Reply:
     """A sampled reply: its call's prompt and completion ids, whether the completion ended
-    on a stop token, and the fresh render of the call's messages. The render equals the
-    prompt unless the prompt was bridged."""
+    on a stop token, the fresh render of the call's messages, and the pictures behind the
+    prompt's image tokens. The render equals the prompt unless the prompt was bridged."""
 
     prompt_ids: tuple[int, ...]
     completion_ids: tuple[int, ...]
     ended_with_stop: bool
     rendered: tuple[int, ...]
+    pictures: tuple[Picture, ...] = ()
 
 
 class Index:
@@ -159,6 +161,8 @@ class Bridged:
     ids: tuple[int, ...]
     #: The fresh render of the messages: what a later head must equal to extend this.
     rendered: tuple[int, ...]
+    #: The pictures behind the image tokens in `ids`: the reply's, then the tail's.
+    pictures: tuple[Picture, ...] = ()
 
 
 def bridge(
@@ -184,17 +188,26 @@ def bridge(
     stops = {int(s) for s in (renderer.get_stop_sequences() or []) if isinstance(s, int)}
     if not stops:
         return None
-    head = ids_in(renderer.build_generation_prompt(list(messages[:at])))
-    if head is None or head != reply.rendered:
+    head = ids_of(renderer.build_generation_prompt(list(messages[:at])))
+    if head != reply.rendered:
         return None
-    full = ids_in(renderer.build_generation_prompt(list(messages)))
-    if full is None or full[: len(head)] != head:
+    fresh = renderer.build_generation_prompt(list(messages))
+    full = ids_of(fresh)
+    if full[: len(head)] != head:
         return None
     end = next((i for i in range(len(head), len(full)) if full[i] in stops), None)
     if end is None:
         return None
     closing = () if reply.ended_with_stop else (full[end],)
-    return Bridged((*reply.prompt_ids, *reply.completion_ids, *closing, *full[end + 1 :]), full)
+    spliced = (*reply.prompt_ids, *reply.completion_ids, *closing, *full[end + 1 :])
+    # An image in the head is the reply's picture; one in the tail moves with the tail.
+    shift = len(spliced) - len(full)
+    tail = tuple(
+        Picture(one.offset + shift, one.length, one.format, one.data)
+        for one in pictures_of(fresh)
+        if one.offset > end
+    )
+    return Bridged(spliced, full, (*reply.pictures, *tail))
 
 
 def tail_extends(tail: Sequence[Any]) -> bool:
@@ -206,15 +219,3 @@ def tail_extends(tail: Sequence[Any]) -> bool:
         return False
     body = roles[:-1] if roles[-1] == "user" else roles
     return all(role == "tool" for role in body)
-
-
-def ids_in(prompt: Any) -> tuple[int, ...] | None:
-    """A rendered prompt as ids, or None when a chunk is not text. An image chunk has no
-    ids to compare or splice."""
-    ids: list[int] = []
-    for chunk in getattr(prompt, "chunks", None) or []:
-        tokens = getattr(chunk, "tokens", None)
-        if tokens is None:
-            return None
-        ids.extend(int(token) for token in tokens)
-    return tuple(ids)

@@ -5,7 +5,6 @@ It builds no graph."""
 
 from __future__ import annotations
 
-import base64
 from collections.abc import Sequence as Values
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,10 +15,23 @@ import torch
 from tinker import TensorData
 
 from shipyard.admit import Verdict, verdicts
-from shipyard.proxy.wire import IMAGE_TOKEN, Picture, Record, image_runs, pictured
+from shipyard.proxy.wire import IMAGE_TOKEN, Picture, Record, model_input, pictured
 
 if TYPE_CHECKING:
     from shipyard.rollout import Rollouts
+
+__all__ = [
+    "Group",
+    "Member",
+    "Sequence",
+    "chains",
+    "datum",
+    "group",
+    "model_input",
+    "packable",
+    "sequences",
+    "shifted",
+]
 
 
 @dataclass(frozen=True)
@@ -119,40 +131,6 @@ def _span(record: Record) -> tuple[int, int]:
     """Where the record's completion sits in a chain it closes: after its own prompt."""
     head = len(record.prompt_token_ids)
     return head, head + len(record.completion_token_ids)
-
-
-def model_input(tokens: Values[int], images: Values[Picture] = ()) -> tinker.ModelInput:
-    """The tokens as the model reads them: text chunks, with an image chunk in place of
-    each `IMAGE_TOKEN` run. Without images, the cookbook's `from_ints`. Raises when a run
-    has no picture, or a picture no run, since the model would then read a prompt the
-    policy never saw."""
-    if not images:
-        if IMAGE_TOKEN in tokens:
-            raise ValueError("a sequence with an image's tokens needs the picture behind them")
-        return tinker.ModelInput.from_ints(list(tokens))
-    placed = sorted(images, key=lambda one: one.offset)
-    runs = image_runs(tokens)
-    if [(one.offset, one.length) for one in placed] != runs:
-        raise ValueError(
-            f"the pictures sit at {[(one.offset, one.length) for one in placed]} but the "
-            f"image tokens at {runs}"
-        )
-    chunks: list[tinker.ModelInputChunk] = []
-    at = 0
-    for picture in placed:
-        if picture.offset > at:
-            chunks.append(tinker.types.EncodedTextChunk(tokens=list(tokens[at : picture.offset])))
-        chunks.append(
-            tinker.types.ImageChunk(
-                data=base64.b64decode(picture.data),
-                format=picture.format,  # type: ignore[arg-type]
-                expected_tokens=picture.length,
-            )
-        )
-        at = picture.offset + picture.length
-    if at < len(tokens):
-        chunks.append(tinker.types.EncodedTextChunk(tokens=list(tokens[at:])))
-    return tinker.ModelInput(chunks=chunks)
 
 
 def shifted(

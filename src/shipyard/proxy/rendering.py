@@ -9,13 +9,12 @@ import re
 from collections.abc import Sequence
 from typing import Any
 
-import tinker
-
 from shipyard.proxy import cookbook
 from shipyard.proxy.bridge import bridge, chain, digest, digests_of
 from shipyard.proxy.exchange import Exchange, exchange
 from shipyard.proxy.thinking import thinking_of
 from shipyard.proxy.vision import has_images, takes_images
+from shipyard.proxy.wire import model_input
 
 
 class Rendering:
@@ -48,7 +47,7 @@ class Rendering:
                 built = bridge(messages, self._inner, index, digests)
                 if built is not None:
                     found.bridged, found.rendered = True, built.rendered
-                    return tinker.ModelInput.from_ints(list(built.ids))
+                    return model_input(built.ids, built.pictures)
         return self._inner.build_generation_prompt(messages, **kwargs)
 
     def parse_response(self, tokens: Any) -> Any:
