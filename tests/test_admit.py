@@ -25,7 +25,7 @@ from shipyard.admit import (
     verdict,
     verdicts,
 )
-from shipyard.proxy.wire import IMAGE_TOKEN
+from shipyard.proxy.wire import IMAGE_TOKEN, Picture
 from shipyard.rollout import Rollouts
 from tests.records import made
 from tests.trials import write_result
@@ -188,11 +188,16 @@ def test_a_harness_that_quit_on_a_failed_call_is_an_api_error(tmp_path: Path) ->
     assert verdict(graded, [made(seq=1), made(seq=2, error=BUDGET)]).mask is None
 
 
-def test_an_image_in_a_prompt_masks_the_rollout_multimodal(tmp_path: Path) -> None:
+def test_an_image_the_record_did_not_keep_masks_the_rollout_multimodal(tmp_path: Path) -> None:
     graded = write_result(tmp_path / "t", reward=1.0)
     seen = [made(seq=1), made((1, IMAGE_TOKEN, IMAGE_TOKEN, 2), seq=2)]
     assert verdict(graded, seen) == Verdict(None, MULTIMODAL, None)
     assert verdict(graded, [made(seq=1, error=BUDGET), *seen]) == Verdict(0.0, None, None)
+    shot = Picture(1, 2, "png", "cG5nIQ==")
+    kept = [made(seq=1), made((1, IMAGE_TOKEN, IMAGE_TOKEN, 2), seq=2, images=(shot,))]
+    assert verdict(graded, kept) == Verdict(1.0, None, None), "a kept image trains"
+    failed_first = [made((1, IMAGE_TOKEN, 2), seq=1, error="sampler: Boom"), made(seq=2)]
+    assert verdict(graded, failed_first) == Verdict(1.0, None, None), "nothing trains on it"
 
 
 def test_a_harness_that_asked_more_turns_than_were_recorded_is_an_env_error(

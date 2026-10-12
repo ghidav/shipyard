@@ -21,7 +21,8 @@ HEALTH_PATH = "/healthz"
 #: Prefix of `error` on a record whose request the sampler failed: `sampler: <type>`.
 SAMPLER_FAILED = "sampler: "
 #: Placeholder id for an image's tokens in a record's prompt ids, one per token of the
-#: chunk. The record keeps the prompt's length, and admission sets such a rollout aside.
+#: chunk, so the record keeps the prompt's length. The image itself is a `Picture` on the
+#: record. Admission sets aside a rollout whose record did not keep one.
 IMAGE_TOKEN = -1
 
 
@@ -30,9 +31,22 @@ def new_token() -> str:
 
 
 @dataclass(frozen=True)
+class Picture:
+    """An image as the model read it: where its tokens sit in the prompt ids, how many
+    there are, the format, and the bytes the renderer sent, base64 for the wire."""
+
+    offset: int
+    length: int
+    format: str
+    data: str
+
+
+@dataclass(frozen=True)
 class Record:
     """One model call of one trial as token ids. A record with `error` set was refused or
-    failed and produced nothing. It is kept so the completeness check sees the call."""
+    failed and produced nothing. It is kept so the completeness check sees the call.
+    `images` holds the pictures behind the prompt's `IMAGE_TOKEN` runs, when the proxy had
+    their bytes."""
 
     seq: int
     at: float
@@ -50,6 +64,31 @@ class Record:
     prompt_digests: tuple[str, ...]
     reply_digest: str | None
     error: str | None
+    images: tuple[Picture, ...] = ()
+
+
+def image_runs(ids: Sequence[int]) -> list[tuple[int, int]]:
+    """Each run of `IMAGE_TOKEN` in `ids` as (offset, length), in order."""
+    runs: list[tuple[int, int]] = []
+    at = 0
+    while at < len(ids):
+        if ids[at] != IMAGE_TOKEN:
+            at += 1
+            continue
+        start = at
+        while at < len(ids) and ids[at] == IMAGE_TOKEN:
+            at += 1
+        runs.append((start, at - start))
+    return runs
+
+
+def pictured(record: Record) -> bool:
+    """Whether every image in the record's prompt is kept: each `IMAGE_TOKEN` run has a
+    picture of exactly its place and length, and the completion holds none."""
+    if IMAGE_TOKEN in record.completion_token_ids:
+        return False
+    kept = {(one.offset, one.length) for one in record.images}
+    return all(run in kept for run in image_runs(record.prompt_token_ids))
 
 
 def delta_encoded(records: Sequence[Record]) -> list[dict[str, Any]]:
@@ -75,6 +114,8 @@ def delta_encoded(records: Sequence[Record]) -> list[dict[str, Any]]:
         if best is not None:
             row["prompt_from"] = best
             row["prompt_token_ids"] = list(prompt[best_end:])
+            # The pictures inside the prefix travel with the record it extends.
+            row["images"] = [one for one in row["images"] if int(one["offset"]) >= best_end]
         out.append(row)
     return out
 
@@ -100,6 +141,7 @@ def records_of(items: Sequence[Mapping[str, Any]]) -> list[Record]:
                     *before.completion_token_ids,
                     *record.prompt_token_ids,
                 ),
+                images=(*before.images, *record.images),
             )
         made.append(record)
     return made
@@ -131,6 +173,16 @@ def record_of(payload: Mapping[str, Any]) -> Record:
         prompt_digests=tuple(str(digest) for digest in payload.get("prompt_digests") or []),
         reply_digest=_text(payload.get("reply_digest")),
         error=_text(payload.get("error")),
+        images=tuple(_picture(item) for item in payload.get("images") or []),
+    )
+
+
+def _picture(payload: Mapping[str, Any]) -> Picture:
+    return Picture(
+        offset=int(payload["offset"]),
+        length=int(payload["length"]),
+        format=str(payload.get("format") or "jpeg"),
+        data=str(payload.get("data") or ""),
     )
 
 

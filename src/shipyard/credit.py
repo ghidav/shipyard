@@ -15,7 +15,7 @@ import tinker
 import torch
 from tinker import TensorData
 
-from shipyard.pack import Group, Member, Sequence, datum, shifted
+from shipyard.pack import Group, Member, Sequence, datum, model_input, shifted
 
 if TYPE_CHECKING:
     from shipyard.gradient import Preset
@@ -179,10 +179,10 @@ async def reference_logprobs(
         )
     data: list[tinker.Datum] = []
     for one in sequences:
-        model_input, target_tokens = shifted(one.tokens)
-        weights = TensorData.from_torch(torch.ones(model_input.length))
+        read, target_tokens = shifted(one.tokens, one.images)
+        weights = TensorData.from_torch(torch.ones(read.length))
         inputs = {"target_tokens": target_tokens, "weights": weights}
-        data.append(tinker.Datum(model_input=model_input, loss_fn_inputs=inputs))
+        data.append(tinker.Datum(model_input=read, loss_fn_inputs=inputs))
     future = await trainer.client.forward_async(data, loss_fn="cross_entropy")
     result = await future.result_async()
     out: list[list[float]] = []
@@ -213,7 +213,7 @@ async def anchor_logprobs(anchor: Any, sequences: Values[Sequence]) -> list[list
     async def one(sequence: Sequence) -> list[float]:
         async with gate:
             scored = await anchor.compute_logprobs_async(
-                tinker.ModelInput.from_ints(list(sequence.tokens))
+                model_input(sequence.tokens, sequence.images)
             )
         scored = list(scored)
         return [_number(scored[at]) for at in sequence.targets]

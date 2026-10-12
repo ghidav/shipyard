@@ -4,9 +4,11 @@ enforces the budget and the context fit, and replays SDK retries."""
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import time
 from dataclasses import replace
+from functools import lru_cache
 from typing import Any
 
 from shipyard.proxy import cookbook
@@ -16,7 +18,7 @@ from shipyard.proxy.exchange import exchange
 # `Record` and `IMAGE_TOKEN` are defined in `wire`, which the run reads without the
 # cookbook. They are re-exported here.
 from shipyard.proxy.wire import IMAGE_TOKEN as IMAGE_TOKEN
-from shipyard.proxy.wire import SAMPLER_FAILED
+from shipyard.proxy.wire import SAMPLER_FAILED, Picture
 from shipyard.proxy.wire import Record as Record
 
 
@@ -92,6 +94,7 @@ class Recorder:
         self, found: Any, trial: str, prompt: Any, num_samples: int, sampling_params: Any
     ) -> Any:
         prompt_ids = ids_of(prompt)
+        pictures = pictures_of(prompt)
         pinned = self.pin(sampling_params)
         # Keyed on the params as pinned, before the budget cut, so a retry arriving after
         # the trial's count moved still matches its reply.
@@ -128,7 +131,7 @@ class Recorder:
             if not pending.done():
                 pending.set_result(None)  # a retry waiting on it samples for itself
             failure = f"{SAMPLER_FAILED}{type(failed).__name__}"
-            self._add(trial, prompt_ids, params, served, error=failure)
+            self._add(trial, prompt_ids, params, served, error=failure, images=pictures)
             raise
         if not pending.done():
             pending.set_result(response)
@@ -147,6 +150,7 @@ class Recorder:
                 stop_reason=str(getattr(sequence, "stop_reason", "") or ""),
                 sample_ms=elapsed_ms,
                 cached_tokens=cache_hit,
+                images=pictures,
             )
             cache_hit = 0
             self.spoke[trial] = self.spoke.get(trial, 0) + len(tokens)
@@ -200,6 +204,7 @@ class Recorder:
         sample_ms: float = 0.0,
         cached_tokens: int = 0,
         error: str | None = None,
+        images: tuple[Picture, ...] = (),
     ) -> Record:
         """Append the trial's next record, numbered from 1 per trial. Refused and failed
         calls get records too, so the sequence shows everything the harness asked for."""
@@ -226,6 +231,7 @@ class Recorder:
             prompt_digests=found.prompt_digests if found else (),
             reply_digest=None,
             error=error,
+            images=images,
         )
         self.records.setdefault(trial, []).append(record)
         if found is not None and error is None:
@@ -290,6 +296,33 @@ def ids_of(prompt: Any) -> tuple[int, ...]:
         else:
             ids.extend([IMAGE_TOKEN] * int(getattr(chunk, "length", 0) or 0))
     return tuple(ids)
+
+
+def pictures_of(prompt: Any) -> tuple[Picture, ...]:
+    """The prompt's images, each at the offset its `IMAGE_TOKEN` run has in `ids_of`. A
+    chunk that carries no bytes (an asset pointer) leaves no picture, and admission sets
+    the rollout aside."""
+    found: list[Picture] = []
+    at = 0
+    for chunk in prompt.chunks:
+        tokens = getattr(chunk, "tokens", None)
+        if tokens is not None:
+            at += len(tokens)
+            continue
+        length = int(getattr(chunk, "length", 0) or 0)
+        data = getattr(chunk, "data", None)
+        if isinstance(data, bytes | bytearray) and length:
+            encoded = _encoded(bytes(data))
+            found.append(Picture(at, length, str(getattr(chunk, "format", "jpeg")), encoded))
+        at += length
+    return tuple(found)
+
+
+@lru_cache(maxsize=256)
+def _encoded(data: bytes) -> str:
+    """The bytes as base64, one string per distinct image: a harness re-sends the same image
+    with every call of a trial, and the records then share it instead of each holding a copy."""
+    return base64.b64encode(data).decode("ascii")
 
 
 def _params_dict(sampling_params: Any) -> dict[str, Any]:

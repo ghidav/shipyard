@@ -3,22 +3,30 @@ checked token for token against the cookbook's own, and the groups a job falls i
 
 from __future__ import annotations
 
+import base64
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 import tinker
 from tinker_cookbook.completers import TokensWithLogprobs
 from tinker_cookbook.rl.data_processing import trajectory_to_data
 from tinker_cookbook.rl.types import Trajectory, Transition
+from tinker_cookbook.supervised.common import (
+    create_rightshifted_model_input_and_leftshifted_targets as cookbook_shift,
+)
 
-from shipyard.pack import Sequence, chains, datum, group, packable, sequences
-from shipyard.proxy.wire import IMAGE_TOKEN, Record
+from shipyard.pack import Sequence, chains, datum, group, model_input, packable, sequences, shifted
+from shipyard.proxy.wire import IMAGE_TOKEN, Picture, Record
 from shipyard.rollout import Rollouts
 from tests.records import made
 from tests.trials import write_result
 
 P1, C1, T1, C2, T2, C3 = (1, 2, 3), (10, 11), (20,), (12,), (21, 22), (13, 14)
+PNG = base64.b64encode(b"png-bytes").decode()
+#: A picture of three tokens at position 1.
+SHOT = Picture(1, 3, "png", PNG)
 
 
 def _record(prompt: tuple[int, ...], completion: tuple[int, ...], seq: int, **named) -> Record:
@@ -80,14 +88,70 @@ def test_a_side_question_is_filed_under_its_own_chain_and_the_longest_match_wins
     assert chains(list(shorter)) == [[shorter[0]], [shorter[1]]]
 
 
-def test_error_and_image_records_never_pack() -> None:
+def test_error_records_and_images_without_their_picture_never_pack() -> None:
     first, second, third = _tool_loop()
     refused = _record((*P1, *C1, *T1), (), 9, error="context")
-    pictured = _record((IMAGE_TOKEN, IMAGE_TOKEN, 5), (6,), 10)
-    assert not packable(refused) and not packable(pictured) and packable(first)
-    found = sequences([first, refused, second, pictured, third])
+    unkept = _record((IMAGE_TOKEN, IMAGE_TOKEN, 5), (6,), 10)
+    assert not packable(refused) and not packable(unkept) and packable(first)
+    found = sequences([first, refused, second, unkept, third])
     assert len(found) == 1 and found[0].spans == ((3, 5), (6, 7), (9, 11))
-    assert sequences([refused, pictured]) == []
+    assert sequences([refused, unkept]) == []
+
+
+def test_a_kept_image_packs_and_the_sequence_carries_the_picture() -> None:
+    seen = _record((1, IMAGE_TOKEN, IMAGE_TOKEN, IMAGE_TOKEN, 5), (6, 7), 1, images=(SHOT,))
+    assert packable(seen)
+    again = _record((*seen.prompt_token_ids, 6, 7, 8), (9,), 2, images=(SHOT,))
+    [found] = sequences([seen, again])
+    assert found.tokens == (1, -1, -1, -1, 5, 6, 7, 8, 9) and found.images == (SHOT,)
+    assert found.spans == ((5, 7), (8, 9))
+    shorter = replace(seen, images=(Picture(1, 2, "png", PNG),))
+    assert not packable(shorter), "a picture of another length is not this image"
+
+
+def _chunks(found: tinker.ModelInput) -> list[tuple[str, Any]]:
+    return [
+        (
+            type(chunk).__name__,
+            list(chunk.tokens)
+            if hasattr(chunk, "tokens")
+            else (chunk.length, chunk.data, chunk.format),
+        )
+        for chunk in found.chunks
+    ]
+
+
+def test_a_pictured_datum_is_the_cookbooks_chunks_and_shift() -> None:
+    seen = _record((1, IMAGE_TOKEN, IMAGE_TOKEN, IMAGE_TOKEN, 5), (6, 7), 1, images=(SHOT,))
+    [found] = sequences([seen])
+    ours = datum(found, logprobs=found.mu, advantages=[0.5, 0.5])
+    whole = [
+        tinker.types.EncodedTextChunk(tokens=[1]),
+        tinker.types.ImageChunk(data=b"png-bytes", format="png", expected_tokens=3),
+        tinker.types.EncodedTextChunk(tokens=[5, 6, 7]),
+    ]
+    theirs, targets = cookbook_shift(whole)
+    assert _chunks(ours.model_input) == _chunks(theirs)
+    assert _chunks(ours.model_input) == [
+        ("EncodedTextChunk", [1]),
+        ("ImageChunk", (3, b"png-bytes", "png")),
+        ("EncodedTextChunk", [5, 6]),
+    ]
+    assert ours.model_input.length == 6
+    assert ours.loss_fn_inputs["target_tokens"].tolist() == targets == [0, 0, 0, 5, 6, 7]
+    assert ours.loss_fn_inputs["mask"].tolist() == [0, 0, 0, 0, 1, 1]
+    assert ours.loss_fn_inputs["logprobs"].tolist() == pytest.approx([0, 0, 0, 0, -0.6, -0.7])
+    assert ours.loss_fn_inputs["advantages"].tolist() == pytest.approx([0, 0, 0, 0, 0.5, 0.5])
+
+
+def test_model_input_refuses_an_image_without_its_picture_or_out_of_place() -> None:
+    with pytest.raises(ValueError, match="picture"):
+        model_input((1, IMAGE_TOKEN, 5))
+    with pytest.raises(ValueError, match="image tokens"):
+        model_input((1, IMAGE_TOKEN, 5), (Picture(0, 1, "png", PNG),))
+    with pytest.raises(ValueError, match="end on an image"):
+        shifted((1, IMAGE_TOKEN), (Picture(1, 1, "png", PNG),))
+    assert model_input((1, 2, 3)).to_ints() == [1, 2, 3]
 
 
 def test_a_record_without_logprobs_leaves_the_sequence_with_no_mu() -> None:
