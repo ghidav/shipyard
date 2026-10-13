@@ -111,9 +111,9 @@ class Endpoint:
         """Build the renderer, a sampling client on `model_path` or the base model, the
         context length (from Tinker when unknown), the app and its routes, then bind the
         socket."""
-        # Wrap the cookbook's parsers for images, thinking and in-list system turns, once
-        # per process. Thinking wraps after vision, so no thinking block reaches a parser.
-        # thinking.install also installs the keepalive's stream wrap beneath its own.
+        # Wrap the cookbook's parsers for images, thinking and in-list system turns on both
+        # wires, once per process. Thinking wraps after vision, so no thinking block reaches
+        # a parser. thinking.install also installs the keepalive's stream wrap beneath its own.
         vision.install()
         thinking.install()
         turns.install()
