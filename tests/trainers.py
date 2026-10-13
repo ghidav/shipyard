@@ -170,8 +170,18 @@ class FlatAnchor:
         self.asked: list[list[int]] = []
 
     async def compute_logprobs_async(self, prompt: Any) -> list[float | None]:
-        self.asked.append(list(prompt.to_ints()))
+        self.asked.append(chunk_ids(prompt))
         return [None] + [self.logprob] * (prompt.length - 1)
+
+
+def chunk_ids(prompt: Any) -> list[int]:
+    """The prompt's ids, an image chunk as a run of -1 of its length: what a fake read,
+    without `to_ints`, which refuses images."""
+    out: list[int] = []
+    for chunk in prompt.chunks:
+        tokens = getattr(chunk, "tokens", None)
+        out.extend(list(tokens) if tokens is not None else [-1] * int(chunk.length))
+    return out
 
 
 def capable(*models: tuple[str, bool]) -> GetServerCapabilitiesResponse:

@@ -421,6 +421,24 @@ async def test_the_trainer_reference_is_one_batched_forward_aligned_by_the_shift
     assert found.sequences == 2 and found.sequences_per_rollout == 1.0
 
 
+async def test_a_pictured_sequence_reaches_the_reference_and_the_anchor_as_chunks() -> None:
+    from shipyard.credit import anchor_logprobs, reference_logprobs
+    from shipyard.proxy.wire import Picture
+
+    seen = Sequence(
+        (1, -1, -1, 5, 6, 7), ((4, 6),), (-0.6, -0.7), (Picture(1, 2, "png", "cG5nIQ=="),)
+    )
+    trainer = _trainer()
+    assert await reference_logprobs(trainer, [seen]) == [[-6.0, -7.0]]
+    [sent] = trainer.client.sent
+    kinds = [(type(chunk).__name__, chunk.length) for chunk in sent.model_input.chunks]
+    assert kinds == [("EncodedTextChunk", 1), ("ImageChunk", 2), ("EncodedTextChunk", 2)]
+    assert sent.loss_fn_inputs["target_tokens"].tolist() == [0, 0, 5, 6, 7]
+    anchor = FlatAnchor(-0.1)
+    assert await anchor_logprobs(anchor, [seen]) == [[-0.1, -0.1]]
+    assert anchor.asked == [[1, -1, -1, 5, 6, 7]]
+
+
 async def test_the_sampler_reference_reads_the_records_logprobs_and_makes_no_forward() -> None:
     trainer = _trainer(updates=7)
     groups = [_group(_member(1.0), _member(0.0), updates=2)]

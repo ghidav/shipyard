@@ -80,10 +80,9 @@ def start_weights(cfg: Blueprint) -> str | None:
 
 def endpoint_settings(cfg: Blueprint, *, run: str | None = None) -> dict[str, Any]:
     """The settings passed to `shipyard serve`: the model and its checkpoint, the bind, the
-    renderer, every `[rollout]` knob the endpoint pins, and the volatile lines unless the
-    run keeps them. With `run` set, the proxy's Tinker session is tagged with it, as the
-    trainer's is."""
-    rollout, profile = cfg.rollout, profile_for(cfg.rollout.harness)
+    renderer, and every `[rollout]` knob the endpoint pins. With `run` set, the proxy's
+    Tinker session is tagged with it, as the trainer's is."""
+    rollout = cfg.rollout
     tagged = {"metadata": {"shipyard_run": run, "shipyard_recipe": cfg.recipe.kind}} if run else {}
     return {
         "model": cfg.model.name,
@@ -97,14 +96,8 @@ def endpoint_settings(cfg: Blueprint, *, run: str | None = None) -> dict[str, An
         "max_tokens": rollout.max_tokens,
         "max_context": rollout.max_context or None,
         "fill_context": rollout.fill_context,
-        "volatile": list(volatile_for(rollout, profile)),
         **tagged,
     }
-
-
-def volatile_for(rollout: Rollout, profile: Profile) -> tuple[str, ...]:
-    """The profile's volatile lines when `cut_volatile` is set, else none."""
-    return tuple(profile.volatile) if rollout.cut_volatile else ()
 
 
 @dataclass(frozen=True)
@@ -229,7 +222,7 @@ class Serving:
         if proxy is None:
             raise RuntimeError("nothing was served; there are no records to harvest")
         counted = dict(trials=0, input_tokens=0, cache_tokens=0, output_tokens=0)
-        noted = dict(turned_away=0, cut=0, bridged=0)
+        noted = dict(turned_away=0, bridged=0)
         taken: dict[str, list[Record]] = {}
         asked: dict[str, int] = {}
         failed: set[str] = set()
@@ -244,7 +237,6 @@ class Serving:
                 raise
             counts = proxy.counters.pop(name, {})
             noted["turned_away"] += int(counts.get("turned_away", 0))
-            noted["cut"] += int(counts.get("cut", 0))
             for item in records:
                 hit = min(int(item.cached_tokens or 0), len(item.prompt_token_ids))
                 counted["input_tokens"] += len(item.prompt_token_ids)

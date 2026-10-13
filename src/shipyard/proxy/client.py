@@ -91,7 +91,7 @@ class Proxy:
     loopback: str | None = None
     process: subprocess.Popen[str] | None = field(default=None, repr=False)
     tunnel: Tunnel | None = field(default=None, repr=False)
-    #: Per trial, the counts each fetch returned with the records: turned_away, cut, spoke.
+    #: Per trial, the counts each fetch returned with the records: turned_away, spoke.
     counters: dict[str, dict[str, int]] = field(default_factory=dict, repr=False)
     #: Tokens a trial may sample, as `/healthz` last reported. None when no budget is enforced.
     budget: int | None = None
@@ -270,7 +270,7 @@ class Proxy:
                 await asyncio.sleep(PAUSES[min(attempt, len(PAUSES) - 1)])
                 continue
             self.counters[trial] = {
-                key: int(payload.get(key) or 0) for key in ("turned_away", "cut", "spoke")
+                key: int(payload.get(key) or 0) for key in ("turned_away", "spoke")
             }
             return records_of(payload.get("records") or [])
         raise AssertionError("unreachable")  # pragma: no cover

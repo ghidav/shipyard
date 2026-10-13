@@ -14,12 +14,12 @@ import tinker
 from shipyard.proxy import cookbook
 from shipyard.proxy import endpoint as endpoint_module
 from shipyard.proxy.exchange import Exchange, exchange
-from shipyard.proxy.recorder import IMAGE_TOKEN, Record, Recorder, ids_of
-from shipyard.proxy.wire import delta_encoded, record_of, records_of
+from shipyard.proxy.recorder import IMAGE_TOKEN, Record, Recorder, ids_of, pictures_of
+from shipyard.proxy.wire import Picture, delta_encoded, pictured, record_of, records_of
 from tests.proxies import FakeSampler, ask, endpoint, fetch, ids
 
 OK = ids("ok")
-EMPTY = {"records": [], "turned_away": 0, "cut": 0, "spoke": 0}
+EMPTY = {"records": [], "turned_away": 0, "spoke": 0}
 
 
 def planted(**fields: Any) -> Record:
@@ -59,7 +59,7 @@ async def test_a_trials_records_come_back_in_order_with_their_ids() -> None:
     assert [tuple(r["completion_token_ids"]) for r in records] == [OK, OK, OK]
     assert [r["seq"] for r in records] == [1, 2, 3]
     assert {r["requested_model"] for r in records} == {"gpt-oss-20b"}
-    assert (payload["turned_away"], payload["cut"], payload["spoke"]) == (0, 0, 6)
+    assert (payload["turned_away"], payload["spoke"]) == (0, 6)
 
 
 async def test_the_fetch_drains_and_an_unknown_trial_is_empty_not_an_error() -> None:
@@ -394,6 +394,72 @@ def test_an_image_chunk_is_a_run_of_image_tokens_in_the_ids() -> None:
     )
     assert ids_of(prompt) == (1, 2, IMAGE_TOKEN, IMAGE_TOKEN, IMAGE_TOKEN, 4)
     assert ids_of(tinker.ModelInput.from_ints([9])) == (9,)
+
+
+def test_pictures_of_keeps_each_image_chunk_with_bytes_at_its_offset() -> None:
+    import base64
+
+    prompt = SimpleNamespace(
+        chunks=[
+            SimpleNamespace(tokens=[1, 2]),
+            tinker.types.ImageChunk(data=b"png!", format="png", expected_tokens=3),
+            SimpleNamespace(tokens=[4]),
+            SimpleNamespace(length=2),  # an asset pointer: no bytes to keep
+        ]
+    )
+    assert ids_of(prompt) == (
+        1,
+        2,
+        IMAGE_TOKEN,
+        IMAGE_TOKEN,
+        IMAGE_TOKEN,
+        4,
+        IMAGE_TOKEN,
+        IMAGE_TOKEN,
+    )
+    assert pictures_of(prompt) == (Picture(2, 3, "png", base64.b64encode(b"png!").decode()),)
+    assert pictures_of(tinker.ModelInput.from_ints([9])) == ()
+
+
+async def test_a_sampled_image_prompt_keeps_its_picture_on_the_record() -> None:
+    import base64
+
+    recorder = Recorder(FakeSampler("ok"))
+    prompt = tinker.ModelInput(
+        chunks=[
+            tinker.types.EncodedTextChunk(tokens=[1]),
+            tinker.types.ImageChunk(data=b"png!", format="png", expected_tokens=2),
+            tinker.types.EncodedTextChunk(tokens=[3]),
+        ]
+    )
+    await under("t", recorder, prompt)
+    [record] = recorder.records_for("t")
+    assert record.prompt_token_ids == (1, IMAGE_TOKEN, IMAGE_TOKEN, 3)
+    assert record.images == (Picture(1, 2, "png", base64.b64encode(b"png!").decode()),)
+    assert pictured(record)
+
+
+def test_pictures_cross_the_wire_once_with_the_record_they_belong_to() -> None:
+    from dataclasses import asdict
+
+    shot, later = Picture(1, 2, "png", "cG5nIQ=="), Picture(6, 1, "jpeg", "anBn")
+    first = planted(
+        prompt_token_ids=(1, IMAGE_TOKEN, IMAGE_TOKEN, 4),
+        completion_token_ids=(5, 6),
+        images=(shot,),
+    )
+    second = planted(
+        seq=2,
+        prompt_token_ids=(1, IMAGE_TOKEN, IMAGE_TOKEN, 4, 5, 6, IMAGE_TOKEN, 8),
+        completion_token_ids=(9,),
+        images=(shot, later),
+    )
+    rows = delta_encoded([first, second])
+    assert rows[1]["prompt_from"] == 0 and rows[1]["prompt_token_ids"] == [IMAGE_TOKEN, 8]
+    assert rows[1]["images"] == [asdict(later)], "the prefix's picture rides with record 0"
+    assert records_of(rows) == [first, second]
+    assert records_of([asdict(first)]) == [first]
+    assert record_of({"prompt_token_ids": [1], "completion_token_ids": [2]}).images == ()
 
 
 async def test_a_retry_of_the_turn_that_spent_the_budget_gets_its_reply() -> None:

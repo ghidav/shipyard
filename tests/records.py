@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from shipyard.proxy.client import Unreachable
-from shipyard.proxy.wire import Record
+from shipyard.proxy.wire import Picture, Record
 from tests.proxies import ids
 
 
@@ -26,6 +26,7 @@ def made(
     bridged: bool = False,
     request_id: str | None = None,
     stop_reason: str = "stop",
+    images: tuple[Picture, ...] = (),
 ) -> Record:
     """A record as the proxy would have kept it, with text rendered by character."""
     prompt_ids = ids(prompt) if isinstance(prompt, str) else tuple(prompt)
@@ -49,6 +50,7 @@ def made(
         prompt_digests=(),
         reply_digest=None,
         error=error,
+        images=images,
     )
 
 
@@ -116,9 +118,7 @@ class FakeProxy:
         task = trial.split("__")[0]
         if task in self.failing:
             raise httpx.ConnectError("the proxy went away")
-        self.counters[trial] = dict(
-            self.counts.get(task) or {"turned_away": 0, "cut": 0, "spoke": 0}
-        )
+        self.counters[trial] = dict(self.counts.get(task) or {"turned_away": 0, "spoke": 0})
         found = self.answers.get(task, self.default)
         return list(found if found is not None else [made()])
 

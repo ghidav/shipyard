@@ -92,7 +92,7 @@ def test_the_serve_command_carries_the_flags_and_the_rest_as_settings() -> None:
             "bind": "0.0.0.0",
             "bind_port": 8000,
             "temperature": 0.5,
-            "volatile": ["x"],
+            "max_context": 4096,
         },
         host="proxy",
     )
@@ -111,7 +111,7 @@ def test_the_serve_command_carries_the_flags_and_the_rest_as_settings() -> None:
     assert rest[8:12] == ["--weights", "tinker://w/step-1", "--renderer", "qwen3"]
     assert rest[12] == "--settings" and json.loads(rest[13]) == {
         "temperature": 0.5,
-        "volatile": ["x"],
+        "max_context": 4096,
     }
     bare = serve_command({"model": "a/b"}, host="h")[len(client.SERVE) :]
     assert bare == ["--model", "a/b", "--bind", "0.0.0.0", "--port", "0", "--advertise", "h"]

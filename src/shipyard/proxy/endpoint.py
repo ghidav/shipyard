@@ -15,7 +15,7 @@ from typing import Any
 
 from aiohttp import web
 
-from shipyard.proxy import cookbook, keepalive, thinking, vision
+from shipyard.proxy import cookbook, keepalive, thinking, turns, vision
 from shipyard.proxy.exchange import middleware
 from shipyard.proxy.keepalive import KEEPALIVE_EVERY, KEEPALIVE_GRACE
 from shipyard.proxy.recorder import Record, Recorder
@@ -54,8 +54,6 @@ class Endpoint:
     max_tokens: int = DEFAULT_MAX_TOKENS
     max_context: int | None = None
     fill_context: bool = False
-    #: Regexes removed from system messages before rendering. Empty by default.
-    volatile: tuple[str, ...] = ()
     #: Seconds a stream may stay silent before it gets SSE comment frames, one per
     #: `keepalive_every` seconds, until its reply. None turns them off.
     keepalive_grace: float | None = KEEPALIVE_GRACE
@@ -111,11 +109,12 @@ class Endpoint:
         """Build the renderer, a sampling client on `model_path` or the base model, the
         context length (from Tinker when unknown), the app and its routes, then bind the
         socket."""
-        # Wrap the cookbook's parsers for images and thinking, once per process. Thinking
-        # wraps after vision, so no thinking block reaches a parser. thinking.install also
-        # installs the keepalive's stream wrap beneath its own.
+        # Wrap the cookbook's parsers for images, thinking and in-list system turns on both
+        # wires, once per process. Thinking wraps after vision, so no thinking block reaches
+        # a parser. thinking.install also installs the keepalive's stream wrap beneath its own.
         vision.install()
         thinking.install()
+        turns.install()
         renderer = (
             cookbook.renderer_for(self.base_model, self.renderer)
             if self.renderer is None or isinstance(self.renderer, str)
@@ -140,7 +139,7 @@ class Endpoint:
             served=self.model_path,
         )
         self._deps = cookbook.ProxyDeps(
-            renderer=Rendering(renderer, volatile=self.volatile, recorder=self._recorder),
+            renderer=Rendering(renderer, recorder=self._recorder),
             sampling_client=self._recorder,
             model_label=self.model_path or self.base_model,
             default_max_tokens=int(self.max_tokens),
@@ -223,14 +222,12 @@ class Endpoint:
         """An unknown trial gets an empty list and a 200. A rollout whose container never
         reached the proxy made no requests."""
         recorder = self.recorder
-        turned_away = recorder.turned_away.get(trial, 0)
-        cut, spoke = recorder.cut.get(trial, 0), recorder.spoke.get(trial, 0)
+        turned_away, spoke = recorder.turned_away.get(trial, 0), recorder.spoke.get(trial, 0)
         records = recorder.take(trial)
         return {
             "trial": trial,
             "records": delta_encoded(records) if delta else [asdict(r) for r in records],
             "turned_away": turned_away,
-            "cut": cut,
             "spoke": spoke,
         }
 

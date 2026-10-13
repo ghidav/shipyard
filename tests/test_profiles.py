@@ -26,7 +26,7 @@ def test_a_version_is_stripped_and_an_unknown_harness_gets_the_generic_profile()
 def test_the_generic_profile_is_the_openai_wire_with_nothing_extra() -> None:
     generic = Profile()
     assert generic.dialect == "openai" and slug_of(generic) == "openai"
-    assert generic.kwargs == {} and generic.env == {} and generic.volatile == ()
+    assert generic.kwargs == {} and generic.env == {}
     assert generic.strip_v1 is False and generic.turns is None and generic.provider is None
 
 
@@ -36,17 +36,12 @@ def test_pi_names_its_model_api_and_terminus_is_generic() -> None:
     assert PROFILES["terminus-2"] == Profile()
 
 
-def test_claude_code_speaks_anthropic_appends_v1_itself_and_rewrites_its_budget_line() -> None:
+def test_claude_code_speaks_anthropic_and_appends_v1_itself() -> None:
     profile = PROFILES["claude-code"]
     assert profile.dialect == "anthropic" and slug_of(profile) == "anthropic"
     assert profile.strip_v1 is True
     assert profile.env == {"DISABLE_COMPACT": "1", "DISABLE_AUTO_COMPACT": "1"}
     assert profile.turns is distinct_requests
-    assert len(profile.volatile) == 1
-    import re
-
-    cut = re.sub(profile.volatile[0], "", "be good\n\n<total_tokens>9 left</total_tokens>")
-    assert cut == "be good"
 
 
 def _event(kind: str, request_id: str | None, model: str = "m", message_id: str = "msg") -> str:

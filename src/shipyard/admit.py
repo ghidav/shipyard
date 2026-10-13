@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from shipyard.proxy.wire import IMAGE_TOKEN, Record
+from shipyard.proxy.wire import Record, pictured
 
 if TYPE_CHECKING:
     from shipyard.rollout import Rollouts
@@ -118,9 +118,9 @@ def served_verdict(
     """The served endings, decided before the verifier's number is read, or None. No
     records, or too few, is `env_error`. A first turn that never fit is
     `context_overflow`. A budget cut or a filled context scores 0. A quit on a failed call
-    is `api_error`. An image is `multimodal`. `failed` is the harness's log saying its last
-    call failed. With no failure on the last record, the proxy never saw that call and
-    the trial measured the connection."""
+    is `api_error`. An image the record did not keep is `multimodal`: nothing can train on
+    it. `failed` is the harness's log saying its last call failed. With no failure on the
+    last record, the proxy never saw that call and the trial measured the connection."""
     if not records:
         return Verdict(None, ENV_ERROR, why)
     if asked is not None and asked > len(records):
@@ -138,7 +138,7 @@ def served_verdict(
         return Verdict(None, API_ERROR, why)
     if failed and last is None:
         return Verdict(None, API_ERROR, why)
-    if any(IMAGE_TOKEN in item.prompt_token_ids for item in records):
+    if any(not pictured(item) for item in records if item.error is None):
         return Verdict(None, MULTIMODAL, why)
     return None
 

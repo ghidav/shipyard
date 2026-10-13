@@ -504,16 +504,16 @@ def test_the_rollout_serving_keys_load_with_their_defaults(tmp_path: Path) -> No
     )
     assert (found.temperature, found.top_p, found.top_k) == (1.0, 1.0, -1)
     assert (found.max_tokens, found.max_context, found.renderer) == (8192, 0, "")
-    assert (found.cut_volatile, found.fill_context, found.check_turns) == (True, False, False)
+    assert (found.fill_context, found.check_turns) == (False, False)
     text = MINIMAL.replace(
         "[rollout]",
         '[rollout]\nhost = "proxy.lan"\nbind = "127.0.0.1"\nbind_port = 8000\n'
-        "cut_volatile = true\nfill_context = true\ncheck_turns = true\nmax_context = 32768\n"
+        "fill_context = true\ncheck_turns = true\nmax_context = 32768\n"
         'renderer = "qwen3"\nendpoint_url = "https://p.example"',
     )
     found = load(write_blueprint(tmp_path / "set", text)).rollout
     assert (found.host, found.bind, found.bind_port) == ("proxy.lan", "127.0.0.1", 8000)
-    assert (found.cut_volatile, found.fill_context, found.check_turns) == (True, True, True)
+    assert (found.fill_context, found.check_turns) == (True, True)
     assert (found.max_context, found.renderer, found.endpoint_url) == (
         32768,
         "qwen3",

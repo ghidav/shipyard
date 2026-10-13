@@ -15,10 +15,23 @@ import torch
 from tinker import TensorData
 
 from shipyard.admit import Verdict, verdicts
-from shipyard.proxy.wire import IMAGE_TOKEN, Record
+from shipyard.proxy.wire import IMAGE_TOKEN, Picture, Record, model_input, pictured
 
 if TYPE_CHECKING:
     from shipyard.rollout import Rollouts
+
+__all__ = [
+    "Group",
+    "Member",
+    "Sequence",
+    "chains",
+    "datum",
+    "group",
+    "model_input",
+    "packable",
+    "sequences",
+    "shifted",
+]
 
 
 @dataclass(frozen=True)
@@ -31,6 +44,8 @@ class Sequence:
     tokens: tuple[int, ...]
     spans: tuple[tuple[int, int], ...]
     mu: tuple[float, ...] | None
+    #: The pictures behind the `IMAGE_TOKEN` runs in `tokens`, from the chain's last record.
+    images: tuple[Picture, ...] = ()
 
     @property
     def targets(self) -> tuple[int, ...]:
@@ -59,13 +74,9 @@ class Group:
 
 
 def packable(record: Record) -> bool:
-    """A refused or failed call has no completion. An image's stand-in tokens are
-    placeholders, and admission masks that rollout anyway."""
-    return (
-        record.error is None
-        and IMAGE_TOKEN not in record.prompt_token_ids
-        and IMAGE_TOKEN not in record.completion_token_ids
-    )
+    """A refused or failed call has no completion. An image's stand-in tokens pack only
+    with the picture behind them; a record that kept none is masked by admission anyway."""
+    return record.error is None and pictured(record)
 
 
 def chains(records: Values[Record]) -> list[list[Record]]:
@@ -112,7 +123,7 @@ def sequences(records: Values[Record]) -> list[Sequence]:
                 mu = None
                 break
             mu.extend(record.inference_logprobs)
-        out.append(Sequence(tokens, spans, None if mu is None else tuple(mu)))
+        out.append(Sequence(tokens, spans, None if mu is None else tuple(mu), last.images))
     return out
 
 
@@ -122,15 +133,21 @@ def _span(record: Record) -> tuple[int, int]:
     return head, head + len(record.completion_token_ids)
 
 
-def shifted(tokens: Values[int]) -> tuple[tinker.ModelInput, TensorData]:
+def shifted(
+    tokens: Values[int], images: Values[Picture] = ()
+) -> tuple[tinker.ModelInput, TensorData]:
     """The cookbook's shift by one, defined here. The model reads `tokens[:-1]` and predicts
     `tokens[1:]`, so position `j` of what it scores is about `tokens[j + 1]`, and a target
-    at `p` sits at `p - 1`."""
+    at `p` sits at `p - 1`. An image's positions are never targets: the cookbook writes 0
+    there, and so does this."""
     if len(tokens) < 2:
         raise ValueError("a sequence needs two tokens for the model to read one and predict one")
+    if tokens[-1] == IMAGE_TOKEN:
+        raise ValueError("a sequence cannot end on an image: nothing is predicted after it")
+    targets = [0 if token == IMAGE_TOKEN else token for token in tokens[1:]]
     return (
-        tinker.ModelInput.from_ints(list(tokens[:-1])),
-        TensorData.from_torch(torch.tensor(list(tokens[1:]))),
+        model_input(tokens[:-1], images),
+        TensorData.from_torch(torch.tensor(targets)),
     )
 
 
@@ -140,14 +157,14 @@ def datum(
     """The datum as the cookbook's `trajectory_to_data` builds it (tinker-cookbook,
     rl/data_processing.py, Apache-2.0, reproduced here): the `shifted` tokens, with mask,
     logprobs and advantages at each target's index - 1 and zeros elsewhere."""
-    model_input, target_tokens = shifted(sequence.tokens)
+    read, target_tokens = shifted(sequence.tokens, sequence.images)
     positions = sequence.targets
     if len(logprobs) != len(positions) or len(advantages) != len(positions):
         raise ValueError(
             f"{len(positions)} target(s) take {len(positions)} logprobs and advantages; got "
             f"{len(logprobs)} and {len(advantages)}"
         )
-    width = model_input.length
+    width = read.length
     mask, logprob_at, advantage_at = [0.0] * width, [0.0] * width, [0.0] * width
     for at, position in enumerate(positions):
         if position == 0:
@@ -156,7 +173,7 @@ def datum(
         logprob_at[position - 1] = float(logprobs[at])
         advantage_at[position - 1] = float(advantages[at])
     return tinker.Datum(
-        model_input=model_input,
+        model_input=read,
         loss_fn_inputs={
             "target_tokens": target_tokens,
             "logprobs": TensorData.from_torch(torch.tensor(logprob_at)),

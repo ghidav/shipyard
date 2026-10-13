@@ -16,7 +16,7 @@ RETRY_HEADER = "x-stainless-retry-count"
 @dataclass
 class Exchange:
     """The request state the three callers share: the trial from the address, the SDK's
-    headers, and what the wrapper cut or bridged."""
+    headers, and what the wrapper bridged."""
 
     trial: str = ""
     #: `anthropic` for a request on `/messages`, `openai` otherwise. It sets the form of
@@ -25,8 +25,6 @@ class Exchange:
     retry: int = 0
     idempotency_key: str | None = None
     request_id: str | None = None
-    #: Number of volatile lines cut from this request's system messages before rendering.
-    cut: int = 0
     #: Whether the prompt was built by the bridge, the digests of its messages, and the
     #: fresh render behind a bridged prompt (what a later head must equal to extend it).
     bridged: bool = False

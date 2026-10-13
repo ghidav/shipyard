@@ -13,11 +13,13 @@ from shipyard.proxy import cookbook
 from shipyard.proxy.bridge import Index, Reply
 from shipyard.proxy.exchange import exchange
 
-# `Record` and `IMAGE_TOKEN` are defined in `wire`, which the run reads without the
-# cookbook. They are re-exported here.
+# `Record`, `IMAGE_TOKEN` and the two readers of a prompt are defined in `wire`, which the
+# run reads without the cookbook. They are re-exported here.
 from shipyard.proxy.wire import IMAGE_TOKEN as IMAGE_TOKEN
-from shipyard.proxy.wire import SAMPLER_FAILED
+from shipyard.proxy.wire import SAMPLER_FAILED, Picture, pictured
 from shipyard.proxy.wire import Record as Record
+from shipyard.proxy.wire import ids_of as ids_of
+from shipyard.proxy.wire import pictures_of as pictures_of
 
 
 class Recorder:
@@ -48,9 +50,8 @@ class Recorder:
         #: Whether a turn that would overrun the context gets the remaining context as its limit.
         self.fill_context = fill_context
         self.records: dict[str, list[Record]] = {}
-        #: Per trial: requests refused (budget or context), volatile lines cut, tokens sampled.
+        #: Per trial: requests refused (budget or context), tokens sampled.
         self.turned_away: dict[str, int] = {}
-        self.cut: dict[str, int] = {}
         self.spoke: dict[str, int] = {}
         self._seq: dict[str, int] = {}
         self._replies: dict[tuple[Any, ...], asyncio.Future[Any]] = {}
@@ -92,6 +93,7 @@ class Recorder:
         self, found: Any, trial: str, prompt: Any, num_samples: int, sampling_params: Any
     ) -> Any:
         prompt_ids = ids_of(prompt)
+        pictures = pictures_of(prompt)
         pinned = self.pin(sampling_params)
         # Keyed on the params as pinned, before the budget cut, so a retry arriving after
         # the trial's count moved still matches its reply.
@@ -128,7 +130,7 @@ class Recorder:
             if not pending.done():
                 pending.set_result(None)  # a retry waiting on it samples for itself
             failure = f"{SAMPLER_FAILED}{type(failed).__name__}"
-            self._add(trial, prompt_ids, params, served, error=failure)
+            self._add(trial, prompt_ids, params, served, error=failure, images=pictures)
             raise
         if not pending.done():
             pending.set_result(response)
@@ -147,6 +149,7 @@ class Recorder:
                 stop_reason=str(getattr(sequence, "stop_reason", "") or ""),
                 sample_ms=elapsed_ms,
                 cached_tokens=cache_hit,
+                images=pictures,
             )
             cache_hit = 0
             self.spoke[trial] = self.spoke.get(trial, 0) + len(tokens)
@@ -200,14 +203,11 @@ class Recorder:
         sample_ms: float = 0.0,
         cached_tokens: int = 0,
         error: str | None = None,
+        images: tuple[Picture, ...] = (),
     ) -> Record:
         """Append the trial's next record, numbered from 1 per trial. Refused and failed
         calls get records too, so the sequence shows everything the harness asked for."""
         found = exchange.get()
-        if found is not None and found.cut:
-            # Counted once per request that left a record. A replayed retry cuts nothing new.
-            self.cut[trial] = self.cut.get(trial, 0) + found.cut
-            found.cut = 0
         self._seq[trial] = seq = self._seq.get(trial, 0) + 1
         record = Record(
             seq=seq,
@@ -226,6 +226,7 @@ class Recorder:
             prompt_digests=found.prompt_digests if found else (),
             reply_digest=None,
             error=error,
+            images=images,
         )
         self.records.setdefault(trial, []).append(record)
         if found is not None and error is None:
@@ -243,19 +244,20 @@ class Recorder:
         call_ids: tuple[str, ...] = (),
     ) -> None:
         """Set the parsed reply's digest on record `seq` of the trial and index the reply,
-        with its calls' ids, for the bridge. A prompt that held an image is not indexed,
-        because no ids rebuild it."""
+        with its calls' ids, for the bridge. A prompt with an image the record did not keep
+        is not indexed, because nothing rebuilds it."""
         records = self.records.get(trial, [])
         for at in range(len(records) - 1, -1, -1):
             if records[at].seq != seq:
                 continue
             record = records[at] = replace(records[at], reply_digest=reply_digest)
-            if IMAGE_TOKEN not in record.prompt_token_ids:
+            if pictured(record):
                 reply = Reply(
                     prompt_ids=record.prompt_token_ids,
                     completion_ids=record.completion_token_ids,
                     ended_with_stop=ended_with_stop,
                     rendered=record.prompt_token_ids if rendered is None else rendered,
+                    pictures=record.images,
                 )
                 self.index_for(trial).add(record.prompt_digests, reply_digest, reply, call_ids)
             return
@@ -273,23 +275,9 @@ class Recorder:
     def _forget(self, trial: str) -> list[Record]:
         for key in [key for key in self._replies if key[0] == trial]:
             del self._replies[key]
-        for counter in (self.turned_away, self.cut, self.spoke, self._seq, self.indexes):
+        for counter in (self.turned_away, self.spoke, self._seq, self.indexes):
             counter.pop(trial, None)
         return self.records.pop(trial, [])
-
-
-def ids_of(prompt: Any) -> tuple[int, ...]:
-    """The prompt as ids. Each non-text chunk becomes a run of `IMAGE_TOKEN` of the
-    chunk's length, because `ModelInput.to_ints` refuses image chunks and the record
-    must still show the length."""
-    ids: list[int] = []
-    for chunk in prompt.chunks:
-        tokens = getattr(chunk, "tokens", None)
-        if tokens is not None:
-            ids.extend(int(token) for token in tokens)
-        else:
-            ids.extend([IMAGE_TOKEN] * int(getattr(chunk, "length", 0) or 0))
-    return tuple(ids)
 
 
 def _params_dict(sampling_params: Any) -> dict[str, Any]:

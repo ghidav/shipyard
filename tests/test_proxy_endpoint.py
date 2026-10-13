@@ -244,7 +244,7 @@ def test_every_knob_that_shapes_the_distribution_is_pinned_and_the_object_left_a
 def test_the_endpoint_defaults_to_truncating_nothing() -> None:
     made = Endpoint(base_model="a/b")
     assert (made.temperature, made.top_p, made.top_k, made.max_tokens) == (1.0, 1.0, -1, 8192)
-    assert made.volatile == () and made.control_token is None
+    assert made.control_token is None
 
 
 # ------------------------------------------------------------------ the control route

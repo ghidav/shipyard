@@ -118,6 +118,12 @@ def renderer_for(base_model: str, name: str | None = None) -> Any:
         image_processor=image_processor_for(base_model),
         model_name=base_model,
     )
+    # Most cookbook renderers drop the history's thinking by default, so the generation
+    # prompt is not a prefix of the next render and the bridge cannot extend it. The
+    # history keeps what the model sampled, as a bridged prompt does and as the cookbook
+    # advises for multi-turn RL.
+    if hasattr(renderer, "strip_thinking_from_history"):
+        renderer.strip_thinking_from_history = False
     return renderer if effort is None else AtEffort(renderer, effort)
 
 
