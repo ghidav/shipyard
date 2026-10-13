@@ -118,9 +118,7 @@ class FakeProxy:
         task = trial.split("__")[0]
         if task in self.failing:
             raise httpx.ConnectError("the proxy went away")
-        self.counters[trial] = dict(
-            self.counts.get(task) or {"turned_away": 0, "cut": 0, "spoke": 0}
-        )
+        self.counters[trial] = dict(self.counts.get(task) or {"turned_away": 0, "spoke": 0})
         found = self.answers.get(task, self.default)
         return list(found if found is not None else [made()])
 

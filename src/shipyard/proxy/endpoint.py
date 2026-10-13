@@ -54,8 +54,6 @@ class Endpoint:
     max_tokens: int = DEFAULT_MAX_TOKENS
     max_context: int | None = None
     fill_context: bool = False
-    #: Regexes removed from system messages before rendering. Empty by default.
-    volatile: tuple[str, ...] = ()
     #: Seconds a stream may stay silent before it gets SSE comment frames, one per
     #: `keepalive_every` seconds, until its reply. None turns them off.
     keepalive_grace: float | None = KEEPALIVE_GRACE
@@ -141,7 +139,7 @@ class Endpoint:
             served=self.model_path,
         )
         self._deps = cookbook.ProxyDeps(
-            renderer=Rendering(renderer, volatile=self.volatile, recorder=self._recorder),
+            renderer=Rendering(renderer, recorder=self._recorder),
             sampling_client=self._recorder,
             model_label=self.model_path or self.base_model,
             default_max_tokens=int(self.max_tokens),
@@ -224,14 +222,12 @@ class Endpoint:
         """An unknown trial gets an empty list and a 200. A rollout whose container never
         reached the proxy made no requests."""
         recorder = self.recorder
-        turned_away = recorder.turned_away.get(trial, 0)
-        cut, spoke = recorder.cut.get(trial, 0), recorder.spoke.get(trial, 0)
+        turned_away, spoke = recorder.turned_away.get(trial, 0), recorder.spoke.get(trial, 0)
         records = recorder.take(trial)
         return {
             "trial": trial,
             "records": delta_encoded(records) if delta else [asdict(r) for r in records],
             "turned_away": turned_away,
-            "cut": cut,
             "spoke": spoke,
         }
 

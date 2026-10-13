@@ -105,7 +105,7 @@ async def test_a_served_model_runs_through_its_proxy_and_is_judged_by_its_record
             "c": [made(seq=1)],
             "d": [],
         },
-        counts={"b": {"turned_away": 1, "cut": 0, "spoke": 2}},
+        counts={"b": {"turned_away": 1, "spoke": 2}},
     )
     monkeypatch.setattr(serving, "Proxy", fake)
     replacements = {
@@ -136,7 +136,6 @@ async def test_a_served_model_runs_through_its_proxy_and_is_judged_by_its_record
     masked = {key: n for job in jobs for key, n in job.get("masked", {}).items()}
     assert masked == {"timeout": 1, "env_error": 1}
     assert sum(job.get("turned_away", 0) for job in jobs) == 1
-    assert "cut" not in jobs[0] and "cut" not in jobs[1]
     assert sum(job["input_tokens"] for job in jobs) == 3 + 8 + 2 + 2 + 2, "the whole prompt"
     assert sum(job["cache_tokens"] for job in jobs) == 3
     assert sum(job["output_tokens"] for job in jobs) == 2 + 4 + 2 + 2

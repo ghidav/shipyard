@@ -1,12 +1,10 @@
-"""The renderer wrapper the app uses. Before rendering it cuts volatile lines from system
-messages, refuses images for a model that takes none, and tries the bridge. After parsing
-it digests the reply onto its record and keeps the reply's thinking for the wire."""
+"""The renderer wrapper the app uses. Before rendering it refuses images for a model that
+takes none and tries the bridge. After parsing it digests the reply onto its record and
+keeps the reply's thinking for the wire."""
 
 from __future__ import annotations
 
 import hashlib
-import re
-from collections.abc import Sequence
 from typing import Any
 
 from shipyard.proxy import cookbook
@@ -21,18 +19,13 @@ class Rendering:
     """Wraps a renderer. It overrides `build_generation_prompt` and `parse_response`.
     Every other attribute comes from the inner renderer."""
 
-    def __init__(self, inner: Any, volatile: Sequence[str] = (), recorder: Any = None) -> None:
+    def __init__(self, inner: Any, recorder: Any = None) -> None:
         self._inner = inner
-        self._volatile = tuple(re.compile(pattern) for pattern in volatile)
         self._recorder = recorder
 
     def build_generation_prompt(self, messages: Any, **kwargs: Any) -> Any:
         found: Exchange | None = exchange.get()
         messages = list(messages)
-        if self._volatile:
-            messages, cut = drop_volatile(messages, self._volatile)
-            if found is not None:
-                found.cut = cut
         if has_images(messages) and not takes_images(self._inner):
             # Answer with a 400 so the harness sees the request was the problem.
             raise cookbook.refused(
@@ -110,43 +103,3 @@ def _call_id(call: Any) -> str | None:
 def int_stops(renderer: Any) -> set[int]:
     """The renderer's stop tokens that are token ids. String stops are skipped."""
     return {int(s) for s in (renderer.get_stop_sequences() or []) if isinstance(s, int)}
-
-
-def drop_volatile(
-    messages: Sequence[Any], patterns: Sequence[re.Pattern[str]]
-) -> tuple[list[Any], int]:
-    """The messages with every pattern match cut from their system text, and the number of
-    matches cut. The input is copied, not modified. A per-request line makes every prompt
-    unique and defeats the cache."""
-    out: list[Any] = []
-    dropped = 0
-    for message in messages:
-        content = message.get("content") if isinstance(message, dict) else None
-        if not isinstance(message, dict) or message.get("role") != "system":
-            out.append(message)
-        elif isinstance(content, str):
-            text, count = _cut(content, patterns)
-            dropped += count
-            out.append({**message, "content": text} if count else message)
-        elif isinstance(content, list):
-            parts, count = [], 0
-            for part in content:
-                if isinstance(part, dict) and part.get("type") == "text":
-                    text, found = _cut(str(part.get("text", "")), patterns)
-                    count += found
-                    parts.append({**part, "text": text} if found else part)
-                else:
-                    parts.append(part)
-            dropped += count
-            out.append({**message, "content": parts} if count else message)
-        else:
-            out.append(message)
-    return out, dropped
-
-
-def _cut(text: str, patterns: Sequence[re.Pattern[str]]) -> tuple[str, int]:
-    total = 0
-    for pattern in patterns:
-        text, count = pattern.subn("", text)
-        total += count
-    return text, total

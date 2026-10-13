@@ -46,7 +46,7 @@ async def test_records_come_back_as_records_with_their_ids_and_the_counters() ->
     assert [found.seq for found in records] == [1, 2]
     assert records[1].prompt_token_ids == ids("oneoktwo"), "the delta is read back whole"
     assert records[0].completion_token_ids == ids("ok")
-    assert proxy.counters["t-1"] == {"turned_away": 0, "cut": 0, "spoke": 0}
+    assert proxy.counters["t-1"] == {"turned_away": 0, "spoke": 0}
     assert again == [] and unknown == [], "drained, and an unknown trial asked for nothing"
 
 

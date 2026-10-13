@@ -24,7 +24,6 @@ from shipyard.serving import (
     placement,
     tinker_base_url,
     turns_asked,
-    volatile_for,
 )
 from tests.records import FakeProxy, made
 from tests.trials import write_result
@@ -112,7 +111,6 @@ def test_the_endpoint_settings_are_the_rollout_knobs_and_the_checkpoint() -> Non
         "max_tokens": 4096,
         "max_context": 32768,
         "fill_context": True,
-        "volatile": [],
     }
     bare = endpoint_settings(blueprint())
     assert bare["weights"] is None and bare["renderer"] is None and bare["max_context"] is None
@@ -127,15 +125,6 @@ def test_the_proxys_tinker_session_is_tagged_with_the_run_and_its_recipe() -> No
         "shipyard_run": "dapo-docker__abc",
         "shipyard_recipe": cfg.recipe.kind,
     }
-
-
-def test_volatile_lines_are_cut_by_default_and_the_profiles_say_which() -> None:
-    claude = PROFILES["claude-code"]
-    assert volatile_for(blueprint(harness="claude-code").rollout, claude) == claude.volatile
-    assert volatile_for(blueprint(harness="claude-code", cut_volatile=False).rollout, claude) == ()
-    assert endpoint_settings(blueprint(harness="claude-code", cut_volatile=True))["volatile"] == [
-        *claude.volatile
-    ]
 
 
 # ------------------------------------------------------------------- start and stop
@@ -242,7 +231,7 @@ async def test_harvest_writes_a_row_per_record_and_counts_the_tokens(
         ],
         "beta": [made("go", error="context", seq=1)],
     }
-    fake.counts = {"beta": {"turned_away": 1, "cut": 3, "spoke": 0}}
+    fake.counts = {"beta": {"turned_away": 1, "spoke": 0}}
     held = Serving(blueprint(), tmp_path)
     await held.start()
     batch = rolled(tmp_path, ("alpha", {"reward": 1.0}), ("beta", {"reward": 0.0}), ("gamma", None))
@@ -259,7 +248,7 @@ async def test_harvest_writes_a_row_per_record_and_counts_the_tokens(
         "cache_tokens": 5,
         "output_tokens": 8,
     }
-    assert harvested.noted == {"turned_away": 1, "cut": 3, "bridged": 1}
+    assert harvested.noted == {"turned_away": 1, "bridged": 1}
     rows = list(record.read(tmp_path / record.REQUESTS))
     assert [row["trial"] for row in rows] == [batch.trials[0].name] * 2 + [
         t.name for t in batch.trials[1:]

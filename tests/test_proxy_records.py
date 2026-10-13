@@ -19,7 +19,7 @@ from shipyard.proxy.wire import Picture, delta_encoded, pictured, record_of, rec
 from tests.proxies import FakeSampler, ask, endpoint, fetch, ids
 
 OK = ids("ok")
-EMPTY = {"records": [], "turned_away": 0, "cut": 0, "spoke": 0}
+EMPTY = {"records": [], "turned_away": 0, "spoke": 0}
 
 
 def planted(**fields: Any) -> Record:
@@ -59,7 +59,7 @@ async def test_a_trials_records_come_back_in_order_with_their_ids() -> None:
     assert [tuple(r["completion_token_ids"]) for r in records] == [OK, OK, OK]
     assert [r["seq"] for r in records] == [1, 2, 3]
     assert {r["requested_model"] for r in records} == {"gpt-oss-20b"}
-    assert (payload["turned_away"], payload["cut"], payload["spoke"]) == (0, 0, 6)
+    assert (payload["turned_away"], payload["spoke"]) == (0, 6)
 
 
 async def test_the_fetch_drains_and_an_unknown_trial_is_empty_not_an_error() -> None:

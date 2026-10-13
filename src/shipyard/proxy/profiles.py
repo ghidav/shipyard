@@ -11,9 +11,8 @@ from dataclasses import dataclass, field
 @dataclass(frozen=True)
 class Profile:
     """One harness: its dialect, the provider it is posed to, the extra agent kwargs and
-    trial env it takes, whether it appends `/v1` itself, the system lines it rewrites per
-    request, its turn counter, and a log reader that reports whether its last model call
-    failed."""
+    trial env it takes, whether it appends `/v1` itself, its turn counter, and a log reader
+    that reports whether its last model call failed."""
 
     dialect: str = "openai"
     #: A provider id for a harness the dialect's id would route wrongly. It forms the model
@@ -26,7 +25,6 @@ class Profile:
     #: left of the context.
     env: dict = field(default_factory=dict)
     strip_v1: bool = False
-    volatile: tuple[str, ...] = ()
     turns: Callable[[str], int] | None = None
     #: Read on every trial, regardless of `check_turns`. A last call that failed where the
     #: proxy never saw it (in transit, or refused before recording) must not be graded.
@@ -98,7 +96,6 @@ PROFILES: dict[str, Profile] = {
     "claude-code": Profile(
         dialect="anthropic",
         strip_v1=True,
-        volatile=(r"\n*<total_tokens>[^<]*</total_tokens>",),
         env={"DISABLE_COMPACT": "1", "DISABLE_AUTO_COMPACT": "1"},
         turns=distinct_requests,
     ),

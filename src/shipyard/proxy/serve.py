@@ -77,8 +77,6 @@ def endpoint_for(
                 f"from a run. It takes {', '.join(sorted(taken))}."
             )
         named.update(settings)
-        if "volatile" in named:
-            named["volatile"] = tuple(named["volatile"] or ())
     if os.environ.get(FAKE_SAMPLER_ENV) == "1":
         named["client_factory"], named["renderer"] = fake_parts()
     return Endpoint(**named)
@@ -206,7 +204,7 @@ def parser() -> argparse.ArgumentParser:
         type=json.loads,
         metavar="JSON",
         help="the run's other [rollout] endpoint keys as a JSON object: temperature, top_p, "
-        "top_k, max_tokens, max_context, fill_context, volatile",
+        "top_k, max_tokens, max_context, fill_context",
     )
     return made
 

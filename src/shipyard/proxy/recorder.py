@@ -50,9 +50,8 @@ class Recorder:
         #: Whether a turn that would overrun the context gets the remaining context as its limit.
         self.fill_context = fill_context
         self.records: dict[str, list[Record]] = {}
-        #: Per trial: requests refused (budget or context), volatile lines cut, tokens sampled.
+        #: Per trial: requests refused (budget or context), tokens sampled.
         self.turned_away: dict[str, int] = {}
-        self.cut: dict[str, int] = {}
         self.spoke: dict[str, int] = {}
         self._seq: dict[str, int] = {}
         self._replies: dict[tuple[Any, ...], asyncio.Future[Any]] = {}
@@ -209,10 +208,6 @@ class Recorder:
         """Append the trial's next record, numbered from 1 per trial. Refused and failed
         calls get records too, so the sequence shows everything the harness asked for."""
         found = exchange.get()
-        if found is not None and found.cut:
-            # Counted once per request that left a record. A replayed retry cuts nothing new.
-            self.cut[trial] = self.cut.get(trial, 0) + found.cut
-            found.cut = 0
         self._seq[trial] = seq = self._seq.get(trial, 0) + 1
         record = Record(
             seq=seq,
@@ -280,7 +275,7 @@ class Recorder:
     def _forget(self, trial: str) -> list[Record]:
         for key in [key for key in self._replies if key[0] == trial]:
             del self._replies[key]
-        for counter in (self.turned_away, self.cut, self.spoke, self._seq, self.indexes):
+        for counter in (self.turned_away, self.spoke, self._seq, self.indexes):
             counter.pop(trial, None)
         return self.records.pop(trial, [])
 
