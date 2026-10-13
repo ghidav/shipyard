@@ -15,7 +15,7 @@ from typing import Any
 
 from aiohttp import web
 
-from shipyard.proxy import cookbook, keepalive, thinking, vision
+from shipyard.proxy import cookbook, keepalive, thinking, turns, vision
 from shipyard.proxy.exchange import middleware
 from shipyard.proxy.keepalive import KEEPALIVE_EVERY, KEEPALIVE_GRACE
 from shipyard.proxy.recorder import Record, Recorder
@@ -111,11 +111,12 @@ class Endpoint:
         """Build the renderer, a sampling client on `model_path` or the base model, the
         context length (from Tinker when unknown), the app and its routes, then bind the
         socket."""
-        # Wrap the cookbook's parsers for images and thinking, once per process. Thinking
-        # wraps after vision, so no thinking block reaches a parser. thinking.install also
-        # installs the keepalive's stream wrap beneath its own.
+        # Wrap the cookbook's parsers for images, thinking and in-list system turns, once
+        # per process. Thinking wraps after vision, so no thinking block reaches a parser.
+        # thinking.install also installs the keepalive's stream wrap beneath its own.
         vision.install()
         thinking.install()
+        turns.install()
         renderer = (
             cookbook.renderer_for(self.base_model, self.renderer)
             if self.renderer is None or isinstance(self.renderer, str)

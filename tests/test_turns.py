@@ -1,0 +1,124 @@
+"""Claude Code puts system-role messages inside the message list. The tests wrap the
+cookbook's real parser as the endpoint does and check that those messages are user turns in
+place, the request's own `system` is the one system message, and a call that ends with a
+new block extends the previous prompt instead of starting over."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from shipyard.proxy import cookbook, turns
+from shipyard.proxy.turns import as_user_turns
+from tests.proxies import BridgeRenderer, ScriptedSampler, ask_anthropic, chars, endpoint, ids
+
+
+@pytest.fixture
+def parser():
+    """The cookbook's Anthropic parser wrapped for the test and restored afterwards."""
+    saved = {name: cookbook.private(name) for name in cookbook.PATCHABLE}
+    turns.install()
+    yield cookbook.private("_parse_anthropic")
+    cookbook.patch(**saved)
+
+
+def _claude_code_body() -> dict[str, Any]:
+    """The wire shape: a system prompt, then agent text and a per-call block as system-role
+    messages inside the list."""
+    return {
+        "model": "m",
+        "max_tokens": 8,
+        "system": [{"type": "text", "text": "Be brief."}],
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "What is here?"}]},
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "# Environment\nA sandbox.",
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+            },
+            {"role": "assistant", "content": [{"type": "text", "text": "Listing."}]},
+            {"role": "user", "content": [{"type": "text", "text": "go on"}]},
+            {
+                "role": "system",
+                "content": [{"type": "text", "text": "<total_tokens>9 left</total_tokens>"}],
+            },
+        ],
+    }
+
+
+def test_in_list_system_messages_are_user_turns_in_place(parser) -> None:
+    parsed = parser(_claude_code_body())
+    assert parsed.system_text == "Be brief."
+    assert [(m["role"], m["content"]) for m in parsed.messages] == [
+        ("user", "What is here?"),
+        ("user", "# Environment\nA sandbox."),
+        ("assistant", "Listing."),
+        ("user", "go on"),
+        ("user", "<total_tokens>9 left</total_tokens>"),
+    ]
+
+
+def test_a_body_without_them_is_handed_on_as_it_is() -> None:
+    body = {"messages": [{"role": "user", "content": "go"}]}
+    assert as_user_turns(body) is body
+    malformed = {"messages": "x"}
+    assert as_user_turns(malformed) is malformed, "the parser says what is wrong with it"
+
+
+def test_the_top_level_system_stays_and_the_input_is_not_modified() -> None:
+    body = {"system": "Be brief.", "messages": [{"role": "system", "content": "late"}]}
+    out = as_user_turns(body)
+    assert out["system"] == "Be brief."
+    assert out["messages"] == [{"role": "user", "content": "late"}]
+    assert body["messages"] == [{"role": "system", "content": "late"}]
+
+
+def test_install_wraps_once(parser) -> None:
+    before = cookbook.private("_parse_anthropic")
+    turns.install()
+    assert cookbook.private("_parse_anthropic") is before
+    assert cookbook.wrapped_by("_parse_anthropic", turns.TAG)
+    assert not cookbook.wrapped_by("_parse_openai", turns.TAG)
+
+
+async def test_a_call_that_ends_with_a_new_block_extends_the_previous_prompt() -> None:
+    """The second call appends a tool result and a new system-role block, as Claude Code
+    does after a file changed on disk. The block is the tail's closing user turn, so the
+    prompt is the record's prompt and sampled tokens plus the tail."""
+    sampler = ScriptedSampler("", answers=["CALL ls {}", "two files"])
+    tools = [{"name": "ls", "description": "List", "input_schema": {"type": "object"}}]
+    body = {"system": "Be brief.", "tools": tools}
+    agent = {"role": "system", "content": [{"type": "text", "text": "# Environment\nA sandbox."}]}
+    note = "Note: a.txt changed on disk.\n\n<total_tokens>9 left</total_tokens>"
+    async with endpoint(sampler, renderer=BridgeRenderer()) as started:
+        messages: list[dict[str, Any]] = [{"role": "user", "content": "look"}, agent]
+        first = await ask_anthropic(started, "t", messages=messages, **body)
+        assert first.status_code == 200, first.text
+        said = first.json()["content"]
+        call = next(block for block in said if block["type"] == "tool_use")
+        messages += [
+            {"role": "assistant", "content": said},
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": call["id"], "content": "a b"}],
+            },
+            {"role": "system", "content": [{"type": "text", "text": note}]},
+        ]
+        second = await ask_anthropic(started, "t", messages=messages, **body)
+        assert second.status_code == 200, second.text
+        one, two = started.records_for("t")
+    assert one.prompt_token_ids == ids(
+        "system:Be brief.<tools:ls>\nuser:look\nuser:# Environment\nA sandbox.\n>"
+    )
+    assert two.bridged
+    prefix = (*one.prompt_token_ids, *one.completion_token_ids)
+    assert two.prompt_token_ids[: len(prefix)] == prefix
+    tail = f"\x00\ntool[{call['id']}]:a b\nuser:{note}\n>"
+    assert chars(two.prompt_token_ids[len(prefix) :]) == tail
+    assert sampler.prompts[1].to_ints() == list(two.prompt_token_ids)
