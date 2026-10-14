@@ -30,6 +30,7 @@ from shipyard.gepa.reflect import (
 from shipyard.modules import KINDS, PROMPT, PROMPT_FILE, SKILL_FILE, Candidate, Module
 from shipyard.rollout import Rollouts
 from shipyard.run import Run
+from shipyard.serving import ProviderSampling
 from tests.trials import write_blueprint, write_result
 
 SKILL = "---\nname: solving\ndescription: how to solve.\n---\n\nset up the algebra first\n"
@@ -282,7 +283,7 @@ class Reflector:
 
 def _run(tmp_path: Path, text: str = BLUEPRINT) -> Run:
     opened = Run.open(write_blueprint(tmp_path, text), root=tmp_path / "runs")
-    assert opened.serving is None, "provider-served: no proxy to point a reflection at"
+    assert isinstance(opened.sampling, ProviderSampling), "no proxy to point a reflection at"
     return opened
 
 

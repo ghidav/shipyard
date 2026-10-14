@@ -36,12 +36,12 @@ from tests.trials import write_result
 class _Provider(SamplingClient):
     async def open(self) -> None: ...
 
-    async def close(self) -> None: ...
+    def close(self) -> None: ...
 
     def connection(self, trial: Trial) -> Connection:
         return Connection(model="m")
 
-    def serve(self, path: str) -> None:
+    async def serve(self, path: str | None) -> None:
         raise RuntimeError("a provider serves no weights")
 
     async def record(self, job: str, trials: list[Trial]) -> Harvest | None:
@@ -117,7 +117,7 @@ async def test_a_provider_sampling_client_records_nothing_and_serves_nothing() -
     sampling = _Provider()
     assert await sampling.record("j", []) is None
     with pytest.raises(RuntimeError, match="serves no weights"):
-        sampling.serve("tinker://x")
+        await sampling.serve("tinker://x")
     assert Connection(model=None).env == {} and Connection("m", "http://p/v1", "t").token == "t"
     assert "token" not in repr(Connection("m", "http://p/v1", "secret"))
 

@@ -1,6 +1,6 @@
 """The run's side of the proxy, faked: a record as the proxy would have kept it, and a
 `Proxy` that notes how it was placed, probed, addressed, fetched and swapped, answering each
-trial's records by its task name, so `Serving` and the recipes run without a server."""
+trial's records by its task name, so `TinkerSampling` and the recipes run without a server."""
 
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ def made(
 
 @dataclass
 class FakeProxy:
-    """`Proxy` as `Serving` drives it: every placement hands back this one instance, which
+    """`Proxy` as `TinkerSampling` drives it: every placement hands back this instance, which
     notes how it was placed, which trials it addressed, fetched and swapped, and answers
     each trial's records by its task name (`answers`, else `default`, else one record)."""
 

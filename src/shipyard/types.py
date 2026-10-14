@@ -168,8 +168,8 @@ class Harvest:
     counted: dict[str, int] = field(default_factory=dict)
     noted: dict[str, int] = field(default_factory=dict)
     party: str = "tinker"
-    #: Why the run stops once the job row is written; None to go on.
-    stopped: str | None = None
+    #: Raised once the job row is written; None to go on.
+    stopped: RuntimeError | None = None
 
 
 class SamplingClient(ABC):
@@ -183,13 +183,14 @@ class SamplingClient(ABC):
     async def open(self) -> None: ...
 
     @abstractmethod
-    async def close(self) -> None: ...
+    def close(self) -> None: ...
 
     @abstractmethod
     def connection(self, trial: Trial) -> Connection: ...
 
     @abstractmethod
-    def serve(self, path: str) -> None: ...
+    async def serve(self, path: str | None) -> None:
+        """Point at sampler weights, None for the base model."""
 
     @abstractmethod
     async def record(self, job: str, trials: Values[Trial]) -> Harvest | None:

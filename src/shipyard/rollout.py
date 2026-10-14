@@ -7,7 +7,7 @@ import copy
 import logging
 import os
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -21,13 +21,14 @@ from harbor.models.trial.config import (
     VerifierConfig,
 )
 
+from shipyard import types
 from shipyard.admit import verdict
 from shipyard.modules import Candidate, deliver, merge_fields
-from shipyard.proxy.profiles import Profile, bare_name, slug_of
+from shipyard.proxy.profiles import bare_name
+from shipyard.types import Connection, Harness, SamplingClient, Trial
 
 if TYPE_CHECKING:
     from shipyard.progress import Reporter
-    from shipyard.proxy.client import Proxy
     from shipyard.proxy.wire import Record
 
 logger = logging.getLogger(__name__)
@@ -64,14 +65,11 @@ class Rollouts:
         return len(self.trials)
 
 
-@dataclass(frozen=True)
-class Served:
-    """How a trial reaches the run's own proxy: the proxy (an address per trial, the token,
-    the host), the harness's profile, and whether to apply the profile's env."""
-
-    proxy: Proxy
-    profile: Profile = field(default_factory=Profile)
-    fill_context: bool = False
+def trials_of(rolled: Rollouts, deployed: Harness) -> list[Trial]:
+    return [
+        Trial(rolled.job, task, index, deployed, Path(trial))
+        for trial, (task, index) in zip(rolled.trials, rolled.plan, strict=True)
+    ]
 
 
 async def rollout(
@@ -79,7 +77,7 @@ async def rollout(
     job: str,
     *,
     harness: str,
-    model: str | None,
+    sampling: SamplingClient,
     sandbox: str,
     concurrency: int,
     rollouts: int,
@@ -91,13 +89,12 @@ async def rollout(
     timeout: float | None = None,
     run_trial: Runner | None = None,
     progress: Reporter | None = None,
-    served: Served | None = None,
     modules: Candidate | None = None,
 ) -> Rollouts:
-    """Run every task `rollouts` times, `concurrency` trials at once, and return them in
-    plan order. Deliver `modules` under the job's directory and name them on the agent
-    config. A trial whose runner raised keeps its slot with no result, which admission
-    masks."""
+    """Run every task `rollouts` times, `concurrency` trials at once, each trial dialling
+    the connection `sampling` gives it, and return them in plan order. Deliver `modules`
+    under the job's directory and name them on the agent config. A trial whose runner
+    raised keeps its slot with no result, which admission masks."""
     if rollouts < 1:
         raise ValueError(f"rollouts must be at least 1; got {rollouts}")
     if concurrency < 1:
@@ -108,10 +105,10 @@ async def rollout(
             "its oracle, which runs the task's reference solution instead of the policy"
         )
     name, version = _harness_at_version(harness)
+    deployed = types.harness(harness)
     trials_dir = Path(jobs_dir) / job
     fields: dict[str, Any] = {
         "name": name,
-        "model_name": model,
         "env": dict(env or {}),
         "kwargs": {**({"version": version} if version else {}), **(kwargs or {})},
         "override_setup_timeout_sec": setup_timeout,
@@ -131,10 +128,11 @@ async def rollout(
     limit = asyncio.Semaphore(concurrency)
     run_one = run_trial if run_trial is not None else _run_trial
 
-    async def one(config: TrialConfig) -> Path:
+    async def one(config: TrialConfig, task: Path, index: int) -> Path:
         trial_dir = Path(config.trials_dir) / config.trial_name
-        if served is not None:
-            config = served_config(config, served)
+        config = connected(
+            config, sampling.connection(Trial(job, task, index, deployed, trial_dir))
+        )
         async with limit:
             try:
                 await run_one(config)
@@ -150,7 +148,11 @@ async def rollout(
             progress.finished(trial_dir, masked=verdict(trial_dir).mask is not None)
         return trial_dir
 
-    trials = list(await asyncio.gather(*(one(config) for config in configs)))
+    trials = list(
+        await asyncio.gather(
+            *(one(config, task, index) for config, (task, index) in zip(configs, plan, strict=True))
+        )
+    )
     return Rollouts(job=job, trials=trials, plan=plan)
 
 
@@ -189,27 +191,16 @@ def _trial_config(
     )
 
 
-def served_config(config: TrialConfig, served: Served) -> TrialConfig:
-    """A copy of this trial's config pointed at the run's proxy, at the address naming
-    the trial. The provider's env names override the batch's env, the profile's kwargs are
-    laid over the batch's, and in allowlist mode the proxy's host is added. The agent
-    config is shared by the batch, hence the copy."""
-    address = served.proxy.address_for(config.trial_name)
-    profile = served.profile
-    if profile.strip_v1:
-        address = address.removesuffix("/v1")
-    slug = slug_of(profile).upper()
-    env = {
-        **dict(config.agent.env or {}),
-        **(dict(profile.env) if served.fill_context else {}),
-        f"{slug}_BASE_URL": address,
-        f"{slug}_API_KEY": served.proxy.token,
-    }
+def connected(config: TrialConfig, connection: Connection) -> TrialConfig:
+    """A copy of the trial's config dialling `connection`: its model name, its env over
+    the batch's, its kwargs laid over the batch's, and its host on an allowlisted task. The
+    agent config is shared by the batch, hence the copy."""
     update: dict[str, Any] = {
-        "env": env,
-        "kwargs": laid_over(config.agent.kwargs or {}, profile.kwargs),
+        "model_name": connection.model,
+        "env": {**dict(config.agent.env or {}), **connection.env},
+        "kwargs": laid_over(config.agent.kwargs or {}, connection.kwargs),
     }
-    host = served.proxy.host
+    host = connection.host
     if host and allowlisted(Path(config.task.path)):
         hosts = list(config.agent.extra_allowed_hosts or [])
         update["extra_allowed_hosts"] = hosts + [host] * (host not in hosts)

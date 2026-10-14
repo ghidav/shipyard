@@ -120,24 +120,16 @@ async def test_a_job_whose_every_request_failed_at_the_sampler_stops_the_run(
     assert len(opened.run_trial.configs) == 4, "the next batch was never paid for"  # type: ignore[union-attr]
 
 
-def test_served_nothing_is_about_records_not_rewards(tmp_path: Path) -> None:
-    from shipyard.rollout import Rollouts
-
-    trials = [tmp_path / "a__0000000", tmp_path / "b__0000001"]
-
-    def why(**records: list) -> str | None:
-        return served_nothing(Rollouts("j", trials, [], records=records))
-
-    assert why(a__0000000=[], b__0000001=[]) == DEAD
+def test_served_nothing_is_about_records_not_rewards() -> None:
+    assert served_nothing({"a": [], "b": []}) == DEAD
     failed = [made(error="sampler: ConnectError"), made(error="sampler: BadRequestError")]
-    assert why(a__0000000=failed) == (
+    assert served_nothing({"a": failed}) == (
         "every request failed at the sampler (sampler: BadRequestError, sampler: ConnectError); "
         "the weights it serves are gone or the backend refuses them"
     )
-    assert why(a__0000000=[made(error="context")]) is None, "a refusal is an answer"
-    assert why(a__0000000=failed, b__0000001=[made()]) is None, "one was served"
-    assert served_nothing(Rollouts("j", trials, [])) is None, "not harvested: not served"
-    assert served_nothing(Rollouts("j", [], [], records={})) is None
+    assert served_nothing({"a": [made(error="context")]}) is None, "a refusal is an answer"
+    assert served_nothing({"a": failed, "b": [made()]}) is None, "one was served"
+    assert served_nothing({}) is None, "no trials: nothing to serve"
 
 
 @pytest.fixture

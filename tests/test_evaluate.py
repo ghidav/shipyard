@@ -16,6 +16,7 @@ from shipyard.data import batches
 from shipyard.recipes import run_recipe
 from shipyard.recipes.evaluate import mean
 from shipyard.run import Run
+from shipyard.serving import TinkerSampling
 from tests.records import FakeProxy, made
 from tests.trials import FIXTURES, FakeTrials
 
@@ -114,7 +115,7 @@ async def test_a_served_model_runs_through_its_proxy_and_is_judged_by_its_record
     }
     home = _blueprint(tmp_path, **replacements)
     opened = Run.open(home, root=tmp_path / "runs")
-    assert opened.config.model.served and opened.serving is not None
+    assert opened.config.model.served and isinstance(opened.sampling, TinkerSampling)
     opened.run_trial = FakeTrials(breaks=("d",), outcomes={**OUTCOMES, "b": {"reward": 1.0}})
     with opened:
         await run_recipe(opened)

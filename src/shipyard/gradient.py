@@ -16,6 +16,7 @@ from shipyard.config import LENGTH_CAP, PAPER_OVERLONG_BUFFER
 from shipyard.credit import Batch, carrying, credit
 from shipyard.data import batches
 from shipyard.pack import Group, group
+from shipyard.serving import TinkerSampling
 from shipyard.trainer import SERVE_TTL, Adam, Trainer, Update
 
 if TYPE_CHECKING:
@@ -24,7 +25,6 @@ if TYPE_CHECKING:
 
     from shipyard.rollout import Rollouts
     from shipyard.run import Run
-    from shipyard.serving import Serving
 
 logger = logging.getLogger(__name__)
 
@@ -236,7 +236,7 @@ async def training(run: Run, preset: Preset) -> AsyncIterator[tuple[Trainer, Any
             anchor = await service.create_sampling_client_async(
                 base_model=model.name, model_path=start
             )
-        await serving.start()
+        await serving.open()
         if preset.overlong_penalty > 0 and serving.budget is None:
             logger.warning(
                 "%s's overlong term is off for this run: the proxy reports no token budget, "
@@ -276,7 +276,7 @@ async def step(
     # name step n + 1 would publish under, and `save_weights_for_sampler` does not overwrite
     # a name by default.
     path = await trainer.publish(f"sample-{index}", ttl_seconds=SERVE_TTL)
-    await serving.point(path)
+    await serving.serve(path)
 
     async def draw(chosen: Sequence[Path], purpose: str = "rollout") -> Rollouts:
         if sample is None:
@@ -331,15 +331,15 @@ async def refilled(
     return found, Refill(refills=rounds, refill_rollouts=rollouts)
 
 
-def serving_of(run: Run, preset: Preset) -> Serving:
+def serving_of(run: Run, preset: Preset) -> TinkerSampling:
     """The proxy this run serves its model through. Raise when the model is served
     elsewhere, since a gradient trains on the proxy's records."""
-    if run.serving is None:
+    if not isinstance(run.sampling, TinkerSampling):
         raise ValueError(
             f"[recipe] kind = {preset.name!r} trains the weights this run serves, and "
             f"[model] provider = {run.config.model.provider!r} serves them elsewhere"
         )
-    return run.serving
+    return run.sampling
 
 
 def row(

@@ -20,7 +20,8 @@ from shipyard.proxy import client
 from shipyard.proxy.client import Proxy, Unreachable
 from shipyard.proxy.tunnel import Tunnel
 from shipyard.run import Run
-from shipyard.serving import ProxyGone, Serving
+from shipyard.serving import ProxyGone, TinkerSampling
+from shipyard.types import Trial, harness
 from tests.proxies import MODEL, FakeSampler, control, endpoint, root
 from tests.records import FakeProxy
 from tests.trials import FakeTrials, fixture_tasks
@@ -135,8 +136,8 @@ async def test_the_tunnel_is_probed_before_the_first_trial_and_its_exit_stops_th
         first = await run.sample(task(stubs), rollouts=1, index=0)
         assert probed == [f"{ORIGIN}/healthz"], "probed once, through the tunnel"
         assert first.records is not None and all(first.records.values())
-        assert run.serving is not None and run.serving.proxy is not None
-        process = run.serving.proxy.tunnel.process  # type: ignore[union-attr]
+        assert isinstance(run.sampling, TinkerSampling) and run.sampling.proxy is not None
+        process = run.sampling.proxy.tunnel.process  # type: ignore[union-attr]
         process.kill()
         process.wait()
         await run.sample(task(stubs), rollouts=1, index=1)
@@ -148,7 +149,7 @@ async def test_the_tunnel_is_probed_before_the_first_trial_and_its_exit_stops_th
     assert [row["job"] for row in record.read(run.directory / record.JOBS)] == [f"{run.id}-0000"]
     assert sorted(p.name for p in (stubs / "jobs").iterdir()) == [f"{run.id}-0000"]
     assert "trycloudflare" in (run.directory / "tunnel.log").read_text()
-    assert run.serving.proxy is None, "stopped with the run"
+    assert run.sampling.proxy is None, "stopped with the run"  # type: ignore[attr-defined]
 
 
 async def test_a_local_serve_is_probed_on_loopback_and_its_exit_stops_the_next_job(
@@ -157,8 +158,8 @@ async def test_a_local_serve_is_probed_on_loopback_and_its_exit_stops_the_next_j
     run = opened(stubs, "docker")
     with pytest.raises(ProxyGone, match="shipyard serve exited with -9"), run:
         await run.sample(task(stubs), rollouts=1, index=0)
-        assert run.serving is not None and run.serving.proxy is not None
-        process = run.serving.proxy.process
+        assert isinstance(run.sampling, TinkerSampling) and run.sampling.proxy is not None
+        process = run.sampling.proxy.process
         assert process is not None
         process.kill()
         process.wait()
@@ -185,7 +186,6 @@ async def test_a_tunnel_that_does_not_answer_refuses_the_run_before_any_trial(
 
 async def test_a_fetch_that_failed_because_the_proxy_died_says_so(tmp_path: Path) -> None:
     from shipyard.config import Blueprint
-    from shipyard.rollout import Rollouts
 
     cfg = Blueprint.model_validate(
         {
@@ -196,15 +196,15 @@ async def test_a_fetch_that_failed_because_the_proxy_died_says_so(tmp_path: Path
         }
     )
     proxy = FakeProxy(failing={"alpha"}, exited="shipyard serve exited with 1")
-    held = Serving(cfg, tmp_path, proxy=proxy)
-    batch = Rollouts(job="j", trials=[tmp_path / "alpha__0000000"], plan=[])
+    held = TinkerSampling(cfg, tmp_path, proxy=proxy)
+    batch = [Trial("j", Path("alpha"), 0, harness("pi"), tmp_path / "alpha__0000000")]
     with pytest.raises(ProxyGone, match="exited with 1"):
-        await held.harvest(batch)
+        await held.record("j", batch)
     with pytest.raises(ProxyGone):
-        await held.point("tinker://w/step-1")
+        await held.serve("tinker://w/step-1")
     proxy.exited = None
     with pytest.raises(httpx.ConnectError):
-        await held.harvest(batch)
+        await held.record("j", batch)
 
 
 # --------------------------------------------------------------- the probe itself

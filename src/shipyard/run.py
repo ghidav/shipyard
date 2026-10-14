@@ -15,14 +15,15 @@ from typing import TYPE_CHECKING, Any, Self
 
 from shortuuid import ShortUUID
 
-from shipyard import record
+from shipyard import record, types
 from shipyard.admit import verdicts
 from shipyard.config import Blueprint, FstRecipe, GepaRecipe, config_file, load, modules_dir
 from shipyard.cost import Costs, billed_by, reported, sandbox_seconds
 from shipyard.modules import Candidate, keep, seed
 from shipyard.progress import Reporter, reporter
-from shipyard.rollout import Rollouts, Runner, rollout
-from shipyard.serving import Harvest, NothingServed, Serving, served_nothing, tinker_base_url
+from shipyard.rollout import Rollouts, Runner, rollout, trials_of
+from shipyard.serving import NothingServed, ProviderSampling, TinkerSampling, tinker_base_url
+from shipyard.types import Harvest, SamplingClient
 
 if TYPE_CHECKING:
     from shipyard.trainer import Checkpoint
@@ -54,8 +55,13 @@ class Run:
         self.progress: Reporter = reporter()
         #: How one trial is run; None is Harbor's `Trial`. A test hands in its own.
         self.run_trial: Runner | None = None
-        #: The proxy and its records, for a run serving its own weights; else None.
-        self.serving: Serving | None = Serving(config, directory) if config.model.served else None
+        #: The proxy over this run's weights, or the provider the harness dials itself.
+        self.sampling: SamplingClient = (
+            TinkerSampling(config, directory)
+            if config.model.served
+            else ProviderSampling(config.model.name)
+        )
+        self._noted = False
         #: The trainer whose weights the proxy serves, for the update count every batch
         #: is stamped with; None for a run that trains nothing.
         self.trainer: Any | None = None
@@ -129,16 +135,12 @@ class Run:
     ) -> Rollouts:
         """Run one Harbor job over `batch`, the recipe's batch `index`, carrying `modules`
         (the run's own when None). Stamp it with the trainer's update count and put every
-        verdict on the job row. Raises `NothingServed` for a served job the proxy served
-        nothing for."""
-        cfg = self.config
-        if self.serving is not None:
-            first = self.serving.proxy is None
-            await self.serving.start()
-            self.serving.alive()
-            if first:
-                placed = {"placement": self.serving.placement, "origin": self.serving.origin}
-                self.note(proxy=placed)
+        verdict on the job row. A stop the harvest carries is raised after the row."""
+        cfg, sampling = self.config, self.sampling
+        await sampling.open()
+        if isinstance(sampling, TinkerSampling) and not self._noted:
+            self.note(proxy={"placement": sampling.placement, "origin": sampling.origin})
+            self._noted = True
         updates = getattr(self.trainer, "updates", None)
         candidate = self.carried if modules is None else modules
         job = self.reserve_job()
@@ -147,7 +149,7 @@ class Run:
             batch,
             job,
             harness=cfg.rollout.harness,
-            model=self.serving.model_name() if self.serving else cfg.model.name,
+            sampling=sampling,
             sandbox=cfg.rollout.sandbox,
             concurrency=cfg.rollout.concurrency,
             rollouts=rollouts,
@@ -158,27 +160,27 @@ class Run:
             timeout=cfg.rollout.timeout,
             run_trial=self.run_trial,
             progress=self.progress,
-            served=self.serving.served() if self.serving else None,
             modules=candidate,
         )
         self.progress.done(job)
-        harvested = await self.serving.harvest(rolled) if self.serving else None
-        if harvested is not None:
-            rolled = harvested.rollouts
+        harvest = await sampling.record(job, trials_of(rolled, types.harness(cfg.rollout.harness)))
+        if harvest is not None:
+            rolled = replace(
+                rolled, records=harvest.records, asked=harvest.asked, failed=harvest.failed
+            )
         rolled = replace(rolled, updates=updates)
         self._record_job(
             rolled,
             batch=index,
             tasks=len(batch),
-            harvested=harvested,
+            harvest=harvest,
             modules=candidate,
             purpose=purpose,
         )
-        if self.serving is not None:
-            self.serving.alive()  # a proxy that died under the batch: its masks are not data
-        why = served_nothing(rolled) if harvested is not None else None
-        if why is not None:
-            raise NothingServed(f"job {rolled.job}: {why}", rolled)
+        if harvest is not None and harvest.stopped is not None:
+            if isinstance(harvest.stopped, NothingServed):
+                harvest.stopped.rolled = rolled
+            raise harvest.stopped
         return rolled
 
     async def checkpoint(self, trainer: Any, tag: str, *, keep: bool = False) -> Checkpoint:
@@ -208,16 +210,16 @@ class Run:
         *,
         batch: int,
         tasks: int,
-        harvested: Harvest | None = None,
+        harvest: Harvest | None = None,
         modules: Candidate | None = None,
         purpose: str = "rollout",
     ) -> dict[str, Any]:
         """Record a rollout of the policy: the modules' digest if it carried any, the graded
         count, the masks, how each trial ended, and the party billed with its counts (from
-        the proxy's records and notes for a served job)."""
+        the harvest for a served job)."""
         judged = verdicts(rolled)
-        if harvested is not None and self.serving is not None:
-            counted, party, noted = harvested.counted, self.serving.party, harvested.noted
+        if harvest is not None:
+            counted, party, noted = harvest.counted, harvest.party, harvest.noted
         else:
             counted, party, noted = reported(rolled), billed_by(rolled), {}
         masked = _tally(each.mask for each in judged)
@@ -233,7 +235,7 @@ class Run:
             graded=sum(each.reward is not None for each in judged),
             **({"masked": masked} if masked else {}),
             **({"ended": ended} if ended else {}),
-            served="tinker" if harvested is not None else "provider",
+            served="tinker" if harvest is not None else "provider",
             **{key: value for key, value in noted.items() if value},
         )
 
@@ -288,8 +290,7 @@ class Run:
         the loop raised. A `KeyboardInterrupt` from a signal is recorded as
         `stopped: <signal>`."""
         self.progress.close()
-        if self.serving is not None:
-            self.serving.close()
+        self.sampling.close()
         if exc is None:
             error = None
         elif isinstance(exc, KeyboardInterrupt):

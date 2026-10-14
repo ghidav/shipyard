@@ -115,7 +115,7 @@ async def run(run: Run) -> None:
         serving = gradient.serving_of(run, slow)
         for cycle, start in enumerate(range(0, len(planned), recipe.cycle)):
             lookahead = planned[start : start + recipe.cycle]
-            await serving.point(await trainer.publish(f"fast-{cycle}", ttl_seconds=SERVE_TTL))
+            await serving.serve(await trainer.publish(f"fast-{cycle}", ttl_seconds=SERVE_TTL))
             population = await fast(run, population, lookahead, cycle, index, write)
             for rank, member in enumerate(population):
                 keep(member, kept / f"cycle-{cycle}" / str(rank))

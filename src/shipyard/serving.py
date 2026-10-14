@@ -1,55 +1,52 @@
-"""The run's serving half: where the proxy runs for this sandbox, when it starts and
-stops, what each job's records cost, and whose weights answered them. `Run` holds a
-`Serving` and delegates to it."""
+"""The sampling clients: the proxy this run starts and drains for a model it serves, and
+the provider case, which records nothing."""
 
 from __future__ import annotations
 
 import logging
 import os
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from shipyard import record
-from shipyard.admit import results
 from shipyard.config import TINKER
 from shipyard.proxy.client import Proxy
-from shipyard.proxy.profiles import Profile, bare_name, profile_for, slug_of
+from shipyard.proxy.profiles import bare_name, slug_of
 from shipyard.proxy.wire import CONTROL_TOKEN_ENV, PROXY_TOKEN_ENV, SAMPLER_FAILED
-from shipyard.rollout import Rollouts, Served
+from shipyard.types import Connection, Harvest, SamplingClient, Trial
 
 if TYPE_CHECKING:
     from shipyard.config import Blueprint, Rollout
     from shipyard.proxy.wire import Record
+    from shipyard.rollout import Rollouts
 
 logger = logging.getLogger(__name__)
 
 #: Sandboxes on this machine, whose containers reach a proxy here by its Docker name.
 LOCAL_SANDBOXES = frozenset({"docker", "podman", "apple-container"})
-#: Where the proxy's and the tunnel's output go, under the run directory.
 PROXY_LOG = "proxy.log"
 TUNNEL_LOG = "tunnel.log"
 
 
 class ProxyGone(RuntimeError):
-    """The proxy this run started has exited, so the run stops."""
+    """The proxy this run started has exited."""
 
 
 class NothingServed(RuntimeError):
-    """A served job the proxy served nothing for: the endpoint is dead, unreachable or
-    refused by its sampler. The run stops instead of masking the batch."""
+    """A served job the proxy served nothing for: the endpoint is dead, or its sampler
+    refuses every request."""
 
     def __init__(self, message: str, rolled: Rollouts | None = None) -> None:
         super().__init__(message)
-        #: The job as harvested and recorded, for a report of what did come back.
         self.rolled = rolled
 
 
 def placement(rollout: Rollout) -> str:
     """`remote` for a named `endpoint_url`, `local` for a sandbox on this machine, else
-    `tunnel`. A sandbox elsewhere has no route back to a proxy in this process."""
+    `tunnel`."""
     if rollout.endpoint_url.strip():
         return "remote"
     return "local" if rollout.sandbox in LOCAL_SANDBOXES else "tunnel"
@@ -57,14 +54,13 @@ def placement(rollout: Rollout) -> str:
 
 def backend(environ: Mapping[str, str] | None = None) -> str:
     """The party sampling is billed to: `tinker`, or `tinker@<host>` under a
-    `TINKER_BASE_URL`. A run on another backend is not filed under Tinker's bill."""
+    `TINKER_BASE_URL`."""
     environ = os.environ if environ is None else environ
     host = urlsplit(environ.get("TINKER_BASE_URL") or "").hostname
     return f"{TINKER}@{host}" if host else TINKER
 
 
 def tinker_base_url(environ: Mapping[str, str] | None = None) -> str:
-    """The backend the proxy will sample from, as the SDK resolves it."""
     from tinker.lib.base_url import DEFAULT_BASE_URL
 
     environ = os.environ if environ is None else environ
@@ -72,16 +68,14 @@ def tinker_base_url(environ: Mapping[str, str] | None = None) -> str:
 
 
 def start_weights(cfg: Blueprint) -> str | None:
-    """The checkpoint the proxy starts on. A sampling run's `from_checkpoint` is a sampler
-    path. A training run's is a state path Tinker cannot sample, so it starts on none and
-    its first step points the proxy at the weights it publishes."""
+    """The checkpoint the proxy starts on. A training run's `from_checkpoint` is a state
+    path Tinker cannot sample, so it starts on none and the first step points it."""
     return None if cfg.trains else (cfg.model.from_checkpoint or None)
 
 
 def endpoint_settings(cfg: Blueprint, *, run: str | None = None) -> dict[str, Any]:
-    """The settings passed to `shipyard serve`: the model and its checkpoint, the bind, the
-    renderer, and every `[rollout]` knob the endpoint pins. With `run` set, the proxy's
-    Tinker session is tagged with it, as the trainer's is."""
+    """The settings passed to `shipyard serve`. With `run`, the proxy's Tinker session is
+    tagged with it."""
     rollout = cfg.rollout
     tagged = {"metadata": {"shipyard_run": run, "shipyard_recipe": cfg.recipe.kind}} if run else {}
     return {
@@ -101,18 +95,31 @@ def endpoint_settings(cfg: Blueprint, *, run: str | None = None) -> dict[str, An
 
 
 @dataclass(frozen=True)
-class Harvest:
-    """One job's records attached to its rollouts, and what they add up to."""
+class ProviderSampling(SamplingClient):
+    """A model served elsewhere: the harness dials it with its own credentials."""
 
-    rollouts: Rollouts
-    counted: dict[str, int]
-    noted: dict[str, int]
+    model: str | None
+
+    async def open(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+    def connection(self, trial: Trial) -> Connection:
+        return Connection(model=self.model)
+
+    async def serve(self, path: str | None) -> None:
+        raise RuntimeError(f"{self.model} is served by its provider; there are no weights to point")
+
+    async def record(self, job: str, trials: Sequence[Trial]) -> None:
+        return None
 
 
 @dataclass
-class Serving:
-    """One run's proxy. The first job starts it and the run stops it. It remembers the
-    served path it was told, so a batch answered by other weights is refused."""
+class TinkerSampling(SamplingClient):
+    """The proxy over a Tinker sampler. The first job starts it, the run stops it, and it
+    remembers the path it was pointed at, so a batch answered by other weights is refused."""
 
     config: Blueprint
     directory: Path
@@ -120,41 +127,25 @@ class Serving:
     proxy: Proxy | None = None
     told: str | None = None
     pointed: bool = False
-    #: Where the proxy stood and the origin sandboxes dialled, kept once it is stopped.
     placement: str | None = None
     origin: str | None = None
     _logs: list[IO[str]] = field(default_factory=list, repr=False)
 
     @property
-    def profile(self) -> Profile:
-        return profile_for(self.config.rollout.harness)
+    def budget(self) -> int | None:  # type: ignore[override]
+        return self.proxy.budget if self.proxy is not None else None
 
     @property
     def party(self) -> str:
         return backend(self.environ)
 
-    @property
-    def budget(self) -> int | None:
-        """The tokens one trial may sample, as the proxy said when it answered; None before
-        it started or when it enforces no budget."""
-        return self.proxy.budget if self.proxy is not None else None
-
-    def model_name(self) -> str:
-        """`<slug>/<model>`, the name the harness's wire expects."""
-        return f"{slug_of(self.profile)}/{self.config.model.name}"
-
-    def served(self) -> Served:
-        if self.proxy is None:
-            raise RuntimeError("the proxy is not started; nothing can be rolled out yet")
-        return Served(self.proxy, self.profile, fill_context=self.config.rollout.fill_context)
-
-    async def start(self) -> Proxy:
-        """Start the proxy for this placement, once, and wait until `/healthz` answers at
-        the address a sandbox will dial (through the tunnel). A local or tunnelled proxy
-        gets the checkpoint on its command line. A remote one is pointed through its
-        control route, or left as it is."""
+    async def open(self) -> None:
+        """Start the proxy once for this placement and wait until `/healthz` answers at the
+        address a sandbox dials. A remote proxy is pointed through its control route, or
+        left as it is. Once started, a call checks the proxy is still up."""
         if self.proxy is not None:
-            return self.proxy
+            self.alive()
+            return
         cfg, weights = self.config, start_weights(self.config)
         where = self.placement = placement(cfg.rollout)
         if where == "remote":
@@ -166,7 +157,7 @@ class Serving:
             self.origin = self.proxy.origin
             await self.proxy.ready()
             if self.proxy.control_token is not None:
-                await self.point(weights)
+                await self.serve(weights)
             elif weights is not None:
                 raise RuntimeError(
                     f"[model] from_checkpoint names {weights}, and the proxy at "
@@ -174,9 +165,8 @@ class Serving:
                     f"{CONTROL_TOKEN_ENV}, or start it with --weights"
                 )
             else:
-                # No checkpoint: the base model is what this run measures.
                 self.told, self.pointed = None, True
-            return self.proxy
+            return
         log = self._log(PROXY_LOG)
         settings = endpoint_settings(cfg, run=self.directory.name)
         if where == "local":
@@ -191,33 +181,46 @@ class Serving:
         self.told, self.pointed = weights, True
         served = await self.proxy.ready()
         logger.info("the proxy at %s answers (%s), serving %s", self.origin, where, served)
-        return self.proxy
 
     def alive(self) -> None:
-        """Raise `ProxyGone` when the tunnel or serve process this run started has exited.
-        Called before every job after the first and before every re-point."""
         why = self.proxy.gone() if self.proxy is not None else None
         if why:
             raise ProxyGone(f"the proxy is no longer reachable: {why}")
 
-    async def point(self, model_path: str | None) -> None:
-        """Re-point the proxy at `model_path` (None for the base) and note it as what this
-        run told it, so the next harvest checks the records against that path."""
+    async def serve(self, path: str | None) -> None:
+        """Point the proxy at `path`, None for the base model, and note it as what this run
+        told it."""
         if self.proxy is None:
             raise RuntimeError("the proxy is not started; there is nothing to point")
         self.alive()
-        await self.proxy.swap(model_path)
-        self.told, self.pointed = model_path, True
+        await self.proxy.swap(path)
+        self.told, self.pointed = path, True
 
-    def _log(self, name: str) -> IO[str]:
-        opened = (self.directory / name).open("a", encoding="utf-8")
-        self._logs.append(opened)
-        return opened
+    def connection(self, trial: Trial) -> Connection:
+        if self.proxy is None:
+            raise RuntimeError("the proxy is not started; nothing can be rolled out yet")
+        profile = trial.harness.profile
+        address = self.proxy.address_for(trial.name)
+        if profile.strip_v1:
+            address = address.removesuffix("/v1")
+        slug = slug_of(profile)
+        env = {
+            **(dict(profile.env) if self.config.rollout.fill_context else {}),
+            f"{slug.upper()}_BASE_URL": address,
+            f"{slug.upper()}_API_KEY": self.proxy.token,
+        }
+        return Connection(
+            model=f"{slug}/{self.config.model.name}",
+            address=address,
+            token=self.proxy.token,
+            env=env,
+            kwargs=dict(profile.kwargs),
+            host=self.proxy.host or None,
+        )
 
-    async def harvest(self, rolled: Rollouts) -> Harvest:
-        """Fetch every trial's records from the proxy and write one `requests.jsonl` row
-        per record. Count turns from the harness's log when `check_turns` is set. Check
-        the served path."""
+    async def record(self, job: str, trials: Sequence[Trial]) -> Harvest:
+        """Drain every trial's records from the proxy, one `requests.jsonl` row per
+        record, and check the served path."""
         proxy = self.proxy
         if proxy is None:
             raise RuntimeError("nothing was served; there are no records to harvest")
@@ -226,10 +229,8 @@ class Serving:
         taken: dict[str, list[Record]] = {}
         asked: dict[str, int] = {}
         failed: set[str] = set()
-        counter = self.profile.turns if self.config.rollout.check_turns else None
-        reader = self.profile.failed_last
-        for trial in rolled.trials:
-            name = Path(trial).name
+        for trial in trials:
+            name = trial.name
             try:
                 taken[name] = records = await proxy.records(name)
             except Exception:
@@ -243,29 +244,44 @@ class Serving:
                 counted["cache_tokens"] += hit
                 counted["output_tokens"] += len(item.completion_token_ids)
                 noted["bridged"] += int(item.bridged)
-                record.append(self.directory / record.REQUESTS, _row(rolled.job, name, item, hit))
-            if counter is not None:
-                turns = turns_asked(Path(trial), self.config.rollout.harness, counter)
+                record.append(self.directory / record.REQUESTS, _row(job, name, item, hit))
+            profile = trial.harness.profile
+            if self.config.rollout.check_turns and profile.turns is not None:
+                turns = turns_asked(trial.dir, trial.harness.name, profile.turns)
                 if turns == 0 and records:
                     logger.warning(
                         "%s: the %s turn counter found no turns beside %d record(s); its log "
                         "format may have moved, so this trial is not checked",
                         name,
-                        bare_name(self.config.rollout.harness),
+                        trial.harness.name,
                         len(records),
                     )
                 if turns is not None:
                     asked[name] = turns
-            text = harness_log(Path(trial), self.config.rollout.harness) if reader else None
+            reader = profile.failed_last
+            text = harness_log(trial.dir, trial.harness.name) if reader else None
             if reader is not None and text is not None and reader(text):
                 failed.add(name)
-        counted["trials"] = sum(1 for _ in results(rolled))
+        counted["trials"] = sum(1 for trial in trials if trial.result is not None)
         if self.pointed:
-            answered_by_ours(rolled.job, taken, self.told)
-        return Harvest(replace(rolled, records=taken, asked=asked, failed=failed), counted, noted)
+            answered_by_ours(job, taken, self.told)
+        return Harvest(taken, asked, failed, counted, noted, self.party, self._stopped(job, taken))
+
+    def _stopped(self, job: str, taken: Mapping[str, Sequence[Record]]) -> RuntimeError | None:
+        """The stop to raise once the job row is written: the proxy died under the batch,
+        or served it nothing."""
+        why = self.proxy.gone() if self.proxy is not None else None
+        if why:
+            return ProxyGone(f"the proxy is no longer reachable: {why}")
+        why = served_nothing(taken)
+        return NothingServed(f"job {job}: {why}") if why else None
+
+    def _log(self, name: str) -> IO[str]:
+        opened = (self.directory / name).open("a", encoding="utf-8")
+        self._logs.append(opened)
+        return opened
 
     def close(self) -> None:
-        """Stop the proxy and the tunnel. Synchronous, for a run closing outside its loop."""
         proxy, self.proxy = self.proxy, None
         if proxy is not None:
             proxy.close()
@@ -274,15 +290,12 @@ class Serving:
         self._logs.clear()
 
 
-def served_nothing(rolled: Rollouts) -> str | None:
-    """Why the proxy served a harvested job nothing, or None. Either no trial reached it,
-    or every request that did failed at the sampler (weights expired, a poisoned client).
-    A job with one answered or refused request is not this case; its silent trials are
-    masked one by one."""
-    taken = rolled.records
-    if taken is None or not rolled.trials:
+def served_nothing(taken: Mapping[str, Sequence[Record]]) -> str | None:
+    """Why the proxy served a job nothing, or None: no trial reached it, or every request
+    failed at the sampler. A job with one answered or refused request is not this case."""
+    if not taken:
         return None
-    made = [item for trial in rolled.trials for item in taken.get(Path(trial).name) or []]
+    made = [item for records in taken.values() for item in records]
     if not made:
         return "no trial reached the proxy; the endpoint is dead or unreachable"
     failed = sorted({item.error or "" for item in made})
@@ -312,14 +325,13 @@ def _row(job: str, trial: str, item: Record, hit: int) -> dict[str, Any]:
 
 
 def turns_asked(trial: Path, harness: str, counter: Any) -> int | None:
-    """How many turns the harness asked for, counted from `agent/<harness>.txt`. None
-    (not 0) when it left no such log."""
+    """How many turns the harness asked for, off `agent/<harness>.txt`; None without the
+    log."""
     text = harness_log(trial, harness)
     return None if text is None else int(counter(text))
 
 
 def harness_log(trial: Path, harness: str) -> str | None:
-    """The harness's own log, `agent/<harness>.txt`, or None when it left none."""
     try:
         return (trial / "agent" / f"{bare_name(harness)}.txt").read_text(
             encoding="utf-8", errors="replace"
@@ -330,7 +342,7 @@ def harness_log(trial: Path, harness: str) -> str | None:
 
 def answered_by_ours(job: str, taken: Mapping[str, Sequence[Record]], told: str | None) -> None:
     """Raise unless every record of `job` was served from the path this run told its
-    proxy. The records carry that path, so a proxy re-pointed mid-batch is caught here."""
+    proxy."""
     answered = {item.served for records in taken.values() for item in records if item.served}
     if answered - {told}:
         raise ValueError(

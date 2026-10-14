@@ -14,18 +14,20 @@ from harbor.models.environment_type import EnvironmentType
 from harbor.models.trial.config import TrialConfig
 
 from shipyard.progress import Reporter
-from shipyard.proxy.profiles import PROFILES, Profile
+from shipyard.proxy.profiles import PROFILES
 from shipyard.rollout import (
     MODAL_IMAGE_BUILDER,
     MODAL_IMAGE_BUILDER_VERSION,
-    Served,
     allowlisted,
+    connected,
     laid_over,
     quiet_litellm,
     rollout,
-    served_config,
 )
+from shipyard.serving import ProviderSampling, TinkerSampling
+from shipyard.types import Connection, Trial, harness
 from tests.records import FakeProxy
+from tests.test_serving import blueprint
 from tests.trials import FakeTrials
 
 
@@ -39,7 +41,7 @@ def _batch(tmp_path: Path, *names: str) -> list[Path]:
 async def _rollout(tmp_path: Path, batch: list[Path], harbor: object, **options: object):
     asked: dict[str, object] = {
         "harness": "pi",
-        "model": "m",
+        "sampling": ProviderSampling("m"),
         "sandbox": "docker",
         "concurrency": 4,
         "rollouts": 1,
@@ -58,7 +60,7 @@ async def test_configs_are_built_in_plan_order_with_harbors_fields(tmp_path: Pat
         batch,
         harbor,
         harness="pi@0.85.1",
-        model="anthropic/some-model",
+        sampling=ProviderSampling("anthropic/some-model"),
         rollouts=3,
         env={"API_KEY": "k"},
         kwargs={"thinking": "high"},
@@ -236,10 +238,9 @@ async def test_every_trial_is_pointed_at_the_address_that_names_it(tmp_path: Pat
         _batch(tmp_path, "alpha", "beta"),
         harbor,
         harness="pi@0.85.1",
-        model="openai/Qwen/Qwen3-8B",
+        sampling=TinkerSampling(blueprint(), tmp_path, proxy=proxy),
         rollouts=2,
         env={"OPENAI_BASE_URL": "https://api.openai.com/v1", "HTTPS_PROXY": "corp"},
-        served=Served(proxy, PROFILES["pi"]),
     )
     assert len(harbor.configs) == 4
     addresses = [config.agent.env["OPENAI_BASE_URL"] for config in harbor.configs]
@@ -256,11 +257,24 @@ async def test_every_trial_is_pointed_at_the_address_that_names_it(tmp_path: Pat
     assert {trial.name for trial in found.trials} == {c.trial_name for c in harbor.configs}
 
 
+def _dialled(
+    tmp_path: Path, proxy: FakeProxy, config: TrialConfig, deployed: str, **rollout: object
+) -> Connection:
+    """What a served trial of `config` under `deployed` dials."""
+    trial = Trial(
+        "j",
+        Path(config.task.path),
+        0,
+        harness(deployed),
+        tmp_path / "jobs" / "j" / config.trial_name,
+    )
+    return TinkerSampling(blueprint(**rollout), tmp_path, proxy=proxy).connection(trial)
+
+
 def test_claude_code_is_handed_the_anthropic_wire_without_the_v1(tmp_path: Path) -> None:
-    harbor = FakeTrials()
     proxy = FakeProxy(origin="https://x.trycloudflare.com", token="k")
     config = _config(tmp_path, "alpha", harness="claude-code", env={"KEEP": "1"})
-    pointed = served_config(config, Served(proxy, PROFILES["claude-code"], fill_context=True))
+    pointed = connected(config, _dialled(tmp_path, proxy, config, "claude-code", fill_context=True))
     assert pointed.agent.env == {
         "KEEP": "1",
         "DISABLE_COMPACT": "1",
@@ -269,10 +283,10 @@ def test_claude_code_is_handed_the_anthropic_wire_without_the_v1(tmp_path: Path)
         "ANTHROPIC_API_KEY": "k",
     }
     assert pointed.agent.kwargs == {} and pointed.agent.name == "claude-code"
-    plain = served_config(config, Served(proxy, PROFILES["claude-code"]))
+    assert pointed.agent.model_name == "anthropic/Qwen/Qwen3-8B"
+    plain = connected(config, _dialled(tmp_path, proxy, config, "claude-code"))
     assert "DISABLE_COMPACT" not in plain.agent.env, "the profile's env only when filling"
     assert config.agent.env == {"KEEP": "1"}, "the batch's config was not written into"
-    assert harbor.configs == []
 
 
 def test_opencode_gets_its_providers_env_and_keeps_a_blueprints_own_config(
@@ -286,7 +300,7 @@ def test_opencode_gets_its_providers_env_and_keeps_a_blueprints_own_config(
         "agent": {"title": {"disable": False}, "build": {"steps": 40}},
     }
     config = _config(tmp_path, "alpha", harness="opencode", kwargs={"opencode_config": mine})
-    pointed = served_config(config, Served(proxy, PROFILES["opencode"]))
+    pointed = connected(config, _dialled(tmp_path, proxy, config, "opencode"))
     address = f"http://host.docker.internal:8000/r/trial/{config.trial_name}/v1"
     assert pointed.agent.env == {"SHIPYARD_BASE_URL": address, "SHIPYARD_API_KEY": "k"}
     merged = pointed.agent.kwargs["opencode_config"]
@@ -337,21 +351,14 @@ def test_a_task_in_allowlist_mode_gets_the_proxys_host(tmp_path: Path) -> None:
     assert not allowlisted(tmp_path / "tasks" / "nothing")
     assert not allowlisted(_task_toml(tmp_path, "broken", "[environment\n"))
 
-    proxy = FakeProxy(origin="http://host.docker.internal:8000", token="k")
-    pointed = served_config(_config(tmp_path, "allow"), Served(proxy, Profile()))
+    dialled = Connection("m", host="host.docker.internal")
+    pointed = connected(_config(tmp_path, "allow"), dialled)
     assert pointed.agent.extra_allowed_hosts == ["host.docker.internal"]
     had = _config(tmp_path, "allow").model_copy()
     had.agent.extra_allowed_hosts = ["host.docker.internal", "pypi.org"]
-    assert served_config(had, Served(proxy, Profile())).agent.extra_allowed_hosts == [
-        "host.docker.internal",
-        "pypi.org",
-    ]
-    assert (
-        served_config(
-            _config(tmp_path, "public"), Served(proxy, Profile())
-        ).agent.extra_allowed_hosts
-        == []
-    )
+    assert connected(had, dialled).agent.extra_allowed_hosts == ["host.docker.internal", "pypi.org"]
+    assert connected(_config(tmp_path, "public"), dialled).agent.extra_allowed_hosts == []
+    assert connected(_config(tmp_path, "allow"), Connection("m")).agent.extra_allowed_hosts == []
 
 
 def _config(tmp_path: Path, task: str, harness: str = "pi", **agent: object) -> TrialConfig:
