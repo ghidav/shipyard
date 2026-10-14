@@ -511,7 +511,7 @@ async def _jobbed(case: Jobbed, tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
             await opened.sample(batch_tasks, rollouts=share, index=0, modules=one) for one in texts
         ]
         # The proxy's budget, read while it is up, as the step reads it.
-        budget = opened.sampling.budget
+        budget = opened.endpoint.budget
     rolled = parts[0] if len(parts) == 1 else merged(parts, share)
     out: dict[str, Any] = {
         "verdicts": [_verdict(one) for one in verdicts(rolled)],

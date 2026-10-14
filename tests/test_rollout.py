@@ -24,7 +24,7 @@ from shipyard.rollout import (
     quiet_litellm,
     rollout,
 )
-from shipyard.serving import ProviderSampling, TinkerSampling
+from shipyard.serving import ProviderEndpoint, ProxyEndpoint
 from shipyard.types import Connection, Trial, harness
 from tests.records import FakeProxy
 from tests.test_serving import blueprint
@@ -41,7 +41,7 @@ def _batch(tmp_path: Path, *names: str) -> list[Path]:
 async def _rollout(tmp_path: Path, batch: list[Path], harbor: object, **options: object):
     asked: dict[str, object] = {
         "harness": "pi",
-        "sampling": ProviderSampling("m"),
+        "endpoint": ProviderEndpoint("m"),
         "sandbox": "docker",
         "concurrency": 4,
         "rollouts": 1,
@@ -60,7 +60,7 @@ async def test_configs_are_built_in_plan_order_with_harbors_fields(tmp_path: Pat
         batch,
         harbor,
         harness="pi@0.85.1",
-        sampling=ProviderSampling("anthropic/some-model"),
+        endpoint=ProviderEndpoint("anthropic/some-model"),
         rollouts=3,
         env={"API_KEY": "k"},
         kwargs={"thinking": "high"},
@@ -238,7 +238,7 @@ async def test_every_trial_is_pointed_at_the_address_that_names_it(tmp_path: Pat
         _batch(tmp_path, "alpha", "beta"),
         harbor,
         harness="pi@0.85.1",
-        sampling=TinkerSampling(blueprint(), tmp_path, proxy=proxy),
+        endpoint=ProxyEndpoint(blueprint(), tmp_path, proxy=proxy),
         rollouts=2,
         env={"OPENAI_BASE_URL": "https://api.openai.com/v1", "HTTPS_PROXY": "corp"},
     )
@@ -268,7 +268,7 @@ def _dialled(
         harness(deployed),
         tmp_path / "jobs" / "j" / config.trial_name,
     )
-    return TinkerSampling(blueprint(**rollout), tmp_path, proxy=proxy).connection(trial)
+    return ProxyEndpoint(blueprint(**rollout), tmp_path, proxy=proxy).connection(trial)
 
 
 def test_claude_code_is_handed_the_anthropic_wire_without_the_v1(tmp_path: Path) -> None:

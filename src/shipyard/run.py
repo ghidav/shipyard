@@ -22,8 +22,8 @@ from shipyard.cost import Costs, billed_by, reported, sandbox_seconds
 from shipyard.modules import Candidate, keep, seed
 from shipyard.progress import Reporter, reporter
 from shipyard.rollout import Rollouts, Runner, rollout, trials_of
-from shipyard.serving import NothingServed, ProviderSampling, TinkerSampling, tinker_base_url
-from shipyard.types import Harvest, SamplingClient
+from shipyard.serving import NothingServed, ProviderEndpoint, ProxyEndpoint, tinker_base_url
+from shipyard.types import Endpoint, Harvest
 
 if TYPE_CHECKING:
     from shipyard.trainer import Checkpoint
@@ -56,10 +56,10 @@ class Run:
         #: How one trial is run; None is Harbor's `Trial`. A test hands in its own.
         self.run_trial: Runner | None = None
         #: The proxy over this run's weights, or the provider the harness dials itself.
-        self.sampling: SamplingClient = (
-            TinkerSampling(config, directory)
+        self.endpoint: Endpoint = (
+            ProxyEndpoint(config, directory)
             if config.model.served
-            else ProviderSampling(config.model.name)
+            else ProviderEndpoint(config.model.name)
         )
         self._noted = False
         #: The trainer whose weights the proxy serves, for the update count every batch
@@ -136,10 +136,10 @@ class Run:
         """Run one Harbor job over `batch`, the recipe's batch `index`, carrying `modules`
         (the run's own when None). Stamp it with the trainer's update count and put every
         verdict on the job row. A stop the harvest carries is raised after the row."""
-        cfg, sampling = self.config, self.sampling
-        await sampling.open()
-        if isinstance(sampling, TinkerSampling) and not self._noted:
-            self.note(proxy={"placement": sampling.placement, "origin": sampling.origin})
+        cfg, endpoint = self.config, self.endpoint
+        await endpoint.open()
+        if isinstance(endpoint, ProxyEndpoint) and not self._noted:
+            self.note(proxy={"placement": endpoint.placement, "origin": endpoint.origin})
             self._noted = True
         updates = getattr(self.trainer, "updates", None)
         candidate = self.carried if modules is None else modules
@@ -149,7 +149,7 @@ class Run:
             batch,
             job,
             harness=cfg.rollout.harness,
-            sampling=sampling,
+            endpoint=endpoint,
             sandbox=cfg.rollout.sandbox,
             concurrency=cfg.rollout.concurrency,
             rollouts=rollouts,
@@ -163,7 +163,7 @@ class Run:
             modules=candidate,
         )
         self.progress.done(job)
-        harvest = await sampling.record(job, trials_of(rolled, types.harness(cfg.rollout.harness)))
+        harvest = await endpoint.record(job, trials_of(rolled, types.harness(cfg.rollout.harness)))
         if harvest is not None:
             rolled = replace(
                 rolled, records=harvest.records, asked=harvest.asked, failed=harvest.failed
@@ -290,7 +290,7 @@ class Run:
         the loop raised. A `KeyboardInterrupt` from a signal is recorded as
         `stopped: <signal>`."""
         self.progress.close()
-        self.sampling.close()
+        self.endpoint.close()
         if exc is None:
             error = None
         elif isinstance(exc, KeyboardInterrupt):

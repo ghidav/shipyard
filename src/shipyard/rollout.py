@@ -25,7 +25,7 @@ from shipyard import types
 from shipyard.admit import verdict
 from shipyard.modules import Candidate, deliver, merge_fields
 from shipyard.proxy.profiles import bare_name
-from shipyard.types import Connection, Harness, SamplingClient, Trial
+from shipyard.types import Connection, Endpoint, Harness, Trial
 
 if TYPE_CHECKING:
     from shipyard.progress import Reporter
@@ -77,7 +77,7 @@ async def rollout(
     job: str,
     *,
     harness: str,
-    sampling: SamplingClient,
+    endpoint: Endpoint,
     sandbox: str,
     concurrency: int,
     rollouts: int,
@@ -92,7 +92,7 @@ async def rollout(
     modules: Candidate | None = None,
 ) -> Rollouts:
     """Run every task `rollouts` times, `concurrency` trials at once, each trial dialling
-    the connection `sampling` gives it, and return them in plan order. Deliver `modules`
+    the connection `endpoint` gives it, and return them in plan order. Deliver `modules`
     under the job's directory and name them on the agent config. A trial whose runner
     raised keeps its slot with no result, which admission masks."""
     if rollouts < 1:
@@ -131,7 +131,7 @@ async def rollout(
     async def one(config: TrialConfig, task: Path, index: int) -> Path:
         trial_dir = Path(config.trials_dir) / config.trial_name
         config = connected(
-            config, sampling.connection(Trial(job, task, index, deployed, trial_dir))
+            config, endpoint.connection(Trial(job, task, index, deployed, trial_dir))
         )
         async with limit:
             try:

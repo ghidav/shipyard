@@ -1,4 +1,4 @@
-"""The sampling clients: the proxy this run starts and drains for a model it serves, and
+"""The endpoints: the proxy this run starts and drains for a model it serves, and
 the provider case, which records nothing."""
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from shipyard.config import TINKER
 from shipyard.proxy.client import Proxy
 from shipyard.proxy.profiles import bare_name, slug_of
 from shipyard.proxy.wire import CONTROL_TOKEN_ENV, PROXY_TOKEN_ENV, SAMPLER_FAILED
-from shipyard.types import Connection, Harvest, SamplingClient, Trial
+from shipyard.types import Connection, Endpoint, Harvest, Trial
 
 if TYPE_CHECKING:
     from shipyard.config import Blueprint, Rollout
@@ -95,7 +95,7 @@ def endpoint_settings(cfg: Blueprint, *, run: str | None = None) -> dict[str, An
 
 
 @dataclass(frozen=True)
-class ProviderSampling(SamplingClient):
+class ProviderEndpoint(Endpoint):
     """A model served elsewhere: the harness dials it with its own credentials."""
 
     model: str | None
@@ -117,7 +117,7 @@ class ProviderSampling(SamplingClient):
 
 
 @dataclass
-class TinkerSampling(SamplingClient):
+class ProxyEndpoint(Endpoint):
     """The proxy over a Tinker sampler. The first job starts it, the run stops it, and it
     remembers the path it was pointed at, so a batch answered by other weights is refused."""
 

@@ -16,7 +16,7 @@ from shipyard.config import LENGTH_CAP, PAPER_OVERLONG_BUFFER
 from shipyard.credit import Batch, carrying, credit
 from shipyard.data import batches
 from shipyard.pack import Group, group
-from shipyard.serving import TinkerSampling
+from shipyard.serving import ProxyEndpoint
 from shipyard.trainer import SERVE_TTL, Adam, Trainer, Update
 
 if TYPE_CHECKING:
@@ -331,15 +331,15 @@ async def refilled(
     return found, Refill(refills=rounds, refill_rollouts=rollouts)
 
 
-def serving_of(run: Run, preset: Preset) -> TinkerSampling:
+def serving_of(run: Run, preset: Preset) -> ProxyEndpoint:
     """The proxy this run serves its model through. Raise when the model is served
     elsewhere, since a gradient trains on the proxy's records."""
-    if not isinstance(run.sampling, TinkerSampling):
+    if not isinstance(run.endpoint, ProxyEndpoint):
         raise ValueError(
             f"[recipe] kind = {preset.name!r} trains the weights this run serves, and "
             f"[model] provider = {run.config.model.provider!r} serves them elsewhere"
         )
-    return run.sampling
+    return run.endpoint
 
 
 def row(
