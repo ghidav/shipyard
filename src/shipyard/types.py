@@ -116,6 +116,10 @@ class Update:
     kl_v2: float | None
     entropy: float | None
     seconds: float
+    #: Sequences the step trained on.
+    sequences: int = 0
+    #: Mean of mu less the anchor's logprobs over those; None without a KL term.
+    anchor_kl: float | None = None
 
 
 class TrainingClient(ABC):
