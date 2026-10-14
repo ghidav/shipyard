@@ -12,11 +12,11 @@ import pytest
 import tinker
 
 from shipyard.proxy import cookbook
-from shipyard.proxy import endpoint as endpoint_module
+from shipyard.proxy import server as server_module
 from shipyard.proxy.exchange import Exchange, exchange
 from shipyard.proxy.recorder import IMAGE_TOKEN, Record, Recorder, ids_of, pictures_of
 from shipyard.proxy.wire import Picture, delta_encoded, pictured, record_of, records_of
-from tests.proxies import FakeSampler, ask, endpoint, fetch, ids
+from tests.proxies import FakeSampler, ask, fetch, ids, server
 
 OK = ids("ok")
 EMPTY = {"records": [], "turned_away": 0, "spoke": 0}
@@ -48,7 +48,7 @@ def planted(**fields: Any) -> Record:
 
 
 async def test_a_trials_records_come_back_in_order_with_their_ids() -> None:
-    async with endpoint(FakeSampler("ok")) as served:
+    async with server(FakeSampler("ok")) as served:
         for said in ("one", "two", "three"):
             await ask(served, "task-1", messages=[{"role": "user", "content": said}])
         answered = await fetch(served, "task-1")
@@ -63,7 +63,7 @@ async def test_a_trials_records_come_back_in_order_with_their_ids() -> None:
 
 
 async def test_the_fetch_drains_and_an_unknown_trial_is_empty_not_an_error() -> None:
-    async with endpoint(FakeSampler("ok")) as served:
+    async with server(FakeSampler("ok")) as served:
         await ask(served, "task-1")
         await ask(served, "task-2")
         first = await fetch(served, "task-1")
@@ -76,7 +76,7 @@ async def test_the_fetch_drains_and_an_unknown_trial_is_empty_not_an_error() -> 
 
 
 async def test_a_fetch_without_the_token_is_refused_and_leaves_the_records() -> None:
-    async with endpoint(FakeSampler("ok")) as served:
+    async with server(FakeSampler("ok")) as served:
         await ask(served, "task-1")
         assert (await fetch(served, "task-1", headers={})).status_code == 401
         wrong = {"Authorization": "Bearer not-the-token"}
@@ -91,7 +91,7 @@ async def test_extending_prompts_cross_as_tails_compressed_and_come_back_whole()
         roles = ("user", "assistant")
         return [{"role": roles[i % 2], "content": c} for i, c in enumerate(contents)]
 
-    async with endpoint(FakeSampler("ok")) as served:
+    async with server(FakeSampler("ok")) as served:
         for contents in turns:
             await ask(served, "t", messages=said(contents))
         raw = await fetch(served, "t", delta="1")
@@ -151,7 +151,7 @@ def test_every_annotation_survives_the_wire() -> None:
 
 
 async def test_a_retry_is_sent_the_answer_already_built() -> None:
-    async with endpoint(FakeSampler("ok")) as served:
+    async with server(FakeSampler("ok")) as served:
         await ask(served, "task-1")
         await ask(served, "task-1")
         first = await fetch(served, "task-1")
@@ -163,17 +163,17 @@ async def test_a_retry_is_sent_the_answer_already_built() -> None:
 
 
 async def test_a_retry_whose_first_request_never_arrived_drains_as_a_first_would() -> None:
-    async with endpoint(FakeSampler("ok")) as served:
+    async with server(FakeSampler("ok")) as served:
         await ask(served, "task-1")
         retried = await fetch(served, "task-1", again="1")
     assert len(retried.json()["records"]) == 1
 
 
 async def test_the_kept_answer_is_let_go_after_its_time(monkeypatch: pytest.MonkeyPatch) -> None:
-    async with endpoint(FakeSampler("ok")) as served:
+    async with server(FakeSampler("ok")) as served:
         await ask(served, "task-1")
         await fetch(served, "task-1")
-        monkeypatch.setattr(endpoint_module, "SERVED_KEPT_SECONDS", -1.0)
+        monkeypatch.setattr(server_module, "SERVED_KEPT_SECONDS", -1.0)
         retried = await fetch(served, "task-1", again="1")
     assert retried.json()["records"] == []
 
@@ -256,7 +256,7 @@ async def test_a_trial_past_its_budget_is_refused_with_the_cookbooks_own_400() -
 
 
 async def test_the_budget_refusal_is_a_400_over_the_wire_and_the_record_crosses() -> None:
-    async with endpoint(FakeSampler("abcd"), max_context=4) as served:
+    async with server(FakeSampler("abcd"), max_context=4) as served:
         assert (await ask(served, "t", max_tokens=2)).status_code == 200
         refused = await ask(served, "t", max_tokens=1)
         assert refused.status_code == 400 and "budget" in refused.text
@@ -266,7 +266,7 @@ async def test_the_budget_refusal_is_a_400_over_the_wire_and_the_record_crosses(
 
 
 async def test_a_turn_that_does_not_fit_is_a_400_the_harness_compacts_on() -> None:
-    async with endpoint(FakeSampler("ok"), max_context=8, max_tokens=4) as served:
+    async with server(FakeSampler("ok"), max_context=8, max_tokens=4) as served:
         refused = await ask(served, "t", messages=[{"role": "user", "content": "hello"}])
         assert refused.status_code == 400 and "prompt is too long" in refused.text
         payload = (await fetch(served, "t")).json()
@@ -332,7 +332,7 @@ async def test_a_failed_sample_is_a_500_and_a_retry_samples_fresh() -> None:
                 raise RuntimeError("once")
             return await super().sample_async(prompt, num_samples, sampling_params)
 
-    async with endpoint(FailingOnce("ok")) as served:
+    async with server(FailingOnce("ok")) as served:
         assert (await ask(served, "t")).status_code == 500
         again = await ask(served, "t", headers={"x-stainless-retry-count": "1"})
         assert again.status_code == 200

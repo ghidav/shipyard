@@ -12,7 +12,7 @@ import httpx
 import tinker
 
 from shipyard.proxy.cookbook import ParseTermination, ToolCall
-from shipyard.proxy.endpoint import Endpoint
+from shipyard.proxy.server import Server
 from shipyard.proxy.wire import CONTROL_PATH, RECORDS_PATH
 
 MODEL = "Qwen/Qwen3-8B"
@@ -78,10 +78,10 @@ def _text(content: Any) -> str:
     return str(content or "")
 
 
-def endpoint(
+def server(
     sampler: Any = None, *, by_path: Callable[[str | None], Any] | None = None, **overrides: Any
-) -> Endpoint:
-    """An endpoint on loopback whose clients are fakes: `sampler` serves every path, or
+) -> Server:
+    """A server on loopback whose clients are fakes: `sampler` serves every path, or
     `by_path(path)` picks one per path so a swap is observable. Loopback keeps outside hosts
     away and avoids the macOS firewall prompt."""
     fixed = sampler if sampler is not None else FakeSampler("hi")
@@ -96,7 +96,7 @@ def endpoint(
         "bind": "127.0.0.1",
         "client_factory": factory,
     }
-    return Endpoint(**{**fields, **overrides})
+    return Server(**{**fields, **overrides})
 
 
 def ids(text: str) -> tuple[int, ...]:
@@ -104,12 +104,12 @@ def ids(text: str) -> tuple[int, ...]:
     return tuple(ord(character) for character in text)
 
 
-def root(started: Endpoint) -> str:
+def root(started: Server) -> str:
     return f"http://127.0.0.1:{started.port}"
 
 
 async def ask(
-    started: Endpoint,
+    started: Server,
     trial: str,
     *,
     key: str | None = None,
@@ -126,7 +126,7 @@ async def ask(
         )
 
 
-async def ask_anthropic(started: Endpoint, trial: str, **body: Any) -> httpx.Response:
+async def ask_anthropic(started: Server, trial: str, **body: Any) -> httpx.Response:
     """One messages request, as Claude Code sends it: `x-api-key`, `/v1/messages`."""
     async with httpx.AsyncClient() as client:
         return await client.post(
@@ -142,9 +142,9 @@ async def ask_anthropic(started: Endpoint, trial: str, **body: Any) -> httpx.Res
 
 
 async def fetch(
-    started: Endpoint, trial: str, headers: dict[str, str] | None = None, **params: str
+    started: Server, trial: str, headers: dict[str, str] | None = None, **params: str
 ) -> httpx.Response:
-    """The records fetch a run makes, with the endpoint's own token unless told otherwise."""
+    """The records fetch a run makes, with the server's own token unless told otherwise."""
     if headers is None:
         headers = {"Authorization": f"Bearer {started.token}"}
     async with httpx.AsyncClient() as client:
@@ -154,7 +154,7 @@ async def fetch(
 
 
 async def control(
-    started: Endpoint, model_path: Any, *, token: str | None = None, raw: Any = None
+    started: Server, model_path: Any, *, token: str | None = None, raw: Any = None
 ) -> httpx.Response:
     """A swap over the control route, with the control token unless told otherwise."""
     bearer = started.control_token if token is None else token

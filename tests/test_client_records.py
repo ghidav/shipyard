@@ -1,4 +1,4 @@
-"""The run's client against a real endpoint on this loop: the records fetch with its retry
+"""The run's client against a real server on this loop: the records fetch with its retry
 and `again=1`, the readiness probe, and the swap through the control route."""
 
 from __future__ import annotations
@@ -13,11 +13,11 @@ from shipyard.proxy import client
 from shipyard.proxy.client import CONTROL_TOKEN_ENV, Proxy, Unreachable
 from shipyard.proxy.exchange import Exchange, exchange
 from shipyard.proxy.wire import Record
-from tests.proxies import FakeSampler, ask, endpoint, ids, root
+from tests.proxies import FakeSampler, ask, ids, root, server
 
 
 def of(started: Any, **named: Any) -> Proxy:
-    """The run's client for a real endpoint on this loop."""
+    """The run's client for a real server on this loop."""
     fields = {
         "origin": root(started),
         "token": started.token,
@@ -27,7 +27,7 @@ def of(started: Any, **named: Any) -> Proxy:
 
 
 async def test_records_come_back_as_records_with_their_ids_and_the_counters() -> None:
-    async with endpoint(FakeSampler("ok")) as started:
+    async with server(FakeSampler("ok")) as started:
         await ask(started, "t-1", messages=[{"role": "user", "content": "one"}])
         await ask(
             started,
@@ -53,7 +53,7 @@ async def test_records_come_back_as_records_with_their_ids_and_the_counters() ->
 @pytest.mark.parametrize("trial", ["a b#c?d__x", "50%__y", "a%2Fb__z"])
 async def test_a_trial_name_with_reserved_characters_comes_back_whole(trial: str) -> None:
     """The client escapes the name into the records route and aiohttp decodes it back."""
-    async with endpoint(FakeSampler("ok")) as started:
+    async with server(FakeSampler("ok")) as started:
         token = exchange.set(Exchange(trial=trial))
         try:
             await started.recorder.sample_async(
@@ -90,7 +90,7 @@ async def test_an_answer_lost_after_the_drain_is_asked_for_again(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(client, "PAUSES", (0.0,))
-    async with endpoint(FakeSampler("ok")) as started:
+    async with server(FakeSampler("ok")) as started:
         await ask(started, "t-1")
         await ask(started, "t-1")
         transport = LosingFirst()
@@ -102,7 +102,7 @@ async def test_an_answer_lost_after_the_drain_is_asked_for_again(
 
 async def test_a_refused_token_is_not_retried_and_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(client, "PAUSES", (0.0,))
-    async with endpoint(FakeSampler("ok")) as started:
+    async with server(FakeSampler("ok")) as started:
         await ask(started, "t-1")
         transport = LosingFirst()
         transport.asked.append({})  # nothing is lost; the 401 comes straight back
@@ -137,7 +137,7 @@ async def test_every_attempt_failing_raises_rather_than_answering_empty(
 
 
 async def test_ready_passes_against_a_proxy_that_answers_and_needs_no_token() -> None:
-    async with endpoint(FakeSampler("ok")) as started:
+    async with server(FakeSampler("ok")) as started:
         await of(started, token="not-the-token").ready()
 
 
@@ -158,7 +158,7 @@ def by_path(path: str | None) -> FakeSampler:
 
 
 async def test_swap_goes_through_the_control_route_and_changes_what_answers() -> None:
-    async with endpoint(by_path=by_path, control_token="c") as started:
+    async with server(by_path=by_path, control_token="c") as started:
         proxy = of(started)
         await proxy.swap("tinker://run/sampler_weights/step-3")
         answered = await ask(started, "t")
@@ -172,7 +172,7 @@ async def test_swap_goes_through_the_control_route_and_changes_what_answers() ->
 
 
 async def test_swap_is_refused_without_the_control_token_and_on_a_wrong_one() -> None:
-    async with endpoint(by_path=by_path, control_token="c") as started:
+    async with server(by_path=by_path, control_token="c") as started:
         with pytest.raises(RuntimeError, match=CONTROL_TOKEN_ENV):
             await of(started, control_token=None).swap("tinker://w/step-1")
         with pytest.raises(RuntimeError, match="401"):

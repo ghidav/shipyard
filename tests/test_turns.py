@@ -1,5 +1,5 @@
 """Claude Code puts system-role messages inside the message list. The tests wrap the
-cookbook's real parsers as the endpoint does and check that those messages are user turns
+cookbook's real parsers as the server does and check that those messages are user turns
 in place, one system prompt stays on each wire, and a call that ends with a new block
 extends the previous prompt instead of starting over."""
 
@@ -11,7 +11,7 @@ import pytest
 
 from shipyard.proxy import cookbook, turns
 from shipyard.proxy.turns import as_user_turns
-from tests.proxies import BridgeRenderer, ScriptedSampler, ask, ask_anthropic, chars, endpoint, ids
+from tests.proxies import BridgeRenderer, ScriptedSampler, ask, ask_anthropic, chars, ids, server
 
 
 @pytest.fixture
@@ -138,7 +138,7 @@ async def test_a_call_that_ends_with_a_new_block_extends_the_previous_prompt() -
     body = {"system": "Be brief.", "tools": tools}
     agent = {"role": "system", "content": [{"type": "text", "text": "# Environment\nA sandbox."}]}
     note = "Note: a.txt changed on disk.\n\n<total_tokens>9 left</total_tokens>"
-    async with endpoint(sampler, renderer=BridgeRenderer()) as started:
+    async with server(sampler, renderer=BridgeRenderer()) as started:
         messages: list[dict[str, Any]] = [{"role": "user", "content": "look"}, agent]
         first = await ask_anthropic(started, "t", messages=messages, **body)
         assert first.status_code == 200, first.text
@@ -172,7 +172,7 @@ async def test_the_same_on_the_openai_wire() -> None:
     bridges, where the cookbook refused it before."""
     sampler = ScriptedSampler("", answers=["CALL ls {}", "two files"])
     note = "Note: a.txt changed on disk."
-    async with endpoint(sampler, renderer=BridgeRenderer()) as started:
+    async with server(sampler, renderer=BridgeRenderer()) as started:
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": "Be brief."},
             {"role": "user", "content": "look"},

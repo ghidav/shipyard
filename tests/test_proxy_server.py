@@ -1,4 +1,4 @@
-"""The endpoint over the wire: addresses, the token gate, both dialects, swapping, the
+"""The server over the wire: addresses, the token gate, both dialects, swapping, the
 run's pins over the harness's, the control route, the context length, and the Tinker
 session closed on the way out."""
 
@@ -11,39 +11,39 @@ import httpx
 import pytest
 import tinker
 
-from shipyard.proxy.endpoint import DEFAULT_MAX_TOKENS, Endpoint, context_of
 from shipyard.proxy.exchange import Exchange, exchange
 from shipyard.proxy.recorder import Recorder
-from tests.proxies import FakeSampler, ask, ask_anthropic, control, endpoint, ids
+from shipyard.proxy.server import DEFAULT_MAX_TOKENS, Server, context_of
+from tests.proxies import FakeSampler, ask, ask_anthropic, control, ids, server
 
 # ------------------------------------------------------------------ before it starts
 
 
 def test_address_for_refuses_before_start() -> None:
     with pytest.raises(RuntimeError, match="start"):
-        endpoint().address_for("task-1")
+        server().address_for("task-1")
 
 
 def test_nothing_is_recorded_before_start() -> None:
     with pytest.raises(RuntimeError):
-        endpoint().records_for("task-1")
+        server().records_for("task-1")
 
 
 @pytest.mark.parametrize("name", ["", "org/name", "org/name/task"])
 async def test_a_trial_name_that_cannot_ride_in_the_path_is_refused(name: str) -> None:
-    async with endpoint() as started:
+    async with server() as started:
         with pytest.raises(ValueError):
             started.address_for(name)
 
 
 def test_each_endpoint_has_its_own_token_and_an_empty_one_is_replaced() -> None:
-    assert endpoint().token != endpoint().token
-    assert endpoint(token="").token
+    assert server().token != server().token
+    assert server(token="").token
 
 
 def test_neither_token_is_in_the_endpoints_repr() -> None:
     """As on the run's Proxy: a traceback's locals or a log line must not carry them."""
-    made = endpoint(token="harness-secret", control_token="control-secret")
+    made = server(token="harness-secret", control_token="control-secret")
     shown = repr(made)
     assert "harness-secret" not in shown and "control-secret" not in shown
     assert "Qwen/Qwen3-8B" in shown
@@ -53,13 +53,13 @@ def test_neither_token_is_in_the_endpoints_repr() -> None:
 
 
 async def test_the_port_is_ephemeral_and_two_endpoints_do_not_collide() -> None:
-    async with endpoint() as first, endpoint() as second:
+    async with server() as first, server() as second:
         assert first.port and second.port and first.port != second.port
         assert first.address_for("task-1") == f"http://127.0.0.1:{first.port}/r/trial/task-1/v1"
 
 
 async def test_the_port_is_given_back_on_stop() -> None:
-    started = endpoint()
+    started = server()
     await started.start()
     await started.stop()
     assert started.port is None
@@ -71,7 +71,7 @@ async def test_the_port_is_given_back_on_stop() -> None:
 
 
 async def test_a_request_is_served_and_recorded_under_its_trial() -> None:
-    async with endpoint(FakeSampler("ok")) as started:
+    async with server(FakeSampler("ok")) as started:
         answered = await ask(started, "task-1")
         assert answered.status_code == 200
         assert answered.json()["choices"][0]["message"]["content"] == "ok"
@@ -85,14 +85,14 @@ async def test_a_request_is_served_and_recorded_under_its_trial() -> None:
 
 
 async def test_a_request_over_aiohttps_default_body_size_is_served_and_recorded() -> None:
-    async with endpoint(FakeSampler("ok")) as started:
+    async with server(FakeSampler("ok")) as started:
         answered = await ask(started, "task-1", metadata={"pad": "x" * (2 * 1024**2)})
         assert answered.status_code == 200
         assert len(started.records_for("task-1")) == 1
 
 
 async def test_the_anthropic_wire_is_served_and_recorded_too() -> None:
-    async with endpoint(FakeSampler("ok")) as started:
+    async with server(FakeSampler("ok")) as started:
         answered = await ask_anthropic(started, "task-1")
         assert answered.status_code == 200
         assert answered.json()["content"][0]["text"] == "ok"
@@ -100,7 +100,7 @@ async def test_the_anthropic_wire_is_served_and_recorded_too() -> None:
 
 
 async def test_two_trials_keep_separate_records_and_seq_counts_per_trial() -> None:
-    async with endpoint(FakeSampler("ok")) as started:
+    async with server(FakeSampler("ok")) as started:
         await ask(started, "task-1")
         await ask(started, "task-2")
         await ask(started, "task-2")
@@ -110,7 +110,7 @@ async def test_two_trials_keep_separate_records_and_seq_counts_per_trial() -> No
 
 
 async def test_a_request_with_no_trial_in_its_address_is_recorded_under_nothing() -> None:
-    async with endpoint(FakeSampler("ok")) as started:
+    async with server(FakeSampler("ok")) as started:
         await ask(started, "task-1")
         async with httpx.AsyncClient() as client:
             answered = await client.post(
@@ -124,7 +124,7 @@ async def test_a_request_with_no_trial_in_its_address_is_recorded_under_nothing(
 
 
 async def test_the_token_is_the_gate() -> None:
-    async with endpoint(FakeSampler("ok")) as started:
+    async with server(FakeSampler("ok")) as started:
         assert (await ask(started, "task-1", key="not-the-token")).status_code == 401
         assert started.records_for("task-1") == []
 
@@ -137,7 +137,7 @@ def by_path(path: str | None) -> FakeSampler:
 
 
 async def test_swap_changes_what_is_served_and_every_record_says_who_answered() -> None:
-    async with endpoint(by_path=by_path) as started:
+    async with server(by_path=by_path) as started:
         assert (await ask(started, "t")).json()["choices"][0]["message"]["content"] == "base"
         await started.swap("tinker://run/sampler_weights/step-1")
         answered = await ask(started, "t")
@@ -154,13 +154,13 @@ async def test_swap_changes_what_is_served_and_every_record_says_who_answered() 
 
 
 async def test_a_path_given_before_start_is_what_start_serves() -> None:
-    async with endpoint(by_path=by_path, model_path="tinker://w/step-7") as started:
+    async with server(by_path=by_path, model_path="tinker://w/step-7") as started:
         assert (await ask(started, "t")).json()["choices"][0]["message"]["content"] == "step-7"
         assert started.records_for("t")[0].served == "tinker://w/step-7"
 
 
 async def test_a_bare_name_is_not_a_path() -> None:
-    async with endpoint(by_path=by_path) as started:
+    async with server(by_path=by_path) as started:
         with pytest.raises(ValueError, match="tinker://"):
             await started.swap("step-1")
 
@@ -201,7 +201,7 @@ async def test_a_record_is_stamped_with_the_weights_that_answered_it() -> None:
 
 async def test_the_runs_temperature_overrides_the_harnesses() -> None:
     sampler = FakeSampler("ok")
-    async with endpoint(sampler, temperature=0.7) as started:
+    async with server(sampler, temperature=0.7) as started:
         await ask(started, "t", temperature=0.0)
         assert sampler.asked[0].temperature == 0.7
         assert started.records_for("t")[0].sampling_params["temperature"] == 0.7
@@ -209,7 +209,7 @@ async def test_the_runs_temperature_overrides_the_harnesses() -> None:
 
 async def test_what_the_run_did_not_name_is_left_to_the_harness() -> None:
     sampler = FakeSampler("ok")
-    async with endpoint(sampler, temperature=None, top_p=None, top_k=None) as started:
+    async with server(sampler, temperature=None, top_p=None, top_k=None) as started:
         await ask(started, "t", temperature=0.25, top_p=0.9, max_tokens=64)
         assert (sampler.asked[0].temperature, sampler.asked[0].top_p) == (0.25, 0.9)
         assert sampler.asked[0].max_tokens == 64
@@ -217,7 +217,7 @@ async def test_what_the_run_did_not_name_is_left_to_the_harness() -> None:
 
 async def test_max_tokens_caps_a_turn_and_is_the_default_for_one_naming_none() -> None:
     sampler = FakeSampler("ok")
-    async with endpoint(sampler, max_tokens=16) as started:
+    async with server(sampler, max_tokens=16) as started:
         await ask(started, "t", max_tokens=99)
         await ask(started, "t", max_tokens=8)
         await ask(started, "t")
@@ -226,7 +226,7 @@ async def test_max_tokens_caps_a_turn_and_is_the_default_for_one_naming_none() -
 
 async def test_a_request_naming_no_limit_is_not_cut_at_the_cookbooks_default() -> None:
     sampler = FakeSampler("ok")
-    async with endpoint(sampler) as started:
+    async with server(sampler) as started:
         await ask(started, "t")
     assert sampler.asked[0].max_tokens == DEFAULT_MAX_TOKENS
 
@@ -242,7 +242,7 @@ def test_every_knob_that_shapes_the_distribution_is_pinned_and_the_object_left_a
 
 
 def test_the_endpoint_defaults_to_truncating_nothing() -> None:
-    made = Endpoint(base_model="a/b")
+    made = Server(base_model="a/b")
     assert (made.temperature, made.top_p, made.top_k, made.max_tokens) == (1.0, 1.0, -1, 8192)
     assert made.control_token is None
 
@@ -251,12 +251,12 @@ def test_the_endpoint_defaults_to_truncating_nothing() -> None:
 
 
 async def test_the_control_route_is_closed_without_a_control_token() -> None:
-    async with endpoint(by_path=by_path) as started:
+    async with server(by_path=by_path) as started:
         assert (await control(started, "tinker://w/step-1", token="x")).status_code == 404
 
 
 async def test_the_control_route_opens_to_the_control_token_and_not_the_harnesses() -> None:
-    async with endpoint(by_path=by_path, control_token="ctl") as started:
+    async with server(by_path=by_path, control_token="ctl") as started:
         assert (await control(started, "tinker://w/step-1", token="wrong")).status_code == 401
         assert (await control(started, "tinker://w/step-1", token=started.token)).status_code == 401
         swapped = await control(started, "tinker://w/step-1")
@@ -269,7 +269,7 @@ async def test_the_control_route_opens_to_the_control_token_and_not_the_harnesse
 
 
 async def test_the_control_route_refuses_what_is_not_a_path() -> None:
-    async with endpoint(by_path=by_path, control_token="ctl") as started:
+    async with server(by_path=by_path, control_token="ctl") as started:
         assert (await control(started, "step-1")).status_code == 400
         assert (await control(started, 7)).status_code == 400
         assert (await control(started, None, raw=b"{not json")).status_code == 400
@@ -324,7 +324,7 @@ async def test_the_proxy_closes_its_tinker_session_once_on_the_way_out() -> None
     run closes its own session with the reason."""
     service = Service()
     with pytest.raises(KeyError):
-        async with endpoint(_service=service, max_context=4096) as started:
+        async with server(_service=service, max_context=4096) as started:
             assert started.port and service.closed == []
             raise KeyError("the run failed")
     assert service.closed == ["success"]
@@ -333,6 +333,6 @@ async def test_the_proxy_closes_its_tinker_session_once_on_the_way_out() -> None
 
 async def test_a_close_that_fails_still_stops_the_proxy() -> None:
     service = Service(fails=True)
-    async with endpoint(_service=service, max_context=4096) as started:
+    async with server(_service=service, max_context=4096) as started:
         pass
     assert service.closed == ["success"] and started.port is None

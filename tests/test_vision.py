@@ -1,5 +1,5 @@
 """Images and documents on the wire, carried to the model as image parts. The tests wrap the
-cookbook's real parsers as the endpoint does and check that parts and pages stay in order,
+cookbook's real parsers as the server does and check that parts and pages stay in order,
 the page cut is stated, text-only bodies are unchanged, and a model that takes no images
 refuses cleanly."""
 
@@ -14,7 +14,7 @@ import pytest
 from PIL import Image
 
 from shipyard.proxy import cookbook, vision
-from tests.proxies import FakeSampler, ask, ask_anthropic, endpoint
+from tests.proxies import FakeSampler, ask, ask_anthropic, server
 
 
 def _png(width: int = 40, height: int = 30, color: str = "red") -> str:
@@ -280,7 +280,7 @@ def test_takes_images_reads_the_renderers_flag_through_wrappers() -> None:
 async def test_a_text_only_model_refuses_an_image_with_a_400_on_both_wires() -> None:
     """The fake renderer has no image processor, like a text-only model's."""
     sampler = FakeSampler("ok")
-    async with endpoint(sampler) as started:
+    async with server(sampler) as started:
         openai = await ask(
             started,
             "t",
