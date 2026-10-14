@@ -132,7 +132,9 @@ def test_a_trial_names_itself_after_its_directory_and_reads_its_result(tmp_path:
     assert Settings().verify is None and Settings(verify=False, concurrency=1).concurrency == 1
 
 
-def test_a_group_has_a_gradient_on_its_shaped_rewards_over_the_measured(tmp_path: Path) -> None:
+def test_a_group_reports_the_variance_of_its_shaped_rewards_over_the_measured(
+    tmp_path: Path,
+) -> None:
     agent = _agent("pi")
     members = [
         _member(tmp_path, 1.0),
@@ -141,17 +143,15 @@ def test_a_group_has_a_gradient_on_its_shaped_rewards_over_the_measured(tmp_path
     ]
     group = Group(Path("t"), agent, agent.harness[0], members)
     assert [one.measured for one in members] == [True, True, False]
-    assert len(group.measured) == 2 and group.shaped == [] and not group.has_gradient
+    assert len(group.measured) == 2 and group.shaped == [] and group.reward_variance == 0.0
     group.shaped = [1.0, 0.0, None]
-    assert group.has_gradient
+    assert group.reward_variance == 0.25
     group.shaped = [1.0, 1.0, None]
-    assert not group.has_gradient, "all equal"
-    group.shaped = [1.0, 1.0 + 1e-7, None]
-    assert not group.has_gradient, "within epsilon"
+    assert group.reward_variance == 0.0, "all equal"
     group.shaped = [0.5, None, None]
-    assert not group.has_gradient, "a lone member"
+    assert group.reward_variance == 0.0, "a lone member"
     group.shaped = [None, None, None]
-    assert not group.has_gradient
+    assert group.reward_variance == 0.0
     assert members[0].sequences[0].targets == (3,) and members[2].sequences == ()
 
 

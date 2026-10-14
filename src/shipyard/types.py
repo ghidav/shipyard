@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Iterator, Mapping
 from collections.abc import Sequence as Values
 from dataclasses import dataclass, field
 from pathlib import Path
-from statistics import pstdev
+from statistics import pvariance
 from typing import Any
 
 import tinker
@@ -315,10 +315,10 @@ class Group:
         return [one for one in self.members if one.measured]
 
     @property
-    def has_gradient(self) -> bool:
-        """On the shaped rewards, before the overlong term: two or more, not all equal."""
+    def reward_variance(self) -> float:
+        """Over the measured members' shaped rewards; 0.0 with fewer than two."""
         found = [one for one in self.shaped if one is not None]
-        return len(found) >= 2 and pstdev(found) > EPSILON
+        return pvariance(found) if len(found) >= 2 else 0.0
 
 
 # ----------------------------------------------------------------- the record
