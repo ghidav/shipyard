@@ -10,13 +10,13 @@ from statistics import fmean
 
 import pytest
 
-from shipyard import record, serving
+from shipyard import record
 from shipyard.admit import BUDGET
 from shipyard.data import batches
 from shipyard.recipes import run_recipe
 from shipyard.recipes.evaluate import mean
 from shipyard.run import Run
-from shipyard.serving import ProxyEndpoint
+from shipyard.sampling.endpoint import ProxyEndpoint
 from tests.records import FakeProxy, made
 from tests.trials import FIXTURES, FakeTrials
 
@@ -107,7 +107,7 @@ async def test_a_served_model_runs_through_its_proxy_and_is_judged_by_its_record
             "d": [],
         },
     )
-    monkeypatch.setattr(serving, "Proxy", fake)
+    monkeypatch.setattr("shipyard.sampling.endpoint.Proxy", fake)
     replacements = {
         'provider = "openrouter"': 'provider = "tinker"',
         'sandbox = "modal"': 'sandbox = "docker"\nhost = "proxy.lan"',

@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-from shipyard import record, serving, session
+from shipyard import record, session
 from shipyard.cli import app
 from shipyard.config import load
 from shipyard.data import batches
@@ -58,7 +58,7 @@ def blueprint(here: Path, kind: str, **replacements: str) -> Path:
 @pytest.fixture
 def proxy(monkeypatch: pytest.MonkeyPatch) -> FakeProxy:
     fake = FakeProxy()
-    monkeypatch.setattr(serving, "Proxy", fake)
+    monkeypatch.setattr("shipyard.sampling.endpoint.Proxy", fake)
     return fake
 
 

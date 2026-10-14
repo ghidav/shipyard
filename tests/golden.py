@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 import tinker
 
-from shipyard import record, serving
+from shipyard import record
 from shipyard.admit import BUDGET, CONTEXT, Verdict, verdicts
 from shipyard.config import load
 from shipyard.credit import Batch, credit
@@ -493,7 +493,7 @@ async def _jobbed(case: Jobbed, tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
         queues={task: list(found) for task, found in case.records.items()},
         budget=case.budget,
     )
-    monkeypatch.setattr(serving, "Proxy", proxy)
+    monkeypatch.setattr("shipyard.sampling.endpoint.Proxy", proxy)
     opened = Run.open(home, root=tmp_path / "runs")
     opened.run_trial = ScriptedTrials(case.outcomes)
     trainer = Trainer(FakeTrainingClient(positional=True))

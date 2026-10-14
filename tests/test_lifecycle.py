@@ -20,7 +20,7 @@ from shipyard.proxy import client
 from shipyard.proxy.client import Proxy, Unreachable
 from shipyard.proxy.tunnel import Tunnel
 from shipyard.run import Run
-from shipyard.serving import ProxyEndpoint, ProxyGone
+from shipyard.sampling.endpoint import ProxyEndpoint, ProxyGone
 from shipyard.types import Trial, harness
 from tests.proxies import MODEL, FakeSampler, control, root, server
 from tests.records import FakeProxy
@@ -301,13 +301,12 @@ async def test_the_tunnel_command_is_logged_once(
 async def test_a_tunnel_that_dies_under_a_batch_stops_the_run_once_the_job_is_recorded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from shipyard import serving
     from shipyard.recipes import run_recipe
 
     fixture_tasks(tmp_path)
     monkeypatch.chdir(tmp_path)
     proxy = FakeProxy()
-    monkeypatch.setattr(serving, "Proxy", proxy)
+    monkeypatch.setattr("shipyard.sampling.endpoint.Proxy", proxy)
     run = opened(tmp_path, "modal")
     trials = FakeTrials()
 

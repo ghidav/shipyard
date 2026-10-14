@@ -24,7 +24,7 @@ from shipyard.config import Finding
 from shipyard.proxy.client import Unreachable
 from shipyard.recipes import run_recipe
 from shipyard.run import Run, RunRefused, runs_root
-from shipyard.serving import NothingServed, ProxyGone
+from shipyard.sampling.endpoint import NothingServed, ProxyGone
 from shipyard.show import fitted, print_run, sections, state_of, styled
 from shipyard.smoke import SmokeFailed
 from shipyard.smoke import smoke as smoke_job

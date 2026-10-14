@@ -11,7 +11,7 @@ import pytest
 from shipyard import record
 from shipyard.rollout import Rollouts
 from shipyard.run import Run
-from shipyard.serving import ProviderEndpoint
+from shipyard.sampling.endpoint import ProviderEndpoint
 from tests.trials import FakeTrials, fixture_tasks
 
 EVALUATE = Path(__file__).parent / "blueprints" / "evaluate"

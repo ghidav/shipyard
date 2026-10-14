@@ -16,7 +16,7 @@ from shipyard.gepa.fitness import Outcome
 from shipyard.gepa.propose import Proposer, Reflection
 from shipyard.modules import KINDS, Module, read, write
 from shipyard.rollout import Rollouts, rollout
-from shipyard.serving import ProviderEndpoint
+from shipyard.sampling.endpoint import ProviderEndpoint
 
 if TYPE_CHECKING:
     from shipyard.run import Run

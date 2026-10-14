@@ -16,7 +16,7 @@ from shipyard.config import LENGTH_CAP, PAPER_OVERLONG_BUFFER
 from shipyard.credit import Batch, carrying, credit
 from shipyard.data import batches
 from shipyard.pack import Group, group
-from shipyard.serving import ProxyEndpoint
+from shipyard.sampling.endpoint import ProxyEndpoint
 from shipyard.trainer import SERVE_TTL, Adam, Trainer, Update
 
 if TYPE_CHECKING:

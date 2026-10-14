@@ -22,7 +22,12 @@ from shipyard.cost import Costs, billed_by, reported, sampled, sandbox_seconds
 from shipyard.modules import Candidate, keep, seed
 from shipyard.progress import Reporter, reporter
 from shipyard.rollout import Rollouts, Runner, rollout, trials_of
-from shipyard.serving import NothingServed, ProviderEndpoint, ProxyEndpoint, tinker_base_url
+from shipyard.sampling.endpoint import (
+    NothingServed,
+    ProviderEndpoint,
+    ProxyEndpoint,
+    tinker_base_url,
+)
 from shipyard.types import Endpoint
 
 if TYPE_CHECKING:

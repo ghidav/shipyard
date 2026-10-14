@@ -9,12 +9,13 @@ from typing import Any
 
 import pytest
 
-from shipyard import record, serving
+from shipyard import record
 from shipyard.config import Blueprint
 from shipyard.proxy.profiles import PROFILES, bare_name
 from shipyard.proxy.wire import CONTROL_TOKEN_ENV, PROXY_TOKEN_ENV
 from shipyard.run import Run
-from shipyard.serving import (
+from shipyard.sampling.endpoint import (
+    PROXY_LOG,
     NothingServed,
     ProviderEndpoint,
     ProxyEndpoint,
@@ -49,7 +50,7 @@ def blueprint(**rollout: Any) -> Blueprint:
 @pytest.fixture
 def fake(monkeypatch: pytest.MonkeyPatch) -> FakeProxy:
     proxy = FakeProxy()
-    monkeypatch.setattr(serving, "Proxy", proxy)
+    monkeypatch.setattr("shipyard.sampling.endpoint.Proxy", proxy)
     return proxy
 
 
@@ -156,13 +157,13 @@ async def test_a_local_sandbox_starts_serve_once_with_the_checkpoint_on_its_comm
         and named["host"] == "proxy.lan"
         and settings["weights"] == "tinker://w/step-2"
     )
-    assert named["log"].name == str(tmp_path / serving.PROXY_LOG)
+    assert named["log"].name == str(tmp_path / PROXY_LOG)
     assert held.told == "tinker://w/step-2" and held.pointed is True
     assert fake.swapped == [], "serve was started on the path; nothing to swap"
     assert held.proxy is fake and held.budget is None
     held.close()
     assert fake.closed == 1 and held.proxy is None
-    assert (tmp_path / serving.PROXY_LOG).is_file()
+    assert (tmp_path / PROXY_LOG).is_file()
     held.close()
     assert fake.closed == 1
 
@@ -200,7 +201,7 @@ async def test_a_remote_proxy_is_pointed_through_its_control_route(
     assert fake.probed == 1, "probed before any sandbox opens"
     assert fake.swapped == ["tinker://w/step-4"]
     assert held.told == "tinker://w/step-4" and held.pointed is True
-    assert not (tmp_path / serving.PROXY_LOG).exists()
+    assert not (tmp_path / PROXY_LOG).exists()
     await held.serve("tinker://w/step-5")
     assert fake.swapped[-1] == "tinker://w/step-5" and held.told == "tinker://w/step-5"
     await held.serve(None)

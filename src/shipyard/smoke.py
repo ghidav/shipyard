@@ -17,7 +17,7 @@ from shipyard.data import batches
 from shipyard.modules import Candidate
 from shipyard.proxy.profiles import PROFILES, bare_name, profile_for
 from shipyard.run import seeded
-from shipyard.serving import NothingServed, ProxyEndpoint
+from shipyard.sampling.endpoint import NothingServed, ProxyEndpoint
 
 if TYPE_CHECKING:
     from shipyard.rollout import Rollouts

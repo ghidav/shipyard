@@ -13,10 +13,10 @@ from pathlib import Path
 
 import pytest
 
-from shipyard import record, serving, session
+from shipyard import record, session
 from shipyard.recipes import run_recipe
 from shipyard.run import Run
-from shipyard.serving import NothingServed, served_nothing
+from shipyard.sampling.endpoint import NothingServed, served_nothing
 from tests.records import FakeProxy, made
 from tests.test_gepa_recipe import BLUEPRINT as GEPA
 from tests.test_gepa_recipe import VALID
@@ -50,7 +50,7 @@ def proxy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeProxy:
     """A proxy nothing reaches: every trial's records come back empty."""
     monkeypatch.chdir(tmp_path)
     fake = FakeProxy(default=[])
-    monkeypatch.setattr(serving, "Proxy", fake)
+    monkeypatch.setattr("shipyard.sampling.endpoint.Proxy", fake)
     return fake
 
 

@@ -39,7 +39,7 @@ from shipyard.modules import (
 )
 from shipyard.rollout import DELIVERED, rollout
 from shipyard.run import CARRIED, Run
-from shipyard.serving import ProviderEndpoint
+from shipyard.sampling.endpoint import ProviderEndpoint
 from tests.trials import FakeTrials, fixture_tasks, write_blueprint
 
 FIXTURES = Path(__file__).parent / "modules"

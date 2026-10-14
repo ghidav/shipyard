@@ -24,10 +24,10 @@ from shipyard.rollout import (
     quiet_litellm,
     rollout,
 )
-from shipyard.serving import ProviderEndpoint, ProxyEndpoint
+from shipyard.sampling.endpoint import ProviderEndpoint, ProxyEndpoint
 from shipyard.types import Connection, Trial, harness
 from tests.records import FakeProxy
-from tests.test_serving import blueprint
+from tests.test_endpoint import blueprint
 from tests.trials import FakeTrials
 
 
