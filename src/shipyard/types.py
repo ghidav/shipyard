@@ -26,19 +26,19 @@ __all__ = [
     "Connection",
     "Cursor",
     "Datum",
+    "Endpoint",
     "Evaluation",
     "Forward",
     "Group",
     "Harness",
-    "Harvest",
     "Member",
     "Modules",
     "Picture",
     "Policy",
     "Profile",
     "Record",
+    "Records",
     "RolloutEngine",
-    "Endpoint",
     "Sequence",
     "Settings",
     "Task",
@@ -52,6 +52,8 @@ __all__ = [
 Task = Path
 Datum = tinker.Datum
 Batches = Iterator[list[Task]]
+#: A job's model calls by trial name.
+Records = dict[str, list[Record]]
 #: Below this spread a group has no gradient.
 EPSILON = 1e-6
 
@@ -157,27 +159,14 @@ class Connection:
     host: str | None = None
 
 
-@dataclass(frozen=True)
-class Harvest:
-    """One job's records, drained from the proxy once, by trial name."""
-
-    records: dict[str, list[Record]]
-    #: Turns each harness asked for, and the trials whose log says the last call failed.
-    asked: dict[str, int] = field(default_factory=dict)
-    failed: set[str] = field(default_factory=set)
-    counted: dict[str, int] = field(default_factory=dict)
-    noted: dict[str, int] = field(default_factory=dict)
-    party: str = "tinker"
-    #: Raised once the job row is written; None to go on.
-    stopped: RuntimeError | None = None
-
-
 class Endpoint(ABC):
     """The model as the endpoint a harness dials. The one part that knows whether this run
     serves the model or a provider does."""
 
     #: Sampled tokens one rollout may spend; None for a provider.
     budget: int | None = None
+    #: The party sampling is billed to; None for a provider, whose trials name it.
+    party: str | None = None
 
     @abstractmethod
     async def open(self) -> None: ...
@@ -193,8 +182,12 @@ class Endpoint(ABC):
         """Point at sampler weights, None for the base model."""
 
     @abstractmethod
-    async def record(self, job: str, trials: Values[Trial]) -> Harvest | None:
-        """The job's harvest; None for a provider."""
+    async def record(self, job: str, trials: Values[Trial]) -> Records | None:
+        """The job's model calls by trial name; None for a provider."""
+
+    def check(self, job: str, records: Records) -> None:
+        """Raise if the run cannot go on after this job. Called once its row is written."""
+        return None
 
 
 @dataclass(frozen=True)
