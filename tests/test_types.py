@@ -1,5 +1,5 @@
 """The vocabulary module: what it defines, what it re-exports, the one rule a group holds,
-and that it pulls in none of the loop."""
+and that it imports none of the loop."""
 
 from __future__ import annotations
 
@@ -21,8 +21,11 @@ from shipyard.types import (
     Harvest,
     Member,
     Policy,
+    RolloutEngine,
+    SamplingClient,
     Sequence,
     Settings,
+    TrainingClient,
     Trial,
     Verdict,
     harness,
@@ -30,11 +33,7 @@ from shipyard.types import (
 from tests.trials import write_result
 
 
-class _Sampling:
-    """A sampling client with the protocol's surface and nothing behind it."""
-
-    budget = None
-
+class _Provider(SamplingClient):
     async def open(self) -> None: ...
 
     async def close(self) -> None: ...
@@ -50,7 +49,7 @@ class _Sampling:
 
 
 def _agent(*names: str) -> Agent:
-    return Agent(Policy(_Sampling()), [harness(name) for name in names])
+    return Agent(Policy(_Provider()), [harness(name) for name in names])
 
 
 def _trial(tmp_path: Path, task: str = "t", attempt: int = 0) -> Trial:
@@ -60,9 +59,6 @@ def _trial(tmp_path: Path, task: str = "t", attempt: int = 0) -> Trial:
 def _member(tmp_path: Path, reward: float | None, *, mask: str | None = None) -> Member:
     found = () if mask else (Sequence((1, 2, 3, 10), ((3, 4),), (-0.5,)),)
     return Member(_trial(tmp_path), Verdict(reward, mask, None), found, 1 if found else 0)
-
-
-# ------------------------------------------------------------- what moved here
 
 
 def test_the_unchanged_dataclasses_are_the_same_objects_under_their_old_names() -> None:
@@ -75,8 +71,6 @@ def test_the_unchanged_dataclasses_are_the_same_objects_under_their_old_names() 
 
 
 def test_the_module_imports_no_part_of_the_loop() -> None:
-    """The loop's modules import this one, so this one imports none of them at module
-    level: only the modules, the profiles and the wire. A method may import lazily."""
     tree = ast.parse(Path(types.__file__).read_text(encoding="utf-8"))
     imported = sorted(
         node.module
@@ -86,7 +80,17 @@ def test_the_module_imports_no_part_of_the_loop() -> None:
     assert imported == ["shipyard.modules", "shipyard.proxy.profiles", "shipyard.proxy.wire"]
 
 
-# ----------------------------------------------------------------- the agent
+def test_a_part_missing_a_method_cannot_be_built() -> None:
+    class Engine(RolloutEngine):
+        pass
+
+    class Client(TrainingClient):
+        pass
+
+    for incomplete in (Engine, Client):
+        with pytest.raises(TypeError, match="abstract"):
+            incomplete()  # type: ignore[abstract]
+    assert _Provider().budget is None
 
 
 def test_a_built_in_harness_carries_its_profile_and_a_custom_one_the_generic() -> None:
@@ -109,16 +113,13 @@ def test_an_agent_is_a_policy_under_harnesses_with_modules_and_varies_by_replace
         agent.modules = None  # type: ignore[misc]
 
 
-async def test_a_provider_sampling_client_fits_the_protocol() -> None:
-    sampling = _Sampling()
-    assert sampling.budget is None and await sampling.record("j", []) is None
+async def test_a_provider_sampling_client_records_nothing_and_serves_nothing() -> None:
+    sampling = _Provider()
+    assert await sampling.record("j", []) is None
     with pytest.raises(RuntimeError, match="serves no weights"):
         sampling.serve("tinker://x")
     assert Connection(model=None).env == {} and Connection("m", "http://p/v1", "t").token == "t"
     assert "token" not in repr(Connection("m", "http://p/v1", "secret"))
-
-
-# ------------------------------------------------------------------ the trial
 
 
 def test_a_trial_names_itself_after_its_directory_and_reads_its_result(tmp_path: Path) -> None:
@@ -129,9 +130,6 @@ def test_a_trial_names_itself_after_its_directory_and_reads_its_result(tmp_path:
         "rewards": {"reward": 1.0}
     }
     assert Settings().verify is None and Settings(verify=False, concurrency=1).concurrency == 1
-
-
-# ------------------------------------------------------------------ the group
 
 
 def test_a_group_has_a_gradient_on_its_shaped_rewards_over_the_measured(tmp_path: Path) -> None:
@@ -155,9 +153,6 @@ def test_a_group_has_a_gradient_on_its_shaped_rewards_over_the_measured(tmp_path
     group.shaped = [None, None, None]
     assert not group.has_gradient
     assert members[0].sequences[0].targets == (3,) and members[2].sequences == ()
-
-
-# ----------------------------------------------------------------- the record
 
 
 def test_a_checkpoint_is_the_agent_written_down_with_the_cursor() -> None:
