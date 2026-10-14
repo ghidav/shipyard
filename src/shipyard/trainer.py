@@ -13,8 +13,8 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 from shipyard.config import MIN_TTL_HOURS
-from shipyard.training.client import DEFAULT_LORA_RANK, SERVE_TTL, TinkerClient
-from shipyard.types import Adam, Forward, Update
+from shipyard.training.client import DEFAULT_LORA_RANK, TinkerClient
+from shipyard.types import SERVE_TTL, Adam, Forward, Update
 
 if TYPE_CHECKING:
     from shipyard.credit import Batch

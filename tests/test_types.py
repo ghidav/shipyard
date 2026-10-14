@@ -6,16 +6,18 @@ from __future__ import annotations
 import ast
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from shipyard import admit, pack, trainer, types
 from shipyard.proxy.profiles import PROFILES, Profile
+from shipyard.training.client import TinkerClient
 from shipyard.types import (
+    SERVE_TTL,
     Agent,
     Checkpoint,
     Connection,
-    Cursor,
     Endpoint,
     Group,
     Harness,
@@ -30,6 +32,7 @@ from shipyard.types import (
     Verdict,
     harness,
 )
+from tests.trainers import FakeService
 from tests.trials import write_result
 
 
@@ -48,8 +51,26 @@ class _Provider(Endpoint):
         return None
 
 
+class _Served(_Provider):
+    def __init__(self) -> None:
+        self.calls: list[Any] = []
+
+    async def open(self) -> None:
+        self.calls.append("open")
+
+    def close(self) -> None:
+        self.calls.append("close")
+
+    async def serve(self, path: str | None) -> None:
+        self.calls.append(("serve", path))
+
+
 def _agent(*names: str) -> Agent:
     return Agent(Policy(_Provider()), [harness(name) for name in names])
+
+
+def _client(service: FakeService) -> TinkerClient:
+    return TinkerClient(service.client, service=service)
 
 
 def _trial(tmp_path: Path, task: str = "t", attempt: int = 0) -> Trial:
@@ -155,10 +176,50 @@ def test_a_group_reports_the_variance_of_its_shaped_rewards_over_the_measured(
     assert members[0].sequences[0].targets == (3,) and members[2].sequences == ()
 
 
-def test_a_checkpoint_is_the_agent_written_down_with_the_cursor() -> None:
-    cursor = Cursor(step=7, updates=5, epoch=1, drawn=3)
-    found = Checkpoint("step-7", "tinker://s", "tinker://w", 168.0, cursor, "abcd", ("pi",))
-    assert found.cursor.drawn == 3 and found.harness == ("pi",) and found.modules == "abcd"
-    final = Checkpoint("final", "tinker://s", "tinker://w", None, cursor)
+async def test_a_policy_opens_its_endpoint_serving_the_start_and_closes_both() -> None:
+    endpoint, service = _Served(), FakeService()
+    async with Policy(endpoint, _client(service)) as policy:
+        assert endpoint.calls == ["open", ("serve", "tinker://fake/sampler_weights/start")]
+        assert service.client.calls == [("save_weights_for_sampler", "start", SERVE_TTL)]
+        assert await policy.sync("sample-1") == "tinker://fake/sampler_weights/sample-1"
+    assert endpoint.calls[2:] == [("serve", "tinker://fake/sampler_weights/sample-1"), "close"]
+    assert service.closed == [("success", None)]
+
+
+async def test_a_resumed_policy_serves_its_checkpoint_and_a_providers_serves_nothing() -> None:
+    endpoint, service = _Served(), FakeService()
+    async with Policy(endpoint, _client(service), start="tinker://w"):
+        pass
+    assert endpoint.calls == ["open", ("serve", "tinker://w"), "close"]
+    assert service.client.calls == [], "the checkpoint's sampler path is served as it is"
+    endpoint = _Served()
+    async with Policy(endpoint) as policy:
+        with pytest.raises(RuntimeError, match="no weights to sync"):
+            await policy.sync("sample-1")
+    assert endpoint.calls == ["open", "close"]
+
+
+@pytest.mark.parametrize(
+    ("failed", "closed"),
+    [
+        (RuntimeError("the backend went away"), ("errored", "RuntimeError: the backend went away")),
+        (KeyboardInterrupt(), ("interrupted", "KeyboardInterrupt: ")),
+    ],
+)
+async def test_a_policy_closes_its_client_with_how_the_run_ended(
+    failed: BaseException, closed: tuple[str, str]
+) -> None:
+    endpoint, service = _Served(), FakeService()
+    with pytest.raises(type(failed)):
+        async with Policy(endpoint, _client(service)):
+            raise failed
+    assert endpoint.calls[-1] == "close" and service.closed == [closed]
+
+
+def test_a_checkpoint_is_the_agent_written_down_where_the_trainer_stood() -> None:
+    found = Checkpoint("step-7", "tinker://s", "tinker://w", 168.0, 7, 5, 1, "abcd", ("pi",))
+    assert (found.step, found.updates, found.epoch) == (7, 5, 1)
+    assert found.harness == ("pi",) and found.modules == "abcd"
+    final = Checkpoint("final", "tinker://s", "tinker://w", None, 9, 6, 2)
     assert final.ttl_hours is None and final.modules is None and final.harness == ()
     assert types.Evaluation(0, 0, 4, 8, 7, 1, 0.5).mean == 0.5

@@ -24,7 +24,6 @@ __all__ = [
     "Batches",
     "Checkpoint",
     "Connection",
-    "Cursor",
     "Datum",
     "Endpoint",
     "Evaluation",
@@ -39,6 +38,7 @@ __all__ = [
     "Record",
     "Records",
     "RolloutEngine",
+    "SERVE_TTL",
     "Sequence",
     "Settings",
     "Task",
@@ -56,6 +56,9 @@ Batches = Iterator[list[Task]]
 Records = dict[str, list[Record]]
 #: Below this spread a group has no gradient.
 EPSILON = 1e-6
+#: How long served sampler weights are kept: past the batch sampled from them, and a
+#: crashed run's leftovers expire on their own.
+SERVE_TTL = 12 * 3600
 
 
 # ------------------------------------------------------------------ the model
@@ -120,6 +123,10 @@ class TrainingClient(ABC):
     return the result's awaitable, so a step submits every part before it reads the first.
     A TTL of None keeps a save forever."""
 
+    #: The optimizer state was loaded with the weights: the run continues an earlier
+    #: run's schedule, so the learning rate does not warm up again.
+    restored: bool = False
+
     @abstractmethod
     async def forward_backward(
         self, datums: Values[Datum], loss_fn: str, loss_config: Mapping[str, float] | None
@@ -142,7 +149,7 @@ class TrainingClient(ABC):
     async def load_state(self, path: str) -> None: ...
 
     @abstractmethod
-    async def close(self, status: str) -> None: ...
+    async def close(self, status: str, detail: str | None = None) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -191,11 +198,42 @@ class Endpoint(ABC):
 
 @dataclass(frozen=True)
 class Policy:
+    """The model behind an agent. Entering it opens the endpoint with the starting weights
+    served; leaving it closes the endpoint, and the client with how the run ended."""
+
     endpoint: Endpoint
     #: None for a provider.
     client: TrainingClient | None = None
     #: A sampler path to serve first: a checkpoint's, on a resumed run.
     start: str | None = None
+
+    async def __aenter__(self) -> Policy:
+        await self.endpoint.open()
+        if self.start is not None:
+            await self.endpoint.serve(self.start)
+        elif self.client is not None:
+            await self.sync("start")
+        return self
+
+    async def __aexit__(
+        self, kind: type[BaseException] | None, failed: BaseException | None, tb: Any
+    ) -> None:
+        self.endpoint.close()
+        if self.client is None:
+            return
+        if failed is None:
+            await self.client.close("success")
+            return
+        status = "errored" if isinstance(failed, Exception) else "interrupted"
+        await self.client.close(status, f"{type(failed).__name__}: {failed}")
+
+    async def sync(self, tag: str) -> str:
+        """Publish the client's weights as `tag` and serve them."""
+        if self.client is None:
+            raise RuntimeError("a provider's policy has no weights to sync")
+        path = await self.client.save_weights_for_sampler(tag, ttl_seconds=SERVE_TTL)
+        await self.endpoint.serve(path)
+        return path
 
 
 # ------------------------------------------------------------------ the agent
@@ -325,24 +363,17 @@ class Group:
 
 
 @dataclass(frozen=True)
-class Cursor:
-    step: int
-    updates: int
-    epoch: int
-    #: Batches drawn in the epoch, refills included.
-    drawn: int
-
-
-@dataclass(frozen=True)
 class Checkpoint:
-    """The agent written down, with the trainer's cursor."""
+    """The agent written down, and where the trainer stood."""
 
     tag: str
     state_path: str
     sampler_path: str
     #: None keeps it until deleted.
     ttl_hours: float | None
-    cursor: Cursor
+    step: int
+    updates: int
+    epoch: int
     modules: str | None = None
     harness: tuple[str, ...] = ()
 

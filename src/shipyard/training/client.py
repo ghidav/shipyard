@@ -20,9 +20,6 @@ logger = logging.getLogger(__name__)
 
 #: Tinker's default rank, used when the blueprint names none.
 DEFAULT_LORA_RANK = 32
-#: How long published sampler weights are kept. They outlive the batch sampled from
-#: them, and a crashed run's leftovers expire on their own.
-SERVE_TTL = 12 * 3600
 
 
 class TinkerClient(TrainingClient):
