@@ -160,6 +160,10 @@ class FakeTrainingClient:
         self.calls.append(("save_weights_for_sampler", name, ttl_seconds))
         return FakeFuture(FakeSaved(f"tinker://fake/sampler_weights/{name}"))
 
+    async def load_state_with_optimizer_async(self, path: str) -> Any:
+        self.calls.append(("load_state_with_optimizer", path))
+        return FakeFuture(None, self, "load")
+
 
 class FlatAnchor:
     """A sampling client on the starting weights, scoring every token `logprob`. The first

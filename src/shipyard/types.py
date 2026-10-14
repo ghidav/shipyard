@@ -116,18 +116,17 @@ class Update:
 
 
 class TrainingClient(ABC):
-    """Tinker's training client as a recipe uses it. The step calls return awaitables so a
-    step submits every part before it reads the first. A TTL of None keeps a save forever."""
-
-    updates: int = 0
+    """Tinker's training client as a recipe uses it. The two step calls submit on await and
+    return the result's awaitable, so a step submits every part before it reads the first.
+    A TTL of None keeps a save forever."""
 
     @abstractmethod
-    def forward_backward(
+    async def forward_backward(
         self, datums: Values[Datum], loss_fn: str, loss_config: Mapping[str, float] | None
     ) -> Awaitable[Forward]: ...
 
     @abstractmethod
-    def optim_step(self, adam: Adam, rate: float) -> Awaitable[None]: ...
+    async def optim_step(self, adam: Adam, rate: float) -> Awaitable[None]: ...
 
     @abstractmethod
     async def compute_logprobs(self, sequences: Values[Sequence]) -> list[list[float]]:

@@ -17,7 +17,8 @@ from shipyard.credit import Batch, carrying, credit
 from shipyard.data import batches
 from shipyard.pack import Group, group
 from shipyard.sampling.endpoint import ProxyEndpoint
-from shipyard.trainer import SERVE_TTL, Adam, Trainer, Update
+from shipyard.trainer import Adam, Trainer, Update
+from shipyard.training.client import SERVE_TTL
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

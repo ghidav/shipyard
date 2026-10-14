@@ -12,10 +12,8 @@ from statistics import fmean, pstdev
 from typing import TYPE_CHECKING, Any
 
 import tinker
-import torch
-from tinker import TensorData
 
-from shipyard.pack import Group, Member, Sequence, datum, model_input, shifted
+from shipyard.pack import Group, Member, Sequence, datum, model_input
 from shipyard.types import EPSILON
 
 if TYPE_CHECKING:
@@ -166,9 +164,7 @@ def pinned(groups: Values[Group], trainer: Trainer | None) -> None:
 async def reference_logprobs(
     trainer: Trainer | None, sequences: Values[Sequence]
 ) -> list[list[float]]:
-    """mu at every target, from one batched forward pass on the training client with one
-    `shifted` datum per sequence. Position `j` of the output scores `tokens[j + 1]`, so a
-    target at `p` reads `scored[p - 1]`. An unscored position is 0.0."""
+    """mu at every target, from the training client's one batched forward."""
     if not sequences:
         return []
     if trainer is None:
@@ -176,20 +172,7 @@ async def reference_logprobs(
             '`[recipe] reference = "trainer"` recomputes mu on the training client, '
             "and none was given"
         )
-    data: list[tinker.Datum] = []
-    for one in sequences:
-        read, target_tokens = shifted(one.tokens, one.images)
-        weights = TensorData.from_torch(torch.ones(read.length))
-        inputs = {"target_tokens": target_tokens, "weights": weights}
-        data.append(tinker.Datum(model_input=read, loss_fn_inputs=inputs))
-    future = await trainer.client.forward_async(data, loss_fn="cross_entropy")
-    result = await future.result_async()
-    out: list[list[float]] = []
-    for one, row in zip(sequences, result.loss_fn_outputs, strict=True):
-        scored = row["logprobs"]
-        scored = scored.tolist() if hasattr(scored, "tolist") else list(scored)
-        out.append([_number(scored[at - 1]) if at > 0 else 0.0 for at in one.targets])
-    return out
+    return await trainer.tinker.compute_logprobs(sequences)
 
 
 def sampler_logprobs(sequence: Sequence) -> list[float]:
