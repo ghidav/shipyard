@@ -19,9 +19,9 @@ from shipyard.types import (
     Endpoint,
     Group,
     Harness,
-    Harvest,
     Member,
     Policy,
+    Records,
     RolloutEngine,
     Sequence,
     Settings,
@@ -44,7 +44,7 @@ class _Provider(Endpoint):
     def serve(self, path: str) -> None:
         raise RuntimeError("a provider serves no weights")
 
-    async def record(self, job: str, trials: list[Trial]) -> Harvest | None:
+    async def record(self, job: str, trials: list[Trial]) -> Records | None:
         return None
 
 
@@ -115,7 +115,7 @@ def test_an_agent_is_a_policy_under_harnesses_with_modules_and_varies_by_replace
 
 async def test_a_provider_endpoint_records_nothing_and_serves_nothing() -> None:
     endpoint = _Provider()
-    assert await endpoint.record("j", []) is None
+    assert await endpoint.record("j", []) is None and endpoint.check("j", {}) is None
     with pytest.raises(RuntimeError, match="serves no weights"):
         endpoint.serve("tinker://x")
     assert Connection(model=None).env == {} and Connection("m", "http://p/v1", "t").token == "t"
@@ -161,5 +161,4 @@ def test_a_checkpoint_is_the_agent_written_down_with_the_cursor() -> None:
     assert found.cursor.drawn == 3 and found.harness == ("pi",) and found.modules == "abcd"
     final = Checkpoint("final", "tinker://s", "tinker://w", None, cursor)
     assert final.ttl_hours is None and final.modules is None and final.harness == ()
-    assert Harvest({}).stopped is None and Harvest({}, party="tinker@host").party == "tinker@host"
     assert types.Evaluation(0, 0, 4, 8, 7, 1, 0.5).mean == 0.5
