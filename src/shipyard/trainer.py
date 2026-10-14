@@ -14,12 +14,25 @@ import torch
 
 from shipyard.config import MIN_TTL_HOURS
 from shipyard.session import quietly_closed, server_has
+from shipyard.types import Adam, Update
 
 if TYPE_CHECKING:
     from shipyard.credit import Batch
     from shipyard.gradient import Preset
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    "COOKBOOK",
+    "DEFAULT_LORA_RANK",
+    "SERVE_TTL",
+    "Adam",
+    "Checkpoint",
+    "Trainer",
+    "Update",
+    "grouped",
+    "split",
+]
 
 #: Tinker's default rank, used when the blueprint names none.
 DEFAULT_LORA_RANK = 32
@@ -28,48 +41,9 @@ DEFAULT_LORA_RANK = 32
 SERVE_TTL = 12 * 3600
 SECONDS_PER_HOUR = 3600
 
-
-@dataclass(frozen=True)
-class Adam:
-    """AdamW as a recipe's paper sets it: the betas, eps, the decoupled weight decay, the
-    global gradient norm each step is clipped to (Tinker's `grad_clip_norm`; 0 is none), and
-    the `warmup` steps over which the learning rate rises linearly to its value (0 is none)."""
-
-    beta1: float
-    beta2: float
-    eps: float
-    weight_decay: float = 0.0
-    grad_clip_norm: float = 0.0
-    warmup: int = 0
-
-    def rate(self, learning_rate: float, done: int) -> float:
-        """The learning rate for the update after `done` updates: `(done + 1) / warmup` of
-        `learning_rate` during the warm-up, so the first update moves the weights, and all
-        of `learning_rate` afterwards."""
-        if done >= self.warmup:
-            return learning_rate
-        return learning_rate * (done + 1) / self.warmup
-
-
 #: Adam as the cookbook's `train_step` sets it (no weight decay, gradient clipping or
 #: warm-up), for whatever a paper leaves unstated. The SDK's `eps` default is 1e-12.
 COOKBOOK = Adam(beta1=0.9, beta2=0.95, eps=1e-8)
-
-
-@dataclass(frozen=True)
-class Update:
-    """What one `apply` did: the tokens sent through `forward_backward`, the substeps run,
-    the learning rate and loss function, and the KL and entropy of the step's own logprobs against
-    mu (None where unreadable)."""
-
-    train_tokens: int
-    substeps: int
-    learning_rate: float
-    loss_fn: str
-    kl_v1: float | None
-    kl_v2: float | None
-    entropy: float | None
-    seconds: float
 
 
 @dataclass(frozen=True)
