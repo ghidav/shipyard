@@ -14,14 +14,14 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import fields
 from typing import Any
 
-from shipyard.proxy.endpoint import Endpoint
+from shipyard.proxy.server import Server
 from shipyard.proxy.wire import CONTROL_TOKEN_ENV, PROXY_TOKEN_ENV, new_token
 
 #: Test-only: serve on a fake sampling client and renderer, with no Tinker and no tokenizer.
 FAKE_SAMPLER_ENV = "SHIPYARD_FAKE_SAMPLER"
 #: Bind values that mean every interface. Fine to listen on, but not an address to dial.
 WILDCARD_BINDS = frozenset({"0.0.0.0", "::", "*", ""})
-#: Endpoint fields set by flags. `--settings` may not name them.
+#: Server fields set by flags. `--settings` may not name them.
 SET_HERE = frozenset(
     {"base_model", "model_path", "renderer", "host", "bind", "bind_port", "token"}
     | {"control_token", "client_factory"}
@@ -42,7 +42,7 @@ def advertised(bind: str, advertise: str | None) -> str:
     return bind
 
 
-def endpoint_for(
+def server_for(
     model: str,
     *,
     weights: str | None,
@@ -53,9 +53,9 @@ def endpoint_for(
     settings: Mapping[str, Any] | None,
     token: str | None,
     control_token: str | None,
-) -> Endpoint:
-    """Build the endpoint the flags describe. `--settings` carries the run's other
-    `[rollout]` keys. A key that is not an Endpoint field, or that a flag already sets,
+) -> Server:
+    """Build the server the flags describe. `--settings` carries the run's other
+    `[rollout]` keys. A key that is not an Server field, or that a flag already sets,
     raises ValueError."""
     named: dict[str, Any] = {
         "base_model": model,
@@ -69,17 +69,17 @@ def endpoint_for(
     if renderer:
         named["renderer"] = renderer
     if settings:
-        taken = {f.name for f in fields(Endpoint) if not f.name.startswith("_")} - SET_HERE
+        taken = {f.name for f in fields(Server) if not f.name.startswith("_")} - SET_HERE
         foreign = sorted(set(settings) - taken)
         if foreign:
             raise ValueError(
-                f"--settings names {', '.join(foreign)}, which this endpoint does not take "
+                f"--settings names {', '.join(foreign)}, which this server does not take "
                 f"from a run. It takes {', '.join(sorted(taken))}."
             )
         named.update(settings)
     if os.environ.get(FAKE_SAMPLER_ENV) == "1":
         named["client_factory"], named["renderer"] = fake_parts()
-    return Endpoint(**named)
+    return Server(**named)
 
 
 def fake_parts() -> tuple[Callable[[str | None], Any], Any]:
@@ -123,12 +123,12 @@ def fake_parts() -> tuple[Callable[[str | None], Any], Any]:
     return make, Chars()
 
 
-def banner(endpoint: Endpoint) -> str:
+def banner(server: Server) -> str:
     """The first line serve prints, which a run parses: what is served, where, and
     whether control is on."""
-    served = endpoint.model_path or endpoint.base_model
-    control = "on" if endpoint.control_token else "off"
-    return f"serving {served} at http://{endpoint.host}:{endpoint.port} (control: {control})"
+    served = server.model_path or server.base_model
+    control = "on" if server.control_token else "off"
+    return f"serving {served} at http://{server.host}:{server.port} (control: {control})"
 
 
 def say(line: str) -> None:
@@ -153,23 +153,23 @@ def stopping_on_signals(stop: asyncio.Event) -> Iterator[None]:
 
 
 async def serve(
-    endpoint: Endpoint,
+    server: Server,
     *,
     out: Callable[[str], None] = say,
     stop: asyncio.Event | None = None,
     generated: Mapping[str, str] | None = None,
 ) -> None:
-    """Start the endpoint, print the banner and then each token generated here, wait for
-    `stop`, and close the endpoint (socket and Tinker session) on exit or error."""
+    """Start the server, print the banner and then each token generated here, wait for
+    `stop`, and close the server (socket and Tinker session) on exit or error."""
     stop = asyncio.Event() if stop is None else stop
-    await endpoint.start()
+    await server.start()
     try:
-        out(banner(endpoint))
+        out(banner(server))
         for name, value in (generated or {}).items():
             out(f"{name} {value}")
         await stop.wait()
     finally:
-        await endpoint.stop()
+        await server.stop()
 
 
 def tokens_from_env(environ: Mapping[str, str] = os.environ) -> tuple[str, str, dict[str, str]]:
@@ -210,11 +210,11 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Build the endpoint and serve until signalled. Returns 2 when it cannot be built."""
+    """Build the server and serve until signalled. Returns 2 when it cannot be built."""
     args = parser().parse_args(argv)
     token, control, generated = tokens_from_env()
     try:
-        endpoint = endpoint_for(
+        server = server_for(
             args.model,
             weights=args.weights,
             bind=args.bind,
@@ -228,14 +228,14 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as refused:
         say(str(refused))
         return 2
-    asyncio.run(_until_signalled(endpoint, generated))
+    asyncio.run(_until_signalled(server, generated))
     return 0
 
 
-async def _until_signalled(endpoint: Endpoint, generated: Mapping[str, str]) -> None:
+async def _until_signalled(server: Server, generated: Mapping[str, str]) -> None:
     stop = asyncio.Event()
     with stopping_on_signals(stop):
-        await serve(endpoint, stop=stop, generated=generated)
+        await serve(server, stop=stop, generated=generated)
 
 
 if __name__ == "__main__":  # pragma: no cover

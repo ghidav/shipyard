@@ -1,4 +1,4 @@
-"""The served endpoint: the cookbook's app on a Tinker sampling client, with the records
+"""The server a harness dials: the cookbook's app on a Tinker sampling client, with the records
 route, the control route, the Exchange middleware and keepalives on streams. Every route
 except `/healthz` requires a token, because sampling spends Tinker credit."""
 
@@ -37,7 +37,7 @@ ClientFactory = Callable[[str | None], Awaitable[Any]]
 
 
 @dataclass
-class Endpoint:
+class Server:
     """A local server that stands in for a model provider. `host` is the name a sandbox
     resolves this machine by. The token gates access regardless of `bind`."""
 
@@ -192,7 +192,7 @@ class Endpoint:
             with contextlib.suppress(Exception):
                 await service.close("success")
 
-    async def __aenter__(self) -> Endpoint:
+    async def __aenter__(self) -> Server:
         await self.start()
         return self
 

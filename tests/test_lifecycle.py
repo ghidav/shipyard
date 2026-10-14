@@ -22,7 +22,7 @@ from shipyard.proxy.tunnel import Tunnel
 from shipyard.run import Run
 from shipyard.serving import ProxyGone, TinkerSampling
 from shipyard.types import Trial, harness
-from tests.proxies import MODEL, FakeSampler, control, endpoint, root
+from tests.proxies import MODEL, FakeSampler, control, root, server
 from tests.records import FakeProxy
 from tests.trials import FakeTrials, fixture_tasks
 
@@ -211,7 +211,7 @@ async def test_a_fetch_that_failed_because_the_proxy_died_says_so(tmp_path: Path
 
 
 async def test_healthz_names_what_is_served_without_a_token_and_follows_a_swap() -> None:
-    async with endpoint(FakeSampler("ok"), control_token="c") as started:
+    async with server(FakeSampler("ok"), control_token="c") as started:
         async with httpx.AsyncClient() as http:
             answer = (await http.get(f"{root(started)}/healthz")).json()
             assert answer == {"status": "ok", "model": MODEL, "serving": MODEL, "budget": None}
@@ -223,7 +223,7 @@ async def test_healthz_names_what_is_served_without_a_token_and_follows_a_swap()
 
 
 async def test_healthz_names_the_token_budget_and_the_run_keeps_it() -> None:
-    async with endpoint(FakeSampler("ok"), max_context=12288) as started:
+    async with server(FakeSampler("ok"), max_context=12288) as started:
         async with httpx.AsyncClient() as http:
             answer = (await http.get(f"{root(started)}/healthz")).json()
         assert answer["budget"] == 12288, "each trial may sample the context length in all"

@@ -16,13 +16,13 @@ from shipyard.types import (
     Checkpoint,
     Connection,
     Cursor,
+    Endpoint,
     Group,
     Harness,
     Harvest,
     Member,
     Policy,
     RolloutEngine,
-    SamplingClient,
     Sequence,
     Settings,
     TrainingClient,
@@ -33,7 +33,7 @@ from shipyard.types import (
 from tests.trials import write_result
 
 
-class _Provider(SamplingClient):
+class _Provider(Endpoint):
     async def open(self) -> None: ...
 
     def close(self) -> None: ...
@@ -113,11 +113,11 @@ def test_an_agent_is_a_policy_under_harnesses_with_modules_and_varies_by_replace
         agent.modules = None  # type: ignore[misc]
 
 
-async def test_a_provider_sampling_client_records_nothing_and_serves_nothing() -> None:
-    sampling = _Provider()
-    assert await sampling.record("j", []) is None
+async def test_a_provider_endpoint_records_nothing_and_serves_nothing() -> None:
+    endpoint = _Provider()
+    assert await endpoint.record("j", []) is None
     with pytest.raises(RuntimeError, match="serves no weights"):
-        await sampling.serve("tinker://x")
+        await endpoint.serve("tinker://x")
     assert Connection(model=None).env == {} and Connection("m", "http://p/v1", "t").token == "t"
     assert "token" not in repr(Connection("m", "http://p/v1", "secret"))
 

@@ -20,7 +20,7 @@ from tests.proxies import (
     ask,
     ask_anthropic,
     chars,
-    endpoint,
+    server,
 )
 
 
@@ -39,7 +39,7 @@ async def _anthropic_turns(sent_back: Any) -> list[Any]:
     """Two turns of a tool loop: the first reply's blocks, rewritten by `sent_back`, then
     a tool result. Returns the trial's records."""
     sampler = ScriptedSampler("", answers=["{look}CALL ls {}", "{done}two files"])
-    async with endpoint(sampler, renderer=BridgeRenderer()) as started:
+    async with server(sampler, renderer=BridgeRenderer()) as started:
         body = {"system": "be brief", "tools": TOOLS_ANTHROPIC}
         messages: list[dict[str, Any]] = [{"role": "user", "content": "look around"}]
         first = await ask_anthropic(started, "t", messages=messages, **body)
@@ -60,7 +60,7 @@ async def _anthropic_turns(sent_back: Any) -> list[Any]:
 
 async def test_the_reply_carries_its_thinking_as_a_signed_block_first() -> None:
     sampler = ScriptedSampler("", answers=["{look}CALL ls {}"])
-    async with endpoint(sampler, renderer=BridgeRenderer()) as started:
+    async with server(sampler, renderer=BridgeRenderer()) as started:
         answered = await ask_anthropic(started, "t", tools=TOOLS_ANTHROPIC)
         blocks = answered.json()["content"]
     assert [b["type"] for b in blocks] == ["thinking", "tool_use"]
@@ -69,16 +69,14 @@ async def test_the_reply_carries_its_thinking_as_a_signed_block_first() -> None:
 
 
 async def test_a_reply_without_thinking_carries_no_block() -> None:
-    async with endpoint(
-        ScriptedSampler("", answers=["plain"]), renderer=BridgeRenderer()
-    ) as started:
+    async with server(ScriptedSampler("", answers=["plain"]), renderer=BridgeRenderer()) as started:
         blocks = (await ask_anthropic(started, "t")).json()["content"]
     assert blocks == [{"type": "text", "text": "plain"}]
 
 
 async def test_a_streamed_reply_carries_the_block_at_index_zero() -> None:
     sampler = ScriptedSampler("", answers=["{look}CALL ls {}"])
-    async with endpoint(sampler, renderer=BridgeRenderer()) as started:
+    async with server(sampler, renderer=BridgeRenderer()) as started:
         events = _events(
             (await ask_anthropic(started, "t", tools=TOOLS_ANTHROPIC, stream=True)).text
         )
@@ -148,7 +146,7 @@ async def test_a_redacted_block_is_accepted_and_carries_nothing() -> None:
 
 async def test_the_openai_reply_carries_reasoning_and_its_details() -> None:
     sampler = ScriptedSampler("", answers=["{look}CALL ls {}"])
-    async with endpoint(sampler, renderer=BridgeRenderer()) as started:
+    async with server(sampler, renderer=BridgeRenderer()) as started:
         message = (await ask(started, "t", tools=TOOLS_OPENAI)).json()["choices"][0]["message"]
     assert message["reasoning"] == "look" and "reasoning_content" not in message
     assert message[thinking.DETAILS] == [
@@ -158,7 +156,7 @@ async def test_the_openai_reply_carries_reasoning_and_its_details() -> None:
 
 
 async def test_the_openai_stream_carries_the_reasoning_before_any_text() -> None:
-    async with endpoint(
+    async with server(
         ScriptedSampler("", answers=["{look}hello"]), renderer=BridgeRenderer()
     ) as started:
         text = (await ask(started, "t", stream=True)).text
@@ -187,7 +185,7 @@ async def test_reasoning_sent_back_in_any_field_is_read_once_and_bridged(
     fields: dict[str, Any],
 ) -> None:
     sampler = ScriptedSampler("", answers=["{look}CALL ls {}", "done"])
-    async with endpoint(sampler, renderer=BridgeRenderer()) as started:
+    async with server(sampler, renderer=BridgeRenderer()) as started:
         history: list[dict[str, Any]] = [{"role": "user", "content": "go"}]
         first = await ask(started, "t", messages=history, tools=TOOLS_OPENAI)
         said = first.json()["choices"][0]["message"]
@@ -292,7 +290,7 @@ async def test_qwen_reads_its_thinking_exactly_when_claude_code_sends_it_back(
             "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}},
         }
     ]
-    async with endpoint(sampler, renderer=renderer) as started:
+    async with server(sampler, renderer=renderer) as started:
         messages: list[dict[str, Any]] = [{"role": "user", "content": "What is here?"}]
         body = {"system": "Be brief.", "tools": tools, "stream": True}
         reply = await ask_anthropic(started, "t", messages=messages, **body)

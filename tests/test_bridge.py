@@ -34,9 +34,9 @@ from tests.proxies import (
     ask,
     ask_anthropic,
     chars,
-    endpoint,
     fetch,
     ids,
+    server,
 )
 
 STOP = BridgeRenderer.STOP
@@ -328,7 +328,7 @@ async def _tool_loop(answers: list[str], *, retitle: Any = None) -> tuple[Any, A
     """Three turns on the OpenAI wire: a tool call, its result, a reply with thinking, a
     closing user message. `retitle` may edit the history before the third request."""
     sampler = ScriptedSampler("", answers=answers)
-    async with endpoint(sampler, renderer=BridgeRenderer()) as started:
+    async with server(sampler, renderer=BridgeRenderer()) as started:
         history: list[dict[str, Any]] = [{"role": "user", "content": "look"}]
         first = await ask(started, "t", messages=history, tools=TOOLS_OPENAI)
         assert first.status_code == 200, first.text
@@ -406,7 +406,7 @@ async def test_a_head_that_re_renders_differently_does_not_bridge() -> None:
 
 async def test_the_anthropic_wire_bridges_a_tool_loop_too() -> None:
     sampler = ScriptedSampler("", answers=["CALL ls {}", "two entries"])
-    async with endpoint(sampler, renderer=BridgeRenderer()) as started:
+    async with server(sampler, renderer=BridgeRenderer()) as started:
         messages: list[dict[str, Any]] = [{"role": "user", "content": "look"}]
         body = {"system": "be brief", "tools": TOOLS_ANTHROPIC}
         first = await ask_anthropic(started, "t", messages=messages, **body)
@@ -436,7 +436,7 @@ async def test_a_retry_replays_one_record_with_its_digest_and_the_index_drains_w
     None
 ):
     sampler = ScriptedSampler("", answers=["hi"])
-    async with endpoint(sampler, renderer=BridgeRenderer()) as started:
+    async with server(sampler, renderer=BridgeRenderer()) as started:
         await ask(started, "t")
         await ask(started, "t", headers={"x-stainless-retry-count": "1"})
         (record,) = started.records_for("t")
@@ -451,7 +451,7 @@ async def test_a_retry_replays_one_record_with_its_digest_and_the_index_drains_w
 
 
 async def test_a_refused_request_leaves_a_record_with_its_digests_and_no_reply() -> None:
-    async with endpoint(
+    async with server(
         ScriptedSampler("", answers=["hi"]), renderer=BridgeRenderer(), max_context=4
     ) as started:
         refused = await ask(started, "t")
@@ -467,7 +467,7 @@ async def test_an_image_prompt_bridges_over_the_wire_and_the_sampler_gets_the_ch
     sink = io.BytesIO()
     picture.save(sink, format="PNG")
     url = f"data:image/png;base64,{base64.b64encode(sink.getvalue()).decode()}"
-    async with endpoint(sampler, renderer=PicturingRenderer()) as started:
+    async with server(sampler, renderer=PicturingRenderer()) as started:
         history: list[dict[str, Any]] = [
             {
                 "role": "user",
@@ -499,7 +499,7 @@ async def test_an_image_prompt_bridges_over_the_wire_and_the_sampler_gets_the_ch
 @pytest.mark.parametrize("stream", [False, True])
 async def test_a_bridged_prompt_is_what_the_sampler_is_given(stream: bool) -> None:
     sampler = ScriptedSampler("", answers=["hi", "bye"])
-    async with endpoint(sampler, renderer=BridgeRenderer()) as started:
+    async with server(sampler, renderer=BridgeRenderer()) as started:
         history = [{"role": "user", "content": "go"}]
         await ask(started, "t", messages=history, stream=stream)
         history += [{"role": "assistant", "content": "hi"}, {"role": "user", "content": "more"}]
@@ -552,7 +552,7 @@ def _extends(later: Any, earlier: Any) -> bool:
 
 async def test_an_echo_whose_arguments_the_harness_rewrote_still_bridges() -> None:
     sampler = ScriptedSampler("", answers=['CALL ls {"p": "a"}', "done"])
-    async with endpoint(sampler, renderer=BridgeRenderer()) as started:
+    async with server(sampler, renderer=BridgeRenderer()) as started:
         history: list[dict[str, Any]] = [{"role": "user", "content": "look"}]
         history += _echo(await _reply(started, history), '{"all": false, "p": "a"}', "alpha")
         await _reply(started, history)
@@ -566,7 +566,7 @@ async def test_of_two_replies_to_one_history_the_one_the_harness_kept_is_bridged
     """Two samples of one history call the same tool on different files. The harness kept
     the first and rewrote its arguments; its ids say which it was."""
     answers = ['CALL ls {"p": "a"}', 'CALL ls {"p": "b"}', "done"]
-    async with endpoint(ScriptedSampler("", answers=answers), renderer=BridgeRenderer()) as started:
+    async with server(ScriptedSampler("", answers=answers), renderer=BridgeRenderer()) as started:
         history: list[dict[str, Any]] = [{"role": "user", "content": "look"}]
         a = await _reply(started, history)
         b = await _reply(started, history)
@@ -592,9 +592,7 @@ class ModelNamedCalls(BridgeRenderer):
 
 async def test_a_model_that_names_its_own_calls_keeps_its_ids_and_two_samples_fork() -> None:
     answers = ['CALL ls {"p": "a"}', 'CALL ls {"p": "b"}', "done"]
-    async with endpoint(
-        ScriptedSampler("", answers=answers), renderer=ModelNamedCalls()
-    ) as started:
+    async with server(ScriptedSampler("", answers=answers), renderer=ModelNamedCalls()) as started:
         history: list[dict[str, Any]] = [{"role": "user", "content": "look"}]
         a = await _reply(started, history)
         b = await _reply(started, history)
@@ -603,9 +601,7 @@ async def test_a_model_that_names_its_own_calls_keeps_its_ids_and_two_samples_fo
         await _reply(started, history)
         assert not started.records_for("t")[-1].bridged, "two replies fit: neither is spliced"
     answers = ['CALL ls {"p": "a"}', "done"]
-    async with endpoint(
-        ScriptedSampler("", answers=answers), renderer=ModelNamedCalls()
-    ) as started:
+    async with server(ScriptedSampler("", answers=answers), renderer=ModelNamedCalls()) as started:
         history = [{"role": "user", "content": "look"}]
         history += _echo(await _reply(started, history), '{"p": "a", "n": 1}', "alpha")
         await _reply(started, history)
@@ -615,7 +611,7 @@ async def test_a_model_that_names_its_own_calls_keeps_its_ids_and_two_samples_fo
 
 async def test_a_replayed_retry_carries_the_ids_its_first_answer_did() -> None:
     sampler = ScriptedSampler("", answers=["CALL ls {}"])
-    async with endpoint(sampler, renderer=BridgeRenderer()) as started:
+    async with server(sampler, renderer=BridgeRenderer()) as started:
         history = [{"role": "user", "content": "look"}]
         first = await _reply(started, history)
         replayed = await _reply(started, history, **{"x-stainless-retry-count": "1"})
@@ -627,9 +623,7 @@ async def test_a_sibling_the_trimmed_echo_of_a_kept_reply_digests_as_is_not_spli
     """Kimi-like ids: the kept reply had thinking, its sibling had none. The harness echoes
     the kept one without its thinking, which digests as the sibling; the shared id forks."""
     answers = ['{plan}CALL ls {"p": "a"}', 'CALL ls {"p": "b"}', "done"]
-    async with endpoint(
-        ScriptedSampler("", answers=answers), renderer=ModelNamedCalls()
-    ) as started:
+    async with server(ScriptedSampler("", answers=answers), renderer=ModelNamedCalls()) as started:
         history: list[dict[str, Any]] = [{"role": "user", "content": "look"}]
         a = await _reply(started, history)
         await _reply(started, history)
@@ -640,7 +634,7 @@ async def test_a_sibling_the_trimmed_echo_of_a_kept_reply_digests_as_is_not_spli
 
 async def test_two_turns_that_sample_the_same_call_get_their_own_ids() -> None:
     answers = ["CALL ls {}", "CALL ls {}", "done"]
-    async with endpoint(ScriptedSampler("", answers=answers), renderer=BridgeRenderer()) as started:
+    async with server(ScriptedSampler("", answers=answers), renderer=BridgeRenderer()) as started:
         history: list[dict[str, Any]] = [{"role": "user", "content": "look"}]
         first = await _reply(started, history)
         history += _echo(first, "{}", "alpha")
@@ -651,7 +645,7 @@ async def test_two_turns_that_sample_the_same_call_get_their_own_ids() -> None:
 async def test_an_anthropic_echo_that_drops_a_whitespace_only_block_bridges() -> None:
     """Claude Code drops a text block holding only whitespace when it echoes a reply."""
     sampler = ScriptedSampler("", answers=["\n\nCALL ls {}", "done"])
-    async with endpoint(sampler, renderer=BridgeRenderer()) as started:
+    async with server(sampler, renderer=BridgeRenderer()) as started:
         messages: list[dict[str, Any]] = [{"role": "user", "content": "look"}]
         body = {"system": "be brief", "tools": TOOLS_ANTHROPIC}
         first = await ask_anthropic(started, "t", messages=messages, **body)

@@ -38,7 +38,7 @@ __all__ = [
     "Profile",
     "Record",
     "RolloutEngine",
-    "SamplingClient",
+    "Endpoint",
     "Sequence",
     "Settings",
     "Task",
@@ -172,7 +172,7 @@ class Harvest:
     stopped: RuntimeError | None = None
 
 
-class SamplingClient(ABC):
+class Endpoint(ABC):
     """The model as the endpoint a harness dials. The one part that knows whether this run
     serves the model or a provider does."""
 
@@ -199,7 +199,7 @@ class SamplingClient(ABC):
 
 @dataclass(frozen=True)
 class Policy:
-    sampling: SamplingClient
+    endpoint: Endpoint
     #: None for a provider.
     client: TrainingClient | None = None
     #: A sampler path to serve first: a checkpoint's, on a resumed run.

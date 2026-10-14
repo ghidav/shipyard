@@ -21,8 +21,8 @@ from tests.proxies import (
     ScriptedSampler,
     ask,
     ask_anthropic,
-    endpoint,
     ids,
+    server,
 )
 
 #: Small enough to keep the tests fast: two or more frames inside the sampler's sleep.
@@ -44,7 +44,7 @@ class SlowSampler(FakeSampler):
 
 
 def kept(sampler: Any, **overrides: Any) -> Any:
-    return endpoint(sampler, keepalive_grace=GRACE, keepalive_every=EVERY, **overrides)
+    return server(sampler, keepalive_grace=GRACE, keepalive_every=EVERY, **overrides)
 
 
 def frames_before(text: str, first: str) -> int:
@@ -116,7 +116,7 @@ async def test_an_unstreamed_or_quick_reply_is_not_kept_alive() -> None:
     async with kept(FakeSampler("hi")) as started:
         quick = (await ask(started, "t", stream=True)).text
     assert quick.startswith("data:") and FRAME.decode() not in quick
-    async with endpoint(SlowSampler("hi"), keepalive_grace=None) as started:
+    async with server(SlowSampler("hi"), keepalive_grace=None) as started:
         off = (await ask(started, "t", stream=True)).text
     assert off.startswith("data:") and FRAME.decode() not in off
 
@@ -148,7 +148,7 @@ async def test_only_a_body_asking_to_stream_is_kept_alive(body: bytes, wanted: b
 def test_the_defaults_are_a_thirty_second_grace_and_a_fifteen_second_beat() -> None:
     assert (keepalive.KEEPALIVE_GRACE, keepalive.KEEPALIVE_EVERY) == (30.0, 15.0)
     assert FRAME == b": keepalive\n\n"
-    made = endpoint()
+    made = server()
     assert (made.keepalive_grace, made.keepalive_every) == (30.0, 15.0)
 
 
