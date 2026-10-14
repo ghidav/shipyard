@@ -1,5 +1,6 @@
-"""What `rollout` passes to Harbor and leaves on disk: configs in plan order, one agent per
-batch, a slot kept for a trial that could not run, and the concurrency semaphore."""
+"""What the engine passes to Harbor and leaves on disk: configs in plan order, one agent
+config per harness, the settings a call brings or the table's, a slot kept for a trial that
+could not run, one concurrency limit across jobs, and the connection each trial dials."""
 
 from __future__ import annotations
 
@@ -8,24 +9,28 @@ import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from harbor.models.environment_type import EnvironmentType
-from harbor.models.trial.config import TrialConfig
+from harbor.models.trial.config import AgentConfig, TrialConfig
 
+from shipyard.config import Rollout
 from shipyard.progress import Reporter
 from shipyard.proxy.profiles import PROFILES
-from shipyard.rollout import (
+from shipyard.sampling.endpoint import ProviderEndpoint, ProxyEndpoint
+from shipyard.sampling.engine import (
     MODAL_IMAGE_BUILDER,
     MODAL_IMAGE_BUILDER_VERSION,
+    HarborEngine,
+    _harness_at_version,
+    _trial_config,
     allowlisted,
     connected,
     laid_over,
     quiet_litellm,
-    rollout,
 )
-from shipyard.sampling.endpoint import ProviderEndpoint, ProxyEndpoint
-from shipyard.types import Connection, Trial, harness
+from shipyard.types import Agent, Connection, Endpoint, Policy, Settings, Trial, harness
 from tests.records import FakeProxy
 from tests.test_endpoint import blueprint
 from tests.trials import FakeTrials
@@ -38,39 +43,39 @@ def _batch(tmp_path: Path, *names: str) -> list[Path]:
     return [root / name for name in names]
 
 
-async def _rollout(tmp_path: Path, batch: list[Path], harbor: object, **options: object):
-    asked: dict[str, object] = {
+def _engine(tmp_path: Path, harbor: Any, **rollout: Any) -> HarborEngine:
+    table = {
         "harness": "pi",
-        "endpoint": ProviderEndpoint("m"),
         "sandbox": "docker",
         "concurrency": 4,
-        "rollouts": 1,
-        "jobs_dir": tmp_path / "jobs",
-        "run_trial": harbor,
+        "jobs_dir": str(tmp_path / "jobs"),
     }
-    asked.update(options)
-    return await rollout(batch, "run-0000", **asked)  # type: ignore[arg-type]
+    return HarborEngine(Rollout(**{**table, **rollout}), run_trial=harbor)
+
+
+def _agent(*names: str, endpoint: Endpoint | None = None) -> Agent:
+    policy = Policy(ProviderEndpoint("m") if endpoint is None else endpoint)
+    return Agent(policy, [harness(name) for name in names])
 
 
 async def test_configs_are_built_in_plan_order_with_harbors_fields(tmp_path: Path) -> None:
     harbor = FakeTrials()
     batch = _batch(tmp_path, "alpha", "beta")
-    found = await _rollout(
+    engine = _engine(
         tmp_path,
-        batch,
         harbor,
-        harness="pi@0.85.1",
-        endpoint=ProviderEndpoint("anthropic/some-model"),
-        rollouts=3,
         env={"API_KEY": "k"},
         kwargs={"thinking": "high"},
         setup_timeout=360.0,
         timeout=1800.0,
     )
-    assert found.job == "run-0000" and len(found) == 6
-    assert found.plan == [(batch[0], 0), (batch[0], 1), (batch[0], 2)] + [
+    agent = _agent("pi@0.85.1", endpoint=ProviderEndpoint("anthropic/some-model"))
+    found = await engine.run("run-0000", batch, 3, agent=agent)
+    assert len(found) == 6 and {one.job for one in found} == {"run-0000"}
+    assert [(one.task, one.attempt) for one in found] == [(batch[0], n) for n in range(3)] + [
         (batch[1], n) for n in range(3)
     ]
+    assert all(one.harness is agent.harness[0] for one in found)
     assert (
         sorted(config.task.path.name for config in harbor.configs) == ["alpha"] * 3 + ["beta"] * 3
     )
@@ -87,86 +92,139 @@ async def test_configs_are_built_in_plan_order_with_harbors_fields(tmp_path: Pat
         assert config.environment.delete is True
         assert config.verifier.disable is False
     # The trials come back in plan order under the job, named as Harbor names them.
-    assert [trial.parent for trial in found.trials] == [tmp_path / "jobs" / "run-0000"] * 6
-    assert [trial.name.split("__")[0] for trial in found.trials] == ["alpha"] * 3 + ["beta"] * 3
-    assert all(len(trial.name.split("__")[1]) == 7 for trial in found.trials)
-    assert {trial.name for trial in found.trials} == {c.trial_name for c in harbor.configs}
+    assert [one.dir.parent for one in found] == [tmp_path / "jobs" / "run-0000"] * 6
+    assert [one.name.split("__")[0] for one in found] == ["alpha"] * 3 + ["beta"] * 3
+    assert all(len(one.name.split("__")[1]) == 7 for one in found)
+    assert {one.name for one in found} == {c.trial_name for c in harbor.configs}
+
+
+async def test_a_call_runs_under_its_own_settings_or_the_tables(tmp_path: Path) -> None:
+    harbor = FakeTrials()
+    batch = _batch(tmp_path, "alpha")
+    engine = _engine(
+        tmp_path, harbor, sandbox="modal", env={"A": "1"}, kwargs={"turns": 10}, timeout=900.0
+    )
+    assert engine.settings == Settings(env={"A": "1"}, kwargs={"turns": 10}, timeout=900.0)
+    own = Settings(verify=False, setup_timeout=1800.0)
+    await engine.run("j0", batch, 1, agent=_agent("pi@0.85.1"), settings=own)
+    await engine.run("j1", batch, 1, agent=_agent("pi@0.85.1"))
+    theirs, tables = harbor.configs
+    assert theirs.verifier.disable is True and tables.verifier.disable is False
+    assert theirs.agent.env == {} and tables.agent.env == {"A": "1"}
+    assert theirs.agent.kwargs == {"version": "0.85.1"}
+    assert tables.agent.kwargs == {"version": "0.85.1", "turns": 10}
+    assert (theirs.agent.override_setup_timeout_sec, theirs.agent.override_timeout_sec) == (
+        1800.0,
+        None,
+    )
+    assert (tables.agent.override_setup_timeout_sec, tables.agent.override_timeout_sec) == (
+        None,
+        900.0,
+    )
+    assert {c.environment.type for c in harbor.configs} == {EnvironmentType.MODAL}
+
+
+async def test_two_harnesses_give_each_task_a_trial_per_harness_in_plan_order(
+    tmp_path: Path,
+) -> None:
+    harbor = FakeTrials()
+    batch = _batch(tmp_path, "alpha", "beta")
+    agent = _agent("pi@0.85.1", "opencode")
+    found = await _engine(tmp_path, harbor).run("j", batch, 2, agent=agent)
+    pi, opencode = agent.harness
+    assert [(one.task.name, one.harness.name, one.attempt) for one in found] == [
+        ("alpha", "pi", 0),
+        ("alpha", "pi", 1),
+        ("alpha", "opencode", 0),
+        ("alpha", "opencode", 1),
+        ("beta", "pi", 0),
+        ("beta", "pi", 1),
+        ("beta", "opencode", 0),
+        ("beta", "opencode", 1),
+    ]
+    assert [one.harness for one in found] == [pi, pi, opencode, opencode] * 2
+    by_name = {c.trial_name: c for c in harbor.configs}
+    assert [by_name[one.name].agent.name for one in found] == [
+        "pi",
+        "pi",
+        "opencode",
+        "opencode",
+    ] * 2
+    assert by_name[found[0].name].agent.kwargs == {"version": "0.85.1"}
+    assert by_name[found[2].name].agent.kwargs == {}
 
 
 async def test_the_harness_pin_is_split_and_a_colon_name_is_left_whole(tmp_path: Path) -> None:
     batch = _batch(tmp_path, "alpha")
     harbor = FakeTrials()
-    await _rollout(tmp_path, batch, harbor, harness="pi")
+    await _engine(tmp_path, harbor).run("j", batch, 1, agent=_agent("pi"))
     assert harbor.configs[0].agent.name == "pi" and harbor.configs[0].agent.kwargs == {}
     harbor = FakeTrials()
-    await _rollout(tmp_path, batch, harbor, harness="acp:some.module:Agent@1")
+    await _engine(tmp_path, harbor).run("j", batch, 1, agent=_agent("acp:some.module:Agent@1"))
     assert harbor.configs[0].agent.name == "acp:some.module:Agent@1"
     assert harbor.configs[0].agent.kwargs == {}
     harbor = FakeTrials()
-    await _rollout(tmp_path, batch, harbor, harness="pi@0.85.1", kwargs={"version": "0.90"})
+    engine = _engine(tmp_path, harbor, kwargs={"version": "0.90"})
+    await engine.run("j", batch, 1, agent=_agent("pi@0.85.1"))
     assert harbor.configs[0].agent.kwargs == {"version": "0.90"}
-
-
-async def test_verification_can_be_switched_off_and_modal_named(tmp_path: Path) -> None:
-    harbor = FakeTrials()
-    await _rollout(tmp_path, _batch(tmp_path, "alpha"), harbor, sandbox="modal", verify=False)
-    assert harbor.configs[0].environment.type == EnvironmentType.MODAL
-    assert harbor.configs[0].verifier.disable is True
 
 
 async def test_a_trial_that_could_not_run_keeps_its_slot(tmp_path: Path) -> None:
     harbor = FakeTrials(breaks=("beta",))
     batch = _batch(tmp_path, "alpha", "beta", "gamma")
-    found = await _rollout(tmp_path, batch, harbor, rollouts=2)
+    found = await _engine(tmp_path, harbor).run("run-0000", batch, 2, agent=_agent("pi"))
     assert len(found) == 6
-    assert [trial.name.split("__")[0] for trial in found.trials] == (
-        ["alpha"] * 2 + ["beta"] * 2 + ["gamma"] * 2
-    )
-    assert [trial.is_dir() for trial in found.trials] == [True, True, False, False, True, True]
+    assert [one.task.name for one in found] == ["alpha"] * 2 + ["beta"] * 2 + ["gamma"] * 2
+    assert [one.dir.is_dir() for one in found] == [True, True, False, False, True, True]
+    assert [one.result is None for one in found] == [False, False, True, True, False, False]
     # The job directory holds only what Harbor's stand-in wrote.
     job_dir = tmp_path / "jobs" / "run-0000"
     assert sorted(p.name for p in job_dir.iterdir()) == sorted(
-        trial.name for trial in found.trials if trial.is_dir()
+        one.name for one in found if one.dir.is_dir()
     )
     assert sorted(p.name for p in job_dir.rglob("*") if p.is_file()) == ["result.json"] * 4
 
 
-async def test_concurrency_never_exceeds_the_semaphore(tmp_path: Path) -> None:
+async def test_one_concurrency_limit_is_shared_by_every_job_of_the_engine(tmp_path: Path) -> None:
     batch = _batch(tmp_path, *[f"t{n}" for n in range(6)])
     harbor = FakeTrials(dwell=0.01)
-    await _rollout(tmp_path, batch, harbor, concurrency=2)
-    assert harbor.peak == 2 and len(harbor.configs) == 6
+    engine = _engine(tmp_path, harbor, concurrency=2)
+    await asyncio.gather(
+        engine.run("j0", batch, 1, agent=_agent("pi")),
+        engine.run("j1", batch, 1, agent=_agent("pi")),
+    )
+    assert harbor.peak == 2 and len(harbor.configs) == 12
     harbor = FakeTrials(dwell=0.005)
-    await _rollout(tmp_path, batch, harbor, concurrency=1)
+    await _engine(tmp_path, harbor, concurrency=1).run("j", batch, 1, agent=_agent("pi"))
     assert harbor.peak == 1
 
 
-@pytest.mark.parametrize("harness", ["", "   "])
-async def test_an_empty_harness_is_refused_before_anything_is_written(
-    tmp_path: Path, harness: str
+async def test_a_job_that_could_not_happen_is_refused_before_anything_is_written(
+    tmp_path: Path,
 ) -> None:
     harbor = FakeTrials()
-    with pytest.raises(ValueError, match="oracle"):
-        await _rollout(tmp_path, _batch(tmp_path, "alpha"), harbor, harness=harness)
+    engine = _engine(tmp_path, harbor)
+    batch = _batch(tmp_path, "alpha")
+    for named in ("", "   "):
+        with pytest.raises(ValueError, match="oracle"):
+            await engine.run("j", batch, 1, agent=_agent(named))
+    with pytest.raises(ValueError, match="attempts"):
+        await engine.run("j", batch, 0, agent=_agent("pi"))
+    with pytest.raises(ValueError, match="names no task"):
+        await engine.run("j", [], 1, agent=_agent("pi"))
     assert harbor.configs == [] and not (tmp_path / "jobs").exists()
-
-
-@pytest.mark.parametrize("knob", ["rollouts", "concurrency"])
-async def test_a_batch_that_could_not_happen_is_refused(tmp_path: Path, knob: str) -> None:
-    with pytest.raises(ValueError, match=knob):
-        await _rollout(tmp_path, _batch(tmp_path, "alpha"), FakeTrials(), **{knob: 0})
 
 
 async def test_the_modal_builder_is_set_unless_the_shell_chose(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     batch = _batch(tmp_path, "alpha")
-    await _rollout(tmp_path, batch, FakeTrials(), sandbox="docker")
+    await _engine(tmp_path, FakeTrials(), sandbox="docker").run("j", batch, 1, agent=_agent("pi"))
     assert MODAL_IMAGE_BUILDER not in os.environ
-    await _rollout(tmp_path, batch, FakeTrials(), sandbox="modal")
+    await _engine(tmp_path, FakeTrials(), sandbox="modal").run("j", batch, 1, agent=_agent("pi"))
     assert os.environ[MODAL_IMAGE_BUILDER] == MODAL_IMAGE_BUILDER_VERSION
     monkeypatch.setenv(MODAL_IMAGE_BUILDER, "legacy")
-    await _rollout(tmp_path, batch, FakeTrials(), sandbox="modal")
+    await _engine(tmp_path, FakeTrials(), sandbox="modal").run("j", batch, 1, agent=_agent("pi"))
     assert os.environ[MODAL_IMAGE_BUILDER] == "legacy"
 
 
@@ -182,9 +240,11 @@ async def test_every_finished_trial_is_reported_to_the_progress_with_its_mask(
 
     progress = Counting()
     batch = _batch(tmp_path, "alpha", "beta")
-    found = await _rollout(tmp_path, batch, FakeTrials(breaks=("beta",)), progress=progress)
-    assert sorted(progress.seen) == sorted(found.trials)
-    assert [progress.seen[trial] for trial in found.trials] == [False, True]
+    engine = _engine(tmp_path, FakeTrials(breaks=("beta",)))
+    engine.progress = progress
+    found = await engine.run("j", batch, 1, agent=_agent("pi"))
+    assert sorted(progress.seen) == sorted(one.dir for one in found)
+    assert [progress.seen[one.dir] for one in found] == [False, True]
 
 
 async def test_a_stray_cancellation_is_one_trials_mask_not_the_batchs(tmp_path: Path) -> None:
@@ -193,8 +253,9 @@ async def test_a_stray_cancellation_is_one_trials_mask_not_the_batchs(tmp_path: 
             raise asyncio.CancelledError()
         (Path(config.trials_dir) / config.trial_name).mkdir(parents=True)
 
-    found = await _rollout(tmp_path, _batch(tmp_path, "alpha", "beta", "gamma"), stray)
-    assert [trial.is_dir() for trial in found.trials] == [True, False, True]
+    batch = _batch(tmp_path, "alpha", "beta", "gamma")
+    found = await _engine(tmp_path, stray).run("j", batch, 1, agent=_agent("pi"))
+    assert [one.dir.is_dir() for one in found] == [True, False, True]
 
 
 async def test_a_real_cancellation_still_stops_the_batch(tmp_path: Path) -> None:
@@ -204,7 +265,10 @@ async def test_a_real_cancellation_still_stops_the_batch(tmp_path: Path) -> None
         started.set()
         await asyncio.sleep(10)
 
-    running = asyncio.ensure_future(_rollout(tmp_path, _batch(tmp_path, "alpha"), slow))
+    engine = _engine(tmp_path, slow)
+    running = asyncio.ensure_future(
+        engine.run("j", _batch(tmp_path, "alpha"), 1, agent=_agent("pi"))
+    )
     await started.wait()
     running.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -229,18 +293,18 @@ def _task_toml(tmp_path: Path, name: str, text: str) -> Path:
 
 
 async def test_every_trial_is_pointed_at_the_address_that_names_it(tmp_path: Path) -> None:
-    """One address per trial, layered over the batch's env. The shared agent config is
+    """One address per trial, layered over the job's env. The shared agent config is
     copied for each trial, so no trial gets another's address."""
     harbor = FakeTrials()
     proxy = FakeProxy(origin="http://host.docker.internal:8000", token="secret")
-    found = await _rollout(
+    engine = _engine(
         tmp_path,
-        _batch(tmp_path, "alpha", "beta"),
         harbor,
-        harness="pi@0.85.1",
-        endpoint=ProxyEndpoint(blueprint(), tmp_path, proxy=proxy),
-        rollouts=2,
         env={"OPENAI_BASE_URL": "https://api.openai.com/v1", "HTTPS_PROXY": "corp"},
+    )
+    served = ProxyEndpoint(blueprint(), tmp_path, proxy=proxy)
+    found = await engine.run(
+        "j", _batch(tmp_path, "alpha", "beta"), 2, agent=_agent("pi@0.85.1", endpoint=served)
     )
     assert len(harbor.configs) == 4
     addresses = [config.agent.env["OPENAI_BASE_URL"] for config in harbor.configs]
@@ -250,11 +314,11 @@ async def test_every_trial_is_pointed_at_the_address_that_names_it(tmp_path: Pat
     for config, address in zip(harbor.configs, addresses, strict=True):
         assert address == f"http://host.docker.internal:8000/r/trial/{config.trial_name}/v1"
         assert config.agent.env["OPENAI_API_KEY"] == "secret"
-        assert config.agent.env["HTTPS_PROXY"] == "corp", "the batch's other env survives"
+        assert config.agent.env["HTTPS_PROXY"] == "corp", "the job's other env survives"
         assert config.agent.kwargs == {"version": "0.85.1", "model_api": "openai-completions"}
         assert config.agent.model_name == "openai/Qwen/Qwen3-8B"
         assert config.agent.extra_allowed_hosts == []
-    assert {trial.name for trial in found.trials} == {c.trial_name for c in harbor.configs}
+    assert {one.name for one in found} == {c.trial_name for c in harbor.configs}
 
 
 def _dialled(
@@ -286,7 +350,7 @@ def test_claude_code_is_handed_the_anthropic_wire_without_the_v1(tmp_path: Path)
     assert pointed.agent.model_name == "anthropic/Qwen/Qwen3-8B"
     plain = connected(config, _dialled(tmp_path, proxy, config, "claude-code"))
     assert "DISABLE_COMPACT" not in plain.agent.env, "the profile's env only when filling"
-    assert config.agent.env == {"KEEP": "1"}, "the batch's config was not written into"
+    assert config.agent.env == {"KEEP": "1"}, "the job's config was not written into"
 
 
 def test_opencode_gets_its_providers_env_and_keeps_a_blueprints_own_config(
@@ -362,10 +426,6 @@ def test_a_task_in_allowlist_mode_gets_the_proxys_host(tmp_path: Path) -> None:
 
 
 def _config(tmp_path: Path, task: str, harness: str = "pi", **agent: object) -> TrialConfig:
-    from harbor.models.trial.config import AgentConfig
-
-    from shipyard.rollout import _harness_at_version, _trial_config
-
     name, version = _harness_at_version(harness)
     made = AgentConfig(name=name, model_name="m", **agent)
     return _trial_config(

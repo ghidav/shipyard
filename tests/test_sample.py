@@ -9,9 +9,9 @@ from typing import Any
 import pytest
 
 from shipyard import record
-from shipyard.rollout import Rollouts
 from shipyard.run import Run
 from shipyard.sampling.endpoint import ProviderEndpoint
+from shipyard.types import Agent, Settings, Trial
 from tests.trials import FakeTrials, fixture_tasks
 
 EVALUATE = Path(__file__).parent / "blueprints" / "evaluate"
@@ -29,39 +29,56 @@ def _batch(tmp_path: Path, *names: str) -> list[Path]:
     return [tmp_path / "tasks" / "fixture" / name for name in names]
 
 
-async def test_jobs_are_named_from_the_rows_and_reserved_by_directory_first(
+async def test_jobs_are_named_in_turn_and_reserved_by_directory_first(
     opened: Run, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    seen: list[tuple[str, bool, dict[str, Any]]] = []
+    seen: list[tuple[str, bool, int, Agent]] = []
 
-    async def fake_rollout(batch: list[Path], job: str, **options: Any) -> Rollouts:
-        seen.append((job, (tmp_path / "jobs" / job).is_dir(), options))
-        plan = [(task, n) for task in batch for n in range(options["rollouts"])]
-        trials = [tmp_path / "jobs" / job / f"{task.name}__{n}" for task, n in plan]
-        return Rollouts(job=job, trials=trials, plan=plan)
+    async def fake_run(
+        job: str, tasks: list[Path], attempts: int, *, agent: Agent, settings: Any = None
+    ) -> list[Trial]:
+        seen.append((job, (tmp_path / "jobs" / job).is_dir(), attempts, agent))
+        return [
+            Trial(job, task, n, agent.harness[0], tmp_path / "jobs" / job / f"{task.name}__{n}")
+            for task in tasks
+            for n in range(attempts)
+        ]
 
-    monkeypatch.setattr("shipyard.run.rollout", fake_rollout)
+    monkeypatch.setattr(opened.engine, "run", fake_run)
     first = await opened.sample(_batch(tmp_path, "alpha", "beta"), rollouts=2, index=0)
     second = await opened.sample(_batch(tmp_path, "alpha"), rollouts=1, index=1)
     assert first.job == f"{opened.id}-0000" and second.job == f"{opened.id}-0001"
-    assert [(job, reserved) for job, reserved, _ in seen] == [(first.job, True), (second.job, True)]
-    options = seen[0][2]
-    assert options["harness"] == "pi@0.85.1"
-    assert options["endpoint"] == ProviderEndpoint("some-hosted-model")
-    assert options["sandbox"] == "modal" and options["concurrency"] == 4
-    assert options["jobs_dir"] == Path("jobs") and options["rollouts"] == 2
-    assert options["env"] == {} and options["kwargs"] == {}
-    assert options["setup_timeout"] is None and options["timeout"] is None
-    assert options["run_trial"] is None and options["progress"] is opened.progress
+    assert [(job, reserved) for job, reserved, *_ in seen] == [
+        (first.job, True),
+        (second.job, True),
+    ]
+    _, _, attempts, agent = seen[0]
+    assert attempts == 2 and agent.modules is None
+    assert [one.agent for one in agent.harness] == ["pi@0.85.1"]
+    assert agent.policy.endpoint == ProviderEndpoint("some-hosted-model")
+    engine = opened.engine
+    assert engine.sandbox == "modal" and engine.jobs_dir == Path("jobs")
+    assert engine.settings == Settings() and engine.progress is opened.progress
+    assert engine.run_trial is None and opened.run_trial is None
     rows = list(record.read(opened.directory / record.JOBS))
     assert [row["job"] for row in rows] == [first.job, second.job]
     assert [row["batch"] for row in rows] == [0, 1]
-    # Rows already in `jobs.jsonl` count toward the job number.
-    # The batch index comes from the caller.
+    # The counter was seeded when the run opened: a row that lands later does not move it.
     record.append(opened.directory / record.JOBS, {"job": "elsewhere"})
     third = await opened.sample(_batch(tmp_path, "beta"), rollouts=1, index=1)
-    assert third.job == f"{opened.id}-0003" and (tmp_path / "jobs" / third.job).is_dir()
+    assert third.job == f"{opened.id}-0002" and (tmp_path / "jobs" / third.job).is_dir()
     assert list(record.read(opened.directory / record.JOBS))[-1]["batch"] == 1
+
+
+def test_the_job_counter_is_seeded_from_the_record_and_the_disk(
+    opened: Run, tmp_path: Path
+) -> None:
+    record.append(opened.directory / record.JOBS, {"job": f"{opened.id}-0003"})
+    record.append(opened.directory / record.JOBS, {"job": "elsewhere"})
+    (tmp_path / "jobs" / f"{opened.id}-0005").mkdir(parents=True)
+    reopened = Run(opened.directory, opened.config)
+    assert reopened.reserve_job() == f"{opened.id}-0006"
+    assert Run(opened.directory, opened.config).reserve_job() == f"{opened.id}-0007"
 
 
 async def test_a_job_name_already_taken_on_disk_is_refused(opened: Run, tmp_path: Path) -> None:

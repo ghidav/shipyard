@@ -395,7 +395,7 @@ def test_an_evaluate_run_shows_its_jobs_and_costs(
     rows with the new columns and the costs document as it was written."""
     monkeypatch.setenv("COLUMNS", "400")  # sixteen columns, none cut to an ellipsis
     monkeypatch.setattr(
-        "shipyard.rollout._run_trial",
+        "shipyard.sampling.engine._run_trial",
         FakeTrials(
             outcomes={
                 "alpha": {"reward": 1.0, "tokens": (10, 0, 2), "provider": "openrouter"},

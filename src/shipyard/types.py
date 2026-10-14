@@ -228,15 +228,14 @@ class Agent:
 
 @dataclass(frozen=True)
 class Settings:
-    """What one `engine.run` call overrides in `[rollout]`; None keeps the blueprint's."""
+    """What one `engine.run` call runs under. The engine's own, from `[rollout]`, stand
+    when a call brings none."""
 
-    sandbox: str | None = None
-    concurrency: int | None = None
-    timeout: float | None = None
+    verify: bool = True
     setup_timeout: float | None = None
-    verify: bool | None = None
-    env: Mapping[str, str] | None = None
-    kwargs: Mapping[str, Any] | None = None
+    timeout: float | None = None
+    env: Mapping[str, str] = field(default_factory=dict)
+    kwargs: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -264,6 +263,7 @@ class RolloutEngine(ABC):
     @abstractmethod
     async def run(
         self,
+        job: str,
         tasks: Values[Task],
         attempts: int,
         *,
@@ -271,7 +271,7 @@ class RolloutEngine(ABC):
         settings: Settings | None = None,
     ) -> list[Trial]:
         """Each task under each of the agent's harnesses, `attempts` times, in plan order:
-        task, harness, attempt."""
+        task, harness, attempt, under the job the record named."""
 
 
 # ------------------------------------------------------------------ the group

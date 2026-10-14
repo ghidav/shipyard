@@ -129,7 +129,7 @@ def test_a_trial_names_itself_after_its_directory_and_reads_its_result(tmp_path:
     assert trial.result is not None and trial.result["verifier_result"] == {
         "rewards": {"reward": 1.0}
     }
-    assert Settings().verify is None and Settings(verify=False, concurrency=1).concurrency == 1
+    assert Settings().verify is True and Settings(verify=False, env={"A": "1"}).env == {"A": "1"}
 
 
 def test_a_group_has_a_gradient_on_its_shaped_rewards_over_the_measured(tmp_path: Path) -> None:

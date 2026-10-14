@@ -10,13 +10,15 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from shipyard import types
 from shipyard.admit import verdict
 from shipyard.cost import billed_by
 from shipyard.gepa.fitness import Outcome
 from shipyard.gepa.propose import Proposer, Reflection
 from shipyard.modules import KINDS, Module, read, write
-from shipyard.rollout import Rollouts, rollout
+from shipyard.rollout import Rollouts
 from shipyard.sampling.endpoint import ProviderEndpoint
+from shipyard.types import Agent, Policy, Settings
 
 if TYPE_CHECKING:
     from shipyard.run import Run
@@ -31,6 +33,8 @@ COLLECTED = ("artifacts", "logs", "artifacts")
 #: The reflector's harness installs itself into an image that carries none. Harbor's
 #: 360 s is six short of what a Node harness takes on `python:3.12-slim`.
 SETUP_TIMEOUT = 1800.0
+#: No verifier, and none of `[rollout]`'s env, kwargs or timeout.
+REFLECTION = Settings(verify=False, setup_timeout=SETUP_TIMEOUT)
 #: Under the container's workdir: the component's directory, the traces, the kind's
 #: reference.
 WORKDIR = "/app"
@@ -72,25 +76,14 @@ def reflect(
 async def _job(
     run: Run, task: Path, *, harness: str, model: str | None, about: Reflection
 ) -> Rollouts:
-    """One job under the run that is not a rollout of the policy. It goes through `rollout`,
-    not `Run.sample`, so it is not pointed at the run's proxy, does not deliver the
-    candidate and is not billed as sampling. It is recorded as a `reflection` under the
-    provider's party."""
-    cfg = run.config
+    """One job under the run that is not a rollout of the policy: its own agent on a
+    provider endpoint, so it is not pointed at the run's proxy, carries no candidate and
+    is not billed as sampling. It is recorded as a `reflection` under the provider's
+    party."""
     job = run.reserve_job()
-    rolled = await rollout(
-        [task],
-        job,
-        harness=harness,
-        endpoint=ProviderEndpoint(model),
-        sandbox=cfg.rollout.sandbox,
-        concurrency=1,
-        rollouts=1,
-        jobs_dir=run.jobs_dir,
-        verify=False,
-        setup_timeout=SETUP_TIMEOUT,
-        run_trial=run.run_trial,
-    )
+    reflector = Agent(Policy(ProviderEndpoint(model)), [types.harness(harness)])
+    trials = await run.engine.run(job, [task], 1, agent=reflector, settings=REFLECTION)
+    rolled = Rollouts.of(job, trials)
     run.record_job(
         rolled,
         purpose="reflection",
