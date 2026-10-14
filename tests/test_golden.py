@@ -1,7 +1,5 @@
-"""The gradient path replayed against its frozen outputs. Each case in `tests/golden.py`
-runs credit, the step and the row (and, for a job case, the job itself) on fixed inputs
-and is compared to `tests/golden/<case>.json`. A difference is a change in what a step
-consumes or what the record sees; when it is meant, regenerate the files with
+"""Each case in `tests/golden.py` replayed against `tests/golden/<case>.json`. A difference
+is a change in what a step consumes or the record sees; when it is meant, regenerate with
 `GOLDEN_UPDATE=1 pytest tests/test_golden.py` and review the diff."""
 
 from __future__ import annotations

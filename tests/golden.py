@@ -1,12 +1,6 @@
-"""The golden harness: what the gradient path produces on fixed inputs, frozen as JSON so
-the next version of the path can be checked against the numbers of this one.
-
-Two halves. The credit half builds groups by hand and runs `credit`, then `Trainer.apply`
-and the metrics `row`. The job half runs `Run.sample` with the proxy, the trial and the
-training client faked, then `group`, `credit`, `apply` and the row, so the verdicts, the
-sequences, the job row and the request rows are frozen beside the batch. Each case is a
-name in `CASES`; `tests/test_golden.py` replays every one against `tests/golden/<name>.json`
-and rewrites the files under `GOLDEN_UPDATE=1`."""
+"""What the gradient path produces on fixed inputs, frozen as JSON under `tests/golden/`.
+The credit cases run `credit`, the step and the row on hand-built groups; the job cases run
+`Run.sample` on fakes first. `GOLDEN_UPDATE=1` rewrites the files."""
 
 from __future__ import annotations
 
@@ -67,10 +61,8 @@ def preset_of(kind: str, **changes: Any) -> Preset:
 
 
 class PositionalAnchor:
-    """A sampling client on the starting weights whose score at position `p` is minus a
-    tenth of the token there, so the KL gap to the trainer's positional mu is nonzero and
-    depends on the position. The first position is unscored, as `compute_logprobs` leaves
-    it. An image's position scores a fixed value."""
+    """The starting weights' sampler: each position scores minus a tenth of its token, so
+    the KL gap to the trainer's positional mu depends on the position."""
 
     def __init__(self) -> None:
         self.asked: list[list[int]] = []
@@ -82,8 +74,7 @@ class PositionalAnchor:
 
 
 class ScriptedTrials:
-    """Harbor's trial replaced: each task's rollouts take the outcomes listed for it, in
-    call order, which is plan order. An outcome of None leaves the directory empty."""
+    """Harbor's trial replaced: each task's rollouts take its outcomes in plan order."""
 
     def __init__(self, outcomes: Mapping[str, list[dict[str, Any] | None]]) -> None:
         self.outcomes = {task: list(found) for task, found in outcomes.items()}
@@ -101,8 +92,7 @@ class ScriptedTrials:
 
 @dataclass
 class ScriptedProxy(FakeProxy):
-    """The fake proxy answering each task's trials with the record lists queued for it, in
-    the order the run fetches them, which is plan order."""
+    """Answers each task's trials with its queued record lists, in plan order."""
 
     queues: dict[str, list[list[Record]]] = field(default_factory=dict)
 
@@ -123,8 +113,8 @@ def sequence(
     scored: bool = True,
     images: tuple[Picture, ...] = (),
 ) -> Sequence:
-    """One chain: the prompt, then each action, with a tool result between actions when
-    `tools` names one. mu, when `scored`, is minus a tenth of each action token."""
+    """The prompt, then the actions with `tools` between them; mu is minus a tenth of each
+    action token."""
     actions = actions or ((10, 11),)
     tokens: list[int] = list(prompt)
     spans: list[tuple[int, int]] = []
@@ -166,9 +156,6 @@ def _varied(reward: float, *tokens: int) -> Member:
 
 @dataclass(frozen=True)
 class Credited:
-    """A credit case: the groups, the preset, what the loop passes beside them, and the
-    trainer's update count before the step."""
-
     groups: Callable[[], list[Group]]
     preset: Preset
     limit: int | None = None
@@ -179,9 +166,8 @@ class Credited:
 
 @dataclass(frozen=True)
 class Jobbed:
-    """A job case: the blueprint kind, the group size, the tasks, each task's outcomes and
-    records per rollout, the proxy's budget and counts, and the texts of an fst step (one
-    job per text at `share` rollouts, merged), with the preset to credit under."""
+    """A job through `Run.sample`; `texts` above one is an fst step, one job per text,
+    merged."""
 
     kind: str
     group_size: int
@@ -196,8 +182,8 @@ class Jobbed:
 
 
 def _mixed() -> list[Group]:
-    """Four groups of four: spread with varied lengths, flat, spread with one masked,
-    spread again: with a limit of two, the last is surplus."""
+    """Spread with varied lengths, flat, spread with a masked member, spread: at a limit of
+    two the last is surplus."""
     return [
         grouped(
             _varied(1.0, 10, 11, 12),
@@ -221,9 +207,8 @@ def _mixed() -> list[Group]:
 
 
 def _overlong() -> list[Group]:
-    """Under a budget of 100: a group docked at two lengths, an all-failed group that
-    differs only in how far it ran (flat before the term, so dropped), and a group with
-    every member inside the buffer."""
+    """Under a budget of 100: a docked group, an all-failed group that is flat before the
+    term, a group inside the buffer."""
     return [
         grouped(
             member(1.0, wrote=50, sequences=[sequence(PROMPT, (10, 11))]),
@@ -247,8 +232,7 @@ def _overlong() -> list[Group]:
 
 
 def _chained() -> list[Group]:
-    """Members with several chains and several spans: owners and the per-prompt weights
-    over a group's tokens."""
+    """Several chains and several spans: owners and the per-prompt weights."""
     two_chains = member(1.0, sequences=[sequence(PROMPT, (10, 11)), sequence((4, 5), (12, 13, 14))])
     three_spans = member(
         0.0, sequences=[sequence(PROMPT, (20,), (21, 22), (23,), tools=((50, 51), (52,)))]
@@ -269,8 +253,7 @@ def _partial() -> list[Group]:
 
 
 def _masked() -> list[Group]:
-    """A group with every member masked, a group with one measured member, and a group
-    where the masked members sit around a measured pair."""
+    """All masked; one measured; a measured pair around masked members."""
     return [
         grouped(
             member(None, mask="env_error", wrote=0, ended=None),
@@ -289,8 +272,7 @@ def _masked() -> list[Group]:
 
 
 def _lengths() -> list[Group]:
-    """dr-grpo's length rule: a tie broken by length, a lone success, a failure longer
-    than the solved, and a group of failures."""
+    """A tie broken by length, a lone success, a long failure, failures only."""
     return [
         grouped(
             member(1.0, wrote=30, sequences=[sequence(PROMPT, (10, 11))]),
@@ -367,8 +349,8 @@ CREDITED: dict[str, Credited] = {
 
 
 def _tool_loop(*actions: tuple[int, ...]) -> list[Record]:
-    """Records of one rollout whose prompts each extend the last prompt and completion,
-    scored minus a tenth of each completion token."""
+    """One rollout's records, each prompt extending the last, scored minus a tenth of each
+    token."""
     out: list[Record] = []
     prompt: tuple[int, ...] = PROMPT
     for at, action in enumerate(actions):
@@ -379,9 +361,8 @@ def _tool_loop(*actions: tuple[int, ...]) -> list[Record]:
 
 
 def _served() -> Jobbed:
-    """Two tasks of four rollouts through the proxy: clean, cut by the budget, a first turn
-    that never fit, a quit on a failed call; never seen, clean, bridged and cached, cut by
-    the clock."""
+    """Clean, cut by the budget, a first turn that never fit, a quit on a failed call; never
+    seen, clean, bridged and cached, cut by the clock."""
     return Jobbed(
         kind="dapo",
         group_size=4,
@@ -421,8 +402,7 @@ def _served() -> Jobbed:
 
 
 def _fst(share: int) -> Jobbed:
-    """An fst slow step over two texts: task a's spread comes from the texts (the first
-    solves it, the second does not), task b's from sampling."""
+    """Task a's spread comes from the two texts, task b's from sampling."""
     first = [{"reward": 1.0}] * share + [{"reward": float(n % 2 == 0)} for n in range(share)]
     second = [{"reward": 0.0}] * share + [{"reward": float(n % 2 == 1)} for n in range(share)]
     return Jobbed(
@@ -490,7 +470,6 @@ async def _credited(case: Credited) -> dict[str, Any]:
 
 
 async def _stepped(batch: Batch, preset: Preset, trainer: Trainer, anchor: Any) -> dict[str, Any]:
-    """The batch, then the step over it and its row, as the loop takes them."""
     update = None if batch.empty else await trainer.apply(batch, preset)
     client = trainer.client
     return {
@@ -550,8 +529,7 @@ async def _jobbed(case: Jobbed, tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
 
 
 def _texts(tmp_path: Path, count: int) -> list[Candidate | None]:
-    """`count` candidates, the first the valid fixture and the next a copy whose skill
-    says one more line; one None when the step carries no text."""
+    """The valid fixture and copies that add a line to its skill; [None] for no text."""
     if count == 1:
         return [None]
     found: list[Candidate | None] = []
@@ -701,8 +679,7 @@ def _plain(value: Any) -> Any:
 
 
 def differences(found: Any, frozen: Any, at: str = "") -> list[str]:
-    """Every place `found` departs from `frozen`, as a path and the two values. Numbers
-    agree within `TOLERANCE`; everything else must be equal."""
+    """Where `found` departs from `frozen`; numbers agree within `TOLERANCE`."""
     out: list[str] = []
     if isinstance(frozen, dict) and isinstance(found, dict):
         for key in sorted(set(frozen) | set(found)):
