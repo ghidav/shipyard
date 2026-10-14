@@ -10,9 +10,10 @@ from typing import TYPE_CHECKING, Any
 
 from harbor.models.agent.context import AgentContext
 
-from shipyard.admit import results
+from shipyard.admit import BUDGET, CONTEXT, results
 
 if TYPE_CHECKING:
+    from shipyard.proxy.wire import Record
     from shipyard.rollout import Rollouts
 
 logger = logging.getLogger(__name__)
@@ -89,6 +90,28 @@ def reported(rollouts: Rollouts) -> dict[str, int]:
         totals["cache_tokens"] += sum(one.n_cache_tokens or 0 for one in contexts)
         totals["output_tokens"] += sum(one.n_output_tokens or 0 for one in contexts)
     return totals
+
+
+def sampled(rollouts: Rollouts) -> tuple[dict[str, int], dict[str, int]]:
+    """For a served job: the party's counts, the trials with a result and the tokens the
+    proxy's records hold, and the calls the proxy refused and bridged."""
+    calls = [item for found in (rollouts.records or {}).values() for item in found]
+    counted = {
+        "trials": sum(1 for _ in results(rollouts)),
+        "input_tokens": sum(len(item.prompt_token_ids) for item in calls),
+        "cache_tokens": sum(cached(item) for item in calls),
+        "output_tokens": sum(len(item.completion_token_ids) for item in calls),
+    }
+    noted = {
+        "turned_away": sum(item.error in (BUDGET, CONTEXT) for item in calls),
+        "bridged": sum(item.bridged for item in calls),
+    }
+    return counted, noted
+
+
+def cached(item: Record) -> int:
+    """The prompt tokens a record says were served from cache, at most the prompt."""
+    return min(int(item.cached_tokens or 0), len(item.prompt_token_ids))
 
 
 def billed_by(rollouts: Rollouts) -> str | None:

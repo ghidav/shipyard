@@ -98,9 +98,7 @@ class ScriptedProxy(FakeProxy):
 
     async def records(self, trial: str) -> list[Record]:
         self.fetched.append(trial)
-        task = trial.split("__")[0]
-        self.counters[trial] = dict(self.counts.get(task) or {"turned_away": 0, "spoke": 0})
-        return list(self.queues[task].pop(0))
+        return list(self.queues[trial.split("__")[0]].pop(0))
 
 
 # ------------------------------------------------------------- building groups
@@ -176,7 +174,6 @@ class Jobbed:
     records: Mapping[str, list[list[Record]]]
     preset: Preset | None = None
     budget: int | None = None
-    counts: Mapping[str, dict[str, int]] = field(default_factory=dict)
     texts: int = 1
     anchored: bool = False
 
@@ -397,7 +394,6 @@ def _served() -> Jobbed:
         },
         preset=preset_of("dapo"),
         budget=100,
-        counts={"a": {"turned_away": 1, "spoke": 4}},
     )
 
 
@@ -495,7 +491,6 @@ async def _jobbed(case: Jobbed, tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     (home / "run.toml").write_text(text, encoding="utf-8")
     proxy = ScriptedProxy(
         queues={task: list(found) for task, found in case.records.items()},
-        counts=dict(case.counts),
         budget=case.budget,
     )
     monkeypatch.setattr(serving, "Proxy", proxy)

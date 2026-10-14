@@ -46,7 +46,6 @@ async def test_records_come_back_as_records_with_their_ids_and_the_counters() ->
     assert [found.seq for found in records] == [1, 2]
     assert records[1].prompt_token_ids == ids("oneoktwo"), "the delta is read back whole"
     assert records[0].completion_token_ids == ids("ok")
-    assert proxy.counters["t-1"] == {"turned_away": 0, "spoke": 0}
     assert again == [] and unknown == [], "drained, and an unknown trial asked for nothing"
 
 
@@ -66,7 +65,6 @@ async def test_a_trial_name_with_reserved_characters_comes_back_whole(trial: str
         proxy = of(started)
         (record,) = await proxy.records(trial)
         assert record.prompt_token_ids == (1, 2) and started.records_for(trial) == []
-    assert trial in proxy.counters
 
 
 class LosingFirst(httpx.AsyncBaseTransport):
@@ -130,7 +128,6 @@ async def test_every_attempt_failing_raises_rather_than_answering_empty(
     with pytest.raises(httpx.ConnectError):
         await proxy.records("t-1")
     assert transport.asked == client.RECORDS_ATTEMPTS == 4
-    assert "t-1" not in proxy.counters
 
 
 # ----------------------------------------------------------------------- the probe

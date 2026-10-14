@@ -16,14 +16,14 @@ from typing import TYPE_CHECKING, Any, Self
 from shortuuid import ShortUUID
 
 from shipyard import record, types
-from shipyard.admit import verdicts
+from shipyard.admit import read_logs, verdicts
 from shipyard.config import Blueprint, FstRecipe, GepaRecipe, config_file, load, modules_dir
-from shipyard.cost import Costs, billed_by, reported, sandbox_seconds
+from shipyard.cost import Costs, billed_by, reported, sampled, sandbox_seconds
 from shipyard.modules import Candidate, keep, seed
 from shipyard.progress import Reporter, reporter
 from shipyard.rollout import Rollouts, Runner, rollout, trials_of
 from shipyard.serving import NothingServed, ProviderEndpoint, ProxyEndpoint, tinker_base_url
-from shipyard.types import Endpoint, Harvest
+from shipyard.types import Endpoint
 
 if TYPE_CHECKING:
     from shipyard.trainer import Checkpoint
@@ -135,7 +135,7 @@ class Run:
     ) -> Rollouts:
         """Run one Harbor job over `batch`, the recipe's batch `index`, carrying `modules`
         (the run's own when None). Stamp it with the trainer's update count and put every
-        verdict on the job row. A stop the harvest carries is raised after the row."""
+        verdict on the job row. The endpoint's check comes after the row."""
         cfg, endpoint = self.config, self.endpoint
         await endpoint.open()
         if isinstance(endpoint, ProxyEndpoint) and not self._noted:
@@ -163,24 +163,19 @@ class Run:
             modules=candidate,
         )
         self.progress.done(job)
-        harvest = await endpoint.record(job, trials_of(rolled, types.harness(cfg.rollout.harness)))
-        if harvest is not None:
-            rolled = replace(
-                rolled, records=harvest.records, asked=harvest.asked, failed=harvest.failed
-            )
+        trials = trials_of(rolled, types.harness(cfg.rollout.harness))
+        records = await endpoint.record(job, trials)
+        if records is not None:
+            asked, failed = read_logs(trials, records, check_turns=cfg.rollout.check_turns)
+            rolled = replace(rolled, records=records, asked=asked, failed=failed)
         rolled = replace(rolled, updates=updates)
-        self._record_job(
-            rolled,
-            batch=index,
-            tasks=len(batch),
-            harvest=harvest,
-            modules=candidate,
-            purpose=purpose,
-        )
-        if harvest is not None and harvest.stopped is not None:
-            if isinstance(harvest.stopped, NothingServed):
-                harvest.stopped.rolled = rolled
-            raise harvest.stopped
+        self._record_job(rolled, batch=index, tasks=len(batch), modules=candidate, purpose=purpose)
+        if records is not None:
+            try:
+                endpoint.check(job, records)
+            except NothingServed as dead:
+                dead.rolled = rolled
+                raise
         return rolled
 
     async def checkpoint(self, trainer: Any, tag: str, *, keep: bool = False) -> Checkpoint:
@@ -210,16 +205,17 @@ class Run:
         *,
         batch: int,
         tasks: int,
-        harvest: Harvest | None = None,
         modules: Candidate | None = None,
         purpose: str = "rollout",
     ) -> dict[str, Any]:
         """Record a rollout of the policy: the modules' digest if it carried any, the graded
-        count, the masks, how each trial ended, and the party billed with its counts (from
-        the harvest for a served job)."""
+        count, the masks, how each trial ended, and the party billed with its counts (off
+        the records for a served job, else what the harness reported)."""
         judged = verdicts(rolled)
-        if harvest is not None:
-            counted, party, noted = harvest.counted, harvest.party, harvest.noted
+        served = rolled.records is not None
+        if served:
+            counted, noted = sampled(rolled)
+            party = self.endpoint.party
         else:
             counted, party, noted = reported(rolled), billed_by(rolled), {}
         masked = _tally(each.mask for each in judged)
@@ -235,7 +231,7 @@ class Run:
             graded=sum(each.reward is not None for each in judged),
             **({"masked": masked} if masked else {}),
             **({"ended": ended} if ended else {}),
-            served="tinker" if harvest is not None else "provider",
+            served="tinker" if served else "provider",
             **{key: value for key, value in noted.items() if value},
         )
 

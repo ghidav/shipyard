@@ -13,10 +13,11 @@ from urllib.parse import urlsplit
 
 from shipyard import record
 from shipyard.config import TINKER
+from shipyard.cost import cached
 from shipyard.proxy.client import Proxy
-from shipyard.proxy.profiles import bare_name, slug_of
+from shipyard.proxy.profiles import slug_of
 from shipyard.proxy.wire import CONTROL_TOKEN_ENV, PROXY_TOKEN_ENV, SAMPLER_FAILED
-from shipyard.types import Connection, Endpoint, Harvest, Trial
+from shipyard.types import Connection, Endpoint, Records, Trial
 
 if TYPE_CHECKING:
     from shipyard.config import Blueprint, Rollout
@@ -136,7 +137,7 @@ class ProxyEndpoint(Endpoint):
         return self.proxy.budget if self.proxy is not None else None
 
     @property
-    def party(self) -> str:
+    def party(self) -> str:  # type: ignore[override]
         return backend(self.environ)
 
     async def open(self) -> None:
@@ -218,63 +219,32 @@ class ProxyEndpoint(Endpoint):
             host=self.proxy.host or None,
         )
 
-    async def record(self, job: str, trials: Sequence[Trial]) -> Harvest:
+    async def record(self, job: str, trials: Sequence[Trial]) -> Records:
         """Drain every trial's records from the proxy, one `requests.jsonl` row per
-        record, and check the served path."""
+        record, and refuse a batch answered from a path this run did not point at."""
         proxy = self.proxy
         if proxy is None:
-            raise RuntimeError("nothing was served; there are no records to harvest")
-        counted = dict(trials=0, input_tokens=0, cache_tokens=0, output_tokens=0)
-        noted = dict(turned_away=0, bridged=0)
-        taken: dict[str, list[Record]] = {}
-        asked: dict[str, int] = {}
-        failed: set[str] = set()
+            raise RuntimeError("nothing was served; there are no records to take")
+        taken: Records = {}
         for trial in trials:
-            name = trial.name
             try:
-                taken[name] = records = await proxy.records(name)
+                taken[trial.name] = records = await proxy.records(trial.name)
             except Exception:
                 self.alive()  # a fetch that failed because the proxy died says so
                 raise
-            counts = proxy.counters.pop(name, {})
-            noted["turned_away"] += int(counts.get("turned_away", 0))
             for item in records:
-                hit = min(int(item.cached_tokens or 0), len(item.prompt_token_ids))
-                counted["input_tokens"] += len(item.prompt_token_ids)
-                counted["cache_tokens"] += hit
-                counted["output_tokens"] += len(item.completion_token_ids)
-                noted["bridged"] += int(item.bridged)
-                record.append(self.directory / record.REQUESTS, _row(job, name, item, hit))
-            profile = trial.harness.profile
-            if self.config.rollout.check_turns and profile.turns is not None:
-                turns = turns_asked(trial.dir, trial.harness.name, profile.turns)
-                if turns == 0 and records:
-                    logger.warning(
-                        "%s: the %s turn counter found no turns beside %d record(s); its log "
-                        "format may have moved, so this trial is not checked",
-                        name,
-                        trial.harness.name,
-                        len(records),
-                    )
-                if turns is not None:
-                    asked[name] = turns
-            reader = profile.failed_last
-            text = harness_log(trial.dir, trial.harness.name) if reader else None
-            if reader is not None and text is not None and reader(text):
-                failed.add(name)
-        counted["trials"] = sum(1 for trial in trials if trial.result is not None)
+                record.append(self.directory / record.REQUESTS, _row(job, trial.name, item))
         if self.pointed:
             answered_by_ours(job, taken, self.told)
-        return Harvest(taken, asked, failed, counted, noted, self.party, self._stopped(job, taken))
+        return taken
 
-    def _stopped(self, job: str, taken: Mapping[str, Sequence[Record]]) -> RuntimeError | None:
-        """The stop to raise once the job row is written: the proxy died under the batch,
-        or served it nothing."""
-        why = self.proxy.gone() if self.proxy is not None else None
+    def check(self, job: str, records: Records) -> None:
+        """`ProxyGone` if the proxy died under the batch, `NothingServed` if it served the
+        job nothing."""
+        self.alive()
+        why = served_nothing(records)
         if why:
-            return ProxyGone(f"the proxy is no longer reachable: {why}")
-        why = served_nothing(taken)
-        return NothingServed(f"job {job}: {why}") if why else None
+            raise NothingServed(f"job {job}: {why}")
 
     def _log(self, name: str) -> IO[str]:
         opened = (self.directory / name).open("a", encoding="utf-8")
@@ -307,13 +277,13 @@ def served_nothing(taken: Mapping[str, Sequence[Record]]) -> str | None:
     )
 
 
-def _row(job: str, trial: str, item: Record, hit: int) -> dict[str, Any]:
+def _row(job: str, trial: str, item: Record) -> dict[str, Any]:
     return {
         "job": job,
         "trial": trial,
         "seq": item.seq,
         "prompt_tokens": len(item.prompt_token_ids),
-        "cached_tokens": hit,
+        "cached_tokens": cached(item),
         "completion_tokens": len(item.completion_token_ids),
         "stop_reason": item.stop_reason,
         "sample_ms": round(float(item.sample_ms), 1),
@@ -322,22 +292,6 @@ def _row(job: str, trial: str, item: Record, hit: int) -> dict[str, Any]:
         "bridged": item.bridged,
         "error": item.error,
     }
-
-
-def turns_asked(trial: Path, harness: str, counter: Any) -> int | None:
-    """How many turns the harness asked for, off `agent/<harness>.txt`; None without the
-    log."""
-    text = harness_log(trial, harness)
-    return None if text is None else int(counter(text))
-
-
-def harness_log(trial: Path, harness: str) -> str | None:
-    try:
-        return (trial / "agent" / f"{bare_name(harness)}.txt").read_text(
-            encoding="utf-8", errors="replace"
-        )
-    except OSError:
-        return None
 
 
 def answered_by_ours(job: str, taken: Mapping[str, Sequence[Record]], told: str | None) -> None:

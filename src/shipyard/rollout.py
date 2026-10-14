@@ -25,11 +25,10 @@ from shipyard import types
 from shipyard.admit import verdict
 from shipyard.modules import Candidate, deliver, merge_fields
 from shipyard.proxy.profiles import bare_name
-from shipyard.types import Connection, Endpoint, Harness, Trial
+from shipyard.types import Connection, Endpoint, Harness, Records, Trial
 
 if TYPE_CHECKING:
     from shipyard.progress import Reporter
-    from shipyard.proxy.wire import Record
 
 logger = logging.getLogger(__name__)
 
@@ -47,14 +46,14 @@ DELIVERED = "modules"
 @dataclass(frozen=True)
 class Rollouts:
     """A finished job: its name, one directory per planned trial, and the plan (task and
-    rollout index of each). Once the run has harvested the job it also holds the proxy's
-    records and the harness's turn counts by trial name, which admission reads beside
+    rollout index of each). Once the run has recorded the job it also holds the proxy's
+    records and what the harness logs said, by trial name, which admission reads beside
     each `result.json`."""
 
     job: str
     trials: list[Path]
     plan: list[tuple[Path, int]]
-    records: dict[str, list[Record]] | None = None
+    records: Records | None = None
     asked: dict[str, int] | None = None
     #: The trials whose harness log says their last model call failed.
     failed: set[str] | None = None

@@ -106,7 +106,6 @@ async def test_a_served_model_runs_through_its_proxy_and_is_judged_by_its_record
             "c": [made(seq=1)],
             "d": [],
         },
-        counts={"b": {"turned_away": 1, "spoke": 2}},
     )
     monkeypatch.setattr(serving, "Proxy", fake)
     replacements = {

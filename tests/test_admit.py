@@ -4,6 +4,7 @@ Harbor defines is classed as the endpoint's or the policy's."""
 from __future__ import annotations
 
 import inspect
+import json
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,8 @@ from shipyard.admit import (
     TIMEOUT,
     Verdict,
     endpoint_failed,
+    harness_log,
+    read_logs,
     scores,
     served_verdict,
     verdict,
@@ -27,6 +30,7 @@ from shipyard.admit import (
 )
 from shipyard.proxy.wire import IMAGE_TOKEN, Picture
 from shipyard.rollout import Rollouts
+from shipyard.types import Trial, harness
 from tests.records import made
 from tests.trials import write_result
 
@@ -255,3 +259,44 @@ def test_verdicts_read_the_records_and_turn_counts_attached_to_the_rollouts(
     assert [v.mask for v in verdicts(failed)] == [API_ERROR, None]
     plain = Rollouts(job="j", trials=[won, cut, quiet], plan=[])
     assert scores(plain) == [1.0, 1.0, 1.0], "without records, the files alone decide"
+
+
+# -------------------------------------------------------------- the harness logs
+
+
+def _trial(tmp_path: Path, task: str, deployed: str, n: int = 0) -> Trial:
+    home = tmp_path / "jobs" / "j" / f"{task}__{n:07d}"
+    write_result(home, reward=1.0)
+    return Trial("j", Path(task), n, harness(deployed), home)
+
+
+def test_turns_are_counted_off_the_harness_log_only_when_asked(tmp_path: Path) -> None:
+    alpha = _trial(tmp_path, "alpha", "opencode")
+    beta = _trial(tmp_path, "beta", "opencode", 1)
+    log = alpha.dir / "agent" / "pi.txt"
+    log.parent.mkdir()
+    log.write_text('{"type":"step-start"}\n{"type":"step-start"}\n')
+    records = {alpha.name: [made()], beta.name: [made()]}
+    assert read_logs([alpha, beta], records, check_turns=True) == ({}, set()), "no opencode log"
+    (alpha.dir / "agent" / "opencode.txt").write_text(log.read_text())
+    assert read_logs([alpha, beta], records, check_turns=True) == ({alpha.name: 2}, set())
+    assert read_logs([alpha, beta], records, check_turns=False) == ({}, set())
+    unprofiled = _trial(tmp_path, "alpha", "terminus-2", 2)
+    assert read_logs([unprofiled], records, check_turns=True) == ({}, set())
+    assert harness_log(beta.dir, "opencode") is None
+    assert harness_log(alpha.dir, "opencode@1") == log.read_text()
+
+
+def test_a_pi_log_ending_on_a_failed_call_is_read_whatever_check_turns_says(
+    tmp_path: Path,
+) -> None:
+    alpha, beta = _trial(tmp_path, "alpha", "pi"), _trial(tmp_path, "beta", "pi", 1)
+    for trial, stop in zip((alpha, beta), ("error", "stop"), strict=True):
+        (trial.dir / "agent").mkdir()
+        message = {"role": "assistant", "stopReason": stop}
+        (trial.dir / "agent" / "pi.txt").write_text(
+            json.dumps({"type": "message_end", "message": message})
+        )
+    records = {alpha.name: [made()], beta.name: [made()]}
+    assert read_logs([alpha, beta], records, check_turns=False) == ({}, {alpha.name})
+    assert read_logs([alpha, beta], records, check_turns=True) == ({}, {alpha.name})

@@ -66,12 +66,10 @@ class FakeProxy:
     answers: dict[str, list[Record]] = field(default_factory=dict)
     default: list[Record] | None = None
     failing: set[str] = field(default_factory=set)
-    counts: dict[str, dict[str, int]] = field(default_factory=dict)
     placed: list[tuple[str, Any, dict[str, Any]]] = field(default_factory=list)
     addressed: list[str] = field(default_factory=list)
     fetched: list[str] = field(default_factory=list)
     swapped: list[str | None] = field(default_factory=list)
-    counters: dict[str, dict[str, int]] = field(default_factory=dict)
     #: The token budget `/healthz` reports; None: the proxy enforces none.
     budget: int | None = None
     closed: int = 0
@@ -118,7 +116,6 @@ class FakeProxy:
         task = trial.split("__")[0]
         if task in self.failing:
             raise httpx.ConnectError("the proxy went away")
-        self.counters[trial] = dict(self.counts.get(task) or {"turned_away": 0, "spoke": 0})
         found = self.answers.get(task, self.default)
         return list(found if found is not None else [made()])
 

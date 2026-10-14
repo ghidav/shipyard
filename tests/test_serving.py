@@ -1,10 +1,9 @@
 """The endpoints: where the proxy goes for each sandbox, its start settings, the
-connection each trial dials, the records and counts drained per job, the served-path
-refusal, the stops carried for after the row, and the provider case."""
+connection each trial dials, the records drained per job with their rows, the served-path
+refusal, the check for after the row, and the provider case."""
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +24,6 @@ from shipyard.serving import (
     endpoint_settings,
     placement,
     tinker_base_url,
-    turns_asked,
 )
 from shipyard.types import Connection, Trial, harness
 from tests.records import FakeProxy, made
@@ -269,10 +267,10 @@ def test_the_wire_and_the_env_follow_the_trials_harness(fake: FakeProxy, tmp_pat
     assert "opencode_config" in named.kwargs
 
 
-# ------------------------------------------------------------------------ the harvest
+# ------------------------------------------------------------------------ the records
 
 
-async def test_record_writes_a_row_per_record_and_counts_the_tokens(
+async def test_record_takes_each_trials_records_and_writes_a_row_per_record(
     fake: FakeProxy, tmp_path: Path
 ) -> None:
     fake.answers = {
@@ -282,24 +280,12 @@ async def test_record_writes_a_row_per_record_and_counts_the_tokens(
         ],
         "beta": [made("go", error="context", seq=1)],
     }
-    fake.counts = {"beta": {"turned_away": 1, "spoke": 0}}
     held = ProxyEndpoint(blueprint(), tmp_path)
     await held.open()
     batch = trials(tmp_path, ("alpha", {"reward": 1.0}), ("beta", {"reward": 0.0}), ("gamma", None))
-    harvest = await held.record("j", batch)
+    records = await held.record("j", batch)
     assert fake.fetched == [trial.name for trial in batch]
-    assert [len(harvest.records[trial.name]) for trial in batch] == [2, 1, 1]
-    assert harvest.asked == {} and harvest.failed == set() and harvest.party == "tinker"
-    assert harvest.stopped is None
-    # prefill = 3 + (8 - 5) + 2 (the refused turn's prompt) + 2 (gamma's default record),
-    # cached = 5, sampled = 2 + 4 + 0 + 2.
-    assert harvest.counted == {
-        "trials": 2,
-        "input_tokens": 15,
-        "cache_tokens": 5,
-        "output_tokens": 8,
-    }
-    assert harvest.noted == {"turned_away": 1, "bridged": 1}
+    assert [len(records[trial.name]) for trial in batch] == [2, 1, 1]
     rows = list(record.read(tmp_path / record.REQUESTS))
     assert [row["trial"] for row in rows] == [batch[0].name] * 2 + [t.name for t in batch[1:]]
     first = rows[0]
@@ -336,7 +322,6 @@ async def test_record_writes_a_row_per_record_and_counts_the_tokens(
         0,
         "",
     )
-    assert fake.counters == {}, "the counters were taken with the records"
 
 
 async def test_a_two_trial_job_is_dialled_and_recorded_under_two_names(
@@ -347,8 +332,8 @@ async def test_a_two_trial_job_is_dialled_and_recorded_under_two_names(
     await held.open()
     batch = trials(tmp_path, ("alpha", {"reward": 1.0}), ("alpha", {"reward": 0.0}))
     assert len({held.connection(trial).address for trial in batch}) == 2
-    harvest = await held.record("j", batch)
-    assert sorted(harvest.records) == sorted(trial.name for trial in batch)
+    records = await held.record("j", batch)
+    assert sorted(records) == sorted(trial.name for trial in batch)
     assert sorted(row["trial"] for row in record.read(tmp_path / record.REQUESTS)) == sorted(
         trial.name for trial in batch
     )
@@ -371,8 +356,8 @@ async def test_a_batch_answered_by_other_weights_is_refused(
         "alpha": [made(served="tinker://w/step-2")],
         "beta": [made(served="tinker://w/step-2")],
     }
-    harvest = await held.record("j", trials(tmp_path, ("alpha", {"reward": 1.0})))
-    assert harvest.counted["trials"] == 1
+    records = await held.record("j", trials(tmp_path, ("alpha", {"reward": 1.0})))
+    assert len(records) == 1
     answered_by_ours("j", {"t": [made(served=None)]}, None)
     with pytest.raises(ValueError, match="pointed its proxy at None"):
         answered_by_ours("j", {"t": [made(served="tinker://x/step-1")]}, None)
@@ -388,8 +373,8 @@ async def test_a_remote_proxy_this_run_did_not_point_must_serve_the_base_model(
     with pytest.raises(ValueError, match="re-pointed"):
         await held.record("j", trials(tmp_path, ("alpha", {"reward": 1.0})))
     fake.answers = {"beta": [made()]}
-    harvest = await held.record("j", trials(tmp_path, ("beta", {"reward": 1.0})))
-    assert harvest.counted["output_tokens"] == 2
+    records = await held.record("j", trials(tmp_path, ("beta", {"reward": 1.0})))
+    assert [len(found) for found in records.values()] == [1]
 
 
 async def test_a_fetch_that_fails_fails_the_job_rather_than_masking_a_trial(
@@ -406,60 +391,23 @@ async def test_a_fetch_that_fails_fails_the_job_rather_than_masking_a_trial(
         )
 
 
-async def test_the_stop_is_carried_on_the_harvest_for_after_the_row(
-    fake: FakeProxy, tmp_path: Path
-) -> None:
+async def test_check_raises_the_stop_for_after_the_row(fake: FakeProxy, tmp_path: Path) -> None:
     fake.default = []
     held = ProxyEndpoint(blueprint(), tmp_path)
     await held.open()
     batch = trials(tmp_path, ("alpha", {"reward": 1.0}))
-    dead = (await held.record("j", batch)).stopped
-    assert isinstance(dead, NothingServed) and dead.rolled is None
-    assert str(dead) == "job j: no trial reached the proxy; the endpoint is dead or unreachable"
-    fake.default = None
-    assert (await held.record("j", batch)).stopped is None
-    fake.exited = "shipyard serve exited with 1"
-    gone = (await held.record("j", batch)).stopped
-    assert isinstance(gone, ProxyGone) and "exited with 1" in str(gone)
-
-
-async def test_turns_are_counted_off_the_harness_log_only_when_asked(
-    fake: FakeProxy, tmp_path: Path
-) -> None:
-    batch = trials(
-        tmp_path, ("alpha", {"reward": 1.0}), ("beta", {"reward": 1.0}), deployed="opencode"
+    records = await held.record("j", batch)
+    with pytest.raises(NothingServed, match="no trial reached the proxy") as caught:
+        held.check("j", records)
+    assert caught.value.rolled is None
+    assert str(caught.value) == (
+        "job j: no trial reached the proxy; the endpoint is dead or unreachable"
     )
-    log = batch[0].dir / "agent" / "pi.txt"
-    log.parent.mkdir()
-    log.write_text('{"type":"step-start"}\n{"type":"step-start"}\n')
-    counted = ProxyEndpoint(blueprint(check_turns=True), tmp_path)
-    await counted.open()
-    assert (await counted.record("j", batch)).asked == {}
-    (batch[0].dir / "agent" / "opencode.txt").write_text(log.read_text())
-    assert (await counted.record("j", batch)).asked == {batch[0].name: 2}
-    quiet = ProxyEndpoint(blueprint(), tmp_path)
-    await quiet.open()
-    assert (await quiet.record("j", batch)).asked == {}
-    unprofiled = trials(tmp_path, ("alpha", {"reward": 1.0}), deployed="terminus-2")
-    assert (await counted.record("j", unprofiled)).asked == {}
-    assert turns_asked(batch[1].dir, "opencode", PROFILES["opencode"].turns) is None
-    assert (await counted.record("j", batch)).failed == set()
-    assert turns_asked(batch[0].dir, "opencode@1", PROFILES["opencode"].turns) == 2
-
-
-async def test_a_pi_log_ending_on_a_failed_call_is_read_whatever_check_turns_says(
-    fake: FakeProxy, tmp_path: Path
-) -> None:
-    batch = trials(tmp_path, ("alpha", {"reward": 0.0}), ("beta", {"reward": 1.0}))
-    for trial, stop in zip(batch, ("error", "stop"), strict=True):
-        (trial.dir / "agent").mkdir()
-        message = {"role": "assistant", "stopReason": stop}
-        (trial.dir / "agent" / "pi.txt").write_text(
-            json.dumps({"type": "message_end", "message": message})
-        )
-    held = ProxyEndpoint(blueprint(), tmp_path)
-    await held.open()
-    assert (await held.record("j", batch)).failed == {batch[0].name}
+    fake.default = None
+    held.check("j", await held.record("j", batch))
+    fake.exited = "shipyard serve exited with 1"
+    with pytest.raises(ProxyGone, match="exited with 1"):
+        held.check("j", records)
 
 
 # ----------------------------------------------------------------------- a provider
