@@ -1,0 +1,256 @@
+{
+  "batch": {
+    "datums": [
+      {
+        "input": [
+          [
+            1,
+            2,
+            3,
+            30
+          ]
+        ],
+        "target_tokens": [
+          2,
+          3,
+          30,
+          31
+        ],
+        "logprobs": [
+          0.0,
+          0.0,
+          -30.0,
+          -31.0
+        ],
+        "advantages": [
+          0.0,
+          0.0,
+          0.9999979734420776,
+          0.9999979734420776
+        ],
+        "mask": [
+          0.0,
+          0.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "input": [
+          [
+            1,
+            2,
+            3
+          ]
+        ],
+        "target_tokens": [
+          2,
+          3,
+          32
+        ],
+        "logprobs": [
+          0.0,
+          0.0,
+          -32.0
+        ],
+        "advantages": [
+          0.0,
+          0.0,
+          -0.9999979734420776
+        ],
+        "mask": [
+          0.0,
+          0.0,
+          1.0
+        ]
+      }
+    ],
+    "owners": [
+      0,
+      0
+    ],
+    "groups": 3,
+    "rollouts": 8,
+    "graded": 3,
+    "masked": 5,
+    "degenerate": 1,
+    "surplus": null,
+    "overlong": null,
+    "credited": 2,
+    "sequences": 2,
+    "reward_mean": 0.6666666666666666,
+    "reward_spread": 0.25,
+    "length_mean": 1.3333333333333333,
+    "anchor_kl": null,
+    "reference_tokens": 7,
+    "anchor_tokens": 0
+  },
+  "client": [
+    [
+      "forward",
+      [
+        4,
+        3
+      ],
+      "cross_entropy"
+    ],
+    [
+      "forward_backward",
+      [
+        4,
+        3
+      ],
+      "ppo",
+      {
+        "clip_low_threshold": 0.8,
+        "clip_high_threshold": 1.28
+      }
+    ],
+    [
+      "optim_step",
+      {
+        "learning_rate": 2e-05,
+        "beta1": 0.9,
+        "beta2": 0.95,
+        "eps": 1e-08,
+        "weight_decay": 0.1,
+        "grad_clip_norm": 1.0
+      }
+    ],
+    [
+      "consumed",
+      "fb"
+    ],
+    [
+      "consumed",
+      "optim"
+    ]
+  ],
+  "sent": [
+    {
+      "input": [
+        [
+          1,
+          2,
+          3,
+          30
+        ]
+      ],
+      "target_tokens": [
+        2,
+        3,
+        30,
+        31
+      ],
+      "weights": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "input": [
+        [
+          1,
+          2,
+          3
+        ]
+      ],
+      "target_tokens": [
+        2,
+        3,
+        32
+      ],
+      "weights": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "input": [
+        [
+          1,
+          2,
+          3,
+          30
+        ]
+      ],
+      "target_tokens": [
+        2,
+        3,
+        30,
+        31
+      ],
+      "logprobs": [
+        0.0,
+        0.0,
+        -30.0,
+        -31.0
+      ],
+      "advantages": [
+        0.0,
+        0.0,
+        0.9999979734420776,
+        0.9999979734420776
+      ]
+    },
+    {
+      "input": [
+        [
+          1,
+          2,
+          3
+        ]
+      ],
+      "target_tokens": [
+        2,
+        3,
+        32
+      ],
+      "logprobs": [
+        0.0,
+        0.0,
+        -32.0
+      ],
+      "advantages": [
+        0.0,
+        0.0,
+        -0.9999979734420776
+      ]
+    }
+  ],
+  "anchor": null,
+  "update": {
+    "train_tokens": 7,
+    "substeps": 1,
+    "learning_rate": 2e-05,
+    "loss_fn": "ppo",
+    "kl_v1": -30.5,
+    "kl_v2": 465.4583435058594,
+    "entropy": 31.0
+  },
+  "row": {
+    "step": 0,
+    "trained": true,
+    "groups": 3,
+    "rollouts": 8,
+    "graded": 3,
+    "masked": 5,
+    "degenerate": 1,
+    "sequences": 2,
+    "sequences_per_rollout": 1.0,
+    "train_tokens": 7,
+    "reward_mean": 0.6666666666666666,
+    "reward_spread": 0.25,
+    "length_mean": 1.3333333333333333,
+    "kl_v1": -30.5,
+    "kl_v2": 465.4583435058594,
+    "entropy": 31.0,
+    "learning_rate": 2e-05,
+    "substeps": 1,
+    "loss_fn": "ppo"
+  },
+  "updates": 1
+}
