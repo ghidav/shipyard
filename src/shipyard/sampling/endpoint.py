@@ -1,5 +1,4 @@
-"""The endpoints: the proxy this run starts and drains for a model it serves, and
-the provider case, which records nothing."""
+"""The proxy over a model this run serves, and the provider case, which records nothing."""
 
 from __future__ import annotations
 
@@ -37,8 +36,7 @@ class ProxyGone(RuntimeError):
 
 
 class NothingServed(RuntimeError):
-    """A served job the proxy served nothing for: the endpoint is dead, or its sampler
-    refuses every request."""
+    """The proxy served a job nothing: it is dead, or its sampler refuses every request."""
 
     def __init__(self, message: str, rolled: Rollouts | None = None) -> None:
         super().__init__(message)
@@ -46,16 +44,14 @@ class NothingServed(RuntimeError):
 
 
 def placement(rollout: Rollout) -> str:
-    """`remote` for a named `endpoint_url`, `local` for a sandbox on this machine, else
-    `tunnel`."""
+    """`remote` for a named `endpoint_url`, `local` for a sandbox on this machine, else `tunnel`."""
     if rollout.endpoint_url.strip():
         return "remote"
     return "local" if rollout.sandbox in LOCAL_SANDBOXES else "tunnel"
 
 
 def backend(environ: Mapping[str, str] | None = None) -> str:
-    """The party sampling is billed to: `tinker`, or `tinker@<host>` under a
-    `TINKER_BASE_URL`."""
+    """The party sampling is billed to: `tinker`, or `tinker@<host>` under a `TINKER_BASE_URL`."""
     environ = os.environ if environ is None else environ
     host = urlsplit(environ.get("TINKER_BASE_URL") or "").hostname
     return f"{TINKER}@{host}" if host else TINKER
@@ -69,14 +65,12 @@ def tinker_base_url(environ: Mapping[str, str] | None = None) -> str:
 
 
 def start_weights(cfg: Blueprint) -> str | None:
-    """The checkpoint the proxy starts on. A training run's `from_checkpoint` is a state
-    path Tinker cannot sample, so it starts on none and the first step points it."""
+    """The sampler path the proxy starts on; None for a state path, which cannot be sampled."""
     return None if cfg.trains else (cfg.model.from_checkpoint or None)
 
 
 def endpoint_settings(cfg: Blueprint, *, run: str | None = None) -> dict[str, Any]:
-    """The settings passed to `shipyard serve`. With `run`, the proxy's Tinker session is
-    tagged with it."""
+    """The settings passed to `shipyard serve`; with `run`, its Tinker session is tagged."""
     rollout = cfg.rollout
     tagged = {"metadata": {"shipyard_run": run, "shipyard_recipe": cfg.recipe.kind}} if run else {}
     return {
@@ -119,8 +113,7 @@ class ProviderEndpoint(Endpoint):
 
 @dataclass
 class ProxyEndpoint(Endpoint):
-    """The proxy over a Tinker sampler. The first job starts it, the run stops it, and it
-    remembers the path it was pointed at, so a batch answered by other weights is refused."""
+    """The proxy over a Tinker sampler: started by the first job, stopped by the run."""
 
     config: Blueprint
     directory: Path
@@ -141,9 +134,7 @@ class ProxyEndpoint(Endpoint):
         return backend(self.environ)
 
     async def open(self) -> None:
-        """Start the proxy once for this placement and wait until `/healthz` answers at the
-        address a sandbox dials. A remote proxy is pointed through its control route, or
-        left as it is. Once started, a call checks the proxy is still up."""
+        """Start the proxy once and wait for `/healthz`; after that, check it is still up."""
         if self.proxy is not None:
             self.alive()
             return
@@ -189,8 +180,7 @@ class ProxyEndpoint(Endpoint):
             raise ProxyGone(f"the proxy is no longer reachable: {why}")
 
     async def serve(self, path: str | None) -> None:
-        """Point the proxy at `path`, None for the base model, and note it as what this run
-        told it."""
+        """Point the proxy at `path`, None for the base model, and note it as this run's."""
         if self.proxy is None:
             raise RuntimeError("the proxy is not started; there is nothing to point")
         self.alive()
@@ -220,8 +210,7 @@ class ProxyEndpoint(Endpoint):
         )
 
     async def record(self, job: str, trials: Sequence[Trial]) -> Records:
-        """Drain every trial's records from the proxy, one `requests.jsonl` row per
-        record, and refuse a batch answered from a path this run did not point at."""
+        """Drain the trials' records, a `requests.jsonl` row each; refuse a path not this run's."""
         proxy = self.proxy
         if proxy is None:
             raise RuntimeError("nothing was served; there are no records to take")
@@ -239,8 +228,7 @@ class ProxyEndpoint(Endpoint):
         return taken
 
     def check(self, job: str, records: Records) -> None:
-        """`ProxyGone` if the proxy died under the batch, `NothingServed` if it served the
-        job nothing."""
+        """`ProxyGone` if the proxy died under the batch, `NothingServed` if it served nothing."""
         self.alive()
         why = served_nothing(records)
         if why:
@@ -261,8 +249,7 @@ class ProxyEndpoint(Endpoint):
 
 
 def served_nothing(taken: Mapping[str, Sequence[Record]]) -> str | None:
-    """Why the proxy served a job nothing, or None: no trial reached it, or every request
-    failed at the sampler. A job with one answered or refused request is not this case."""
+    """Why the proxy served a job nothing, or None when one request was answered or refused."""
     if not taken:
         return None
     made = [item for records in taken.values() for item in records]
@@ -295,8 +282,7 @@ def _row(job: str, trial: str, item: Record) -> dict[str, Any]:
 
 
 def answered_by_ours(job: str, taken: Mapping[str, Sequence[Record]], told: str | None) -> None:
-    """Raise unless every record of `job` was served from the path this run told its
-    proxy."""
+    """Raise unless every record of `job` was served from the path this run pointed at."""
     answered = {item.served for records in taken.values() for item in records if item.served}
     if answered - {told}:
         raise ValueError(

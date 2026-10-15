@@ -149,9 +149,7 @@ class Run:
         modules: Candidate | None = None,
         purpose: str = "rollout",
     ) -> Rollouts:
-        """Run one Harbor job over `batch`, the recipe's batch `index`, carrying `modules`
-        (the run's own when None). Stamp it with the trainer's update count and put every
-        verdict on the job row. The endpoint's check comes after the row."""
+        """One Harbor job over `batch`: the verdicts on its row, then the endpoint's check."""
         cfg, endpoint = self.config, self.endpoint
         await endpoint.open()
         self.noted()
@@ -229,9 +227,7 @@ class Run:
         modules: Candidate | None = None,
         purpose: str = "rollout",
     ) -> dict[str, Any]:
-        """Record a rollout of the policy: the modules' digest if it carried any, the graded
-        count, the masks, how each trial ended, and the party billed with its counts (off
-        the records for a served job, else what the harness reported)."""
+        """The job row: modules digest, graded count, masks, endings, and the party billed."""
         judged = verdicts(rolled)
         served = rolled.records is not None
         if served:
