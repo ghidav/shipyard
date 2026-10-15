@@ -22,13 +22,12 @@ from shipyard.gradient import Preset, row
 from shipyard.modules import Candidate, seed
 from shipyard.pack import Group, Member, Sequence, group
 from shipyard.proxy.wire import IMAGE_TOKEN, Picture, Record
-from shipyard.recipes import cispo, dapo, dr_grpo, fst
-from shipyard.recipes.fst import merged
+from shipyard.recipes import cispo, dapo, dr_grpo, fst, trainer_for
+from shipyard.recipes.fst import merged_rollouts as merged
 from shipyard.rollout import Rollouts
 from shipyard.run import Run
 from shipyard.trainer import Trainer
 from shipyard.training.client import TinkerClient
-from shipyard.training.trainer import CISPOTrainer, DAPOTrainer, DrGRPOTrainer
 from shipyard.training.trainer import Trainer as Procedure
 from shipyard.types import Agent, Connection, Endpoint, Policy, Records, Trial, harness
 from tests.records import FakeProxy, made
@@ -57,14 +56,6 @@ def preset_of(kind: str, **recipe: Any) -> Preset:
     loaded = load(BLUEPRINTS / kind).recipe.model_copy(update=recipe)
     module = {"dapo": dapo, "dr-grpo": dr_grpo, "cispo": cispo, "fst": fst}[kind]
     return module.preset(loaded)
-
-
-#: The recipe classes by `[recipe] kind`.
-TRAINERS: dict[str, type[Procedure]] = {
-    "dapo": DAPOTrainer,
-    "dr-grpo": DrGRPOTrainer,
-    "cispo": CISPOTrainer,
-}
 
 
 # ------------------------------------------------------------------- the fakes
@@ -578,7 +569,9 @@ async def _stepped_by(
         "sent": [_sent(one) for one in client.sent],
         "anchor": None if trainer.anchor is None else list(trainer.anchor.asked),
         "update": None if update is None else _update(update),
-        "row": {key: value for key, value in row.items() if key not in ("seconds", "jobs")},
+        "row": {
+            key: value for key, value in row.items() if key not in ("seconds", "jobs", "cycle")
+        },
     }
 
 
@@ -594,7 +587,8 @@ async def _credited_by(case: Credited, tmp_path: Path) -> dict[str, Any]:
     run.config.recipe = run.config.recipe.model_copy(update=dict(case.recipe))
     client = FakeTrainingClient(positional=True)
     agent = Agent(Policy(Budgeted(case.budget), TinkerClient(client)), [harness("pi")])
-    trainer = TRAINERS[case.kind](run, anchor=PositionalAnchor() if case.anchored else None)
+    procedure = trainer_for(run.config.recipe)
+    trainer = procedure(run, anchor=PositionalAnchor() if case.anchored else None)
     trainer.updates = case.updates
     with run:
         return await _stepped_by(trainer, agent, typed(case.groups(), agent), client)
@@ -610,12 +604,17 @@ async def _jobbed_by(
     served = opened.config.model.served
     policy = Policy(opened.endpoint, TinkerClient(client) if served else None)
     agent = Agent(policy, [harness(opened.config.rollout.harness)])
-    procedure = TRAINERS.get(case.kind, Procedure)
+    procedure = trainer_for(opened.config.recipe)
     trainer = procedure(opened, anchor=PositionalAnchor() if case.anchored else None)
     batch_tasks = [tmp_path / "tasks" / "golden" / task for task in case.tasks]
     with opened:
         async with agent.policy:
-            found = await trainer.job(agent, batch_tasks)
+            if case.texts > 1:
+                texts = _texts(tmp_path, case.texts)
+                trainer.population = [replace(agent, modules=text) for text in texts]
+                (found,) = [groups async for groups in trainer.sample(agent, iter([batch_tasks]))]
+            else:
+                found = await trainer.job(agent, batch_tasks)
             members = [one for group in found for one in group.members]
             out: dict[str, Any] = {
                 "verdicts": [_verdict(one.verdict) for one in members],
@@ -641,6 +640,7 @@ def _staged(
     home.mkdir()
     text = (BLUEPRINTS / case.kind / "run.toml").read_text(encoding="utf-8")
     text = text.replace('"aime-train"', '"golden"').replace('"fixture"', '"golden"')
+    text = text.replace("group_size = 4", f"group_size = {case.group_size}")
     (home / "run.toml").write_text(text, encoding="utf-8")
     proxy = ScriptedProxy(
         queues={task: list(found) for task, found in case.records.items()},

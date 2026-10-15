@@ -48,20 +48,21 @@ class Search:
         *,
         pareto: Values[Path] | None = None,
         budget: int,
+        minibatch: int,
+        patience: int | None,
         rng: random.Random,
         log: Log | None = None,
     ) -> Evolution:
         """GEPA's rounds over `tasks`, each candidate scored on `pareto` when given."""
-        recipe = self.recipe
         return await evolve(
             seed,
             tasks,
             pareto=pareto,
             write=self.propose,
             score=partial(self.score, agent),
-            minibatch=recipe.minibatch,
+            minibatch=minibatch,
             budget=budget,
-            patience=recipe.patience,
+            patience=patience,
             rollouts=self.score_group_size,
             rng=rng,
             log=self.run.log if log is None else log,
@@ -107,7 +108,14 @@ class GEPATrainer(Search, Trainer):
         feedback, pareto = search_sets(cfg)
         budget = recipe.budget or DEFAULT_PASSES * len({*feedback, *pareto}) * data.group_size
         result = await self.evolve(
-            agent, feedback, [seeded], pareto=pareto, budget=budget, rng=random.Random(data.seed)
+            agent,
+            feedback,
+            [seeded],
+            pareto=pareto,
+            budget=budget,
+            minibatch=recipe.minibatch,
+            patience=recipe.patience,
+            rng=random.Random(data.seed),
         )
         keep(result.best, kept / BEST)
         self.run.log(

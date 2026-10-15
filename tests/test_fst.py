@@ -25,16 +25,18 @@ from shipyard.config import (
 from shipyard.data import batches
 from shipyard.modules import SKILL_FILE, seed
 from shipyard.recipes import resolution, run_recipe
-from shipyard.recipes.fst import ADAM, BUDGET_PASSES, merged, preset
+from shipyard.recipes.fst import ADAM, BUDGET_PASSES, fst_trainer, preset
 from shipyard.recipes.gepa.reflect import COLLECTED
-from shipyard.rollout import Rollouts
 from shipyard.run import Run
-from tests.records import made
+from shipyard.sampling.endpoint import ProviderEndpoint
+from shipyard.training.trainer import CISPOTrainer
+from shipyard.types import Agent, Group, Member, Policy, Sequence, Trial, Verdict, harness
 from tests.test_cycle import drawn
 from tests.test_runner import fakes  # noqa: F401 - the proxy and the Tinker service, faked
 from tests.trials import FIXTURES, write_blueprint, write_result
 
 FST = Path(__file__).parent / "blueprints" / "fst"
+AGENT = Agent(Policy(ProviderEndpoint("m")), [harness("pi")])
 VALID = Path(__file__).parent / "modules" / "valid"
 
 
@@ -107,25 +109,33 @@ def test_a_population_that_does_not_divide_the_group_is_blocked(tmp_path: Path) 
     assert any(text.startswith("[recipe] population: 3 does not divide") for text in texts)
 
 
-def _part(job: str, suffix: str, updates: int = 3) -> Rollouts:
-    trials = [Path(f"jobs/{job}/{task}__{suffix}") for task in ("a", "b")]
-    return Rollouts(
-        job=job,
-        trials=trials,
-        plan=[(Path(task), 0) for task in ("a", "b")],
-        records={trial.name: [made()] for trial in trials},
-        updates=updates,
-    )
+def _group(task: str, job: str, *rewards: float) -> Group:
+    members = [
+        Member(
+            Trial(job, Path(task), at, harness("pi"), Path(f"jobs/{job}/{task}__{at}")),
+            Verdict(reward, None, None),
+            (Sequence((1, 2, 10 + at), ((2, 3),), (-0.1,)),),
+            1,
+        )
+        for at, reward in enumerate(rewards)
+    ]
+    return Group(Path(task), AGENT, harness("pi"), members)
 
 
-def test_the_jobs_of_a_step_merge_into_one_group_per_task() -> None:
-    found = merged([_part("j1", "one"), _part("j2", "two")], share=1)
-    assert [trial.name for trial in found.trials] == ["a__one", "a__two", "b__one", "b__two"]
-    assert [task.name for task, _ in found.plan] == ["a", "a", "b", "b"]
-    assert set(found.records or {}) == {"a__one", "a__two", "b__one", "b__two"}
-    assert (found.job, found.updates) == ("j1+j2", 3)
-    with pytest.raises(ValueError, match="different weights"):
-        merged([_part("j1", "one"), _part("j2", "two", updates=4)], share=1)
+async def test_the_jobs_of_a_step_merge_into_one_group_per_task(tmp_path: Path) -> None:
+    trainer = fst_trainer(CISPOTrainer)(Run.open(FST, root=tmp_path))
+    parts = [
+        [_group("a", "j1", 1.0), _group("b", "j1", 0.0)],
+        [_group("a", "j2", 0.0), _group("b", "j2", 0.0)],
+    ]
+    found = trainer.merged(parts)
+    assert [group.task.name for group in found] == ["a", "b"]
+    assert [[one.trial.job for one in group.members] for group in found] == [["j1", "j2"]] * 2
+    assert found[0].shaped == [1.0, 0.0] and found[0].reward_variance == 0.25
+    assert found[1].shaped == [0.0, 0.0] and found[1].reward_variance == 0.0
+    assert found[0].advantages == pytest.approx([1.0, -1.0], abs=1e-5), "credited as one group"
+    with pytest.raises(ValueError, match="different numbers of groups"):
+        trainer.merged([parts[0], parts[1][:1]])
 
 
 class Trials:
@@ -180,7 +190,9 @@ async def test_a_cycle_evolves_two_texts_then_splits_every_group_across_them(
     assert [(row["step"], row["cycle"]) for row in steps] == [(0, 0), (1, 0)]
     assert any(row["trained"] for row in steps), "a task the two texts split has spread"
     jobs = [
-        job for job in record.read(opened.directory / record.JOBS) if job["purpose"] == "rollout"
+        job
+        for job in record.read(opened.directory / record.JOBS)
+        if job["purpose"] in ("rollout", "search")
     ]
     assert [job["modules"] for job in jobs[-4:]] == population * 2, "one job per text per step"
     # The anchor set is both what the search learns from and what it keeps texts by: the
@@ -210,7 +222,9 @@ async def test_the_fast_phase_scores_each_cell_with_one_rollout_on_five_passes(
     (evolution,) = [row for row in rows if row.get("evolution")]
     assert 0 < evolution["spent"] <= BUDGET_PASSES * 4, "five passes over four tasks"
     jobs = [
-        job for job in record.read(opened.directory / record.JOBS) if job["purpose"] == "rollout"
+        job
+        for job in record.read(opened.directory / record.JOBS)
+        if job["purpose"] in ("rollout", "search")
     ]
     fast, slow = jobs[:-4], jobs[-4:]
     assert fast and all(job["trials"] == job["tasks"] for job in fast), "one rollout a cell"
