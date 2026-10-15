@@ -1,22 +1,18 @@
 """Dr. GRPO (Liu et al., arXiv 2503.20783): advantage = r - mean (no division by spread), PPO
 with one symmetric `clip` (0.2, App. G; the bounds `1 - clip` / `1 + clip` via
 `gradient.clipped`), token losses summed (Tinker's sum is the constant normalizer of
-3.2), and AdamW as App. G sets it. Degenerate groups are dropped, and refilled only when
-`refill` is set. The length rule among solved answers (`length_penalty`, `length_floor`,
-`length_cap`; `credit.shaped`) is shipyard's addition and off by default. The paper has
-none."""
+3.2), and AdamW as App. G sets it. Degenerate groups are dropped. The length rule among
+solved answers (`length_penalty`, `length_floor`, `length_cap`; `credit.shaped`) is
+shipyard's addition and off by default. The paper has none."""
 
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from shipyard import gradient
 from shipyard.gradient import Preset
 from shipyard.trainer import Adam
-
-if TYPE_CHECKING:
-    from shipyard.run import Run
 
 #: App. G (Table 6): betas 0.9 / 0.95, weight decay 0, the gradient norm clipped at 1.0, a
 #: constant learning rate. Eps is unstated, so the cookbook's applies.
@@ -37,7 +33,3 @@ def preset(recipe: Any) -> Preset:
         adam=replace(ADAM, warmup=int(recipe.warmup)),
         **gradient.shared(recipe),
     )
-
-
-async def run(run: Run) -> None:
-    await gradient.train(run, preset(run.config.recipe))

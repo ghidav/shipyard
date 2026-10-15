@@ -38,7 +38,7 @@ MODAL_IMAGE_BUILDER = "MODAL_IMAGE_BUILDER_VERSION"
 MODAL_IMAGE_BUILDER_VERSION = "2025.06"
 
 #: How one trial is run: Harbor's `Trial`, or a test's stand-in for it.
-Runner = Callable[[TrialConfig], Awaitable[Any]]
+TrialRunner = Callable[[TrialConfig], Awaitable[Any]]
 #: Where a job's modules are delivered: under the job's directory, beside its trials.
 DELIVERED = "modules"
 
@@ -48,7 +48,11 @@ class HarborEngine(RolloutEngine):
     job shares, and the settings a call runs under unless it brings its own."""
 
     def __init__(
-        self, rollout: Rollout, *, run_trial: Runner | None = None, progress: Reporter | None = None
+        self,
+        rollout: Rollout,
+        *,
+        run_trial: TrialRunner | None = None,
+        progress: Reporter | None = None,
     ) -> None:
         self.sandbox = rollout.sandbox
         self.jobs_dir = Path(rollout.jobs_dir)

@@ -1,4 +1,5 @@
-"""The recipes: one module per `[recipe] kind`, each an `async def run(run: Run)`."""
+"""The recipes: a trainer class per gradient `[recipe] kind`, run by the runner; the other
+kinds are modules with an `async def run(run: Run)`."""
 
 from __future__ import annotations
 
@@ -7,6 +8,7 @@ from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
 from shipyard.config import KINDS
+from shipyard.runner import TRAINERS, Runner
 
 if TYPE_CHECKING:
     from shipyard.run import Run
@@ -22,8 +24,13 @@ def module_for(kind: str) -> ModuleType:
 
 
 async def run_recipe(run: Run) -> None:
-    """Import the module named by `run.config.recipe.kind` and await its `run(run)`."""
-    await module_for(run.config.recipe.kind).run(run)
+    """Run the kind's procedure: the runner for a kind with a trainer class, else the
+    module's `run(run)`."""
+    kind = run.config.recipe.kind
+    if kind in TRAINERS:
+        await Runner.of(run).run()
+    else:
+        await module_for(kind).run(run)
 
 
 def resolution(recipe: Any) -> str | None:

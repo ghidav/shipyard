@@ -31,7 +31,7 @@ from shipyard.rollout import Rollouts
 from shipyard.run import Run
 from tests.records import made
 from tests.test_cycle import drawn
-from tests.test_loop import fakes  # noqa: F401 - the proxy and the Tinker service, faked
+from tests.test_runner import fakes  # noqa: F401 - the proxy and the Tinker service, faked
 from tests.trials import FIXTURES, write_blueprint, write_result
 
 FST = Path(__file__).parent / "blueprints" / "fst"

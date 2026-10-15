@@ -1,21 +1,19 @@
-"""The training loop shared by the gradient recipes, over the Tinker SDK. `Preset` holds what a
-recipe name resolves to. `step` publishes the weights, points the proxy, samples and refills,
-credits, applies, logs, and checkpoints every `every` steps. `train` runs the session of
-steps."""
+"""The old training step, kept for fst until it has a trainer class. `Preset` holds what a
+recipe name resolves to. `step` publishes the weights, points the proxy, samples, credits,
+applies, logs, and checkpoints every `every` steps."""
 
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 from shipyard import session
 from shipyard.config import LENGTH_CAP, PAPER_OVERLONG_BUFFER
-from shipyard.credit import Batch, carrying, credit
-from shipyard.data import batches
-from shipyard.pack import Group, group
+from shipyard.credit import Batch, credit
+from shipyard.pack import group
 from shipyard.sampling.endpoint import ProxyEndpoint
 from shipyard.trainer import Adam, Trainer, Update
 from shipyard.training.trainer import clipped
@@ -37,15 +35,12 @@ Sampler = Callable[["Sequence[Path]", int], Awaitable["Rollouts"]]
 __all__ = [
     "ROW",
     "Preset",
-    "Refill",
     "clipped",
     "optimizer",
-    "refilled",
     "resolution",
     "row",
     "shared",
     "step",
-    "train",
     "training",
 ]
 
@@ -55,8 +50,6 @@ ROW = (
     "trained",
     "groups",
     "rollouts",
-    "refills",
-    "refill_rollouts",
     "graded",
     "masked",
     "degenerate",
@@ -84,11 +77,11 @@ class Preset:
     """What a recipe name and its knobs resolve to. `loss_config` is Tinker's
     `loss_fn_config` for the step (see `clipped`); `clipping` describes it for `check`.
     `aggregation` is "prompt" (each prompt's token losses averaged, so every prompt weighs
-    the same) or "sum" (Tinker's sum over tokens). `refill` caps the extra sampling rounds
-    a step may take to fill its batch with groups that carry a gradient. The length rule
-    docks solved answers (`credit.shaped`). The overlong term docks a rollout that sampled
-    into the last `overlong_buffer` of its token budget (`credit.overlong`). `adam` is the
-    optimizer as the recipe's paper sets it."""
+    the same) or "sum" (Tinker's sum over tokens). `refill` is read and unused, since the
+    step that refilled a batch is gone. The length rule docks solved answers
+    (`credit.shaped`). The overlong term docks a rollout that sampled into the last
+    `overlong_buffer` of its token budget (`credit.overlong`). `adam` is the optimizer as
+    the recipe's paper sets it."""
 
     name: str
     normalize: bool
@@ -109,14 +102,6 @@ class Preset:
     learning_rate: float
     substeps: int
     refill: int
-
-
-@dataclass(frozen=True)
-class Refill:
-    """A step's extra sampling rounds: how many, and how many rollouts they sampled."""
-
-    refills: int
-    refill_rollouts: int
 
 
 def shared(recipe: Any) -> dict[str, Any]:
@@ -156,14 +141,7 @@ def resolution(preset: Preset) -> str:
         )
     parts.append("1 substep" if preset.substeps == 1 else f"{preset.substeps} substeps by prompt")
     parts.append(optimizer(preset.adam, preset.paper_warmup))
-    if preset.refill > 0:
-        rounds = "round" if preset.refill == 1 else "rounds"
-        parts.append(
-            f"degenerate groups dropped and refilled from the plan, up to {preset.refill} "
-            f"more {rounds}"
-        )
-    else:
-        parts.append("degenerate groups dropped")
+    parts.append("degenerate groups dropped")
     if preset.kl_coef > 0:
         parts.append(f"kl {preset.kl_coef} to the starting weights")
     return f"# {preset.name}: " + "; ".join(parts)
@@ -184,17 +162,6 @@ def optimizer(adam: Adam, paper_warmup: int = 0) -> str:
     elif paper_warmup > 0:
         said += f", no warm-up (the paper's is {paper_warmup} steps)"
     return said
-
-
-async def train(run: Run, preset: Preset) -> None:
-    """Run a `step` per batch of the plan inside `training`. A step may draw further
-    batches from the same plan to fill itself."""
-    cfg = run.config
-    data = cfg.data
-    async with training(run, preset) as (trainer, anchor):
-        planned = batches(cfg.datasets, size=data.batch_size, seed=data.seed, epochs=data.epochs)
-        for index, tasks in enumerate(planned):
-            await step(run, trainer, anchor, preset, tasks, index, plan=planned)
 
 
 @asynccontextmanager
@@ -251,12 +218,11 @@ async def step(
     *,
     sample: Sampler | None = None,
     about: Mapping[str, Any] | None = None,
-    plan: Iterator[Sequence[Path]] | None = None,
 ) -> None:
     """One step over `tasks`. Publish the weights and point the proxy at them, sample the
-    batch (with `sample` when given), refill it from `plan` under the preset's `refill`,
-    credit it, apply the gradient unless nothing was credited, log the row with `about`, and
-    checkpoint when `index + 1` divides by `[checkpoints] every`."""
+    batch (with `sample` when given), credit it, apply the gradient unless nothing was
+    credited, log the row with `about`, and checkpoint when `index + 1` divides by
+    `[checkpoints] every`."""
     serving = serving_of(run, preset)
     data, every = run.config.data, run.config.checkpoints.every
     # Published as `sample-<index>`, since the spec's `step-<index>` collides with the
@@ -266,57 +232,25 @@ async def step(
     path = await trainer.publish(f"sample-{index}", ttl_seconds=SERVE_TTL)
     await serving.serve(path)
 
-    async def draw(chosen: Sequence[Path], purpose: str = "rollout") -> Rollouts:
+    async def draw(chosen: Sequence[Path]) -> Rollouts:
         if sample is None:
-            return await run.sample(chosen, rollouts=data.group_size, index=index, purpose=purpose)
+            return await run.sample(chosen, rollouts=data.group_size, index=index)
         return await sample(chosen, index)
 
     groups = group(await draw(tasks), data.group_size)
-    refill: Refill | None = None
-    # Groups of one are never compared, so refilling them would only spend the plan.
-    if preset.refill > 0 and plan is not None and data.group_size > 1:
-        groups, refill = await refilled(
-            groups, preset, data.batch_size, data.group_size, plan, draw
-        )
-    limit = data.batch_size if refill is not None else None
-    batch = await credit(groups, preset, trainer, anchor, limit=limit, budget=serving.budget)
+    batch = await credit(groups, preset, trainer, anchor, budget=serving.budget)
     run.spent(
         serving.party, reference_tokens=batch.reference_tokens, anchor_tokens=batch.anchor_tokens
     )
     extra = dict(about or {})
     if batch.empty:
-        run.log(**row(index, batch, None, refill), **extra)
+        run.log(**row(index, batch, None), **extra)
         return
     update = await trainer.apply(batch, preset)
     run.spent(serving.party, train_tokens=update.train_tokens)
-    run.log(**row(index, batch, update, refill), **extra)
+    run.log(**row(index, batch, update), **extra)
     if (index + 1) % every == 0:
         await run.checkpoint(trainer, f"step-{index + 1}")
-
-
-async def refilled(
-    groups: Sequence[Group],
-    preset: Preset,
-    size: int,
-    group_size: int,
-    plan: Iterator[Sequence[Path]],
-    draw: Callable[[Sequence[Path], str], Awaitable[Rollouts]],
-) -> tuple[list[Group], Refill]:
-    """DAPO's dynamic sampling (Alg. 1, lines 6 to 8). While fewer than `size` groups carry
-    a gradient, sample the plan's next batch at the same weights and add its groups to the
-    step. The batches are consumed from the plan, as DAPO consumes its dataloader. Stop
-    after `preset.refill` rounds or when the plan runs out."""
-    found = list(groups)
-    rounds = rollouts = 0
-    while rounds < preset.refill and carrying(found, preset) < size:
-        more = next(plan, None)
-        if more is None:
-            break
-        rolled = await draw(more, "refill")
-        rounds += 1
-        rollouts += len(rolled)
-        found += group(rolled, group_size)
-    return found, Refill(refills=rounds, refill_rollouts=rollouts)
 
 
 def serving_of(run: Run, preset: Preset) -> ProxyEndpoint:
@@ -330,13 +264,10 @@ def serving_of(run: Run, preset: Preset) -> ProxyEndpoint:
     return run.endpoint
 
 
-def row(
-    index: int, batch: Batch, update: Update | None, refill: Refill | None = None
-) -> dict[str, Any]:
+def row(index: int, batch: Batch, update: Update | None) -> dict[str, Any]:
     """The step's metrics row in `ROW` order. `trained` says whether a gradient was taken.
-    A measure that was not taken is absent, including the refill counts when no refill
-    happened."""
+    A measure that was not taken is absent."""
     found: dict[str, Any] = {"step": index, "trained": update is not None}
-    for source in (batch, update, refill):
+    for source in (batch, update):
         found.update({key: getattr(source, key) for key in ROW if hasattr(source, key)})
     return {key: value for key in ROW if (value := found.get(key)) is not None}

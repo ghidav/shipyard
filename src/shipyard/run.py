@@ -28,7 +28,7 @@ from shipyard.sampling.endpoint import (
     ProxyEndpoint,
     tinker_base_url,
 )
-from shipyard.sampling.engine import HarborEngine, Runner
+from shipyard.sampling.engine import HarborEngine, TrialRunner
 from shipyard.types import Agent, Endpoint, Policy
 
 if TYPE_CHECKING:
@@ -120,12 +120,12 @@ class Run:
         record.write_json(self.directory / record.PROCESS, current)
 
     @property
-    def run_trial(self) -> Runner | None:
+    def run_trial(self) -> TrialRunner | None:
         """How one trial is run; None is Harbor's `Trial`. A test hands in its own."""
         return self.engine.run_trial
 
     @run_trial.setter
-    def run_trial(self, runner: Runner | None) -> None:
+    def run_trial(self, runner: TrialRunner | None) -> None:
         self.engine.run_trial = runner
 
     def reserve_job(self) -> str:
