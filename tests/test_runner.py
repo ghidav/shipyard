@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from harbor.models.trial.config import TrialConfig
 
-from shipyard import record, session
+from shipyard import record
 from shipyard.data import Generator, tasks
 from shipyard.run import Run
 from shipyard.runner import Runner, runner_in
@@ -86,7 +86,7 @@ def fakes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[FakeProxy, F
     monkeypatch.setattr("shipyard.sampling.endpoint.Proxy", proxy)
     service = FakeService(capabilities=capable((MODEL, True)))
     service.client.trained = -0.3
-    monkeypatch.setattr(session, "service_client", lambda metadata=None: service)
+    monkeypatch.setattr("shipyard.runner.service_client", lambda metadata=None: service)
     return proxy, service
 
 

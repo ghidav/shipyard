@@ -11,12 +11,12 @@ from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from shipyard import record, session
+from shipyard import record
 from shipyard.data import Generator
 from shipyard.modules import Candidate
 from shipyard.recipes import trainer_for
 from shipyard.run import Run
-from shipyard.training.client import TinkerClient
+from shipyard.training.client import TinkerClient, service_client
 from shipyard.training.trainer import Trainer
 from shipyard.types import SERVE_TTL, Agent, Evaluation, Policy, harness
 
@@ -100,7 +100,7 @@ class Runner:
         service = client = None
         if cfg.trains:
             metadata = {"shipyard_run": run.id, "shipyard_recipe": recipe.kind}
-            service = session.service_client(metadata)
+            service = service_client(metadata)
             client = await TinkerClient.open(
                 service,
                 model.name,

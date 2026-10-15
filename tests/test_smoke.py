@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-from shipyard import record, session
+from shipyard import record
 from shipyard.cli import app
 from shipyard.config import load
 from shipyard.data import Generator
@@ -40,7 +40,7 @@ def here(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     def no_session(metadata: Any = None) -> Any:
         raise AssertionError("a smoke run opens no training session")
 
-    monkeypatch.setattr(session, "service_client", no_session)
+    monkeypatch.setattr("shipyard.runner.service_client", no_session)
     return tmp_path
 
 
