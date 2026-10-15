@@ -13,9 +13,9 @@ from typing import TYPE_CHECKING
 from shipyard import types
 from shipyard.admit import verdict
 from shipyard.cost import billed_by
-from shipyard.gepa.fitness import Outcome
-from shipyard.gepa.propose import Proposer, Reflection
 from shipyard.modules import KINDS, Module, read, write
+from shipyard.recipes.gepa.fitness import Outcome
+from shipyard.recipes.gepa.propose import Proposer, Reflection
 from shipyard.rollout import Rollouts
 from shipyard.sampling.endpoint import ProviderEndpoint
 from shipyard.types import Agent, Policy, Settings

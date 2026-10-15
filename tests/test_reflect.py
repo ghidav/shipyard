@@ -14,9 +14,10 @@ from harbor.models.task.task import Task
 from harbor.models.trial.config import TrialConfig
 
 from shipyard import record
-from shipyard.gepa.fitness import Outcome
-from shipyard.gepa.propose import Reflection
-from shipyard.gepa.reflect import (
+from shipyard.modules import KINDS, PROMPT, PROMPT_FILE, SKILL_FILE, Candidate, Module
+from shipyard.recipes.gepa.fitness import Outcome
+from shipyard.recipes.gepa.propose import Reflection
+from shipyard.recipes.gepa.reflect import (
     COLLECTED,
     PUBLISH,
     REFERENCE,
@@ -27,7 +28,6 @@ from shipyard.gepa.reflect import (
     unwrapped,
     written,
 )
-from shipyard.modules import KINDS, PROMPT, PROMPT_FILE, SKILL_FILE, Candidate, Module
 from shipyard.rollout import Rollouts
 from shipyard.run import Run
 from shipyard.sampling.endpoint import ProviderEndpoint
@@ -207,7 +207,7 @@ def test_a_rewrite_that_fails_the_kinds_check_is_declined_and_said(
 ) -> None:
     trial = tmp_path / "reflection__abc"
     _published(trial, SKILL_FILE).write_text("# Solving\n\nno frontmatter any more\n")
-    with caplog.at_level(logging.WARNING, logger="shipyard.gepa.reflect"):
+    with caplog.at_level(logging.WARNING, logger="shipyard.recipes.gepa.reflect"):
         assert written(_rollouts(trial), _module()) is None
     assert "rewrite of 'solving' declined" in caplog.text
     assert "does not open with a `---` frontmatter block" in caplog.text
@@ -245,19 +245,19 @@ def test_a_trial_that_wrote_nothing_declines_and_one_that_died_says_so(
     quiet = tmp_path / "quiet"
     _published(quiet, "x")  # the directory, and nothing in it
     write_result(quiet)
-    with caplog.at_level(logging.INFO, logger="shipyard.gepa.reflect"):
+    with caplog.at_level(logging.INFO, logger="shipyard.recipes.gepa.reflect"):
         assert written(_rollouts(quiet), _module()) is None
     assert "WARNING" not in caplog.text and "wrote no 'SKILL.md'" in caplog.text
     caplog.clear()
     wrong = tmp_path / "wrong"
     _published(wrong, "notes.md").write_text("prose instead of the file")
-    with caplog.at_level(logging.WARNING, logger="shipyard.gepa.reflect"):
+    with caplog.at_level(logging.WARNING, logger="shipyard.recipes.gepa.reflect"):
         assert written(_rollouts(wrong), _module()) is None
     assert "it left ['notes.md']" in caplog.text
     caplog.clear()
     dead = tmp_path / "dead"
     write_result(dead, exception="AgentSetupTimeoutError")
-    with caplog.at_level(logging.WARNING, logger="shipyard.gepa.reflect"):
+    with caplog.at_level(logging.WARNING, logger="shipyard.recipes.gepa.reflect"):
         assert written(_rollouts(dead), _module()) is None
     assert "the reflection trial failed: AgentSetupTimeoutError" in caplog.text
 

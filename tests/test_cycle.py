@@ -14,10 +14,10 @@ from typing import Any
 
 import pytest
 
-from shipyard.gepa.cycle import Evolution, best, evolve, minibatches, perfect
-from shipyard.gepa.fitness import Outcome, tally
-from shipyard.gepa.propose import Reflection, component_for, propose
 from shipyard.modules import SKILL_FILE, Candidate, Module
+from shipyard.recipes.gepa.cycle import Evolution, best, evolve, minibatches, perfect
+from shipyard.recipes.gepa.fitness import Outcome, tally
+from shipyard.recipes.gepa.propose import Reflection, component_for, propose
 
 TASKS = tuple(Path("tasks/four") / name for name in ("t1", "t2", "t3", "t4"))
 HELD = tuple(Path("tasks/held") / name for name in ("h1", "h2", "h3"))

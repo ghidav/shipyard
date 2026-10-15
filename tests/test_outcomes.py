@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from shipyard.admit import BUDGET
-from shipyard.gepa.outcomes import MAX_FEEDBACK, MAX_INPUTS, MAX_TRANSCRIPT, outcomes
+from shipyard.recipes.gepa.outcomes import MAX_FEEDBACK, MAX_INPUTS, MAX_TRANSCRIPT, outcomes
 from shipyard.rollout import Rollouts
 from tests.records import made
 from tests.trials import write_result

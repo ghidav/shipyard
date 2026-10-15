@@ -258,7 +258,7 @@ async def test_a_trainer_class_of_ones_own_replaces_the_kinds(
     opened = Run.open(_blueprint(tmp_path), root=tmp_path / "runs")
     opened.run_trial = Alternating()
     with opened:
-        agent = await Runner.of(opened, trainer=Trainer).run()
+        agent = await Runner.of(opened, Trainer).run()
     assert agent.policy.client is not None and type(opened.trainer) is Trainer
     assert [row["loss_fn"] for row in _rows(opened)] == ["importance_sampling"] * 2
 

@@ -16,13 +16,13 @@ from typing import TYPE_CHECKING, Any
 from shipyard import gradient, record
 from shipyard.config import SLOW_KNOBS, CispoRecipe, DapoRecipe, DrGrpoRecipe
 from shipyard.data import batches
-from shipyard.gepa.cycle import evolve
-from shipyard.gepa.outcomes import outcomes
-from shipyard.gepa.reflect import reflect
 from shipyard.gradient import Preset
 from shipyard.modules import Candidate, keep, seed
 from shipyard.recipes import cispo, dapo, dr_grpo
 from shipyard.recipes.gepa import BEST, SEED
+from shipyard.recipes.gepa.cycle import evolve
+from shipyard.recipes.gepa.outcomes import outcomes
+from shipyard.recipes.gepa.reflect import reflect
 from shipyard.rollout import Rollouts
 from shipyard.trainer import Adam
 from shipyard.types import SERVE_TTL

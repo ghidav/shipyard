@@ -7,22 +7,14 @@ from typing import TYPE_CHECKING, Any
 from shipyard import session
 from shipyard.data import Generator
 from shipyard.training.client import TinkerClient
-from shipyard.training.trainer import CISPOTrainer, DAPOTrainer, DrGRPOTrainer, Trainer
+from shipyard.training.trainer import Trainer
 from shipyard.types import SERVE_TTL, Agent, Policy, harness
 
 if TYPE_CHECKING:
     from shipyard.config import Model
     from shipyard.run import Run
 
-__all__ = ["TRAINERS", "Runner"]
-
-#: The trainer class of each `[recipe] kind` the runner runs.
-TRAINERS: dict[str, type[Trainer]] = {
-    "dapo": DAPOTrainer,
-    "dr-grpo": DrGRPOTrainer,
-    "cispo": CISPOTrainer,
-    "evaluate": Trainer,
-}
+__all__ = ["Runner"]
 
 
 class Runner:
@@ -42,21 +34,21 @@ class Runner:
         self.evaluate_every = evaluate_every
 
     @classmethod
-    def of(cls, run: Run, *, trainer: type[Trainer] | None = None) -> Runner:
-        """The runner for an open run; `trainer` replaces the class its kind names."""
+    def of(cls, run: Run, trainer: type[Trainer]) -> Runner:
+        """The runner for an open run under the trainer class given."""
         cfg = run.config
         if cfg.trains and not cfg.model.served:
             raise ValueError(
                 f"[recipe] kind = {cfg.recipe.kind!r} trains the weights this run serves, and "
                 f"[model] provider = {cfg.model.provider!r} serves them elsewhere"
             )
-        procedure = (TRAINERS[cfg.recipe.kind] if trainer is None else trainer)(run)
+        procedure = trainer(run)
         run.trainer = procedure
         return cls(
             run,
             Generator.of(cfg),
             procedure,
-            epochs=cfg.data.epochs if cfg.trains else 0,
+            epochs=0 if cfg.recipe.kind == "evaluate" else cfg.data.epochs,
             evaluate_every=cfg.data.evaluate_every,
         )
 

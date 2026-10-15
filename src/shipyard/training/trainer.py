@@ -145,6 +145,7 @@ class Trainer:
         attempts: int | None = None,
         *,
         purpose: str = "rollout",
+        **about: Any,
     ) -> list[Group]:
         """The one place a policy is sampled: run, record, group, shape, advantage."""
         run = self.run
@@ -157,7 +158,7 @@ class Trainer:
         trials = await run.engine.run(job, tasks, attempts, agent=agent)
         run.progress.done(job)
         rolled = await run.recorded(
-            job, trials, batch=self.steps, modules=agent.modules, purpose=purpose
+            job, trials, batch=self.steps, modules=agent.modules, purpose=purpose, **about
         )
         found = groups(trials, rolled, agent)
         for group in found:

@@ -167,6 +167,7 @@ class Run:
         batch: int,
         modules: Candidate | None = None,
         purpose: str = "rollout",
+        **about: Any,
     ) -> Rollouts:
         """The job's record side: records drained, logs read, row written, the endpoint checked."""
         endpoint = self.endpoint
@@ -177,7 +178,9 @@ class Run:
             rolled = replace(rolled, records=records, asked=asked, failed=failed)
         rolled = replace(rolled, updates=getattr(self.trainer, "updates", None))
         tasks = len({one.task for one in trials})
-        self._record_job(rolled, batch=batch, tasks=tasks, modules=modules, purpose=purpose)
+        self._record_job(
+            rolled, batch=batch, tasks=tasks, modules=modules, purpose=purpose, **about
+        )
         if records is not None:
             try:
                 endpoint.check(job, records)
@@ -223,6 +226,7 @@ class Run:
         tasks: int,
         modules: Candidate | None = None,
         purpose: str = "rollout",
+        **about: Any,
     ) -> dict[str, Any]:
         """The job row: modules digest, graded count, masks, endings, and the party billed."""
         judged = verdicts(rolled)
@@ -241,6 +245,7 @@ class Run:
             counted=counted,
             batch=batch,
             tasks=tasks,
+            **about,
             **({"modules": modules.digest} if modules is not None else {}),
             graded=sum(each.reward is not None for each in judged),
             **({"masked": masked} if masked else {}),

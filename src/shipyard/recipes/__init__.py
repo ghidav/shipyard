@@ -8,12 +8,23 @@ from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
 from shipyard.config import KINDS
-from shipyard.runner import TRAINERS, Runner
+from shipyard.recipes.gepa import GEPATrainer
+from shipyard.runner import Runner
+from shipyard.training.trainer import CISPOTrainer, DAPOTrainer, DrGRPOTrainer, Trainer
 
 if TYPE_CHECKING:
     from shipyard.run import Run
 
-__all__ = ["module_for", "resolution", "run_recipe"]
+__all__ = ["TRAINERS", "module_for", "resolution", "run_recipe"]
+
+#: The trainer class of each `[recipe] kind` the runner runs.
+TRAINERS: dict[str, type[Trainer]] = {
+    "dapo": DAPOTrainer,
+    "dr-grpo": DrGRPOTrainer,
+    "cispo": CISPOTrainer,
+    "evaluate": Trainer,
+    "gepa": GEPATrainer,
+}
 
 #: The module of each kind. A hyphenated kind imports under its underscore name.
 MODULES = {kind: kind.replace("-", "_") for kind in KINDS}
@@ -27,7 +38,7 @@ async def run_recipe(run: Run) -> None:
     """The runner for a kind with a trainer class, else the module's `run(run)`."""
     kind = run.config.recipe.kind
     if kind in TRAINERS:
-        await Runner.of(run).run()
+        await Runner.of(run, TRAINERS[kind]).run()
     else:
         await module_for(kind).run(run)
 
