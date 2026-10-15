@@ -298,9 +298,9 @@ async def test_every_trial_is_pointed_at_the_address_that_names_it(tmp_path: Pat
         harbor,
         env={"OPENAI_BASE_URL": "https://api.openai.com/v1", "HTTPS_PROXY": "corp"},
     )
-    served = ProxyEndpoint(served(), tmp_path, proxy=proxy)
+    endpoint = ProxyEndpoint(served(), tmp_path, proxy=proxy)
     found = await engine.run(
-        "j", _batch(tmp_path, "alpha", "beta"), 2, agent=_agent("pi@0.85.1", endpoint=served)
+        "j", _batch(tmp_path, "alpha", "beta"), 2, agent=_agent("pi@0.85.1", endpoint=endpoint)
     )
     assert len(harbor.configs) == 4
     addresses = [config.agent.env["OPENAI_BASE_URL"] for config in harbor.configs]

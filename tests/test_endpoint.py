@@ -61,12 +61,8 @@ def test_a_sandbox_on_this_machine_reaches_a_proxy_here(sandbox: str) -> None:
 @pytest.mark.parametrize("sandbox", ["modal", "e2b", "daytona"])
 def test_a_sandbox_elsewhere_needs_a_tunnel_unless_a_url_is_named(sandbox: str) -> None:
     assert placement(served(sandbox=sandbox).rollout) == "tunnel"
-    assert (
-        placement(served(sandbox=sandbox, endpoint_url="https://p.example").rollout) == "remote"
-    )
-    assert (
-        placement(served(sandbox="docker", endpoint_url="https://p.example").rollout) == "remote"
-    )
+    assert placement(served(sandbox=sandbox, endpoint_url="https://p.example").rollout) == "remote"
+    assert placement(served(sandbox="docker", endpoint_url="https://p.example").rollout) == "remote"
 
 
 def test_the_party_is_tinker_or_tinker_at_the_backends_host() -> None:
@@ -204,9 +200,7 @@ async def test_a_remote_proxy_without_a_control_token_serves_only_what_it_was_st
     with pytest.raises(RuntimeError, match=CONTROL_TOKEN_ENV):
         await ProxyEndpoint(cfg, tmp_path, environ=environ).open()
     with pytest.raises(ValueError, match=PROXY_TOKEN_ENV):
-        await ProxyEndpoint(
-            served(endpoint_url="https://p.example"), tmp_path, environ={}
-        ).open()
+        await ProxyEndpoint(served(endpoint_url="https://p.example"), tmp_path, environ={}).open()
 
 
 # ---------------------------------------------------------------------- the connection
