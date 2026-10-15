@@ -654,7 +654,7 @@ def _sequence(one: Sequence) -> dict[str, Any]:
 
 
 def _job(one: Mapping[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in one.items() if key not in ("at", "job")}
+    return {key: value for key, value in one.items() if key not in ("at", "job", "epoch")}
 
 
 def _requests(directory: Path, rolled: Rollouts) -> list[dict[str, Any]]:

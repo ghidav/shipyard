@@ -97,6 +97,31 @@ class Run:
         )
         return cls(directory, config, carried)
 
+    @classmethod
+    def reopen(cls, directory: Path, *, resumed: str | None = None) -> Self:
+        """The run as it stands, to go on: a new process note keeps the earlier ones."""
+        directory = Path(directory)
+        config = load(directory)
+        carried = directory / record.MODULES / CARRIED
+        run = cls(directory, config, seed(carried) if carried.is_dir() else None)
+        run._seq = sum(1 for _ in record.read(directory / record.METRICS))
+        earlier = record.read_json(directory / record.PROCESS)
+        before = earlier.pop("earlier", [])
+        record.write_json(
+            directory / record.PROCESS,
+            {
+                "pid": os.getpid(),
+                "started_at": record.now(),
+                "version": version(),
+                "blueprint": earlier.get("blueprint"),
+                "kind": config.recipe.kind,
+                **({"tinker_base_url": tinker_base_url()} if config.model.served else {}),
+                **({"resumed": resumed} if resumed else {}),
+                "earlier": [*before, earlier] if earlier else before,
+            },
+        )
+        return run
+
     @staticmethod
     def read(directory: Path) -> dict[str, Any]:
         """The process note of a run directory, open or closed; `{}` when it has none."""

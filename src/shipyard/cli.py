@@ -1,4 +1,4 @@
-"""The command line: check a blueprint, run it, list the runs, show one, serve a model."""
+"""The command line: check, run, resume, evaluate, list, show, serve."""
 
 from __future__ import annotations
 
@@ -19,11 +19,13 @@ from rich.logging import RichHandler
 from rich.markup import escape
 from rich.table import Table
 
-from shipyard import config, record, resolved
-from shipyard.config import Finding
+from shipyard import config, data, record, resolved
+from shipyard.config import ConfigError, Finding
+from shipyard.data import NoSuchDataset
 from shipyard.proxy.client import Unreachable
 from shipyard.recipes import run_recipe
 from shipyard.run import Run, RunRefused, runs_root
+from shipyard.runner import Runner
 from shipyard.sampling.endpoint import NothingServed, ProxyGone
 from shipyard.show import fitted, print_run, sections, state_of, styled
 from shipyard.smoke import SmokeFailed
@@ -37,7 +39,7 @@ app = typer.Typer(
 console = Console()
 
 BlueprintArgument = Annotated[
-    Path, typer.Argument(help="a directory holding run.toml, or the file")
+    Path, typer.Argument(help="a directory holding run.toml, or the file; with --resume, a run id")
 ]
 RunArgument = Annotated[str, typer.Argument(help="a run id, `<blueprint>__<7 chars>`")]
 RootOption = Annotated[
@@ -55,6 +57,20 @@ SmokeOption = Annotated[
         "--smoke",
         help="one task, one rollout, no gradient, checkpoint or reflection. Runs the "
         "sampling path end to end, prints a report, and exits 0 only if a trial came back",
+    ),
+]
+
+ResumeOption = Annotated[
+    bool,
+    typer.Option("--resume", help="go on from the run's last checkpoint; the argument is a run id"),
+]
+CheckpointOption = Annotated[
+    str, typer.Option("--checkpoint", help="the checkpoint tag to measure; the last by default")
+]
+TestOption = Annotated[
+    str | None,
+    typer.Option(
+        "--test", help="a dataset under tasks/ to measure on; the run's [data] test by default"
     ),
 ]
 
@@ -96,9 +112,18 @@ def check(
 
 
 @app.command()
-def run(blueprint: BlueprintArgument, root: RootOption = None, smoke: SmokeOption = False) -> None:
+def run(
+    blueprint: BlueprintArgument,
+    root: RootOption = None,
+    smoke: SmokeOption = False,
+    resume: ResumeOption = False,
+) -> None:
     """Check the blueprint, open a run, execute its recipe (with --smoke, sample one trial
-    and report it), and record how it ended."""
+    and report it), and record how it ended. With --resume, go on with a run from its
+    last checkpoint."""
+    if resume:
+        started = _reopened(runs_root(root) / blueprint.name)
+        raise typer.Exit(_executed(started.opened, lambda: asyncio.run(started.run())))
     findings = config.check(blueprint)
     _print_findings([found for found in findings if found.level != "ok"])
     if _blocked(findings):
@@ -109,6 +134,46 @@ def run(blueprint: BlueprintArgument, root: RootOption = None, smoke: SmokeOptio
     except RunRefused as refused:
         console.print(f"[red]{escape(str(refused))}[/red]")
         raise typer.Exit(1) from None
+    work = (lambda: _smoke(opened)) if smoke else (lambda: asyncio.run(run_recipe(opened)))
+    raise typer.Exit(_executed(opened, work))
+
+
+@app.command()
+def evaluate(
+    run_id: RunArgument,
+    root: RootOption = None,
+    checkpoint: CheckpointOption = "last",
+    test: TestOption = None,
+) -> None:
+    """Measure one of a run's checkpoints on a test set, as one more row of its metrics."""
+    started = _reopened(runs_root(root) / run_id, checkpoint=checkpoint)
+    try:
+        tasks = data.tasks(test) if test else started.generator.test
+    except NoSuchDataset as refused:
+        console.print(f"[red]{escape(str(refused))}[/red]")
+        raise typer.Exit(1) from None
+    if not tasks:
+        console.print("[red]the run names no [data] test; pass --test[/red]")
+        raise typer.Exit(1)
+    found: list[Any] = []
+    code = _executed(started.opened, lambda: found.append(asyncio.run(started.evaluate(tasks))))
+    if found and found[0] is not None:
+        for key, value in vars(found[0]).items():
+            console.print(f"  {key:<10}{value}", highlight=False)
+    raise typer.Exit(code)
+
+
+def _reopened(directory: Path, *, checkpoint: str = "last") -> Runner:
+    """The runner over a run reopened at a checkpoint, or exit 1 saying why not."""
+    try:
+        return Runner.from_run(directory, checkpoint=checkpoint)
+    except (ValueError, ConfigError) as refused:
+        console.print(f"[red]{escape(str(refused))}[/red]")
+        raise typer.Exit(1) from None
+
+
+def _executed(opened: Run, work: Callable[[], Any]) -> int:
+    """Run `work` inside the run, stopping on signals, and print how it ended."""
     console.print(
         f"[bold cyan]{opened.id}[/bold cyan]  [dim]{escape(str(opened.directory))}[/dim]",
         highlight=False,
@@ -118,10 +183,7 @@ def run(blueprint: BlueprintArgument, root: RootOption = None, smoke: SmokeOptio
     code = 0
     try:
         with opened:
-            if smoke:
-                _smoke(opened)
-            else:
-                asyncio.run(run_recipe(opened))
+            work()
     except KeyboardInterrupt:
         code = 130
     except (SmokeFailed, NothingServed, ProxyGone, Unreachable):
@@ -136,7 +198,7 @@ def run(blueprint: BlueprintArgument, root: RootOption = None, smoke: SmokeOptio
         style = "yellow" if code == 130 else "red"
         console.print(f"[{style}]{escape(str(note['error']))}[/]", highlight=False, soft_wrap=True)
     console.print(f"{opened.id}  {styled(state_of(note))}", highlight=False)
-    raise typer.Exit(code)
+    return code
 
 
 def _smoke(opened: Run) -> None:

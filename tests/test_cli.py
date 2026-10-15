@@ -438,3 +438,14 @@ def test_an_evaluate_run_shows_its_jobs_and_costs(
     assert as_json["metrics"]["count"] == 1 and final["evaluation"] is True
     assert final["graded"] == 2 and final["masked"] == 2 and final["mean"] == 1.0
     assert "total" not in json.dumps(as_json["costs"])
+
+
+def test_resume_and_evaluate_refuse_a_run_with_no_checkpoint(tmp_path: Path) -> None:
+    root = tmp_path / "r"
+    opened = Run.open(EVALUATE, root=root)
+    result = runner.invoke(app, ["run", opened.id, "--resume", "--root", str(root)])
+    assert result.exit_code == 1 and "no checkpoint to go on from" in result.output
+    result = runner.invoke(app, ["evaluate", opened.id, "--root", str(root)])
+    assert result.exit_code == 1 and "no checkpoint to go on from" in result.output
+    result = runner.invoke(app, ["evaluate", "nope__0000000", "--root", str(root)])
+    assert result.exit_code == 1 and "no run at" in result.output

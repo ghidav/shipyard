@@ -4,7 +4,7 @@ population of K texts co-evolve in cycles."""
 from __future__ import annotations
 
 import random
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from collections.abc import Sequence as Values
 from dataclasses import replace
 from functools import partial
@@ -17,7 +17,7 @@ from shipyard.modules import keep, seed
 from shipyard.recipes.gepa import BEST, SEED, Search
 from shipyard.recipes.gepa.reflect import reflect
 from shipyard.training.trainer import CISPOTrainer, DAPOTrainer, DrGRPOTrainer, Trainer
-from shipyard.types import Adam, Agent, Batches, Group, Update
+from shipyard.types import Adam, Agent, Batches, Checkpoint, Group, Modules, Policy, Update
 
 if TYPE_CHECKING:
     from shipyard.run import Run
@@ -85,6 +85,8 @@ class FST(Search):
         )
         self.population: list[Agent] = []
         self.cycles = 0
+        #: Batches of the cycle in progress already stepped, on a resume.
+        self.offset = 0
 
     async def train(self, agent: Agent, tasks: Batches) -> Agent:
         """Cycles of `cycle` batches: a fast phase over the cycle's tasks, then its slow steps."""
@@ -94,10 +96,20 @@ class FST(Search):
             seeded = seed(self.run.config.home / fst.modules)
             keep(seeded, kept / SEED)
             self.population = [replace(agent, modules=seeded)]
+        else:
+            self.population = [replace(agent, modules=one.modules) for one in self.population]
+            agent = self.population[0]
         batches = list(tasks)
-        for start in range(0, len(batches), fst.cycle):
-            chunk = batches[start : start + fst.cycle]
+        start = 0
+        while start < len(batches):
+            chunk = batches[start : start + fst.cycle - self.offset]
+            start += len(chunk)
             cycle = self.cycles
+            if self.offset:
+                self.offset = 0
+                agent = await super().train(agent, iter(chunk))
+                self.cycles += 1
+                continue
             anchor = list(dict.fromkeys(task for batch in chunk for task in batch))
             anchor = anchor[: fst.anchor] if fst.anchor else anchor
             # Scoring the carried-in population is added to the budget, except its first member.
@@ -151,6 +163,24 @@ class FST(Search):
             group.advantages = self.advantage(group)
             found.append(group)
         return found
+
+    async def checkpoint(
+        self, agent: Agent, tag: str, *, keep: bool = False, **more: Any
+    ) -> Checkpoint | None:
+        return await super().checkpoint(agent, tag, keep=keep, cycle=self.cycles, **more)
+
+    def consumed(self, jobs: Values[Mapping[str, Any]], row: Mapping[str, Any]) -> int:
+        return super().consumed(jobs, row) // self.fst.population
+
+    def restore(self, row: Mapping[str, Any], consumed: int) -> Modules | None:
+        """The population of the checkpoint's cycle, and where in the cycle it stood."""
+        super().restore(row, consumed)
+        kept = self.run.directory / record.MODULES / f"cycle-{row['cycle']}"
+        texts = [seed(kept / str(rank)) for rank in range(self.fst.population)]
+        self.population = [Agent(Policy(self.run.endpoint), [], text) for text in texts]
+        self.offset = consumed % self.fst.cycle
+        self.cycles = row["cycle"] if self.offset else row["cycle"] + 1
+        return texts[0]
 
     def weights(self, sizes: Values[int]) -> list[float]:
         """Each prompt weighs the same (Eq. 4), whatever the slow recipe does."""
