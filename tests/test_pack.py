@@ -1,11 +1,10 @@
 """Records into sequences: the token-prefix rule, the target spans, the datum convention
-checked token for token against the cookbook's own, and the groups a job falls into."""
+checked token for token against the cookbook's own."""
 
 from __future__ import annotations
 
 import base64
 from dataclasses import replace
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -19,9 +18,7 @@ from tinker_cookbook.supervised.common import (
 
 from shipyard.pack import Sequence, chains, datum, model_input, packable, sequences, shifted
 from shipyard.proxy.wire import IMAGE_TOKEN, Picture, Record
-from shipyard.rollout import Rollouts
 from tests.records import made
-from tests.trials import write_result
 
 P1, C1, T1, C2, T2, C3 = (1, 2, 3), (10, 11), (20,), (12,), (21, 22), (13, 14)
 PNG = base64.b64encode(b"png-bytes").decode()
@@ -234,24 +231,3 @@ def test_a_datum_refuses_misaligned_inputs_and_a_sequence_too_short_to_shift() -
     headless = Sequence((5, 6), ((0, 2),), (-0.1, -0.2))
     made_one = datum(headless, logprobs=headless.mu, advantages=[1.0, 1.0])
     assert made_one.loss_fn_inputs["mask"].tolist() == [1] and made_one.model_input.to_ints() == [5]
-
-
-# ----------------------------------------------------------------------- groups
-
-
-def _job(tmp_path: Path, records: dict[str, list[Record] | None], outcomes: dict) -> Rollouts:
-    """Two tasks, two rollouts each, in plan order, with a result and records per trial."""
-    trials, plan = [], []
-    for task in ("a", "b"):
-        for index in range(2):
-            name = f"{task}__{index}"
-            outcome = outcomes.get(name)
-            trial = tmp_path / "jobs" / "j" / name
-            if outcome is not None:
-                write_result(trial, **outcome)
-            else:
-                trial.mkdir(parents=True)
-            trials.append(trial)
-            plan.append((tmp_path / "tasks" / task, index))
-    taken = {name: list(found) for name, found in records.items() if found is not None}
-    return Rollouts(job="j", trials=trials, plan=plan, records=taken, updates=3)

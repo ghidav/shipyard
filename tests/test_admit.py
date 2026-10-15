@@ -133,10 +133,10 @@ def test_verdicts_follow_plan_order_and_scores_leave_the_masked_out(tmp_path: Pa
     lost = write_result(tmp_path / "lost", reward=0.0)
     cut = write_result(tmp_path / "cut", reward=1.0, exception="AgentTimeoutError")
     gone = tmp_path / "gone"
-    rollouts = Rollouts(job="j", trials=[won, gone, lost, cut], plan=[])
+    rollouts = Rollouts(job="j", trials=[won, gone, lost, cut])
     assert [found.mask for found in verdicts(rollouts)] == [None, ENV_ERROR, None, TIMEOUT]
     assert scores(rollouts) == [1.0, 0.0]
-    assert scores(Rollouts(job="j", trials=[gone, cut], plan=[])) == []
+    assert scores(Rollouts(job="j", trials=[gone, cut])) == []
 
 
 # ----------------------------------------------------------------- the served endings
@@ -254,14 +254,14 @@ def test_verdicts_read_the_records_and_turn_counts_attached_to_the_rollouts(
         quiet.name: [],
         short.name: [made()],
     }
-    rollouts = Rollouts(job="j", trials=[won, cut, quiet, short], plan=[], records=records)
+    rollouts = Rollouts(job="j", trials=[won, cut, quiet, short], records=records)
     assert [v.mask for v in verdicts(rollouts)] == [None, None, ENV_ERROR, None]
     assert scores(rollouts) == [1.0, 0.0, 1.0]
-    asked = Rollouts(job="j", trials=[won, short], plan=[], records=records, asked={short.name: 2})
+    asked = Rollouts(job="j", trials=[won, short], records=records, asked={short.name: 2})
     assert [v.mask for v in verdicts(asked)] == [None, ENV_ERROR]
-    failed = Rollouts(job="j", trials=[won, short], plan=[], records=records, failed={won.name})
+    failed = Rollouts(job="j", trials=[won, short], records=records, failed={won.name})
     assert [v.mask for v in verdicts(failed)] == [API_ERROR, None]
-    plain = Rollouts(job="j", trials=[won, cut, quiet], plan=[])
+    plain = Rollouts(job="j", trials=[won, cut, quiet])
     assert scores(plain) == [1.0, 1.0, 1.0], "without records, the files alone decide"
 
 

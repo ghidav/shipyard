@@ -17,7 +17,7 @@ from shipyard.modules import keep, seed
 from shipyard.recipes.gepa import BEST, SEED, Search
 from shipyard.recipes.gepa.reflect import reflect
 from shipyard.training.trainer import CISPOTrainer, DAPOTrainer, DrGRPOTrainer, Trainer
-from shipyard.types import Adam, Agent, Batches, Checkpoint, Group, Modules, Policy, Update
+from shipyard.types import Adam, Agent, Batches, Group, Modules, Policy, Update
 
 if TYPE_CHECKING:
     from shipyard.run import Run
@@ -164,10 +164,8 @@ class FST(Search):
             found.append(group)
         return found
 
-    async def checkpoint(
-        self, agent: Agent, tag: str, *, keep: bool = False, **more: Any
-    ) -> Checkpoint | None:
-        return await super().checkpoint(agent, tag, keep=keep, cycle=self.cycles, **more)
+    async def checkpoint(self, agent: Agent, tag: str, *, keep: bool = False, **more: Any) -> None:
+        await super().checkpoint(agent, tag, keep=keep, cycle=self.cycles, **more)
 
     def consumed(self, jobs: Values[Mapping[str, Any]], row: Mapping[str, Any]) -> int:
         return super().consumed(jobs, row) // self.fst.population

@@ -21,7 +21,6 @@ __all__ = [
     "Adam",
     "Agent",
     "Batches",
-    "Checkpoint",
     "Connection",
     "Datum",
     "Endpoint",
@@ -84,7 +83,6 @@ class Forward:
     """What `forward_backward` returns: each datum's logprobs at every input position."""
 
     logprobs: list[list[float]]
-    metrics: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -239,12 +237,11 @@ class Harness:
     #: Harbor's installed agent: a name with its version, or an import path.
     agent: str
     profile: Profile = field(default_factory=Profile)
-    effort: str | None = None
 
 
-def harness(named: str, *, effort: str | None = None) -> Harness:
+def harness(named: str) -> Harness:
     """A built-in harness by the name `[rollout] harness` takes."""
-    return Harness(bare_name(named).strip(), named, profile_for(named), effort)
+    return Harness(bare_name(named).strip(), named, profile_for(named))
 
 
 @dataclass(frozen=True)
@@ -279,12 +276,6 @@ class Trial:
     @property
     def name(self) -> str:
         return self.dir.name
-
-    @property
-    def result(self) -> dict[str, Any] | None:
-        from shipyard.admit import result_of
-
-        return result_of(self.dir)
 
 
 class RolloutEngine(ABC):
@@ -353,22 +344,6 @@ class Group:
 
 
 # ----------------------------------------------------------------- the record
-
-
-@dataclass(frozen=True)
-class Checkpoint:
-    """The agent written down, and where the trainer stood."""
-
-    tag: str
-    state_path: str
-    sampler_path: str
-    #: None keeps it until deleted.
-    ttl_hours: float | None
-    step: int
-    updates: int
-    epoch: int
-    modules: str | None = None
-    harness: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

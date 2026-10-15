@@ -19,7 +19,6 @@ from shipyard.types import (
     Adam,
     Agent,
     Batches,
-    Checkpoint,
     Datum,
     Evaluation,
     Forward,
@@ -449,45 +448,31 @@ class Trainer:
         self.run.log(**kept, **rest)
         return {**kept, **rest}
 
-    async def checkpoint(
-        self, agent: Agent, tag: str, *, keep: bool = False, **more: Any
-    ) -> Checkpoint | None:
+    async def checkpoint(self, agent: Agent, tag: str, *, keep: bool = False, **more: Any) -> None:
         """Save state and sampler weights under `tag`, and the agent written down to the record."""
         client = agent.policy.client
         if client is None:
-            return None
+            return
         hours = None if keep else self.run.config.checkpoints.ttl_hours
         ttl = None if hours is None else int(hours * SECONDS_PER_HOUR)
         state = await client.save_state(tag, ttl_seconds=ttl)
         sampler = await client.save_weights_for_sampler(tag, ttl_seconds=ttl)
-        saved = Checkpoint(
-            tag,
-            state,
-            sampler,
-            hours,
-            self.steps,
-            self.updates,
-            self.epoch,
-            agent.modules.digest if agent.modules is not None else None,
-            tuple(one.name for one in agent.harness),
-        )
         record.append(
             self.run.directory / record.CHECKPOINTS,
             {
-                "tag": saved.tag,
-                "state_path": saved.state_path,
-                "sampler_path": saved.sampler_path,
-                "ttl_hours": saved.ttl_hours,
-                "step": saved.step,
-                "updates": saved.updates,
-                "epoch": saved.epoch,
-                "modules": saved.modules,
-                "harness": list(saved.harness),
+                "tag": tag,
+                "state_path": state,
+                "sampler_path": sampler,
+                "ttl_hours": hours,
+                "step": self.steps,
+                "updates": self.updates,
+                "epoch": self.epoch,
+                "modules": agent.modules.digest if agent.modules is not None else None,
+                "harness": [one.name for one in agent.harness],
                 **more,
             },
         )
-        logger.info("checkpoint %s: %s", saved.tag, saved.sampler_path)
-        return saved
+        logger.info("checkpoint %s: %s", tag, sampler)
 
     def consumed(self, jobs: Values[Mapping[str, Any]], row: Mapping[str, Any]) -> int:
         """The batches of the checkpoint's epoch stepped before it: its rollout jobs."""
