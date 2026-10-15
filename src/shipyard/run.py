@@ -17,7 +17,7 @@ from shortuuid import ShortUUID
 
 from shipyard import record, types
 from shipyard.admit import read_logs, verdicts
-from shipyard.config import Blueprint, FstRecipe, GepaRecipe, config_file, load, modules_dir
+from shipyard.config import Blueprint, Search, config_file, load, modules_dir
 from shipyard.cost import Costs, billed_by, reported, sampled, sandbox_seconds
 from shipyard.modules import Candidate, keep, seed
 from shipyard.progress import Reporter, reporter
@@ -319,7 +319,7 @@ def _process(config: Blueprint, blueprint: str | None, **extra: Any) -> dict[str
 def carried_modules(config: Blueprint) -> Candidate | None:
     """The candidate a run carries into every job, seeded from `[recipe] modules`. None
     when the key is unset or the recipe (gepa, fst) seeds its own search."""
-    return None if isinstance(config.recipe, GepaRecipe | FstRecipe) else seeded(config)
+    return None if isinstance(config.recipe, Search) else seeded(config)
 
 
 def seeded(config: Blueprint) -> Candidate | None:
