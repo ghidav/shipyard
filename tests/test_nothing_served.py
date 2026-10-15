@@ -178,5 +178,5 @@ async def test_a_gepa_search_whose_seed_nothing_reached_stops(
     with pytest.raises(NothingServed, match=DEAD), opened:
         await run_recipe(opened)
     [job] = list(record.read(opened.directory / record.JOBS))
-    assert job["purpose"] == "rollout" and job["batch"] == 0
+    assert job["purpose"] == "search" and job["batch"] == 0
     assert not (opened.directory / record.METRICS).exists()

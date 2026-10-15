@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from shipyard.gepa.fitness import Fitness, Outcome, mean, tally
+from shipyard.recipes.gepa.fitness import Fitness, Outcome, mean, tally
 
 TASKS = ("t1", "t2", "t3", "t4")
 

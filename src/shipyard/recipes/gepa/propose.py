@@ -8,8 +8,8 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
-from shipyard.gepa.fitness import Outcome
 from shipyard.modules import Candidate, Module
+from shipyard.recipes.gepa.fitness import Outcome
 
 
 @dataclass(frozen=True)

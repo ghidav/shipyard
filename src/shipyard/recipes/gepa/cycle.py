@@ -15,9 +15,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from shipyard.gepa.fitness import Fitness, Outcome, Scorer, mean, tally
-from shipyard.gepa.propose import Proposer, component_for, propose
 from shipyard.modules import Candidate
+from shipyard.recipes.gepa.fitness import Fitness, Outcome, Scorer, mean, tally
+from shipyard.recipes.gepa.propose import Proposer, component_for, propose
 
 logger = logging.getLogger(__name__)
 

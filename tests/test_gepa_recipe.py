@@ -24,12 +24,12 @@ from shipyard.config import (
     search_sets,
 )
 from shipyard.data import held_out
-from shipyard.gepa.cycle import Evolution
-from shipyard.gepa.reflect import COLLECTED
 from shipyard.modules import SKILL_FILE, seed
-from shipyard.recipes import gepa, run_recipe
-from shipyard.recipes.gepa import BEST, SEED
+from shipyard.recipes import run_recipe
+from shipyard.recipes.gepa import BEST, SEED, GEPATrainer
+from shipyard.recipes.gepa.reflect import COLLECTED
 from shipyard.run import Run
+from shipyard.runner import Runner
 from tests.test_cycle import drawn
 from tests.trials import FIXTURES, fixture_tasks, write_blueprint, write_result
 
@@ -125,13 +125,13 @@ async def test_the_recipe_runs_end_to_end_on_fakes(
     # it served, the seed's being round 0.
     jobs = list(record.read(opened.directory / record.JOBS))
     assert [job["purpose"] for job in jobs] == [
-        "rollout",
-        "rollout",
+        "search",
+        "search",
         "reflection",
-        "rollout",
-        "rollout",
+        "search",
+        "search",
     ]
-    assert [job.get("batch") for job in jobs] == [0, 1, None, 1, 1]
+    assert [job.get("round") for job in jobs] == [0, 1, None, 1, 1]
     assert [job.get("tasks") for job in jobs] == [2, 1, None, 1, 2]
     assert [job["modules"] for job in jobs if "modules" in job] == [
         seeded.digest,
@@ -141,7 +141,7 @@ async def test_the_recipe_runs_end_to_end_on_fakes(
     ]
     assert jobs[2]["component"] == "solving" and jobs[2]["candidate"] == seeded.digest
     assert jobs[2]["party"] == "anthropic" and jobs[2]["input_tokens"] == 1000
-    assert [job["party"] for job in jobs if job["purpose"] == "rollout"] == ["openrouter"] * 4
+    assert [job["party"] for job in jobs if job["purpose"] == "search"] == ["openrouter"] * 4
     assert fakes.reflected == [[f"00-tasks-fixture-{drawn}.txt"]]
     reflection = fakes.configs[3]
     assert reflection.agent.name == "claude-code" and reflection.verifier.disable is True
@@ -235,10 +235,10 @@ async def test_a_quiet_reflector_leaves_the_seed_as_the_winner(
 
     opened.run_trial = quiet
     with opened:
-        result = await gepa.run(opened)
+        agent = await Runner.of(opened, GEPATrainer).run()
     seeded = seed(opened.directory / record.MODULES / SEED)
     assert seed(opened.directory / record.MODULES / BEST) == seeded
-    assert isinstance(result, Evolution) and result.best == seeded, "handed back, for a caller"
+    assert agent.modules == seeded, "handed back, for a caller"
     *rounds, final = list(record.read(opened.directory / record.METRICS))
     assert len(rounds) == 2, "patience = 2"
     assert all(row["child"] is None and row["accepted"] is False for row in rounds)
@@ -246,10 +246,10 @@ async def test_a_quiet_reflector_leaves_the_seed_as_the_winner(
     assert final["best_mean"] == 0.5 and final["moved"] is False
     jobs = list(record.read(opened.directory / record.JOBS))
     assert [job["purpose"] for job in jobs] == [
-        "rollout",
-        "rollout",
+        "search",
+        "search",
         "reflection",
-        "rollout",
+        "search",
         "reflection",
     ], "the seed on the held-out task, then each round the parent before the reflector"
 

@@ -7,10 +7,14 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from shipyard.admit import Verdict, verdicts
-from shipyard.gepa.fitness import Outcome
+from shipyard.recipes.gepa.fitness import Outcome
 from shipyard.rollout import Rollouts
+
+if TYPE_CHECKING:
+    from shipyard.types import Group
 
 #: Characters of verifier output kept per task for the reflector: the tail, since a test
 #: script prints a long preamble and says what went wrong at the end.
@@ -47,35 +51,41 @@ def outcomes(rollouts: Rollouts, tasks: Sequence[Path], group_size: int = 1) -> 
             "against this task list"
         )
     judged = list(zip(trials, verdicts(rollouts), strict=True))
-    built: list[Outcome] = []
-    for index, task in enumerate(tasks):
-        task = Path(task)
-        members = judged[index * group_size : (index + 1) * group_size]
-        measured = [(trial, found.reward) for trial, found in members if found.reward is not None]
-        if not measured:
-            built.append(
-                Outcome(
-                    task=str(task),
-                    reward=None,
-                    feedback=_why_nothing([found for _, found in members]),
-                    inputs=_inputs(task),
-                    count=0,
-                )
-            )
-            continue
-        worst = min(measured, key=lambda pair: pair[1])[0]
-        rewards = [reward for _, reward in measured]
-        built.append(
-            Outcome(
-                task=str(task),
-                reward=sum(rewards) / len(rewards),
-                feedback=_tail(worst.joinpath(*VERIFIER_STDOUT), MAX_FEEDBACK),
-                inputs=_inputs(task),
-                count=len(rewards),
-                transcript=_transcript(worst),
-            )
+    return [
+        _outcome(Path(task), judged[index * group_size : (index + 1) * group_size])
+        for index, task in enumerate(tasks)
+    ]
+
+
+def outcomes_of(groups: Sequence[Group]) -> list[Outcome]:
+    """One outcome per group, judged by its members' verdicts."""
+    return [
+        _outcome(group.task, [(one.trial.dir, one.verdict) for one in group.members])
+        for group in groups
+    ]
+
+
+def _outcome(task: Path, judged: Sequence[tuple[Path, Verdict]]) -> Outcome:
+    """The mean over the measured verdicts; feedback and transcript off the worst."""
+    measured = [(trial, found.reward) for trial, found in judged if found.reward is not None]
+    if not measured:
+        return Outcome(
+            task=str(task),
+            reward=None,
+            feedback=_why_nothing([found for _, found in judged]),
+            inputs=_inputs(task),
+            count=0,
         )
-    return built
+    worst = min(measured, key=lambda pair: pair[1])[0]
+    rewards = [reward for _, reward in measured]
+    return Outcome(
+        task=str(task),
+        reward=sum(rewards) / len(rewards),
+        feedback=_tail(worst.joinpath(*VERIFIER_STDOUT), MAX_FEEDBACK),
+        inputs=_inputs(task),
+        count=len(rewards),
+        transcript=_transcript(worst),
+    )
 
 
 def _inputs(task: Path) -> str:
