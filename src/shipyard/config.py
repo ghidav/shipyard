@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from harbor.models.environment_type import EnvironmentType
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -18,8 +16,6 @@ from pydantic import (
     model_validator,
 )
 
-from shipyard.data import NoSuchDataset, held_out, home_of, tasks
-from shipyard.modules import Inadmissible, seed
 from shipyard.record import CONFIG
 
 TINKER = "tinker"
@@ -29,17 +25,6 @@ KINDS = ("dapo", "dr-grpo", "cispo", "gepa", "fst", "evaluate")
 #: 1 hour (3600) and 10 years" (tinker/lib/public_interfaces/training_client.py).
 MIN_TTL_HOURS = 1.0
 #: What `[rollout] sandbox` may name: Harbor's environment types.
-SANDBOXES = tuple(kind.value for kind in EnvironmentType)
-#: What `check` says of a blueprint that cannot run yet.
-NO_HARNESS = (
-    "[rollout] harness: name the harness; Harbor reads an unnamed agent as its oracle, "
-    "which runs the task's reference solution"
-)
-NO_REFLECTOR = (
-    "[recipe] reflection_harness: name the harness the reflector runs as; Harbor reads an "
-    "unnamed agent as its oracle, and the reflection task has no reference solution"
-)
-#: The reflector's container when a gepa blueprint names none: a shell and a Python.
 REFLECTION_IMAGE = "python:3.12-slim"
 
 
@@ -185,12 +170,6 @@ class CispoRecipe(Gradient):
     overlong_buffer: float = Field(default=PAPER_OVERLONG_BUFFER, gt=0, le=1)
 
 
-#: The share of a run's tasks gepa holds out to select on when `[recipe] pareto` is unset,
-#: rounded down, as in three of GEPA's four benchmarks: GEPA §4.1 (split sizes) and §4.3
-#: (the validation set is D_pareto). HotpotQA, IFBench and HoVer hold 300 validation tasks
-#: beside 150 training ones (PUPA alone splits 111 and 111), and the one split the paper
-#: draws itself, IFBench's, is one of those.
-PAPER_PARETO = (2, 3)
 #: GEPA 4.3: "All GEPA optimization runs use a minibatch size of 3".
 PAPER_MINIBATCH = 3
 #: No patience: the budget alone ends the search, as in GEPA's released code, whose
@@ -370,31 +349,6 @@ def modules_dir(loaded: Blueprint) -> Path | None:
     return loaded.home / named if named else None
 
 
-def search_sets(loaded: Blueprint) -> tuple[list[Path], list[Path]]:
-    """gepa's two task lists, GEPA's D_feedback and D_pareto (Alg. 1 line 1). Minibatches are
-    drawn from the first. Every candidate the search keeps is scored on the second. A dataset
-    name is D_pareto, and the run's tasks are D_feedback. A count holds that many of the run's
-    tasks out, drawn with `[data] seed`. 0 keeps every task in both (GEPA 6). Unset holds out
-    two thirds, as in three of GEPA's four benchmarks. Raises ValueError when either list
-    would be empty."""
-    listed = [task for name in loaded.datasets for task in tasks(name)]
-    named = loaded.recipe.pareto
-    if isinstance(named, str):
-        return listed, tasks(named)
-    if named == 0:
-        return listed, list(listed)
-    share, whole = PAPER_PARETO
-    count = len(listed) * share // whole if named is None else named
-    if count < 1:
-        raise ValueError(
-            "one task cannot be split; 0 selects on the task the search reflects on, and a "
-            "dataset name selects on that dataset"
-        )
-    if count >= len(listed):
-        raise ValueError(f"holding out {count} of {_tasks(len(listed))} leaves none to reflect on")
-    return held_out(listed, count, seed=loaded.data.seed)
-
-
 def _problem(error: dict[str, Any]) -> str:
     """One validation error as `[table] key: problem`, in the blueprint's own words."""
     loc = [str(part) for part in error["loc"]]
@@ -421,227 +375,3 @@ def _problem(error: dict[str, Any]) -> str:
     table, key = ".".join(loc[:-1]), loc[-1]
     what = {"missing": "field required", "extra_forbidden": "unknown key"}.get(kind, message)
     return f"[{table}] {key}: {what}"
-
-
-@dataclass(frozen=True)
-class Finding:
-    level: Literal["ok", "warning", "blocked"]
-    text: str
-
-
-def check(blueprint: Path) -> list[Finding]:
-    """The findings `shipyard check` prints: one blocked finding per problem, else one ok
-    finding per fact. Datasets are looked up under `tasks/` in the working directory, as
-    `run` does."""
-    try:
-        loaded = load(blueprint)
-    except ConfigError as error:
-        return [Finding("blocked", problem) for problem in error.problems]
-    return findings(loaded)
-
-
-def findings(loaded: Blueprint) -> list[Finding]:
-    """The findings of a blueprint that loaded. The sandbox and served-model findings come
-    from `preflight`, imported here because `preflight` imports this module."""
-    from shipyard.preflight import findings as preflight_findings
-
-    model, rollout = loaded.model, loaded.rollout
-    served = " (served by this run)" if model.served else ""
-    found = [
-        Finding("ok", f"recipe {loaded.recipe.kind}"),
-        Finding("ok", f"model {model.name}, provider {model.provider}{served}"),
-    ]
-    for label, names in (("train", loaded.datasets), ("test", loaded.test_sets)):
-        if names:
-            found.append(Finding("ok", f"{label} {', '.join(names)}"))
-    found.append(Finding("ok", f"harness {rollout.harness}, sandbox {rollout.sandbox}"))
-    found += [_dataset_finding(name) for name in [*loaded.datasets, *loaded.test_sets]]
-    found += _data_findings(loaded)
-    for finding in (_provider_finding(loaded), _checkpoint_finding(loaded)):
-        if finding is not None:
-            found.append(finding)
-    if (directory := modules_dir(loaded)) is not None:
-        found.append(_modules_finding(directory))
-        if (template := _template_finding(loaded, directory)) is not None:
-            found.append(template)
-    if isinstance(loaded.recipe, Search):
-        found.append(_reflector_finding(loaded.recipe))
-    if isinstance(loaded.recipe, GepaRecipe):
-        found += _pareto_findings(loaded)
-    if isinstance(loaded.recipe, FstRecipe) and loaded.data.group_size % loaded.recipe.population:
-        k, g = loaded.recipe.population, loaded.data.group_size
-        found.append(
-            Finding(
-                "blocked",
-                f"[recipe] population: {k} does not divide [data] group_size {g}; each "
-                "candidate takes group_size / population rollouts of every task's group",
-            )
-        )
-    if (cap := _length_cap(loaded.recipe)) is not None and cap >= 1:
-        found.append(
-            Finding(
-                "warning",
-                f"[recipe] length_cap: {cap} lets the length rule take a solved answer's "
-                "whole reward, so a long solved answer can score as low as a failure",
-            )
-        )
-    if not rollout.harness.strip():
-        found.append(Finding("blocked", NO_HARNESS))
-    if rollout.sandbox not in SANDBOXES:
-        named = f"no Harbor environment called {rollout.sandbox!r}; one of {', '.join(SANDBOXES)}"
-        found.append(Finding("blocked", f"[rollout] sandbox: {named}"))
-    found += preflight_findings(loaded)
-    return found
-
-
-def _data_findings(loaded: Blueprint) -> list[Finding]:
-    """The older spelling, a task in both sets, an evaluation cadence past the epochs."""
-    found: list[Finding] = []
-    if "dataset" in loaded.raw.get("data", {}):
-        key = "test" if loaded.recipe.kind == "evaluate" else "train"
-        found.append(Finding("warning", f"[data] dataset: the older spelling of {key}; still read"))
-    if loaded.datasets and loaded.test_sets:
-        try:
-            train = {task for name in loaded.datasets for task in tasks(name)}
-            both = [task for name in loaded.test_sets for task in tasks(name) if task in train]
-        except NoSuchDataset:
-            both = []
-        if both:
-            found.append(
-                Finding(
-                    "warning",
-                    f"[data] test: {_tasks(len(both))} also in train, so the measurement is "
-                    "not held out",
-                )
-            )
-    data = loaded.data
-    if data.evaluate_every > data.epochs:
-        found.append(
-            Finding(
-                "warning",
-                f"[data] evaluate_every: {data.evaluate_every} is past the {data.epochs} "
-                "epoch(s), so the run evaluates at its end only",
-            )
-        )
-    return found
-
-
-def _length_cap(recipe: Any) -> float | None:
-    """The cap on dr-grpo's length rule, as set or defaulted. None for a recipe without the
-    rule or with `length_penalty` at 0."""
-    if isinstance(recipe, DrGrpoRecipe):
-        penalty, cap = recipe.length_penalty, recipe.length_cap
-    elif isinstance(recipe, FstRecipe) and recipe.slow == "dr-grpo":
-        penalty = recipe.length_penalty or 0.0
-        cap = LENGTH_CAP if recipe.length_cap is None else recipe.length_cap
-    else:
-        return None
-    return cap if penalty > 0 else None
-
-
-def _provider_finding(loaded: Blueprint) -> Finding | None:
-    """`blocked` when the recipe trains weights this run does not serve."""
-    if loaded.trains and not loaded.model.served:
-        return Finding(
-            "blocked",
-            f"[recipe] kind = {loaded.recipe.kind!r} trains the weights this run serves, and "
-            f"[model] provider = {loaded.model.provider!r} serves them elsewhere",
-        )
-    return None
-
-
-def _checkpoint_finding(loaded: Blueprint) -> Finding | None:
-    """`blocked` when `from_checkpoint` names the wrong column of `checkpoints.jsonl`. A
-    training run resumes from a `state_path`. A run that only samples needs a `sampler_path`."""
-    named = loaded.model.from_checkpoint or ""
-    if loaded.trains and "/sampler_weights/" in named:
-        return Finding(
-            "blocked",
-            "[model] from_checkpoint: a training run resumes from a checkpoint's state_path "
-            "(tinker://.../weights/...), not its sampler_path",
-        )
-    if not loaded.trains and "/weights/" in named and "/sampler_weights/" not in named:
-        return Finding(
-            "blocked",
-            f"[model] from_checkpoint: {loaded.recipe.kind} samples a checkpoint's sampler_path "
-            "(tinker://.../sampler_weights/...), not its state_path",
-        )
-    return None
-
-
-def _modules_finding(directory: Path) -> Finding:
-    """`ok` with the component count and digest, or `blocked` with why `seed` refused."""
-    try:
-        candidate = seed(directory)
-    except Inadmissible as refused:
-        return Finding("blocked", f"[recipe] modules: {refused}")
-    return Finding(
-        "ok", f"modules: {len(candidate)} component(s) under {directory} ({candidate.digest})"
-    )
-
-
-def _template_finding(loaded: Blueprint, directory: Path) -> Finding | None:
-    """`warning` when the modules hold a prompt and `[rollout.kwargs]` names a prompt
-    template: the prompt's template replaces it in every rollout that carries the prompt."""
-    if "prompt_template_path" not in loaded.rollout.kwargs:
-        return None
-    try:
-        kinds = {one.kind for one in seed(directory).components.values()}
-    except Inadmissible:
-        return None  # the modules finding says why
-    if "prompt" not in kinds:
-        return None
-    return Finding(
-        "warning",
-        "[rollout.kwargs] prompt_template_path: the prompt in the modules is delivered as the "
-        "prompt template, so this one is not used where the prompt is carried",
-    )
-
-
-def _reflector_finding(recipe: Search) -> Finding:
-    """`ok` naming the reflector's harness, model and image, or `blocked` for a blank
-    harness. The image is not checked: Harbor pulls it at the first round."""
-    if not recipe.reflection_harness.strip():
-        return Finding("blocked", NO_REFLECTOR)
-    model = recipe.reflection_model or "the harness's own default"
-    return Finding(
-        "ok",
-        f"reflector {recipe.reflection_harness}, model {model}, image {recipe.reflection_image}",
-    )
-
-
-def _pareto_findings(loaded: Blueprint) -> list[Finding]:
-    """The finding for a named held-out dataset, then `ok` with how the tasks split or
-    `blocked` with why they cannot. No split line when a dataset is missing, which that
-    dataset's finding already says."""
-    named = loaded.recipe.pareto
-    found = [_dataset_finding(named)] if isinstance(named, str) else []
-    try:
-        feedback, pareto = search_sets(loaded)
-    except NoSuchDataset:
-        return found
-    except ValueError as refused:
-        return [*found, Finding("blocked", f"[recipe] pareto: {refused}")]
-    if isinstance(named, str):
-        said = f"dataset {named}'s {_tasks(len(pareto))} to select on"
-        said += f", the run's {_tasks(len(feedback))} to reflect on"
-    elif named == 0:
-        said = f"none held out; {_tasks(len(feedback))} both reflected and selected on"
-    else:
-        said = f"{len(pareto)} of {_tasks(len(feedback) + len(pareto))} held out with seed "
-        said += f"{loaded.data.seed} to select on, {len(feedback)} to reflect on"
-    return [*found, Finding("ok", f"pareto: {said}")]
-
-
-def _tasks(count: int) -> str:
-    return f"{count} task" if count == 1 else f"{count} tasks"
-
-
-def _dataset_finding(name: str) -> Finding:
-    """`ok` with the task count under `tasks/<name>`, or `blocked` with the path."""
-    try:
-        listed = tasks(name)
-    except NoSuchDataset as missing:
-        return Finding("blocked", str(missing))
-    plural = "" if len(listed) == 1 else "s"
-    return Finding("ok", f"dataset {name}: {len(listed)} task{plural} under {home_of(name)}")

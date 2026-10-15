@@ -11,7 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from shipyard.config import Blueprint, ConfigError, Finding, findings, load
+from shipyard.config import Blueprint, ConfigError, load
+from shipyard.preflight import Finding, findings
 
 #: What TOML accepts as a bare key; any other key is quoted.
 BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")

@@ -16,7 +16,7 @@ from typer.testing import CliRunner
 
 from shipyard import record
 from shipyard.cli import app
-from shipyard.config import Finding, Rollout, check
+from shipyard.config import Rollout
 from shipyard.modules import (
     KINDS,
     PROMPT,
@@ -37,11 +37,20 @@ from shipyard.modules import (
     seed,
     write,
 )
+from shipyard.preflight import Finding
 from shipyard.run import CARRIED, Run
 from shipyard.sampling.endpoint import ProviderEndpoint
 from shipyard.sampling.engine import DELIVERED, HarborEngine
 from shipyard.types import Agent, Policy, harness
-from tests.trials import FakeTrials, fixture_tasks, job_of, sampled, trials_of, write_blueprint
+from tests.trials import (
+    FakeTrials,
+    check,
+    fixture_tasks,
+    job_of,
+    sampled,
+    trials_of,
+    write_blueprint,
+)
 
 FIXTURES = Path(__file__).parent / "modules"
 VALID = FIXTURES / "valid"

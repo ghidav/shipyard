@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from shipyard import config, preflight
-from shipyard.config import Finding, check
+from shipyard import preflight
+from shipyard.preflight import Finding
 from shipyard.proxy import tunnel
-from tests.trials import fixture_tasks, write_blueprint
+from tests.trials import check, fixture_tasks, write_blueprint
 
 BLUEPRINTS = Path(__file__).parent / "blueprints"
 
@@ -102,7 +102,7 @@ def test_check_blocks_an_unknown_sandbox_and_a_blank_harness(
     assert blocked[0].startswith("[rollout] harness: name the harness")
     assert blocked[1].startswith("[rollout] sandbox: no Harbor environment called 'cloud9'")
     assert "docker, podman" in blocked[1] and "modal" in blocked[1]
-    assert set(config.SANDBOXES) >= {"docker", "modal", "podman", "e2b", "daytona"}
+    assert set(preflight.SANDBOXES) >= {"docker", "modal", "podman", "e2b", "daytona"}
 
 
 SERVED = HOSTED.replace('provider = "openrouter"', 'provider = "tinker"').replace(

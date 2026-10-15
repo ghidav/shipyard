@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from shipyard import record
-from shipyard.config import search_sets
+from shipyard.data import search_sets
 from shipyard.modules import Candidate, keep, seed
 from shipyard.recipes.gepa.cycle import Evolution, Log, evolve
 from shipyard.recipes.gepa.fitness import Outcome

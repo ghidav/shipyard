@@ -6,9 +6,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from shipyard.config import check, load
+from shipyard.config import load
 from shipyard.sampling.endpoint import endpoint_settings, start_weights
-from tests.trials import write_blueprint
+from tests.trials import check, write_blueprint
 
 BLUEPRINTS = Path(__file__).parent / "blueprints"
 STATE = "tinker://abc:train:0/weights/final"
