@@ -21,52 +21,77 @@ TRAINERS: dict[str, type[Trainer]] = {
     "dapo": DAPOTrainer,
     "dr-grpo": DrGRPOTrainer,
     "cispo": CISPOTrainer,
+    "evaluate": Trainer,
 }
 
 
 class Runner:
-    def __init__(self, run: Run, generator: Generator, trainer: Trainer, *, epochs: int) -> None:
+    def __init__(
+        self,
+        run: Run,
+        generator: Generator,
+        trainer: Trainer,
+        *,
+        epochs: int,
+        evaluate_every: int = 0,
+    ) -> None:
         self.opened = run
         self.generator = generator
         self.trainer = trainer
         self.epochs = epochs
+        self.evaluate_every = evaluate_every
 
     @classmethod
     def of(cls, run: Run, *, trainer: type[Trainer] | None = None) -> Runner:
         """The runner for an open run; `trainer` replaces the class its kind names."""
         cfg = run.config
-        if not cfg.model.served:
+        if cfg.trains and not cfg.model.served:
             raise ValueError(
                 f"[recipe] kind = {cfg.recipe.kind!r} trains the weights this run serves, and "
                 f"[model] provider = {cfg.model.provider!r} serves them elsewhere"
             )
         procedure = (TRAINERS[cfg.recipe.kind] if trainer is None else trainer)(run)
         run.trainer = procedure
-        return cls(run, Generator.of(cfg), procedure, epochs=cfg.data.epochs)
+        return cls(
+            run,
+            Generator.of(cfg),
+            procedure,
+            epochs=cfg.data.epochs if cfg.trains else 0,
+            evaluate_every=cfg.data.evaluate_every,
+        )
 
     async def run(self) -> Agent:
-        """Open the agent on a training client, train an epoch at a time, checkpoint `final`."""
-        run, trainer = self.opened, self.trainer
+        """Open the agent, train an epoch at a time, evaluate on the cadence, checkpoint `final`."""
+        run, trainer, generator = self.opened, self.trainer, self.generator
         cfg = run.config
         model, recipe = cfg.model, cfg.recipe
-        metadata = {"shipyard_run": run.id, "shipyard_recipe": recipe.kind}
-        service = session.service_client(metadata)
-        client = await TinkerClient.open(
-            service,
-            model.name,
-            from_checkpoint=model.from_checkpoint,
-            lora_rank=model.lora_rank,
-            restore_optimizer=model.restore_optimizer,
-            metadata=metadata,
-        )
+        service = client = None
+        if cfg.trains:
+            metadata = {"shipyard_run": run.id, "shipyard_recipe": recipe.kind}
+            service = session.service_client(metadata)
+            client = await TinkerClient.open(
+                service,
+                model.name,
+                from_checkpoint=model.from_checkpoint,
+                lora_rank=model.lora_rank,
+                restore_optimizer=model.restore_optimizer,
+                metadata=metadata,
+            )
         agent = Agent(Policy(run.endpoint, client), [harness(cfg.rollout.harness)], run.carried)
         async with agent.policy:
-            if recipe.kl_coef > 0:
+            if client is not None and recipe.kl_coef > 0:
                 trainer.anchor = await anchor(service, client, model)
+            evaluated = 0
             for epoch in range(self.epochs):
                 trainer.epoch = epoch
-                agent = await trainer.train(agent, self.generator.batches(epoch))
-            await trainer.checkpoint(agent, "final", keep=True)
+                agent = await trainer.train(agent, generator.batches(epoch))
+                if self.evaluate_every and (epoch + 1) % self.evaluate_every == 0:
+                    await trainer.evaluate(agent, generator.test)
+                    evaluated = epoch + 1
+            if generator.test and (self.epochs == 0 or evaluated != self.epochs):
+                await trainer.evaluate(agent, generator.test)
+            if client is not None:
+                await trainer.checkpoint(agent, "final", keep=True)
         return agent
 
 

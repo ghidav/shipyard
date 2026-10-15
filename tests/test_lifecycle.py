@@ -78,7 +78,7 @@ SERVED = """
 [model]
 name = "Qwen/Qwen3-8B"
 [data]
-dataset = "fixture"
+test = "fixture"
 batch_size = 1
 [rollout]
 harness = "pi@0.85.1"

@@ -53,7 +53,7 @@ def _hosted_dapo(tmp_path: Path) -> Path:
     home.mkdir(parents=True)
     text = (DAPO / "run.toml").read_text(encoding="utf-8")
     text = text.replace("lora_rank = 32", 'lora_rank = 32\nprovider = "openrouter"')
-    text = text.replace('dataset = "aime-train"', 'dataset = "fixture"')
+    text = text.replace('train = "aime-train"', 'train = "fixture"')
     (home / "run.toml").write_text(text, encoding="utf-8")
     return home
 
@@ -273,7 +273,7 @@ def test_runs_and_show_with_nothing(tmp_path: Path) -> None:
 def test_root_flag_env_and_default_are_honored_alike(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("shipyard.recipes.evaluate.run", _finishes)
+    monkeypatch.setattr("shipyard.cli.run_recipe", _finishes)
     flagged, env = tmp_path / "flag", tmp_path / "env"
 
     assert runner.invoke(app, ["run", str(EVALUATE), "--root", str(flagged)]).exit_code == 0
@@ -420,7 +420,7 @@ def test_an_evaluate_run_shows_its_jobs_and_costs(
         assert column in header
     for column in ("party", "input_tokens", "output_tokens", "sandbox", "sandbox_seconds"):
         assert column in header
-    assert f"{directory.name}-0000" in shown.output and "rollout" in shown.output
+    assert f"{directory.name}-0000" in shown.output and "evaluation" in shown.output
     assert '{"timeout": 2}' in shown.output and "openrouter" in shown.output
     assert '"parties"' in shown.output and '"modal"' in shown.output
     assert "evaluation" in shown.output and "mean" in shown.output
@@ -429,11 +429,12 @@ def test_an_evaluate_run_shows_its_jobs_and_costs(
         runner.invoke(app, ["show", directory.name, "--root", str(root), "--json"]).stdout
     )
     rows = as_json["jobs"]["rows"]
-    assert as_json["jobs"]["count"] == 2 and [row["batch"] for row in rows] == [0, 1]
+    assert as_json["jobs"]["count"] == 2 and [row["batch"] for row in rows] == [0, 0]
+    assert [row["purpose"] for row in rows] == ["evaluation", "evaluation"]
     assert sum(row["graded"] for row in rows) == 2 and sum(row["trials"] for row in rows) == 4
     assert as_json["costs"]["parties"]["openrouter"]["input_tokens"] == 20
     assert as_json["costs"]["sandbox"]["modal"]["trials"] == 4
     final = as_json["metrics"]["last"]
-    assert as_json["metrics"]["count"] == 3 and final["evaluation"] is True
+    assert as_json["metrics"]["count"] == 1 and final["evaluation"] is True
     assert final["graded"] == 2 and final["masked"] == 2 and final["mean"] == 1.0
     assert "total" not in json.dumps(as_json["costs"])

@@ -34,9 +34,10 @@ class SmokeFailed(RuntimeError):
 
 
 def planned(cfg: Blueprint) -> list[Path]:
-    """The task a smoke run samples: the first of the recipe's first batch."""
+    """The first task of the first batch, of the test set when there is no train set."""
     data = cfg.data
-    first = next(batches(cfg.datasets, size=data.batch_size, seed=data.seed, epochs=1))
+    names = cfg.datasets or cfg.test_sets
+    first = next(batches(names, size=data.batch_size, seed=data.seed, epochs=1))
     return first[:1]
 
 

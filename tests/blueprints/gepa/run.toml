@@ -2,7 +2,7 @@
 name = "Qwen/Qwen3-8B"
 
 [data]
-dataset = ["aime-train", "math-500"]
+train = ["aime-train", "math-500"]
 batch_size = 4
 
 [rollout]

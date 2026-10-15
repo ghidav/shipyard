@@ -89,13 +89,15 @@ def _listed(path: Path) -> dict[str, Any] | None:
 
 
 def _tail(path: Path) -> dict[str, Any] | None:
-    """A JSONL file's row count and last row, read without holding every row; None if absent."""
+    """A JSONL file's row count, its last row and its last evaluation row; None if absent."""
     if not path.is_file():
         return None
-    count, last = 0, None
+    count, last, evaluation = 0, None, None
     for row in record.read(path):
         count, last = count + 1, row
-    return {"count": count, "last": last}
+        if row.get("evaluation"):
+            evaluation = row
+    return {"count": count, "last": last, "evaluation": evaluation}
 
 
 def styled(state: str) -> str:
@@ -133,11 +135,19 @@ def _print_process(process: dict[str, Any]) -> None:
 
 
 def _print_metrics(metrics: dict[str, Any]) -> None:
-    """The row count and the last row's fields, one per line."""
+    """The row count, the last row's fields, then the last evaluation's when it is another row."""
     last = metrics["last"] or {}
     console.print(f"[bold]metrics[/bold]  {_rows(metrics['count'])}", highlight=False)
-    width = max((len(key) for key in last), default=0) + 2
-    for key, value in last.items():
+    _fields(last)
+    evaluation = metrics.get("evaluation")
+    if evaluation and evaluation != last:
+        console.print("[bold]evaluation[/bold]", highlight=False)
+        _fields(evaluation)
+
+
+def _fields(row: dict[str, Any]) -> None:
+    width = max((len(key) for key in row), default=0) + 2
+    for key, value in row.items():
         _pair(key, escape(_text(value)), width)
 
 

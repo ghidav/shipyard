@@ -80,6 +80,11 @@ async def _run(home: Path, tmp_path: Path, runner: Any) -> Run:
     return opened
 
 
+def _two(tmp_path: Path) -> None:
+    for name in ("x", "y"):
+        shutil.copytree(FIXTURES / "fixture" / "alpha", tmp_path / "tasks" / "two" / name)
+
+
 def _rows(opened: Run) -> list[dict[str, Any]]:
     return list(record.read(opened.directory / record.METRICS))
 
@@ -178,6 +183,51 @@ async def test_each_epoch_is_one_pass_over_the_train_set_and_the_steps_count_thr
         ("final", 4, 1),
     ]
     assert [job["batch"] for job in record.read(opened.directory / record.JOBS)] == [0, 1, 2, 3]
+
+
+async def test_a_run_that_names_a_test_set_evaluates_on_the_cadence(
+    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
+) -> None:
+    _two(tmp_path)
+    home = _blueprint(
+        tmp_path,
+        **{"batch_size = 2": 'batch_size = 2\ntest = "two"\nevaluate_every = 1\nepochs = 2'},
+    )
+    opened = await _run(home, tmp_path, Alternating())
+    rows = _rows(opened)
+    assert ["evaluation" if row.get("evaluation") else "step" for row in rows] == [
+        "step",
+        "step",
+        "evaluation",
+        "step",
+        "step",
+        "evaluation",
+    ]
+    evaluations = [row for row in rows if row.get("evaluation")]
+    assert [
+        (row["step"], row["epoch"], row["tasks"], row["rollouts"], row["graded"], row["mean"])
+        for row in evaluations
+    ] == [(2, 0, 2, 4, 4, 0.5), (4, 1, 2, 4, 4, 0.5)]
+    jobs = list(record.read(opened.directory / record.JOBS))
+    assert [job["purpose"] for job in jobs] == ["rollout", "rollout", "evaluation"] * 2
+    assert [job["batch"] for job in jobs] == [0, 1, 2, 2, 3, 4]
+    assert [c["tag"] for c in _checkpoints(opened)][-1] == "final"
+
+
+async def test_a_run_that_names_a_test_set_ends_with_an_evaluation(
+    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
+) -> None:
+    _two(tmp_path)
+    home = _blueprint(
+        tmp_path, **{"batch_size = 2": 'batch_size = 2\ntest = "two"\ntest_group_size = 1'}
+    )
+    opened = await _run(home, tmp_path, Alternating())
+    *steps, evaluation = _rows(opened)
+    assert len(steps) == 2 and not any(row.get("evaluation") for row in steps)
+    assert (evaluation["step"], evaluation["epoch"], evaluation["rollouts"]) == (2, 0, 2)
+    assert [job["purpose"] for job in record.read(opened.directory / record.JOBS)][
+        -1
+    ] == "evaluation"
 
 
 @pytest.mark.parametrize(

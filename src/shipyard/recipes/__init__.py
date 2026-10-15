@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
@@ -32,8 +33,9 @@ async def run_recipe(run: Run) -> None:
 
 
 def resolution(recipe: Any) -> str | None:
-    """The one-line description of what a gradient recipe's knobs resolve to, printed by
-    `check`. None when the recipe's module has no `preset`."""
+    """The resolution line `check` prints; None for a kind without a preset."""
+    if importlib.util.find_spec(f"shipyard.recipes.{MODULES[recipe.kind]}") is None:
+        return None
     module = module_for(recipe.kind)
     own = getattr(module, "resolution", None)
     if own is not None:

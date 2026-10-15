@@ -46,7 +46,7 @@ BLUEPRINT = """
 name = "Qwen/Qwen3-8B"
 provider = "{provider}"
 [data]
-dataset = "fixture"
+test = "fixture"
 batch_size = 1
 [rollout]
 harness = "pi@0.85.1"

@@ -1,20 +1,15 @@
-"""The evaluate recipe end to end with a stand-in for Harbor: the rows per batch and the
-final row carry the right counts, the mean leaves the masked out, and a served model
-runs through a fake proxy whose records admission and the bill are read from."""
+"""Test the evaluate kind through the runner: one row for the test set, one job per batch."""
 
 from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from statistics import fmean
 
 import pytest
 
 from shipyard import record
 from shipyard.admit import BUDGET
-from shipyard.data import batches
 from shipyard.recipes import run_recipe
-from shipyard.recipes.evaluate import mean
 from shipyard.run import Run
 from shipyard.sampling.endpoint import ProxyEndpoint
 from tests.records import FakeProxy, made
@@ -27,11 +22,10 @@ OUTCOMES = {
     "b": {"reward": 0.0},
     "c": {"reward": 1.0, "exception": "AgentTimeoutError"},
 }
-GRADED = {"a": 1.0, "b": 0.0}
 
 
 def _blueprint(tmp_path: Path, **replacements: str) -> Path:
-    """The evaluate fixture over a four-task dataset, two tasks per batch, one rollout each."""
+    """The evaluate fixture over a four-task test set, two tasks per batch, one rollout each."""
     for name in ("a", "b", "c", "d"):
         shutil.copytree(FIXTURES / "fixture" / "alpha", tmp_path / "tasks" / "four" / name)
     text = (EVALUATE / "run.toml").read_text(encoding="utf-8")
@@ -45,30 +39,31 @@ def _blueprint(tmp_path: Path, **replacements: str) -> Path:
     return home
 
 
-async def test_the_rows_count_each_batch_and_the_whole_run(
+async def _run(home: Path, tmp_path: Path, trials: FakeTrials) -> Run:
+    opened = Run.open(home, root=tmp_path / "runs")
+    opened.run_trial = trials
+    with opened:
+        await run_recipe(opened)
+    return opened
+
+
+async def test_the_test_set_is_measured_in_one_row_over_one_job_per_batch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    home = _blueprint(tmp_path)
-    opened = Run.open(home, root=tmp_path / "runs")
-    opened.run_trial = FakeTrials(breaks=("d",), outcomes=OUTCOMES)
-    with opened:
-        await run_recipe(opened)
-    planned = list(batches(["four"], size=2, seed=0, epochs=1))
-    assert [len(batch) for batch in planned] == [2, 2]
-    *per_batch, final = list(record.read(opened.directory / record.METRICS))
-    assert len(per_batch) == 2
-    for index, (row, batch) in enumerate(zip(per_batch, planned, strict=True)):
-        graded = [GRADED[task.name] for task in batch if task.name in GRADED]
-        assert row["seq"] == index + 1 and row["batch"] == index
-        assert row["tasks"] == 2 and row["rollouts"] == 2
-        assert row["graded"] == len(graded) and row["masked"] == 2 - len(graded)
-        assert row["mean"] == (fmean(graded) if graded else None)
-    assert final["seq"] == 3 and final["evaluation"] is True
-    assert final["batches"] == 2 and final["rollouts"] == 4
-    assert final["graded"] == 2 and final["masked"] == 2 and final["mean"] == 0.5
+    opened = await _run(
+        _blueprint(tmp_path), tmp_path, FakeTrials(breaks=("d",), outcomes=OUTCOMES)
+    )
+    (row,) = list(record.read(opened.directory / record.METRICS))
+    assert row["evaluation"] is True and (row["step"], row["epoch"]) == (0, 0)
+    assert (row["tasks"], row["rollouts"], row["graded"], row["masked"]) == (4, 4, 2, 2)
+    assert row["mean"] == 0.5
     jobs = list(record.read(opened.directory / record.JOBS))
     assert [job["job"] for job in jobs] == [f"{opened.id}-0000", f"{opened.id}-0001"]
+    assert [(job["purpose"], job["tasks"], job["trials"]) for job in jobs] == [
+        ("evaluation", 2, 2),
+        ("evaluation", 2, 2),
+    ]
     assert sum(job["graded"] for job in jobs) == 2
     masked = [job.get("masked", {}) for job in jobs]
     assert sum(m.get("timeout", 0) for m in masked) == 1
@@ -76,28 +71,34 @@ async def test_the_rows_count_each_batch_and_the_whole_run(
     assert record.read_json(opened.directory / record.COSTS)["sandbox"] == {
         "modal": {"trials": 3, "seconds": 0.0}
     }
+    assert not (opened.directory / record.CHECKPOINTS).exists()
     note = Run.read(opened.directory)
     assert note["failed"] is False and note["finished_at"]
 
 
-async def test_a_batch_with_nothing_graded_has_no_mean(
+async def test_the_test_group_size_sets_the_attempts_per_task(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    opened = Run.open(_blueprint(tmp_path), root=tmp_path / "runs")
-    opened.run_trial = FakeTrials(breaks=("a", "b", "c", "d"))
-    await run_recipe(opened)
-    rows = list(record.read(opened.directory / record.METRICS))
-    assert [row["mean"] for row in rows] == [None, None, None]
-    assert rows[-1]["graded"] == 0 and rows[-1]["masked"] == 4
-    assert mean([]) is None and mean([1.0, 0.0]) == 0.5
+    home = _blueprint(tmp_path, **{"group_size = 1": "group_size = 1\ntest_group_size = 2"})
+    opened = await _run(home, tmp_path, FakeTrials(outcomes=OUTCOMES))
+    (row,) = list(record.read(opened.directory / record.METRICS))
+    assert (row["tasks"], row["rollouts"], row["graded"], row["masked"]) == (4, 8, 6, 2)
+    assert [job["trials"] for job in record.read(opened.directory / record.JOBS)] == [4, 4]
+
+
+async def test_nothing_graded_has_no_mean(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    opened = await _run(_blueprint(tmp_path), tmp_path, FakeTrials(breaks=("a", "b", "c", "d")))
+    (row,) = list(record.read(opened.directory / record.METRICS))
+    assert row["mean"] is None and row["graded"] == 0 and row["masked"] == 4
 
 
 async def test_a_served_model_runs_through_its_proxy_and_is_judged_by_its_records(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Four tasks, two per batch: `a` graded 1 with two turns, `b` cut by its budget (0,
-    overriding the verifier), `c` timed out, `d` never came up (no records, no result)."""
+    """`a` graded 1 with two turns, `b` cut by its budget (0, overriding the verifier), `c`
+    timed out, `d` never came up (no records, no result)."""
     monkeypatch.chdir(tmp_path)
     fake = FakeProxy(
         answers={
@@ -127,9 +128,9 @@ async def test_a_served_model_runs_through_its_proxy_and_is_judged_by_its_record
         assert config.agent.env["OPENAI_BASE_URL"].endswith(f"/r/trial/{config.trial_name}/v1")
         assert config.agent.env["OPENAI_API_KEY"] == fake.token
         assert config.agent.kwargs == {"version": "0.85.1", "model_api": "openai-completions"}
-    *per_batch, final = list(record.read(opened.directory / record.METRICS))
-    assert final["rollouts"] == 4 and final["graded"] == 2 and final["masked"] == 2
-    assert final["mean"] == 0.5, "a's 1 and b's budget-cut 0; c and d masked"
+    (row,) = list(record.read(opened.directory / record.METRICS))
+    assert (row["rollouts"], row["graded"], row["masked"]) == (4, 2, 2)
+    assert row["mean"] == 0.5, "a's 1 and b's budget-cut 0; c and d masked"
     jobs = list(record.read(opened.directory / record.JOBS))
     assert [job["served"] for job in jobs] == ["tinker", "tinker"]
     assert [job["party"] for job in jobs] == ["tinker", "tinker"]
