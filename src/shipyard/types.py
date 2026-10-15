@@ -1,5 +1,4 @@
-"""The vocabulary of a run: the agent and its policy, the three parts as abstract classes,
-and what they hand each other. Nothing here does work."""
+"""The vocabulary of a run. Nothing here does work."""
 
 from __future__ import annotations
 
@@ -66,8 +65,7 @@ SERVE_TTL = 12 * 3600
 
 @dataclass(frozen=True)
 class Sequence:
-    """One chain: the last record's prompt and completion, which hold every earlier one as
-    a prefix."""
+    """One chain: the last record's prompt and completion, which hold every earlier one."""
 
     tokens: tuple[int, ...]
     #: Where each completion sits, in chain order.
@@ -123,9 +121,7 @@ class Update:
 
 
 class TrainingClient(ABC):
-    """Tinker's training client as a recipe uses it. The two step calls submit on await and
-    return the result's awaitable, so a step submits every part before it reads the first.
-    A TTL of None keeps a save forever."""
+    """Tinker's training client; a step call submits on await and returns the result's awaitable."""
 
     #: The optimizer state was loaded with the weights: the run continues an earlier
     #: run's schedule, so the learning rate does not warm up again.
@@ -158,7 +154,7 @@ class TrainingClient(ABC):
 
 @dataclass(frozen=True)
 class Connection:
-    """What a trial's harness dials. A provider's is the model name alone."""
+    """What a trial's harness dials; a provider's is the model name alone."""
 
     model: str | None
     address: str | None = None
@@ -170,8 +166,7 @@ class Connection:
 
 
 class Endpoint(ABC):
-    """The model as the endpoint a harness dials. The one part that knows whether this run
-    serves the model or a provider does."""
+    """The model as the endpoint a harness dials: served by this run, or by a provider."""
 
     #: Sampled tokens one rollout may spend; None for a provider.
     budget: int | None = None
@@ -196,7 +191,7 @@ class Endpoint(ABC):
         """The job's model calls by trial name; None for a provider."""
 
     def check(self, job: str, records: Records) -> None:
-        """Raise if the run cannot go on after this job. Called once its row is written."""
+        """Raise if the run cannot go on after this job, once its row is written."""
         return None
 
 
@@ -311,8 +306,7 @@ class RolloutEngine(ABC):
         agent: Agent,
         settings: Settings | None = None,
     ) -> list[Trial]:
-        """Each task under each of the agent's harnesses, `attempts` times, in plan order:
-        task, harness, attempt, under the job the record named."""
+        """Each task under each harness, `attempts` times, in plan order: task, harness, attempt."""
 
 
 # ------------------------------------------------------------------ the group
@@ -344,13 +338,13 @@ class Member:
 
 @dataclass
 class Group:
-    """A task's attempts under one agent in one harness. `shaped` and `advantages` are
-    indexed like `members`, None on an unmeasured one; the trainer's rules fill them."""
+    """A task's attempts under one agent in one harness."""
 
     task: Task
     agent: Agent
     harness: Harness
     members: list[Member]
+    #: Indexed like `members`, None on an unmeasured one; the trainer's rules fill them.
     shaped: list[float | None] = field(default_factory=list)
     advantages: list[float | None] = field(default_factory=list)
 
