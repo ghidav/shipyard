@@ -3,7 +3,7 @@
 name = "thinkingmachines/Inkling-Small"
 
 [data]
-dataset = "terminal-bench-sample"
+train = "terminal-bench-sample"
 batch_size = 10
 group_size = 2
 

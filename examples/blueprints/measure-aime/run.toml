@@ -3,7 +3,7 @@
 name = "thinkingmachines/Inkling-Small"
 
 [data]
-dataset = "aime"
+test = "aime"
 batch_size = 10
 group_size = 4
 

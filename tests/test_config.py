@@ -47,6 +47,16 @@ def test_each_fixture_loads(kind: str) -> None:
     assert isinstance(found.recipe, config.Gradient) == (kind in GRADIENT)
 
 
+EXAMPLES = sorted((Path(__file__).parent.parent / "examples" / "blueprints").iterdir())
+
+
+@pytest.mark.parametrize("home", EXAMPLES, ids=[one.name for one in EXAMPLES])
+def test_each_example_loads_and_spells_its_sets_the_current_way(home: Path) -> None:
+    loaded = load(home)
+    assert "dataset" not in loaded.raw["data"]
+    assert loaded.datasets or loaded.test_sets
+
+
 def test_load_accepts_the_file_as_well_as_the_directory() -> None:
     assert load(BLUEPRINTS / "dapo" / "run.toml").recipe.kind == "dapo"
 
