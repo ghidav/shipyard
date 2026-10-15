@@ -86,7 +86,6 @@ TEMPLATE = re.compile(r"\$\{([^}:]+)(?::-(.*))?\}")
 #: `create_if_missing` creates nothing (modal/app.py, `App.lookup`).
 MODAL_APP = "shipyard"
 #: Modal reads each half from the environment before its profile file (modal/config.py).
-MODAL_TOKEN = ("MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET")
 #: How long `check` waits for Modal to answer that lookup before it gives up and warns.
 MODAL_SECONDS = 15.0
 #: At this many leftover trial networks `check` warns: Docker's default address pools hold
@@ -486,7 +485,7 @@ def modal_source(environ: Mapping[str, str]) -> tuple[str, str]:
         name for name, body in profiles.items() if isinstance(body, dict) and body.get("active")
     ]
     profile = environ.get("MODAL_PROFILE") or (active[0] if active else "default")
-    named = [variable for variable in MODAL_TOKEN if variable in environ]
+    named = [variable for variable in PROVIDERS["modal"][1] if variable in environ]
     if not named:
         return f"profile {profile} in {path}", ""
     source = f"{' and '.join(named)} in the environment"
@@ -570,39 +569,28 @@ def leftover_networks() -> int:
     """How many of Harbor's trial networks have no container on them. These are the
     `<trial>__env` and `<trial>__verifier__<key>` Compose projects that a run killed hard
     did not take down."""
-    binary = shutil.which("docker")
-    if binary is None:
-        return 0
-    try:
-        done = subprocess.run(
-            [binary, "network", "ls", "--filter", "dangling=true", "--format", "{{.Name}}"],
-            capture_output=True,
-            text=True,
-            timeout=DOCKER_SECONDS,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return 0
-    if done.returncode != 0:
-        return 0
-    names = done.stdout.split()
+    listed = _docker("network", "ls", "--filter", "dangling=true", "--format", "{{.Name}}")
+    names = (listed or "").split()
     return sum(1 for name in names if name.endswith("__env_default") or "__verifier__" in name)
 
 
 def docker_running() -> bool:
     """Whether a docker daemon answers `docker info` within `DOCKER_SECONDS`."""
+    return bool((_docker("info", "--format", "{{.ServerVersion}}") or "").strip())
+
+
+def _docker(*args: str) -> str | None:
+    """`docker <args>`'s stdout, or None when there is no docker, it fails, or it hangs."""
     binary = shutil.which("docker")
     if binary is None:
-        return False
+        return None
     try:
         done = subprocess.run(
-            [binary, "info", "--format", "{{.ServerVersion}}"],
-            capture_output=True,
-            text=True,
-            timeout=DOCKER_SECONDS,
+            [binary, *args], capture_output=True, text=True, timeout=DOCKER_SECONDS
         )
     except (OSError, subprocess.TimeoutExpired):
-        return False
-    return done.returncode == 0 and bool(done.stdout.strip())
+        return None
+    return done.stdout if done.returncode == 0 else None
 
 
 def twice_in(dotenv: Path) -> list[Finding]:

@@ -102,10 +102,10 @@ class Kind(Protocol):
 
     def check(self, module: Module) -> str | None: ...
 
-    # Returns the agent-config fields that carry the modules written under `into`, which
-    # `merge_fields` merges onto the rollout's own. That suffices for a kind Harbor uploads
-    # itself, like `skills`. A kind that places files in the container (a tool's
-    # `server.py`) would need a separate route for them.
+    # Returns the agent-config fields that carry the modules written under `into`, each kind
+    # its own keys, which the engine lays over the rollout's own. That suffices for a kind
+    # Harbor uploads itself, like `skills`. A kind that places files in the container (a
+    # tool's `server.py`) would need a separate route for them.
     def deliver(self, modules: Sequence[Module], into: Path) -> dict[str, Any]: ...
 
     def reference(self) -> str | None: ...
@@ -298,21 +298,8 @@ def deliver(candidate: Candidate, into: Path) -> dict[str, Any]:
     for kind, handler in KINDS.items():
         mine = [module for module in candidate.components.values() if module.kind == kind]
         if mine:
-            merge_fields(fields, handler.deliver(mine, into))
+            fields.update(handler.deliver(mine, into))
     return fields
-
-
-def merge_fields(fields: dict[str, Any], more: Mapping[str, Any]) -> None:
-    """Merge `more` into `fields` in place. Lists are concatenated, dicts merge key by key
-    with `more` winning, and anything else is replaced."""
-    for key, value in more.items():
-        had = fields.get(key)
-        if isinstance(had, list) and isinstance(value, list):
-            fields[key] = had + value
-        elif isinstance(had, dict) and isinstance(value, Mapping):
-            fields[key] = {**had, **value}
-        else:
-            fields[key] = value
 
 
 def read(home: Path) -> dict[str, str]:

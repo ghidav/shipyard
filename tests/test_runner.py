@@ -92,7 +92,7 @@ def fakes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[FakeProxy, F
 
 async def _run(home: Path, tmp_path: Path, runner: Any) -> tuple[Run, Runner]:
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.run_trial = runner
+    opened.engine.run_trial = runner
     started = Runner.from_run(opened)
     with opened:
         await started.run()
@@ -276,7 +276,7 @@ async def test_a_trainer_class_of_ones_own_replaces_the_kinds(
     tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
 ) -> None:
     opened = Run.open(_blueprint(tmp_path), root=tmp_path / "runs")
-    opened.run_trial = Alternating()
+    opened.engine.run_trial = Alternating()
     started = Runner.from_run(opened, Trainer)
     with opened:
         agent = await started.run()
@@ -328,11 +328,11 @@ async def test_a_resumed_run_anchors_kl_to_its_start_before_loading_the_checkpoi
         tmp_path, **{"[model]\n": f'[model]\nfrom_checkpoint = "{state}"\n', **ANCHORED}
     )
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.run_trial = Interrupting(after=5)
+    opened.engine.run_trial = Interrupting(after=5)
     with pytest.raises(Stopped), opened:
         await Runner.from_run(opened).run()
     resumed = Runner.from_checkpoint(opened.directory)
-    resumed.opened.run_trial = Alternating()
+    resumed.opened.engine.run_trial = Alternating()
     with resumed.opened:
         await resumed.run()
     published = "tinker://fake/sampler_weights/anchor"
@@ -349,11 +349,11 @@ async def test_a_resumed_run_continues_its_warm_up(
 ) -> None:
     home = _blueprint(tmp_path, **{"learning_rate = 2e-5": "learning_rate = 2e-5\nwarmup = 20"})
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.run_trial = Interrupting(after=5)
+    opened.engine.run_trial = Interrupting(after=5)
     with pytest.raises(Stopped), opened:
         await Runner.from_run(opened).run()
     resumed = Runner.from_checkpoint(opened.directory)
-    resumed.opened.run_trial = Alternating()
+    resumed.opened.engine.run_trial = Alternating()
     with resumed.opened:
         await resumed.run()
     rates = [row["learning_rate"] for row in _rows(resumed.opened)]
@@ -382,7 +382,7 @@ async def test_a_step_that_fails_closes_the_session_as_errored_and_the_run_as_fa
     service.client.failing = RuntimeError("the backend went away")
     home = _blueprint(tmp_path, **{"batch_size = 2": "batch_size = 4"})
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.run_trial = Alternating()
+    opened.engine.run_trial = Alternating()
     with pytest.raises(RuntimeError, match="went away"), opened:
         await Runner.from_run(opened).run()
     assert service.closed == [("errored", "RuntimeError: the backend went away")]
@@ -396,7 +396,7 @@ async def test_a_run_killed_mid_epoch_resumes_from_its_last_checkpoint(
 ) -> None:
     proxy, service = fakes
     opened = Run.open(_blueprint(tmp_path), root=tmp_path / "runs")
-    opened.run_trial = Interrupting(after=5)  # the second batch's first trial
+    opened.engine.run_trial = Interrupting(after=5)  # the second batch's first trial
     started = Runner.from_run(opened)
     with pytest.raises(Stopped), opened:
         await started.run()
@@ -410,7 +410,7 @@ async def test_a_run_killed_mid_epoch_resumes_from_its_last_checkpoint(
     trainer = resumed.trainer
     assert (trainer.steps, trainer.updates, trainer.epoch) == (1, 1, 0)
     again = resumed.opened
-    again.run_trial = trials = Alternating()
+    again.engine.run_trial = trials = Alternating()
     with again:
         await resumed.run()
     planned = list(Generator(tasks("four", root=tmp_path / "tasks"), 2, 0).batches(0))
@@ -451,7 +451,7 @@ async def test_a_run_is_evaluated_at_a_checkpoint_as_one_more_row(
     opened, _ = await _run(_blueprint(tmp_path), tmp_path, Alternating())
     _two(tmp_path)
     reopened = Runner.from_checkpoint(opened.directory, tag="step-1")
-    reopened.opened.run_trial = Alternating()
+    reopened.opened.engine.run_trial = Alternating()
     calls = len(service.calls)
     with reopened.opened:
         result = await reopened.evaluate(tasks("two", root=tmp_path / "tasks"))
@@ -511,7 +511,7 @@ async def test_a_run_under_a_runner_file_trains_under_its_trainer_and_resumes_un
     file = _file(tmp_path / "run.py", RUNNER_FILE)
     opened = Run.open(_blueprint(tmp_path), root=tmp_path / "runs", runner=file)
     assert (opened.directory / record.RUNNER).read_bytes() == file.read_bytes()
-    opened.run_trial = Alternating()
+    opened.engine.run_trial = Alternating()
     started = runner_in(file).from_run(opened)
     with opened:
         await started.run()

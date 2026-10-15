@@ -59,7 +59,7 @@ async def test_jobs_are_named_in_turn_and_reserved_by_directory_first(
     engine = opened.engine
     assert engine.sandbox == "modal" and engine.jobs_dir == Path("jobs")
     assert engine.settings == Settings() and engine.progress is opened.progress
-    assert engine.run_trial is None and opened.run_trial is None
+    assert engine.run_trial is None
     rows = list(record.read(opened.directory / record.JOBS))
     assert [row["job"] for row in rows] == [job_of(first), job_of(second)]
     assert [row["batch"] for row in rows] == [0, 1]
@@ -84,7 +84,7 @@ def test_the_job_counter_is_seeded_from_the_record_and_the_disk(
 async def test_a_job_name_already_taken_on_disk_is_refused(opened: Run, tmp_path: Path) -> None:
     taken = tmp_path / "jobs" / f"{opened.id}-0000"
     taken.mkdir(parents=True)
-    opened.run_trial = FakeTrials()
+    opened.engine.run_trial = FakeTrials()
     with pytest.raises(FileExistsError, match=f"{opened.id}-0000 is taken"):
         await sampled(opened, _batch(tmp_path, "alpha"), rollouts=1, index=0)
     assert not (opened.directory / record.JOBS).exists() and not any(taken.iterdir())
@@ -93,7 +93,7 @@ async def test_a_job_name_already_taken_on_disk_is_refused(opened: Run, tmp_path
 async def test_the_job_row_counts_verdicts_endings_tokens_and_seconds(
     opened: Run, tmp_path: Path
 ) -> None:
-    opened.run_trial = FakeTrials(
+    opened.engine.run_trial = FakeTrials(
         outcomes={
             "alpha": {
                 "reward": 1.0,
@@ -144,9 +144,11 @@ async def test_the_job_row_counts_verdicts_endings_tokens_and_seconds(
 async def test_empty_maps_are_left_off_and_costs_add_up_across_jobs(
     opened: Run, tmp_path: Path
 ) -> None:
-    opened.run_trial = FakeTrials(outcomes={"alpha": {"reward": 0.5}, "beta": {"reward": 1.0}})
+    opened.engine.run_trial = FakeTrials(
+        outcomes={"alpha": {"reward": 0.5}, "beta": {"reward": 1.0}}
+    )
     await sampled(opened, _batch(tmp_path, "alpha", "beta"), rollouts=1, index=0)
-    opened.run_trial = FakeTrials(breaks=("alpha",), outcomes={"beta": {"reward": 0.0}})
+    opened.engine.run_trial = FakeTrials(breaks=("alpha",), outcomes={"beta": {"reward": 0.0}})
     await sampled(opened, _batch(tmp_path, "alpha", "beta"), rollouts=1, index=1)
     first, second = list(record.read(opened.directory / record.JOBS))
     assert "masked" not in first and "ended" not in first and first["graded"] == 2
@@ -177,7 +179,7 @@ async def test_jobs_dir_comes_from_the_blueprint(
     )
     (home / "run.toml").write_text(text)
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.run_trial = FakeTrials()
+    opened.engine.run_trial = FakeTrials()
     rolled = await sampled(opened, _batch(tmp_path, "alpha"), rollouts=1, index=0)
     assert trials_of(rolled)[0].parent == Path("elsewhere/jobs") / job_of(rolled)
     assert (tmp_path / "elsewhere" / "jobs" / job_of(rolled)).is_dir()

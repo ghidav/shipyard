@@ -28,7 +28,7 @@ from shipyard.sampling.endpoint import (
     ProxyEndpoint,
     tinker_base_url,
 )
-from shipyard.sampling.engine import HarborEngine, TrialRunner
+from shipyard.sampling.engine import HarborEngine
 from shipyard.types import Endpoint
 
 logger = logging.getLogger(__name__)
@@ -134,15 +134,6 @@ class Run:
         current.update(about)
         record.write_json(self.directory / record.PROCESS, current)
 
-    @property
-    def run_trial(self) -> TrialRunner | None:
-        """How one trial is run; None is Harbor's `Trial`. A test hands in its own."""
-        return self.engine.run_trial
-
-    @run_trial.setter
-    def run_trial(self, runner: TrialRunner | None) -> None:
-        self.engine.run_trial = runner
-
     def reserve_job(self) -> str:
         """The next job name, `<run id>-NNNN`, with its directory created; raises if it exists."""
         name = f"{self.id}-{self._next_job:04d}"
@@ -163,7 +154,8 @@ class Run:
         purpose: str = "rollout",
         **about: Any,
     ) -> Rollouts:
-        """The job's record side: records drained, logs read, row written, the endpoint checked."""
+        """The job's record side: records drained, logs read, the row written with its modules
+        digest, graded count, masks, endings and the party billed, then the endpoint checked."""
         endpoint = self.endpoint
         rolled = Rollouts.of(job, trials)
         records = await endpoint.record(job, trials)
@@ -171,8 +163,29 @@ class Run:
             asked, failed = read_logs(trials, records, check_turns=self.config.rollout.check_turns)
             rolled = replace(rolled, records=records, asked=asked, failed=failed)
         tasks = len({one.task for one in trials})
-        self._record_job(
-            rolled, batch=batch, tasks=tasks, modules=modules, purpose=purpose, **about
+        judged = verdicts(rolled)
+        served = rolled.records is not None
+        if served:
+            counted, noted = sampled(rolled)
+            party = self.endpoint.party
+        else:
+            counted, party, noted = reported(rolled), billed_by(rolled), {}
+        masked = _tally(each.mask for each in judged)
+        ended = _tally(each.ended for each in judged)
+        self.record_job(
+            rolled,
+            purpose=purpose,
+            party=party or self.config.model.provider,
+            counted=counted,
+            batch=batch,
+            tasks=tasks,
+            **about,
+            **({"modules": modules.digest} if modules is not None else {}),
+            graded=sum(each.reward is not None for each in judged),
+            **({"masked": masked} if masked else {}),
+            **({"ended": ended} if ended else {}),
+            served="tinker" if served else "provider",
+            **{key: value for key, value in noted.items() if value},
         )
         if records is not None:
             try:
@@ -189,42 +202,6 @@ class Run:
             return
         self.costs.add_party(party, **counted)
         record.write_json(self.directory / record.COSTS, self.costs.to_dict())
-
-    def _record_job(
-        self,
-        rolled: Rollouts,
-        *,
-        batch: int,
-        tasks: int,
-        modules: Candidate | None = None,
-        purpose: str = "rollout",
-        **about: Any,
-    ) -> dict[str, Any]:
-        """The job row: modules digest, graded count, masks, endings, and the party billed."""
-        judged = verdicts(rolled)
-        served = rolled.records is not None
-        if served:
-            counted, noted = sampled(rolled)
-            party = self.endpoint.party
-        else:
-            counted, party, noted = reported(rolled), billed_by(rolled), {}
-        masked = _tally(each.mask for each in judged)
-        ended = _tally(each.ended for each in judged)
-        return self.record_job(
-            rolled,
-            purpose=purpose,
-            party=party or self.config.model.provider,
-            counted=counted,
-            batch=batch,
-            tasks=tasks,
-            **about,
-            **({"modules": modules.digest} if modules is not None else {}),
-            graded=sum(each.reward is not None for each in judged),
-            **({"masked": masked} if masked else {}),
-            **({"ended": ended} if ended else {}),
-            served="tinker" if served else "provider",
-            **{key: value for key, value in noted.items() if value},
-        )
 
     def record_job(
         self,
@@ -255,14 +232,10 @@ class Run:
                 "sandbox_seconds": seconds,
             },
         )
-        self._bill(party, counted, timed, seconds)
-        return row
-
-    def _bill(self, party: str, counted: Mapping[str, int], timed: int, seconds: float) -> None:
-        """Add the party's counts and the sandbox's seconds to `costs.json`."""
         self.costs.add_party(party, **counted)
         self.costs.add_sandbox(self.config.rollout.sandbox, timed, seconds)
         record.write_json(self.directory / record.COSTS, self.costs.to_dict())
+        return row
 
     def __enter__(self) -> Self:
         if self._reopened:

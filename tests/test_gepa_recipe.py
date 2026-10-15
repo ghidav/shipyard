@@ -102,7 +102,7 @@ async def test_the_recipe_runs_end_to_end_on_fakes(
     home = _blueprint(tmp_path, BLUEPRINT + "pareto = 0\n")
     opened = Run.open(home, root=tmp_path / "runs")
     assert opened.carried is None and opened.config.recipe.budget is None
-    opened.run_trial = fakes = Fakes()
+    opened.engine.run_trial = fakes = Fakes()
     with opened:
         await Runner.from_run(opened).run()
     seeded = seed(home / "modules")
@@ -175,7 +175,7 @@ async def test_by_default_two_thirds_are_held_out_and_the_winner_is_scored_on_th
         [Path("tasks/fixture") / n for n in ("alpha", "beta")], 1, seed=0
     )
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.run_trial = fakes = Fakes()
+    opened.engine.run_trial = fakes = Fakes()
     with opened:
         await Runner.from_run(opened).run()
     taught, held = feedback[0].name, pareto[0].name
@@ -203,7 +203,7 @@ async def test_data_seed_draws_the_minibatches(
         home = write_blueprint(tmp_path / f"seed{value}", text + "pareto = 0\nbudget = 30\n")
         shutil.copytree(VALID, home / "modules")
         opened = Run.open(home, root=tmp_path / "runs")
-        opened.run_trial = fakes = Fakes()
+        opened.engine.run_trial = fakes = Fakes()
         with opened:
             await Runner.from_run(opened).run()
         names = _names(fakes.configs)
@@ -229,7 +229,7 @@ async def test_a_quiet_reflector_leaves_the_seed_as_the_winner(
             return
         write_result(trial, reward=0.5)
 
-    opened.run_trial = quiet
+    opened.engine.run_trial = quiet
     with opened:
         agent = await Runner.from_run(opened, GEPATrainer).run()
     seeded = seed(opened.directory / record.MODULES / SEED)
@@ -263,7 +263,7 @@ async def test_a_seed_perfect_on_its_minibatches_is_never_reflected_on(
         ran.append(Path(str(config.task.path)).name)
         write_result(Path(config.trials_dir) / config.trial_name, reward=1.0)
 
-    opened.run_trial = solved
+    opened.engine.run_trial = solved
     with opened:
         await Runner.from_run(opened).run()
     assert "reflection" not in ran and len(ran) == 3, "the seed's scoring, then two parents"

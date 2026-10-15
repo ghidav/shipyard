@@ -31,7 +31,6 @@ from shipyard.modules import (
     Unsupported,
     deliver,
     keep,
-    merge_fields,
     preamble,
     read,
     seed,
@@ -40,7 +39,7 @@ from shipyard.modules import (
 from shipyard.preflight import Finding
 from shipyard.run import CARRIED, Run
 from shipyard.sampling.endpoint import ProviderEndpoint
-from shipyard.sampling.engine import DELIVERED, HarborEngine
+from shipyard.sampling.engine import DELIVERED, HarborEngine, laid_over
 from shipyard.types import Agent, Policy, harness
 from tests.trials import (
     FakeTrials,
@@ -268,8 +267,8 @@ def test_a_prompt_is_delivered_as_harbors_prompt_template(tmp_path: Path) -> Non
 
 def test_a_prompt_rides_with_skills_and_lays_over_the_blueprints_kwargs(tmp_path: Path) -> None:
     candidate = Candidate({PROMPT: _prompt(), "solving": _module()})
-    fields: dict[str, Any] = {"kwargs": {"version": "1.0", "prompt_template_path": "theirs.j2"}}
-    merge_fields(fields, deliver(candidate, tmp_path / "into"))
+    under: dict[str, Any] = {"kwargs": {"version": "1.0", "prompt_template_path": "theirs.j2"}}
+    fields = laid_over(under, deliver(candidate, tmp_path / "into"))
     assert fields["skills"] == [str((tmp_path / "into" / "skills").resolve())]
     assert fields["kwargs"]["version"] == "1.0"
     assert fields["kwargs"]["prompt_template_path"].endswith("prompt/template.j2")
@@ -323,23 +322,6 @@ def test_deliver_names_the_skills_root_harbor_takes_and_writes_every_file(
     assert not stale.exists(), "emptied first: one candidate's text never beside another's"
     # The field is Harbor's: `AgentConfig.skills` takes the root as it is.
     assert AgentConfig(name="pi", **fields).skills == [str(root)]
-
-
-def test_merge_fields_joins_lists_merges_dicts_and_replaces_the_rest() -> None:
-    fields: dict[str, Any] = {
-        "skills": ["/a"],
-        "kwargs": {"version": "1", "turns": 2},
-        "name": "pi",
-    }
-    merge_fields(
-        fields, {"skills": ["/b"], "kwargs": {"turns": 3}, "env": {"X": "1"}, "name": "acp:x"}
-    )
-    assert fields == {
-        "skills": ["/a", "/b"],
-        "kwargs": {"version": "1", "turns": 3},
-        "env": {"X": "1"},
-        "name": "acp:x",
-    }
 
 
 async def test_a_kinds_fields_land_on_the_agent_config_beside_the_rollouts_own(
@@ -441,7 +423,7 @@ async def test_open_keeps_the_carried_modules_once_and_sample_delivers_them_per_
     carried = opened.directory / record.MODULES / CARRIED
     assert kept == [carried] and _files(carried) == _files(VALID)
     assert seed(carried).digest == opened.carried.digest
-    opened.run_trial = runner = FakeTrials()
+    opened.engine.run_trial = runner = FakeTrials()
     first = await sampled(opened, _batch(tmp_path, "alpha", "beta"), rollouts=2, index=0)
     second = await sampled(opened, _batch(tmp_path, "alpha"), rollouts=1, index=1)
     assert kept == [carried], "the carried copy is written once, at open"
@@ -474,7 +456,7 @@ async def test_sample_delivers_the_candidate_it_is_handed_and_nothing_otherwise(
     monkeypatch.chdir(tmp_path)
     opened = Run.open(BLUEPRINTS / "evaluate", root=tmp_path / "runs")
     assert opened.carried is None and not (opened.directory / record.MODULES).exists()
-    opened.run_trial = runner = FakeTrials()
+    opened.engine.run_trial = runner = FakeTrials()
     bare = await sampled(opened, _batch(tmp_path, "alpha"), rollouts=1, index=0)
     assert runner.configs[0].agent.skills == []
     assert sorted(p.name for p in (tmp_path / "jobs" / job_of(bare)).iterdir()) == [
@@ -494,7 +476,7 @@ async def test_a_handed_candidate_wins_over_the_carried_one(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     opened = Run.open(_carrying(tmp_path), root=tmp_path / "runs")
-    opened.run_trial = runner = FakeTrials()
+    opened.engine.run_trial = runner = FakeTrials()
     planning = _module(_skill("plan first", name="planning"))
     other = Candidate({}).with_component("planning", planning)
     assert other.components["planning"].name == "planning", "named by its component"
@@ -510,7 +492,7 @@ async def test_sample_hands_a_prompt_to_harbor_as_the_agents_prompt_template(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     opened = Run.open(_carrying(tmp_path), root=tmp_path / "runs")
-    opened.run_trial = runner = FakeTrials()
+    opened.engine.run_trial = runner = FakeTrials()
     prompted = Candidate({}).with_component("guidance", _prompt("Run the tests.\n"))
     rolled = await sampled(opened, _batch(tmp_path, "alpha"), rollouts=1, index=0, modules=prompted)
     kwargs = runner.configs[0].agent.kwargs

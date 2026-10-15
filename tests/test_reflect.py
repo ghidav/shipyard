@@ -293,7 +293,7 @@ async def test_the_reflector_runs_the_trial_our_way_and_records_it_as_a_reflecti
     monkeypatch.chdir(tmp_path)
     runner = Reflector()
     with _run(tmp_path) as opened:
-        opened.run_trial = runner
+        opened.engine.run_trial = runner
         write = reflect(opened, harness="claude-code", model="anthropic/claude-sonnet-5", image="i")
         found = await write(_reflection())
     assert found is not None and found.text == REWRITTEN and found.name == "solving"
@@ -339,14 +339,14 @@ async def test_a_reflection_that_published_nothing_or_crashed_is_a_decline(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     with _run(tmp_path) as opened:
-        opened.run_trial = Reflector(answer=None)
+        opened.engine.run_trial = Reflector(answer=None)
         write = reflect(opened, harness="claude-code", model=None, image="i")
         assert await write(_reflection()) is None
 
         async def crashes(config: TrialConfig) -> None:
             raise RuntimeError("the daemon went away")
 
-        opened.run_trial = crashes
+        opened.engine.run_trial = crashes
         assert await write(_reflection()) is None
     rows = list(record.read(opened.directory / record.JOBS))
     assert [row["purpose"] for row in rows] == ["reflection", "reflection"]
@@ -363,7 +363,7 @@ async def test_the_party_falls_back_to_the_models_prefix(
         _published(Path(config.trials_dir) / config.trial_name, SKILL_FILE).write_text(REWRITTEN)
 
     with _run(tmp_path) as opened:
-        opened.run_trial = wrote_no_result
+        opened.engine.run_trial = wrote_no_result
         write = reflect(opened, harness="pi", model="openai/gpt-5", image="i")
         assert (await write(_reflection())) is not None
     (row,) = record.read(opened.directory / record.JOBS)

@@ -179,7 +179,7 @@ async def test_a_cycle_evolves_two_texts_then_splits_every_group_across_them(
     )
     shutil.copytree(VALID, home / "modules")
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.run_trial = Trials()
+    opened.engine.run_trial = Trials()
     with opened:
         await Runner.from_run(opened).run()
     rows = list(record.read(opened.directory / record.METRICS))
@@ -216,7 +216,7 @@ async def test_the_fast_phase_scores_each_cell_with_one_rollout_on_five_passes(
     home = write_blueprint(tmp_path, _text(**{'"aime-train"': '"four"'}))
     shutil.copytree(VALID, home / "modules")
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.run_trial = Trials()
+    opened.engine.run_trial = Trials()
     with opened:
         await Runner.from_run(opened).run()
     rows = list(record.read(opened.directory / record.METRICS))
@@ -243,7 +243,7 @@ async def test_patience_ends_a_fast_phase_as_it_ends_gepa(tmp_path: Path) -> Non
     home = write_blueprint(tmp_path, _text(**changes))
     shutil.copytree(VALID, home / "modules")
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.run_trial = Trials()
+    opened.engine.run_trial = Trials()
     with opened:
         await Runner.from_run(opened).run()
     rows = list(record.read(opened.directory / record.METRICS))
@@ -266,7 +266,7 @@ async def test_cycle_c_draws_its_minibatches_with_data_seed_plus_c(tmp_path: Pat
     home = write_blueprint(tmp_path, _text(**changes))
     shutil.copytree(VALID, home / "modules")
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.run_trial = trials = Trials()
+    opened.engine.run_trial = trials = Trials()
     with opened:
         await Runner.from_run(opened).run()
     names = [Path(str(config.task.path)).name for config in trials.configs]
@@ -333,7 +333,7 @@ async def test_a_cycle_interrupted_after_a_slow_step_resumes_without_another_fas
     )
     shutil.copytree(VALID, home / "modules")
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.run_trial = Alternating()
+    opened.engine.run_trial = Alternating()
     started = Runner.from_run(opened)
     trainer = started.trainer
     checkpointed, job = trainer.checkpoint, trainer.job
@@ -364,7 +364,7 @@ async def test_a_cycle_interrupted_after_a_slow_step_resumes_without_another_fas
     population = [one.digest for one in resumed.trainer.population]
     assert len(population) == 2 and resumed.modules is not None
     assert resumed.modules.digest == population[0]
-    resumed.opened.run_trial = Alternating()
+    resumed.opened.engine.run_trial = Alternating()
     with resumed.opened:
         await resumed.run()
     after = list(record.read(resumed.opened.directory / record.JOBS))[len(before) :]
