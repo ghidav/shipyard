@@ -293,5 +293,10 @@ async def context_of(service: Any, base_model: str) -> int | None:
             if getattr(model, "model_name", None) == base_model:
                 return int(getattr(model, "max_context_length", 0) or 0) or None
     except Exception:  # noqa: BLE001 - a failed capability read must not fail a run
-        logger.debug("could not read the context length of %s", base_model, exc_info=True)
+        logger.warning(
+            "could not read the context length of %s: the budget and the context fit are "
+            "not enforced",
+            base_model,
+            exc_info=True,
+        )
     return None

@@ -4,6 +4,7 @@ session closed on the way out."""
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from typing import Any
 
@@ -280,7 +281,9 @@ async def test_the_control_route_refuses_what_is_not_a_path() -> None:
 # ------------------------------------------------------------------ the context length
 
 
-async def test_the_context_length_is_read_off_the_capabilities_or_is_none() -> None:
+async def test_the_context_length_is_read_off_the_capabilities_or_is_none(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     class Service:
         async def get_server_capabilities_async(self) -> Any:
             return SimpleNamespace(
@@ -297,7 +300,10 @@ async def test_the_context_length_is_read_off_the_capabilities_or_is_none() -> N
     assert await context_of(Service(), "a/b") == 4096
     assert await context_of(Service(), "c/d") is None
     assert await context_of(Service(), "e/f") is None
-    assert await context_of(Broken(), "a/b") is None
+    with caplog.at_level(logging.WARNING, logger="shipyard.proxy.server"):
+        assert await context_of(Broken(), "a/b") is None
+    assert "could not read the context length of a/b" in caplog.text
+    assert "not enforced" in caplog.text and "RuntimeError: no network" in caplog.text
 
 
 # ------------------------------------------------------------------ the Tinker session

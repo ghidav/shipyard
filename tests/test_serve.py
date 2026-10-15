@@ -4,6 +4,8 @@ process end to end on the fake sampler, with no Tinker and no tokenizer."""
 from __future__ import annotations
 
 import asyncio
+import io
+import logging
 import os
 import signal
 import subprocess
@@ -84,6 +86,26 @@ def test_the_flags_default_to_every_interface_and_any_port() -> None:
 def test_main_says_what_is_wrong_rather_than_serving_nowhere(capsys: Any) -> None:
     assert serve.main(["--model", "a/b"]) == 2
     assert "--advertise" in capsys.readouterr().out
+
+
+def test_main_configures_the_proxys_logging_unless_it_is_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    out = io.StringIO()
+    root, ours = logging.getLogger(), logging.getLogger("shipyard")
+    level, handlers = ours.level, list(ours.handlers)
+    monkeypatch.setattr(root, "handlers", [])
+    try:
+        serve.configure_logging(out)
+        logging.getLogger("shipyard.proxy.server").info("swapped to %s", "w")
+        logging.getLogger("aiohttp.access").info("GET /v1/chat/completions")
+    finally:
+        ours.handlers[:] = handlers
+        ours.setLevel(level)
+    assert out.getvalue() == "swapped to w\n"
+    monkeypatch.setattr(root, "handlers", [logging.NullHandler()])
+    serve.configure_logging(out)
+    assert ours.handlers == handlers, "configured already, as under the CLI's verb"
 
 
 # ------------------------------------------------------------------- the server
