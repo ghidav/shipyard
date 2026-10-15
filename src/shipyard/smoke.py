@@ -12,9 +12,8 @@ from typing import TYPE_CHECKING
 
 from shipyard import record
 from shipyard.admit import Verdict, verdicts
-from shipyard.config import Blueprint, FstRecipe, GepaRecipe
+from shipyard.config import Blueprint
 from shipyard.data import Generator
-from shipyard.modules import Candidate
 from shipyard.proxy.profiles import PROFILES, bare_name, profile_for
 from shipyard.run import seeded
 from shipyard.sampling.endpoint import NothingServed, ProxyEndpoint
@@ -43,12 +42,6 @@ def planned(cfg: Blueprint) -> list[Path]:
     if not made.train:
         made = replace(made, train=made.test)
     return next(made.batches(0))[:1]
-
-
-def carried(cfg: Blueprint) -> Candidate | None:
-    """The modules the job carries. For gepa and fst, the seed, since a search's first job
-    scores it. None for the other recipes, whose run carries its own."""
-    return seeded(cfg) if isinstance(cfg.recipe, GepaRecipe | FstRecipe) else None
 
 
 @dataclass(frozen=True)
@@ -112,10 +105,11 @@ class Smoked:
 
 
 async def smoke(run: Run) -> Smoked:
-    """Run the smoke job through the trainer's `job`, recorded with `purpose = "smoke"`. A job
-    the proxy served nothing for is still reported, and its stop is kept for `verify`."""
+    """Run the smoke job through the trainer's `job`, carrying the modules the blueprint seeds,
+    recorded with `purpose = "smoke"`. A job the proxy served nothing for is still reported,
+    and its stop is kept for `verify`."""
     cfg = run.config
-    agent = Agent(Policy(run.endpoint), [harness(cfg.rollout.harness)], carried(cfg))
+    agent = Agent(Policy(run.endpoint), [harness(cfg.rollout.harness)], seeded(cfg))
     await run.endpoint.open()
     try:
         found = await Trainer(run).job(agent, planned(cfg), 1, purpose=PURPOSE)

@@ -18,7 +18,7 @@ from shipyard.config import load
 from shipyard.data import Generator
 from shipyard.modules import seed
 from shipyard.run import Run
-from shipyard.smoke import Smoked, Trial, carried, planned, wiring
+from shipyard.smoke import Smoked, Trial, planned, wiring
 from tests.records import FakeProxy, made
 from tests.test_gepa_recipe import BLUEPRINT as GEPA
 from tests.test_gepa_recipe import VALID
@@ -87,14 +87,6 @@ def test_the_smoke_task_is_the_first_of_the_first_batch(here: Path) -> None:
     cfg = load(blueprint(here, "dapo"))
     first = next(Generator.of(cfg).batches(0))
     assert planned(cfg) == first[:1] and len(first) == 2
-    assert carried(cfg) is None
-
-
-def test_a_gepa_smoke_carries_the_seed_the_search_would_score_first(here: Path) -> None:
-    home = write_blueprint(here, GEPA.replace('"fixture"', '"four"'))
-    shutil.copytree(VALID, home / "modules")
-    found = carried(load(home))
-    assert found is not None and found.digest == seed(home / "modules").digest
 
 
 # ------------------------------------------------------------------- served runs
@@ -125,6 +117,20 @@ def test_a_served_smoke_samples_one_trial_and_reports_it(
     )
     assert proxy.swapped == [] and proxy.closed == 1
     assert config.agent.env["OPENAI_BASE_URL"].endswith(f"/r/trial/{config.trial_name}/v1")
+
+
+def test_a_dapo_smoke_carries_the_blueprints_modules(
+    here: Path, proxy: FakeProxy, trials: FakeTrials
+) -> None:
+    proxy.default = [made("prompt", "said", seq=1)]
+    home = blueprint(here, "dapo", **{'kind = "dapo"': 'kind = "dapo"\nmodules = "modules"'})
+    shutil.copytree(VALID, home / "modules")
+    result = runner.invoke(app, ["run", str(home), "--smoke"])
+    assert result.exit_code == 0, result.output
+    [job] = list(record.read(only_run(here) / record.JOBS))
+    assert job["modules"] == seed(home / "modules").digest
+    [config] = trials.configs
+    assert [Path(root).name for root in config.agent.skills] == ["skills"]
 
 
 def test_a_served_smoke_nothing_reached_reports_and_fails_with_the_dead_endpoint(
