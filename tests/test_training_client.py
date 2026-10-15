@@ -34,7 +34,6 @@ async def test_open_makes_a_lora_at_the_rank_named_or_tinkers_default() -> None:
     opened = await TinkerClient.open(service, MODEL, lora_rank=16)
     assert service.calls == [("lora", MODEL, 16)] and service.metadata == [None]
     assert opened.client is service.client and opened.service is service
-    assert opened.restored is False
     service = FakeService()
     await TinkerClient.open(service, MODEL, metadata={"shipyard_run": "r"})
     assert service.calls == [("lora", MODEL, DEFAULT_LORA_RANK)] and DEFAULT_LORA_RANK == 32
@@ -44,17 +43,17 @@ async def test_open_makes_a_lora_at_the_rank_named_or_tinkers_default() -> None:
 async def test_open_from_a_state_path_restores_the_moments_only_if_asked() -> None:
     path = "tinker://run/weights/step-3"
     service = FakeService()
-    opened = await TinkerClient.open(service, MODEL, from_checkpoint=path, lora_rank=64)
-    assert service.calls == [("from_state", path)] and opened.restored is False
+    await TinkerClient.open(service, MODEL, from_checkpoint=path, lora_rank=64)
+    assert service.calls == [("from_state", path)]
     service = FakeService()
-    opened = await TinkerClient.open(
+    await TinkerClient.open(
         service, MODEL, from_checkpoint=path, restore_optimizer=True, metadata={"a": "b"}
     )
-    assert service.calls == [("from_state_with_optimizer", path)] and opened.restored is True
+    assert service.calls == [("from_state_with_optimizer", path)]
     assert service.metadata == [{"a": "b"}]
     service = FakeService()
-    opened = await TinkerClient.open(service, MODEL, restore_optimizer=True)
-    assert service.calls == [("lora", MODEL, 32)] and opened.restored is False
+    await TinkerClient.open(service, MODEL, restore_optimizer=True)
+    assert service.calls == [("lora", MODEL, 32)]
 
 
 async def test_open_refuses_a_model_the_backend_lacks_or_cannot_train_before_spending() -> None:
@@ -146,15 +145,13 @@ async def test_saves_carry_their_ttl_and_return_the_path() -> None:
     ]
 
 
-async def test_load_state_restores_the_optimizer_too_and_says_so() -> None:
+async def test_load_state_restores_the_optimizer_too() -> None:
     client, fake = _client()
-    assert client.restored is False
     await client.load_state("tinker://run/weights/step-3")
     assert fake.calls == [
         ("load_state_with_optimizer", "tinker://run/weights/step-3"),
         ("consumed", "load"),
     ]
-    assert client.restored is True
 
 
 async def test_close_finishes_the_session_once_with_its_status() -> None:

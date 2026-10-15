@@ -344,6 +344,37 @@ async def test_a_resumed_run_anchors_kl_to_its_start_before_loading_the_checkpoi
     assert anchored < loaded, "the anchor is the blueprint's start, not the resume point"
 
 
+async def test_a_resumed_run_continues_its_warm_up(
+    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
+) -> None:
+    home = _blueprint(tmp_path, **{"learning_rate = 2e-5": "learning_rate = 2e-5\nwarmup = 20"})
+    opened = Run.open(home, root=tmp_path / "runs")
+    opened.run_trial = Interrupting(after=5)
+    with pytest.raises(Stopped), opened:
+        await Runner.from_run(opened).run()
+    resumed = Runner.from_checkpoint(opened.directory)
+    resumed.opened.run_trial = Alternating()
+    with resumed.opened:
+        await resumed.run()
+    rates = [row["learning_rate"] for row in _rows(resumed.opened)]
+    assert rates == pytest.approx([2e-5 / 20, 2e-5 * 2 / 20]), "the second update of twenty"
+
+
+async def test_a_run_continuing_an_optimizer_state_skips_the_warm_up(
+    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
+) -> None:
+    state = "tinker://run:train:0/weights/final"
+    home = _blueprint(
+        tmp_path,
+        **{
+            "[model]\n": f'[model]\nfrom_checkpoint = "{state}"\nrestore_optimizer = true\n',
+            "learning_rate = 2e-5": "learning_rate = 2e-5\nwarmup = 20",
+        },
+    )
+    opened, _ = await _run(home, tmp_path, Alternating())
+    assert [row["learning_rate"] for row in _rows(opened)] == pytest.approx([2e-5, 2e-5])
+
+
 async def test_a_run_whose_model_is_not_served_is_refused_before_a_session_opens(
     tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
 ) -> None:

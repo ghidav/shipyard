@@ -123,10 +123,6 @@ class Update:
 class TrainingClient(ABC):
     """Tinker's training client; a step call submits on await and returns the result's awaitable."""
 
-    #: The optimizer state was loaded with the weights: the run continues an earlier
-    #: run's schedule, so the learning rate does not warm up again.
-    restored: bool = False
-
     @abstractmethod
     async def forward_backward(
         self, datums: Values[Datum], loss_fn: str, loss_config: Mapping[str, float] | None
