@@ -47,7 +47,7 @@ def test_each_fixture_loads(kind: str) -> None:
     assert isinstance(found.recipe, config.Gradient) == (kind in GRADIENT)
 
 
-EXAMPLES = sorted(Path(__file__).parent.parent / "examples" / "blueprints").iterdir())
+EXAMPLES = sorted((Path(__file__).parent.parent / "examples" / "blueprints").iterdir())
 
 
 @pytest.mark.parametrize("home", EXAMPLES, ids=[one.name for one in EXAMPLES])
