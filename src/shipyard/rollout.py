@@ -45,10 +45,7 @@ DELIVERED = "modules"
 
 @dataclass(frozen=True)
 class Rollouts:
-    """A finished job: its name, one directory per planned trial, and the plan (task and
-    rollout index of each). Once the run has recorded the job it also holds the proxy's
-    records and what the harness logs said, by trial name, which admission reads beside
-    each `result.json`."""
+    """A finished job: its trials in plan order, and once recorded, its records and harness logs."""
 
     job: str
     trials: list[Path]
@@ -90,10 +87,7 @@ async def rollout(
     progress: Reporter | None = None,
     modules: Candidate | None = None,
 ) -> Rollouts:
-    """Run every task `rollouts` times, `concurrency` trials at once, each trial dialling
-    the connection `endpoint` gives it, and return them in plan order. Deliver `modules`
-    under the job's directory and name them on the agent config. A trial whose runner
-    raised keeps its slot with no result, which admission masks."""
+    """Run every task `rollouts` times, each trial dialling the connection `endpoint` gives it."""
     if rollouts < 1:
         raise ValueError(f"rollouts must be at least 1; got {rollouts}")
     if concurrency < 1:
@@ -191,9 +185,7 @@ def _trial_config(
 
 
 def connected(config: TrialConfig, connection: Connection) -> TrialConfig:
-    """A copy of the trial's config dialling `connection`: its model name, its env over
-    the batch's, its kwargs laid over the batch's, and its host on an allowlisted task. The
-    agent config is shared by the batch, hence the copy."""
+    """A copy of the trial's config dialling `connection`, its env and kwargs over the batch's."""
     update: dict[str, Any] = {
         "model_name": connection.model,
         "env": {**dict(config.agent.env or {}), **connection.env},

@@ -1,6 +1,4 @@
-"""The endpoints: where the proxy goes for each sandbox, its start settings, the
-connection each trial dials, the records drained per job with their rows, the served-path
-refusal, the check for after the row, and the provider case."""
+"""Test the endpoints: placement, settings, connections, records, refusals, the provider case."""
 
 from __future__ import annotations
 
@@ -57,7 +55,7 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> FakeProxy:
 def trials(
     tmp_path: Path, *outcomes: tuple[str, dict[str, Any] | None], deployed: str = "pi"
 ) -> list[Trial]:
-    """A job's trials under `jobs/j`, each with the result given, None for none."""
+    """A job's trials under `jobs/j`, each with its result, None for none."""
     found = []
     for n, (task, outcome) in enumerate(outcomes):
         home = tmp_path / "jobs" / "j" / f"{task}__{n:07d}"
