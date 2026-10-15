@@ -219,7 +219,9 @@ class Trainer:
             rollouts=rollouts,
             graded=len(measured),
             masked=rollouts - len(measured),
-            mean=fmean(float(one.verdict.reward or 0.0) for one in measured) if measured else None,
+            reward_mean=fmean(float(one.verdict.reward or 0.0) for one in measured)
+            if measured
+            else None,
         )
         self.run.log(evaluation=True, **vars(result), **more)
         return result

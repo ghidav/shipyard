@@ -61,7 +61,7 @@ def _fixture_dapo(tmp_path: Path, *, provider: str | None = None) -> Path:
 SECTIONS = ("process", "metrics", "jobs", "checkpoints", "costs")
 COSTS = {
     "parties": {"m": {"trials": 2, "input_tokens": 15, "cache_tokens": 0, "output_tokens": 3}},
-    "sandbox": {"docker": {"trials": 2, "seconds": 1.5}},
+    "sandboxes": {"docker": {"trials": 2, "seconds": 1.5}},
 }
 
 
@@ -432,10 +432,10 @@ def test_an_evaluate_run_shows_its_jobs_and_costs(
     assert [row["purpose"] for row in rows] == ["evaluation", "evaluation"]
     assert sum(row["graded"] for row in rows) == 2 and sum(row["trials"] for row in rows) == 4
     assert as_json["costs"]["parties"]["openrouter"]["input_tokens"] == 20
-    assert as_json["costs"]["sandbox"]["modal"]["trials"] == 4
+    assert as_json["costs"]["sandboxes"]["modal"]["trials"] == 4
     final = as_json["metrics"]["last"]
     assert as_json["metrics"]["count"] == 1 and final["evaluation"] is True
-    assert final["graded"] == 2 and final["masked"] == 2 and final["mean"] == 1.0
+    assert final["graded"] == 2 and final["masked"] == 2 and final["reward_mean"] == 1.0
     assert "total" not in json.dumps(as_json["costs"])
 
 

@@ -33,7 +33,7 @@ class Costs:
     `costs.json`."""
 
     parties: dict[str, dict[str, int]] = field(default_factory=dict)
-    sandbox: dict[str, dict[str, float]] = field(default_factory=dict)
+    sandboxes: dict[str, dict[str, float]] = field(default_factory=dict)
 
     def add_party(self, name: str, **counts: int) -> None:
         """Add to a party's counts. Raises `ValueError` for a key outside `COUNTS` and
@@ -47,14 +47,14 @@ class Costs:
             held[key] = held.get(key, 0) + int(value)
 
     def add_sandbox(self, name: str, trials: int, seconds: float) -> None:
-        held = self.sandbox.setdefault(name, {"trials": 0, "seconds": 0.0})
+        held = self.sandboxes.setdefault(name, {"trials": 0, "seconds": 0.0})
         held["trials"] += int(trials)
         held["seconds"] += float(seconds)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "parties": {name: dict(held) for name, held in self.parties.items()},
-            "sandbox": {name: dict(held) for name, held in self.sandbox.items()},
+            "sandboxes": {name: dict(held) for name, held in self.sandboxes.items()},
         }
 
     @classmethod
@@ -65,7 +65,8 @@ class Costs:
             base = {key: held.get(key, 0) for key in COUNTS}
             trained = {key: held[key] for key in TRAINING_COUNTS if key in held}
             costs.add_party(name, **base, **trained)
-        for name, held in (payload.get("sandbox") or {}).items():
+        # A costs.json written before the key was `sandboxes` says `sandbox`.
+        for name, held in (payload.get("sandboxes") or payload.get("sandbox") or {}).items():
             costs.add_sandbox(name, held.get("trials", 0), held.get("seconds", 0.0))
         return costs
 

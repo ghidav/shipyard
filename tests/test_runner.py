@@ -153,7 +153,14 @@ async def test_a_run_that_names_a_test_set_evaluates_on_the_cadence(
     ]
     evaluations = [row for row in logged if row.get("evaluation")]
     assert [
-        (row["step"], row["epoch"], row["tasks"], row["rollouts"], row["graded"], row["mean"])
+        (
+            row["step"],
+            row["epoch"],
+            row["tasks"],
+            row["rollouts"],
+            row["graded"],
+            row["reward_mean"],
+        )
         for row in evaluations
     ] == [(2, 0, 2, 4, 4, 0.5), (4, 1, 2, 4, 4, 0.5)]
     jobs = list(record.read(opened.directory / record.JOBS))
@@ -385,7 +392,7 @@ async def test_a_run_is_evaluated_at_a_checkpoint_as_one_more_row(
         result = await reopened.evaluate(tasks("two", root=tmp_path / "tasks"))
     assert result is not None
     assert (result.step, result.epoch, result.tasks, result.rollouts) == (1, 0, 2, 4)
-    assert result.mean == 0.5
+    assert result.reward_mean == 0.5
     logged = rows(reopened.opened)
     assert logged[-1]["evaluation"] is True and logged[-1]["checkpoint"] == "step-1"
     assert logged[-1]["seq"] == 3, "numbered after the run's own rows"

@@ -55,7 +55,7 @@ async def test_the_test_set_is_measured_in_one_row_over_one_job_per_batch(
     (row,) = list(record.read(opened.directory / record.METRICS))
     assert row["evaluation"] is True and (row["step"], row["epoch"]) == (0, 0)
     assert (row["tasks"], row["rollouts"], row["graded"], row["masked"]) == (4, 4, 2, 2)
-    assert row["mean"] == 0.5
+    assert row["reward_mean"] == 0.5
     jobs = list(record.read(opened.directory / record.JOBS))
     assert [job["job"] for job in jobs] == [f"{opened.id}-0000", f"{opened.id}-0001"]
     assert [(job["purpose"], job["tasks"], job["trials"]) for job in jobs] == [
@@ -66,7 +66,7 @@ async def test_the_test_set_is_measured_in_one_row_over_one_job_per_batch(
     masked = [job.get("masked", {}) for job in jobs]
     assert sum(m.get("timeout", 0) for m in masked) == 1
     assert sum(m.get("env_error", 0) for m in masked) == 1
-    assert record.read_json(opened.directory / record.COSTS)["sandbox"] == {
+    assert record.read_json(opened.directory / record.COSTS)["sandboxes"] == {
         "modal": {"trials": 3, "seconds": 0.0}
     }
     assert not (opened.directory / record.CHECKPOINTS).exists()
@@ -89,7 +89,7 @@ async def test_nothing_graded_has_no_mean(tmp_path: Path, monkeypatch: pytest.Mo
     monkeypatch.chdir(tmp_path)
     opened = await _run(_blueprint(tmp_path), tmp_path, FakeTrials(breaks=("a", "b", "c", "d")))
     (row,) = list(record.read(opened.directory / record.METRICS))
-    assert row["mean"] is None and row["graded"] == 0 and row["masked"] == 4
+    assert row["reward_mean"] is None and row["graded"] == 0 and row["masked"] == 4
 
 
 async def test_a_served_model_runs_through_its_proxy_and_is_judged_by_its_records(
@@ -128,7 +128,7 @@ async def test_a_served_model_runs_through_its_proxy_and_is_judged_by_its_record
         assert config.agent.kwargs == {"version": "0.85.1", "model_api": "openai-completions"}
     (row,) = list(record.read(opened.directory / record.METRICS))
     assert (row["rollouts"], row["graded"], row["masked"]) == (4, 2, 2)
-    assert row["mean"] == 0.5, "a's 1 and b's budget-cut 0; c and d masked"
+    assert row["reward_mean"] == 0.5, "a's 1 and b's budget-cut 0; c and d masked"
     jobs = list(record.read(opened.directory / record.JOBS))
     assert [job["served"] for job in jobs] == ["tinker", "tinker"]
     assert [job["party"] for job in jobs] == ["tinker", "tinker"]
