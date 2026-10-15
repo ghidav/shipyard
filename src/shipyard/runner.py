@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import importlib.util
+import sys
 from collections.abc import Mapping
 from collections.abc import Sequence as Values
+from hashlib import sha256
 from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from shipyard import record, session
 from shipyard.data import Generator
+from shipyard.recipes import trainer_for
 from shipyard.run import Run
 from shipyard.training.client import TinkerClient
 from shipyard.training.trainer import Trainer
@@ -18,10 +22,14 @@ from shipyard.types import SERVE_TTL, Agent, Evaluation, Modules, Policy, harnes
 if TYPE_CHECKING:
     from shipyard.config import Model
 
-__all__ = ["Runner"]
+__all__ = ["Runner", "runner_in"]
 
 
 class Runner:
+    #: The trainer class a subclass names; None means the kind's. An instance's `trainer` is
+    #: the one built.
+    trainer: Any = None
+
     def __init__(
         self,
         run: Run,
@@ -43,46 +51,43 @@ class Runner:
         self.position: tuple[Mapping[str, Any], int] | None = None
 
     @classmethod
-    def of(cls, run: Run, trainer: type[Trainer]) -> Runner:
-        """The runner for an open run under the trainer class given."""
+    def from_run(cls, run: Run, trainer: type[Trainer] | None = None) -> Runner:
+        """The runner for an open run: under `trainer`, else the class's own, else the kind's."""
         cfg = run.config
         if cfg.trains and not cfg.model.served:
             raise ValueError(
                 f"[recipe] kind = {cfg.recipe.kind!r} trains the weights this run serves, and "
                 f"[model] provider = {cfg.model.provider!r} serves them elsewhere"
             )
+        chosen = trainer or cls.trainer or trainer_for(cfg.recipe)
         return cls(
             run,
             Generator.of(cfg),
-            trainer(run),
+            chosen(run),
             epochs=0 if cfg.recipe.kind == "evaluate" else cfg.data.epochs,
             evaluate_every=cfg.data.evaluate_every,
             modules=run.carried,
         )
 
     @classmethod
-    def from_run(cls, directory: Path, *, checkpoint: str = "last") -> Runner:
-        """The runner over a run reopened at one of its checkpoints, standing where it stood."""
-        from shipyard.recipes import trainer_for
-
+    def from_checkpoint(cls, directory: Path, *, tag: str = "last") -> Runner:
+        """The runner over a run reopened at one of its checkpoints, standing where it stood;
+        a run opened under a runner file reopens under its copy."""
         directory = Path(directory)
         if not (directory / record.CONFIG).is_file():
             raise ValueError(f"no run at {directory}")
+        kept = directory / record.RUNNER
+        if cls is Runner and kept.is_file():
+            return runner_in(kept).from_checkpoint(directory, tag=tag)
         rows = list(record.read(directory / record.CHECKPOINTS))
         if not rows:
             raise ValueError(f"{directory.name} has no checkpoint to go on from")
-        row = (
-            rows[-1]
-            if checkpoint == "last"
-            else next((r for r in rows if r["tag"] == checkpoint), None)
-        )
+        row = rows[-1] if tag == "last" else next((r for r in rows if r["tag"] == tag), None)
         if row is None:
             tags = ", ".join(r["tag"] for r in rows)
-            raise ValueError(
-                f"{directory.name} has no checkpoint tagged {checkpoint!r}; it has {tags}"
-            )
+            raise ValueError(f"{directory.name} has no checkpoint tagged {tag!r}; it has {tags}")
         run = Run.reopen(directory, resumed=row["tag"])
-        runner = cls.of(run, trainer_for(run.config.recipe))
+        runner = cls.from_run(run)
         consumed = runner.trainer.consumed(list(record.read(directory / record.JOBS)), row)
         runner.modules = runner.trainer.restore(row, consumed)
         runner.position = (row, consumed)
@@ -147,3 +152,31 @@ async def anchor(service: Any, client: TinkerClient, model: Model) -> Any:
         else None
     )
     return await service.create_sampling_client_async(base_model=model.name, model_path=start)
+
+
+def runner_in(path: Path) -> type[Runner]:
+    """The one `Runner` subclass the Python file defines; a path is loaded once."""
+    path = Path(path).resolve()
+    name = f"shipyard_runner_{sha256(str(path).encode()).hexdigest()[:12]}"
+    module = sys.modules.get(name)
+    if module is None:
+        spec = importlib.util.spec_from_file_location(name, path)
+        if spec is None or spec.loader is None:
+            raise ValueError(f"{path} is not a Python file")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        try:
+            spec.loader.exec_module(module)
+        except BaseException:
+            del sys.modules[name]
+            raise
+    found = [
+        one
+        for one in vars(module).values()
+        if isinstance(one, type) and issubclass(one, Runner) and one.__module__ == name
+    ]
+    if len(found) != 1:
+        raise ValueError(
+            f"{path} defines {len(found)} Runner subclasses; a runner file defines one"
+        )
+    return found[0]

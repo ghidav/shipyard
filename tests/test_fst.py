@@ -25,7 +25,7 @@ from shipyard.config import (
 )
 from shipyard.data import Generator, tasks
 from shipyard.modules import SKILL_FILE, seed
-from shipyard.recipes import resolution, run_recipe, trainer_for
+from shipyard.recipes import resolution, trainer_for
 from shipyard.recipes.fst import ADAM, BUDGET_PASSES, fst_trainer, slow_recipe
 from shipyard.recipes.gepa.reflect import COLLECTED
 from shipyard.run import Run
@@ -182,7 +182,7 @@ async def test_a_cycle_evolves_two_texts_then_splits_every_group_across_them(
     opened = Run.open(home, root=tmp_path / "runs")
     opened.run_trial = Trials()
     with opened:
-        await run_recipe(opened)
+        await Runner.from_run(opened).run()
     rows = list(record.read(opened.directory / record.METRICS))
     (evolution,) = [row for row in rows if row.get("evolution")]
     population = evolution["population"]
@@ -219,7 +219,7 @@ async def test_the_fast_phase_scores_each_cell_with_one_rollout_on_five_passes(
     opened = Run.open(home, root=tmp_path / "runs")
     opened.run_trial = Trials()
     with opened:
-        await run_recipe(opened)
+        await Runner.from_run(opened).run()
     rows = list(record.read(opened.directory / record.METRICS))
     (evolution,) = [row for row in rows if row.get("evolution")]
     assert 0 < evolution["spent"] <= BUDGET_PASSES * 4, "five passes over four tasks"
@@ -246,7 +246,7 @@ async def test_patience_ends_a_fast_phase_as_it_ends_gepa(tmp_path: Path) -> Non
     opened = Run.open(home, root=tmp_path / "runs")
     opened.run_trial = Trials()
     with opened:
-        await run_recipe(opened)
+        await Runner.from_run(opened).run()
     rows = list(record.read(opened.directory / record.METRICS))
     rounds = [row for row in rows if "round" in row]
     assert len(rounds) == 2 and rounds[0]["accepted"] is True
@@ -269,7 +269,7 @@ async def test_cycle_c_draws_its_minibatches_with_data_seed_plus_c(tmp_path: Pat
     opened = Run.open(home, root=tmp_path / "runs")
     opened.run_trial = trials = Trials()
     with opened:
-        await run_recipe(opened)
+        await Runner.from_run(opened).run()
     names = [Path(str(config.task.path)).name for config in trials.configs]
     runs = [names[at - 3 : at] for at, name in enumerate(names) if name == "reflection"]
     cycles = [
@@ -335,7 +335,7 @@ async def test_a_cycle_interrupted_after_a_slow_step_resumes_without_another_fas
     shutil.copytree(VALID, home / "modules")
     opened = Run.open(home, root=tmp_path / "runs")
     opened.run_trial = Alternating()
-    started = Runner.of(opened, trainer_for(opened.config.recipe))
+    started = Runner.from_run(opened)
     trainer = started.trainer
     checkpointed, job = trainer.checkpoint, trainer.job
     stopping = False
@@ -359,7 +359,7 @@ async def test_a_cycle_interrupted_after_a_slow_step_resumes_without_another_fas
     assert (saved["tag"], saved["cycle"]) == ("step-1", 0)
     before = list(record.read(opened.directory / record.JOBS))
 
-    resumed = Runner.from_run(opened.directory)
+    resumed = Runner.from_checkpoint(opened.directory)
     assert resumed.position[1] == 1 and resumed.trainer.offset == 1
     assert resumed.trainer.cycles == 0
     population = [one.modules.digest for one in resumed.trainer.population]

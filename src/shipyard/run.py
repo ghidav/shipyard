@@ -68,10 +68,18 @@ class Run:
         self._seq = 0
 
     @classmethod
-    def open(cls, blueprint: Path, *, root: Path | None = None, smoke: bool = False) -> Self:
-        """Create `<root>/<id>/`, copy `run.toml` byte for byte, keep the recipe's modules
-        under `modules/carried/`, and write the process note (marked `smoke` for a smoke
-        run). Raises `RunRefused` if the directory exists."""
+    def open(
+        cls,
+        blueprint: Path,
+        *,
+        root: Path | None = None,
+        smoke: bool = False,
+        runner: Path | None = None,
+    ) -> Self:
+        """Create `<root>/<id>/`, copy `run.toml` byte for byte and the runner file as
+        `runner.py` when one is given, keep the recipe's modules under `modules/carried/`, and
+        write the process note (marked `smoke` for a smoke run). Raises `RunRefused` if the
+        directory exists."""
         config = load(blueprint)
         source = config_file(blueprint)
         home = source.parent
@@ -81,6 +89,8 @@ class Run:
             raise RunRefused(f"{directory} already exists")
         directory.mkdir(parents=True)
         shutil.copyfile(source, directory / record.CONFIG)
+        if runner is not None:
+            shutil.copyfile(runner, directory / record.RUNNER)
         if carried is not None:
             keep(carried, directory / record.MODULES / CARRIED)
         record.write_json(
@@ -91,6 +101,7 @@ class Run:
                 "version": version(),
                 "blueprint": str(home.resolve()),
                 "kind": config.recipe.kind,
+                **({"runner": str(Path(runner).resolve())} if runner is not None else {}),
                 **({"tinker_base_url": tinker_base_url()} if config.model.served else {}),
                 **({"smoke": True} if smoke else {}),
             },
