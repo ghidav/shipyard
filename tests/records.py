@@ -14,7 +14,7 @@ from shipyard.proxy.wire import Picture, Record
 from tests.proxies import MODEL, ids
 
 
-def blueprint(**rollout: Any) -> Blueprint:
+def served(**rollout: Any) -> Blueprint:
     """A served evaluate blueprint: `from_checkpoint` goes to `[model]`, the rest to `[rollout]`."""
     model = {"name": MODEL}
     if "from_checkpoint" in rollout:

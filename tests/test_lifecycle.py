@@ -23,7 +23,7 @@ from shipyard.run import Run
 from shipyard.sampling.endpoint import ProxyEndpoint, ProxyGone
 from shipyard.types import Trial, harness
 from tests.proxies import MODEL, FakeSampler, control, root, server
-from tests.records import FakeProxy, blueprint
+from tests.records import FakeProxy, served
 from tests.trials import FakeTrials, fixture_tasks, job
 
 ORIGIN = "https://fake-words.trycloudflare.com"
@@ -186,7 +186,7 @@ async def test_a_tunnel_that_does_not_answer_refuses_the_run_before_any_trial(
 
 async def test_a_fetch_that_failed_because_the_proxy_died_says_so(tmp_path: Path) -> None:
     proxy = FakeProxy(failing={"alpha"}, exited="shipyard serve exited with 1")
-    held = ProxyEndpoint(blueprint(harness="pi"), tmp_path, proxy=proxy)
+    held = ProxyEndpoint(served(harness="pi"), tmp_path, proxy=proxy)
     batch = [Trial("j", Path("alpha"), 0, harness("pi"), tmp_path / "alpha__0000000")]
     with pytest.raises(ProxyGone, match="exited with 1"):
         await held.record("j", batch)

@@ -24,7 +24,7 @@ from shipyard.sampling.endpoint import (
     tinker_base_url,
 )
 from shipyard.types import Connection, Trial, harness
-from tests.records import FakeProxy, blueprint, made
+from tests.records import FakeProxy, made, served
 from tests.trials import BLUEPRINTS, write_result
 
 DAPO = BLUEPRINTS / "dapo"
@@ -55,17 +55,17 @@ def trials(
 
 @pytest.mark.parametrize("sandbox", ["docker", "podman", "apple-container"])
 def test_a_sandbox_on_this_machine_reaches_a_proxy_here(sandbox: str) -> None:
-    assert placement(blueprint(sandbox=sandbox).rollout) == "local"
+    assert placement(served(sandbox=sandbox).rollout) == "local"
 
 
 @pytest.mark.parametrize("sandbox", ["modal", "e2b", "daytona"])
 def test_a_sandbox_elsewhere_needs_a_tunnel_unless_a_url_is_named(sandbox: str) -> None:
-    assert placement(blueprint(sandbox=sandbox).rollout) == "tunnel"
+    assert placement(served(sandbox=sandbox).rollout) == "tunnel"
     assert (
-        placement(blueprint(sandbox=sandbox, endpoint_url="https://p.example").rollout) == "remote"
+        placement(served(sandbox=sandbox, endpoint_url="https://p.example").rollout) == "remote"
     )
     assert (
-        placement(blueprint(sandbox="docker", endpoint_url="https://p.example").rollout) == "remote"
+        placement(served(sandbox="docker", endpoint_url="https://p.example").rollout) == "remote"
     )
 
 
@@ -85,7 +85,7 @@ def test_the_party_is_tinker_or_tinker_at_the_backends_host() -> None:
 
 
 def test_the_endpoint_settings_are_the_rollout_knobs_and_the_checkpoint() -> None:
-    cfg = blueprint(
+    cfg = served(
         from_checkpoint="tinker://w/step-9",
         renderer="tml_v0",
         bind="127.0.0.1",
@@ -110,14 +110,14 @@ def test_the_endpoint_settings_are_the_rollout_knobs_and_the_checkpoint() -> Non
         "max_context": 32768,
         "fill_context": True,
     }
-    bare = endpoint_settings(blueprint())
+    bare = endpoint_settings(served())
     assert bare["weights"] is None and bare["renderer"] is None and bare["max_context"] is None
     assert (bare["bind"], bare["bind_port"], bare["max_tokens"]) == ("0.0.0.0", 0, 8192)
     assert "metadata" not in bare
 
 
 def test_the_proxys_tinker_session_is_tagged_with_the_run_and_its_recipe() -> None:
-    cfg = blueprint()
+    cfg = served()
     tagged = endpoint_settings(cfg, run="dapo-docker__abc")
     assert tagged["metadata"] == {
         "shipyard_run": "dapo-docker__abc",
@@ -131,7 +131,7 @@ def test_the_proxys_tinker_session_is_tagged_with_the_run_and_its_recipe() -> No
 async def test_a_local_sandbox_starts_serve_once_with_the_checkpoint_on_its_command_line(
     fake: FakeProxy, tmp_path: Path
 ) -> None:
-    held = ProxyEndpoint(blueprint(from_checkpoint="tinker://w/step-2", host="proxy.lan"), tmp_path)
+    held = ProxyEndpoint(served(from_checkpoint="tinker://w/step-2", host="proxy.lan"), tmp_path)
     await held.open()
     await held.open()
     [(how, settings, named)] = fake.placed
@@ -152,7 +152,7 @@ async def test_a_local_sandbox_starts_serve_once_with_the_checkpoint_on_its_comm
 
 
 async def test_a_sandbox_elsewhere_gets_a_tunnel(fake: FakeProxy, tmp_path: Path) -> None:
-    held = ProxyEndpoint(blueprint(sandbox="modal"), tmp_path)
+    held = ProxyEndpoint(served(sandbox="modal"), tmp_path)
     await held.open()
     [(how, settings, named)] = fake.placed
     assert how == "tunnel" and settings["weights"] is None and "tunnel_log" in named
@@ -165,7 +165,7 @@ async def test_a_sandbox_elsewhere_gets_a_tunnel(fake: FakeProxy, tmp_path: Path
 async def test_a_proxy_that_exited_is_found_on_the_next_open(
     fake: FakeProxy, tmp_path: Path
 ) -> None:
-    held = ProxyEndpoint(blueprint(), tmp_path)
+    held = ProxyEndpoint(served(), tmp_path)
     await held.open()
     fake.exited = "shipyard serve exited with 1"
     with pytest.raises(ProxyGone, match="exited with 1"):
@@ -177,7 +177,7 @@ async def test_a_remote_proxy_is_pointed_through_its_control_route(
     fake: FakeProxy, tmp_path: Path
 ) -> None:
     environ = {PROXY_TOKEN_ENV: "t", CONTROL_TOKEN_ENV: "c"}
-    cfg = blueprint(endpoint_url="https://p.example/", from_checkpoint="tinker://w/step-4")
+    cfg = served(endpoint_url="https://p.example/", from_checkpoint="tinker://w/step-4")
     held = ProxyEndpoint(cfg, tmp_path, environ=environ)
     await held.open()
     assert fake.placed == [("remote", "https://p.example/", {"token": "t", "control_token": "c"})]
@@ -195,17 +195,17 @@ async def test_a_remote_proxy_without_a_control_token_serves_only_what_it_was_st
     fake: FakeProxy, tmp_path: Path
 ) -> None:
     environ = {PROXY_TOKEN_ENV: "t"}
-    held = ProxyEndpoint(blueprint(endpoint_url="https://p.example"), tmp_path, environ=environ)
+    held = ProxyEndpoint(served(endpoint_url="https://p.example"), tmp_path, environ=environ)
     await held.open()
     assert fake.swapped == [] and held.told is None, "base, checked"
     with pytest.raises(RuntimeError, match="not started"):
-        await ProxyEndpoint(blueprint(endpoint_url="https://p.example"), tmp_path).serve(None)
-    cfg = blueprint(endpoint_url="https://p.example", from_checkpoint="tinker://w/step-4")
+        await ProxyEndpoint(served(endpoint_url="https://p.example"), tmp_path).serve(None)
+    cfg = served(endpoint_url="https://p.example", from_checkpoint="tinker://w/step-4")
     with pytest.raises(RuntimeError, match=CONTROL_TOKEN_ENV):
         await ProxyEndpoint(cfg, tmp_path, environ=environ).open()
     with pytest.raises(ValueError, match=PROXY_TOKEN_ENV):
         await ProxyEndpoint(
-            blueprint(endpoint_url="https://p.example"), tmp_path, environ={}
+            served(endpoint_url="https://p.example"), tmp_path, environ={}
         ).open()
 
 
@@ -215,7 +215,7 @@ async def test_a_remote_proxy_without_a_control_token_serves_only_what_it_was_st
 def test_each_trial_dials_the_address_that_names_it_on_its_harnesss_wire(
     fake: FakeProxy, tmp_path: Path
 ) -> None:
-    held = ProxyEndpoint(blueprint(), tmp_path, proxy=fake)
+    held = ProxyEndpoint(served(), tmp_path, proxy=fake)
     one, two = trials(tmp_path, ("alpha", None), ("alpha", None))
     first, second = held.connection(one), held.connection(two)
     assert first.model == second.model == "openai/Qwen/Qwen3-8B"
@@ -227,12 +227,12 @@ def test_each_trial_dials_the_address_that_names_it_on_its_harnesss_wire(
     assert first.kwargs is not PROFILES["pi"].kwargs
     assert fake.addressed == [one.name, two.name]
     with pytest.raises(RuntimeError, match="not started"):
-        ProxyEndpoint(blueprint(), tmp_path).connection(one)
+        ProxyEndpoint(served(), tmp_path).connection(one)
 
 
 def test_the_wire_and_the_env_follow_the_trials_harness(fake: FakeProxy, tmp_path: Path) -> None:
     [trial] = trials(tmp_path, ("alpha", None), deployed="claude-code")
-    filling = ProxyEndpoint(blueprint(fill_context=True), tmp_path, proxy=fake)
+    filling = ProxyEndpoint(served(fill_context=True), tmp_path, proxy=fake)
     found = filling.connection(trial)
     assert found.model == "anthropic/Qwen/Qwen3-8B"
     assert found.address == f"{fake.origin}/r/trial/{trial.name}", "no /v1 for the Anthropic wire"
@@ -242,10 +242,10 @@ def test_the_wire_and_the_env_follow_the_trials_harness(fake: FakeProxy, tmp_pat
         "ANTHROPIC_BASE_URL": found.address,
         "ANTHROPIC_API_KEY": "harness-token",
     }
-    plain = ProxyEndpoint(blueprint(), tmp_path, proxy=fake).connection(trial)
+    plain = ProxyEndpoint(served(), tmp_path, proxy=fake).connection(trial)
     assert "DISABLE_COMPACT" not in plain.env, "the profile's env only when filling"
     [trial] = trials(tmp_path, ("alpha", None), deployed="opencode@1.18.35")
-    named = ProxyEndpoint(blueprint(), tmp_path, proxy=fake).connection(trial)
+    named = ProxyEndpoint(served(), tmp_path, proxy=fake).connection(trial)
     assert named.model == "shipyard/Qwen/Qwen3-8B"
     assert set(named.env) == {"SHIPYARD_BASE_URL", "SHIPYARD_API_KEY"}
     assert "opencode_config" in named.kwargs
@@ -264,7 +264,7 @@ async def test_record_takes_each_trials_records_and_writes_a_row_per_record(
         ],
         "beta": [made("go", error="context", seq=1)],
     }
-    held = ProxyEndpoint(blueprint(), tmp_path)
+    held = ProxyEndpoint(served(), tmp_path)
     await held.open()
     batch = trials(tmp_path, ("alpha", {"reward": 1.0}), ("beta", {"reward": 0.0}), ("gamma", None))
     records = await held.record("j", batch)
@@ -312,7 +312,7 @@ async def test_a_two_trial_job_is_dialled_and_recorded_under_two_names(
     fake: FakeProxy, tmp_path: Path
 ) -> None:
     fake.answers = {"alpha": [made("one", "ok")]}
-    held = ProxyEndpoint(blueprint(), tmp_path)
+    held = ProxyEndpoint(served(), tmp_path)
     await held.open()
     batch = trials(tmp_path, ("alpha", {"reward": 1.0}), ("alpha", {"reward": 0.0}))
     assert len({held.connection(trial).address for trial in batch}) == 2
@@ -330,7 +330,7 @@ async def test_a_batch_answered_by_other_weights_is_refused(
         "alpha": [made(served="tinker://w/step-2")],
         "beta": [made(served="tinker://intruder/step-9")],
     }
-    held = ProxyEndpoint(blueprint(from_checkpoint="tinker://w/step-2"), tmp_path)
+    held = ProxyEndpoint(served(from_checkpoint="tinker://w/step-2"), tmp_path)
     await held.open()
     with pytest.raises(ValueError, match="intruder"):
         await held.record(
@@ -352,7 +352,7 @@ async def test_a_remote_proxy_this_run_did_not_point_must_serve_the_base_model(
 ) -> None:
     fake.answers = {"alpha": [made(served="tinker://theirs/step-5")]}
     environ = {PROXY_TOKEN_ENV: "t"}
-    held = ProxyEndpoint(blueprint(endpoint_url="https://p.example"), tmp_path, environ=environ)
+    held = ProxyEndpoint(served(endpoint_url="https://p.example"), tmp_path, environ=environ)
     await held.open()
     with pytest.raises(ValueError, match="re-pointed"):
         await held.record("j", trials(tmp_path, ("alpha", {"reward": 1.0})))
@@ -367,7 +367,7 @@ async def test_a_fetch_that_fails_fails_the_job_rather_than_masking_a_trial(
     import httpx
 
     fake.failing = {"beta"}
-    held = ProxyEndpoint(blueprint(), tmp_path)
+    held = ProxyEndpoint(served(), tmp_path)
     await held.open()
     with pytest.raises(httpx.ConnectError):
         await held.record(
@@ -377,7 +377,7 @@ async def test_a_fetch_that_fails_fails_the_job_rather_than_masking_a_trial(
 
 async def test_check_raises_the_stop_for_after_the_row(fake: FakeProxy, tmp_path: Path) -> None:
     fake.default = []
-    held = ProxyEndpoint(blueprint(), tmp_path)
+    held = ProxyEndpoint(served(), tmp_path)
     await held.open()
     batch = trials(tmp_path, ("alpha", {"reward": 1.0}))
     records = await held.record("j", batch)
