@@ -201,7 +201,7 @@ class Trainer:
         return found
 
     async def evaluate(self, agent: Agent, tasks: Values[Task], **more: Any) -> Evaluation | None:
-        """One job per batch of `tasks` at `[data] test_group_size`, then one row with the mean reward."""
+        """One job per batch of `tasks` at `[data] test_group_size`, then one row with the mean."""
         if not tasks:
             return None
         data = self.run.config.data
