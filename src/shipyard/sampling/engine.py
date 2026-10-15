@@ -1,5 +1,4 @@
-"""Harbor as the rollout engine: a job's trials in plan order, each dialling the
-connection the agent's endpoint gives it, under one concurrency limit for the run."""
+"""Harbor as the rollout engine: a job's trials in plan order, under one concurrency limit."""
 
 from __future__ import annotations
 
@@ -44,8 +43,7 @@ DELIVERED = "modules"
 
 
 class HarborEngine(RolloutEngine):
-    """Built from `[rollout]`: the sandbox, the jobs directory, the concurrency limit every
-    job shares, and the settings a call runs under unless it brings its own."""
+    """Built from `[rollout]`: the sandbox, the jobs directory, one concurrency limit, settings."""
 
     def __init__(
         self, rollout: Rollout, *, run_trial: Runner | None = None, progress: Reporter | None = None
@@ -71,8 +69,7 @@ class HarborEngine(RolloutEngine):
         agent: Agent,
         settings: Settings | None = None,
     ) -> list[Trial]:
-        """A trial whose runner raised keeps its slot with no result, which admission
-        masks. The agent's modules are delivered once, under the job's directory."""
+        """A trial whose runner raised keeps its slot with no result, which admission masks."""
         if not tasks:
             raise ValueError(f"job {job} names no task")
         if attempts < 1:
@@ -179,9 +176,7 @@ def _trial_config(
 
 
 def connected(config: TrialConfig, connection: Connection) -> TrialConfig:
-    """A copy of the trial's config dialling `connection`: its model name, its env over
-    the job's, its kwargs laid over the job's, and its host on an allowlisted task. The
-    agent config is shared by the job, hence the copy."""
+    """A copy of the trial's config dialling `connection`, its env and kwargs over the job's."""
     update: dict[str, Any] = {
         "model_name": connection.model,
         "env": {**dict(config.agent.env or {}), **connection.env},

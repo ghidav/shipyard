@@ -129,9 +129,7 @@ class Run:
         self.engine.run_trial = runner
 
     def reserve_job(self) -> str:
-        """The next job name, `<run id>-NNNN`, from a counter seeded by the record when
-        the run opened, so jobs in flight together never share one. Creates its directory
-        and raises `FileExistsError` if it exists."""
+        """The next job name, `<run id>-NNNN`, with its directory created; raises if it exists."""
         name = f"{self.id}-{self._next_job:04d}"
         try:
             (self.jobs_dir / name).mkdir(parents=True)

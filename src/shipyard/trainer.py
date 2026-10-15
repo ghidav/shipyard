@@ -1,5 +1,4 @@
-"""The loop's handle on the training side until the trainer takes it over: today's
-`create`, `publish`, `save`, `apply` and `close` over the `TinkerClient`."""
+"""The loop's handle on the training side until the trainer takes it, over the `TinkerClient`."""
 
 from __future__ import annotations
 
@@ -54,10 +53,7 @@ class Checkpoint:
 
 @dataclass
 class Trainer:
-    """`updates` counts the gradients applied. Credit reads it to tell whether the weights a
-    batch was sampled at have moved, and `Adam.rate` reads it to tell how far the run's
-    warm-up has gone. `restored` is set when the optimizer state was loaded with the
-    weights: the run continues an earlier run's optimizer state and has no warm-up."""
+    """`updates` counts the gradients applied; `restored` means the optimizer state was loaded."""
 
     client: Any
     updates: int = 0
@@ -89,8 +85,7 @@ class Trainer:
         return cls(opened.client, service=service, restored=opened.restored)
 
     async def publish(self, name: str, *, ttl_seconds: int = SERVE_TTL) -> str:
-        """Save the current weights as sampler weights, kept for `ttl_seconds`, and return
-        their `tinker://` path, which a proxy anywhere can resolve."""
+        """Save the current weights as sampler weights for `ttl_seconds`; returns their path."""
         return await self.tinker.save_weights_for_sampler(name, ttl_seconds=int(ttl_seconds))
 
     async def save(self, tag: str, *, ttl_hours: float | None = None) -> Checkpoint:

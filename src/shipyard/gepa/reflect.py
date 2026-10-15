@@ -76,10 +76,7 @@ def reflect(
 async def _job(
     run: Run, task: Path, *, harness: str, model: str | None, about: Reflection
 ) -> Rollouts:
-    """One job under the run that is not a rollout of the policy: its own agent on a
-    provider endpoint, so it is not pointed at the run's proxy, carries no candidate and
-    is not billed as sampling. It is recorded as a `reflection` under the provider's
-    party."""
+    """A job that is no rollout: its own agent on a provider endpoint, recorded as a reflection."""
     job = run.reserve_job()
     reflector = Agent(Policy(ProviderEndpoint(model)), [types.harness(harness)])
     trials = await run.engine.run(job, [task], 1, agent=reflector, settings=REFLECTION)
