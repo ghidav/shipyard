@@ -15,7 +15,6 @@ from tinker_cookbook.capture.scope import current_scope
 from tinker_cookbook.image_processing_utils import get_image_processor
 from tinker_cookbook.model_info import get_model_attributes, get_recommended_renderer_name
 from tinker_cookbook.renderers import ParseTermination as ParseTermination
-from tinker_cookbook.renderers import ToolCall as ToolCall
 from tinker_cookbook.renderers import get_renderer as get_renderer
 from tinker_cookbook.tokenizer_utils import get_tokenizer
 

@@ -11,14 +11,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from shipyard import record
-from shipyard.admit import Verdict, verdicts
+from shipyard.admit import verdicts
 from shipyard.config import Blueprint
 from shipyard.data import Generator
 from shipyard.proxy.profiles import PROFILES, bare_name, profile_for
 from shipyard.run import seeded
 from shipyard.sampling.endpoint import NothingServed, ProxyEndpoint
 from shipyard.training.trainer import Trainer
-from shipyard.types import Agent, Policy, harness
+from shipyard.types import Agent, Policy, Verdict, harness
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

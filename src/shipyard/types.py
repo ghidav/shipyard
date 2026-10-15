@@ -12,7 +12,7 @@ from typing import Any
 
 import tinker
 
-from shipyard.modules import Candidate as Modules
+from shipyard.modules import Candidate
 from shipyard.proxy.profiles import Profile, bare_name, profile_for
 from shipyard.proxy.wire import Picture, Record
 
@@ -28,11 +28,7 @@ __all__ = [
     "Group",
     "Harness",
     "Member",
-    "Modules",
-    "Picture",
     "Policy",
-    "Profile",
-    "Record",
     "Records",
     "RolloutEngine",
     "SERVE_TTL",
@@ -245,7 +241,7 @@ def harness(named: str) -> Harness:
 class Agent:
     policy: Policy
     harness: list[Harness]
-    modules: Modules | None = None
+    modules: Candidate | None = None
 
 
 # ----------------------------------------------------------------- the engine

@@ -12,14 +12,16 @@ from typing import Any
 from shipyard.proxy import cookbook
 from shipyard.proxy.bridge import Index, Reply
 from shipyard.proxy.exchange import exchange
-from shipyard.proxy.wire import BUDGET, CONTEXT, SAMPLER_FAILED, Picture, pictured
-
-# `Record`, `IMAGE_TOKEN` and the two readers of a prompt are defined in `wire`, which the
-# run reads without the cookbook. They are re-exported here.
-from shipyard.proxy.wire import IMAGE_TOKEN as IMAGE_TOKEN
-from shipyard.proxy.wire import Record as Record
-from shipyard.proxy.wire import ids_of as ids_of
-from shipyard.proxy.wire import pictures_of as pictures_of
+from shipyard.proxy.wire import (
+    BUDGET,
+    CONTEXT,
+    SAMPLER_FAILED,
+    Picture,
+    Record,
+    ids_of,
+    pictured,
+    pictures_of,
+)
 
 
 class Recorder:

@@ -16,8 +16,9 @@ from tinker_cookbook.supervised.common import (
     create_rightshifted_model_input_and_leftshifted_targets as cookbook_shift,
 )
 
-from shipyard.pack import Sequence, chains, datum, model_input, packable, sequences, shifted
-from shipyard.proxy.wire import IMAGE_TOKEN, Picture, Record
+from shipyard.pack import chains, datum, packable, sequences, shifted
+from shipyard.proxy.wire import IMAGE_TOKEN, Picture, Record, model_input
+from shipyard.types import Sequence
 from tests.records import made
 
 P1, C1, T1, C2, T2, C3 = (1, 2, 3), (10, 11), (20,), (12,), (21, 22), (13, 14)

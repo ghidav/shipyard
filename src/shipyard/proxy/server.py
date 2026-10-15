@@ -18,9 +18,16 @@ from aiohttp import web
 from shipyard.proxy import cookbook, keepalive, thinking, turns, vision
 from shipyard.proxy.exchange import middleware
 from shipyard.proxy.keepalive import KEEPALIVE_EVERY, KEEPALIVE_GRACE
-from shipyard.proxy.recorder import Record, Recorder
+from shipyard.proxy.recorder import Recorder
 from shipyard.proxy.rendering import Rendering
-from shipyard.proxy.wire import CONTROL_PATH, HEALTH_PATH, RECORDS_PATH, delta_encoded, new_token
+from shipyard.proxy.wire import (
+    CONTROL_PATH,
+    HEALTH_PATH,
+    RECORDS_PATH,
+    Record,
+    delta_encoded,
+    new_token,
+)
 
 logger = logging.getLogger(__name__)
 
