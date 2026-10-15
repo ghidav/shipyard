@@ -5,9 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from shipyard.config import Gradient
+from shipyard.recipes.cispo import CISPOTrainer
+from shipyard.recipes.dapo import DAPOTrainer
+from shipyard.recipes.dr_grpo import DrGRPOTrainer
 from shipyard.recipes.fst import fst_trainer
 from shipyard.recipes.gepa import GEPATrainer
-from shipyard.training.trainer import CISPOTrainer, DAPOTrainer, DrGRPOTrainer, Trainer
+from shipyard.training.trainer import Trainer
 
 __all__ = ["TRAINERS", "resolution", "trainer_for"]
 

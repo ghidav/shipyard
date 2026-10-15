@@ -26,12 +26,12 @@ from shipyard.config import (
 from shipyard.data import Generator, tasks
 from shipyard.modules import SKILL_FILE, seed
 from shipyard.recipes import resolution, trainer_for
+from shipyard.recipes.cispo import CISPOTrainer
 from shipyard.recipes.fst import ADAM, BUDGET_PASSES, fst_trainer, slow_recipe
 from shipyard.recipes.gepa.reflect import COLLECTED
 from shipyard.run import Run
 from shipyard.runner import Runner
 from shipyard.sampling.endpoint import ProviderEndpoint
-from shipyard.training.trainer import CISPOTrainer
 from shipyard.types import Agent, Group, Member, Policy, Sequence, Trial, Verdict, harness
 from tests.test_cycle import drawn
 from tests.test_runner import fakes  # noqa: F401 - the proxy and the Tinker service, faked
