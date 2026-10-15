@@ -21,6 +21,7 @@ from shipyard.types import (
     Batches,
     Checkpoint,
     Datum,
+    Evaluation,
     Forward,
     Group,
     Sequence,
@@ -163,6 +164,30 @@ class Trainer:
             group.shaped = self.shape(group)
             group.advantages = self.advantage(group)
         return found
+
+    async def evaluate(self, agent: Agent, tasks: Values[Task]) -> Evaluation | None:
+        """One job per batch of `tasks` at `[data] test_group_size`, then one row with the mean."""
+        if not tasks:
+            return None
+        data = self.run.config.data
+        attempts = data.test_group_size or data.group_size
+        found: list[Group] = []
+        for start in range(0, len(tasks), data.batch_size):
+            batch = tasks[start : start + data.batch_size]
+            found += await self.job(agent, batch, attempts, purpose="evaluation")
+        measured = [one for group in found for one in group.measured]
+        rollouts = sum(len(group.members) for group in found)
+        result = Evaluation(
+            step=self.steps,
+            epoch=self.epoch,
+            tasks=len({group.task for group in found}),
+            rollouts=rollouts,
+            graded=len(measured),
+            masked=rollouts - len(measured),
+            mean=fmean(float(one.verdict.reward or 0.0) for one in measured) if measured else None,
+        )
+        self.run.log(evaluation=True, **vars(result))
+        return result
 
     def shape(self, group: Group) -> list[float | None]:
         """The rewards as the verifier scored them; None on an unmeasured member."""

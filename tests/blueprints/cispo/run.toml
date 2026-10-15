@@ -3,7 +3,7 @@ name = "Qwen/Qwen3-8B"
 lora_rank = 32
 
 [data]
-dataset = "aime-train"
+train = "aime-train"
 batch_size = 2
 group_size = 4
 

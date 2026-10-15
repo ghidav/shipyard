@@ -11,7 +11,7 @@ import pytest
 
 from shipyard import config, resolved
 from shipyard.config import Blueprint, ConfigError, Finding, check, load
-from tests.trials import write_blueprint
+from tests.trials import fixture_tasks, write_blueprint
 
 BLUEPRINTS = Path(__file__).parent / "blueprints"
 #: The kinds whose recipe is a `Gradient`: the three the loop trains.
@@ -21,7 +21,7 @@ MINIMAL = """
 [model]
 name = "Qwen/Qwen3-8B"
 [data]
-dataset = "aime-train"
+train = "aime-train"
 batch_size = 2
 [rollout]
 harness = "pi@0.85.1"
@@ -243,14 +243,64 @@ def test_each_gradient_recipe_takes_the_shared_knobs(tmp_path: Path) -> None:
         assert found.kl_coef == 0.1 and found.modules == "skills"
 
 
-def test_dataset_str_and_list_both_give_datasets(tmp_path: Path) -> None:
-    found = load(write_blueprint(tmp_path, MINIMAL))
-    assert found.data.dataset == "aime-train" and found.datasets == ["aime-train"]
-    listed = MINIMAL.replace('dataset = "aime-train"', 'dataset = ["a", "b"]')
+def test_train_takes_a_name_or_a_list_and_dataset_is_its_older_spelling(tmp_path: Path) -> None:
+    old = MINIMAL.replace('train = "aime-train"', 'dataset = "aime-train"')
+    found = load(write_blueprint(tmp_path, old))
+    assert found.data.train == "aime-train" and found.datasets == ["aime-train"]
+    assert found.data.test is None and found.test_sets == []
+    listed = MINIMAL.replace('train = "aime-train"', 'train = ["a", "b"]\ntest = "c"')
     found = load(write_blueprint(tmp_path / "two", listed))
-    assert found.data.dataset == ["a", "b"] and found.datasets == ["a", "b"]
+    assert found.data.train == ["a", "b"] and found.datasets == ["a", "b"]
+    assert found.data.test == "c" and found.test_sets == ["c"]
     assert _problems(tmp_path / "three", MINIMAL.replace('"aime-train"', "3")) == [
-        "[data] dataset: a dataset name or a list of them"
+        "[data] train: a dataset name or a list of them"
+    ]
+    both = MINIMAL.replace('train = "aime-train"', 'dataset = "a"\ntrain = "b"')
+    assert _problems(tmp_path / "four", both) == [
+        "[data]: `dataset` is the older spelling of `train`; name one of them"
+    ]
+    none = MINIMAL.replace('train = "aime-train"\n', "")
+    assert _problems(tmp_path / "five", none) == ["[data] train: field required"]
+
+
+def test_the_evaluate_kind_reads_dataset_as_test(tmp_path: Path) -> None:
+    text = MINIMAL.replace('kind = "dapo"\nlearning_rate = 2e-5', 'kind = "evaluate"')
+    text = text.replace('train = "aime-train"', 'dataset = "aime-train"')
+    found = load(write_blueprint(tmp_path, text))
+    assert found.data.train is None and found.data.test == "aime-train"
+    assert found.datasets == [] and found.test_sets == ["aime-train"]
+    none = text.replace('dataset = "aime-train"\n', "")
+    assert _problems(tmp_path / "none", none) == ["[data] test: field required"]
+
+
+def test_the_test_group_size_and_the_evaluation_cadence_are_keys(tmp_path: Path) -> None:
+    text = MINIMAL.replace(
+        "batch_size = 2",
+        'batch_size = 2\ntest = "held"\ntest_group_size = 8\nevaluate_every = 2\nepochs = 4',
+    )
+    found = load(write_blueprint(tmp_path, text)).data
+    assert (found.test_group_size, found.evaluate_every, found.epochs) == (8, 2, 4)
+    assert load(write_blueprint(tmp_path / "d", MINIMAL)).data.test_group_size is None
+    bad = MINIMAL.replace("batch_size = 2", "batch_size = 2\nevaluate_every = -1")
+    assert _problems(tmp_path / "bad", bad) == [
+        "[data] evaluate_every: Input should be greater than or equal to 0"
+    ]
+
+
+def test_check_warns_on_the_older_spelling_an_overlap_and_a_cadence_past_the_epochs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    fixture_tasks(tmp_path)
+    text = MINIMAL.replace(
+        'train = "aime-train"\nbatch_size = 2',
+        'dataset = "fixture"\ntest = "fixture"\nbatch_size = 2\nevaluate_every = 3',
+    )
+    warned = [f.text for f in check(write_blueprint(tmp_path, text)) if f.text.startswith("[data]")]
+    assert warned == [
+        "[data] dataset: the older spelling of train; still read",
+        "[data] test: 2 tasks also in train, so the measurement is not held out",
+        "[data] evaluate_every: 3 is past the 1 epoch(s), so the run evaluates at its end only",
     ]
 
 
@@ -320,10 +370,13 @@ def test_the_resolved_config_fills_every_table_and_leads_the_recipe_with_its_kin
         "restore_optimizer": False,
     }
     assert found["data"] == {
-        "dataset": "aime-train",
+        "train": "aime-train",
+        "test": None,
         "batch_size": 2,
         "group_size": 4,
+        "test_group_size": None,
         "epochs": 1,
+        "evaluate_every": 0,
         "seed": 0,
     }
     assert found["rollout"]["concurrency"] == 2 and found["rollout"]["env"] == {}

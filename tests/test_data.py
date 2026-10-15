@@ -131,10 +131,12 @@ def test_a_generator_is_built_from_the_blueprints_data_table(
     fixture_tasks(tmp_path)
     home = write_blueprint(
         tmp_path,
-        '[model]\nname = "Qwen/Qwen3-8B"\n[data]\ndataset = "fixture"\nbatch_size = 1\nseed = 3\n'
+        '[model]\nname = "Qwen/Qwen3-8B"\n[data]\ntrain = "fixture"\ntest = "fixture"\n'
+        "batch_size = 1\nseed = 3\n"
         '[rollout]\nharness = "pi@0.85.1"\n[recipe]\nkind = "dapo"\nlearning_rate = 2e-5\n',
     )
     made = Generator.of(load(home))
     assert [task.name for task in made.train] == ["alpha", "beta"]
+    assert [task.name for task in made.test] == ["alpha", "beta"]
     assert (made.batch_size, made.seed) == (1, 3)
     assert [[task.name for task in batch] for batch in made.batches(0)] == [["beta"], ["alpha"]]

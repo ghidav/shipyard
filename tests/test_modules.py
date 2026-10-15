@@ -53,7 +53,7 @@ CARRYING = """
 name = "m"
 provider = "openrouter"
 [data]
-dataset = "fixture"
+test = "fixture"
 batch_size = 2
 [rollout]
 harness = "pi@0.85.1"

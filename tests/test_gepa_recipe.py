@@ -40,7 +40,7 @@ BLUEPRINT = """
 name = "some-hosted-model"
 provider = "openrouter"
 [data]
-dataset = "fixture"
+train = "fixture"
 batch_size = 1
 [rollout]
 harness = "pi@0.85.1"

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import random
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -75,13 +75,17 @@ class Generator:
     train: list[Path]
     batch_size: int
     seed: int
+    test: list[Path] = field(default_factory=list)
 
     @classmethod
     def of(cls, config: Blueprint, *, root: Path | None = None) -> Generator:
-        """Over the blueprint's `[data]` table: its datasets' tasks in list order."""
+        """Over the blueprint's `[data]` table: each set's tasks in list order."""
         data = config.data
-        listed = [task for dataset in config.datasets for task in tasks(dataset, root=root)]
-        return cls(listed, data.batch_size, data.seed)
+
+        def listed(names: Sequence[str]) -> list[Path]:
+            return [task for name in names for task in tasks(name, root=root)]
+
+        return cls(listed(config.datasets), data.batch_size, data.seed, listed(config.test_sets))
 
     def batches(self, epoch: int) -> Iterator[list[Path]]:
         """One epoch: the train tasks shuffled under `seed + epoch`, `batch_size` at a time."""

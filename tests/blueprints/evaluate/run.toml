@@ -3,7 +3,7 @@ name = "some-hosted-model"
 provider = "openrouter"
 
 [data]
-dataset = "fixture"
+test = "fixture"
 batch_size = 1
 group_size = 2
 

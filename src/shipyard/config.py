@@ -8,7 +8,15 @@ from pathlib import Path
 from typing import Any, Literal
 
 from harbor.models.environment_type import EnvironmentType
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from shipyard.data import NoSuchDataset, held_out, home_of, tasks
 from shipyard.modules import Inadmissible, seed
@@ -61,18 +69,38 @@ class Model(_Table):
 
 
 class Data(_Table):
-    dataset: str | list[str]
+    #: The tasks to learn from; the evaluate kind has none.
+    train: str | list[str] | None = None
+    #: The tasks to measure on; a run that names them ends with an evaluation.
+    test: str | list[str] | None = None
     batch_size: int = Field(ge=1)
     group_size: int = Field(default=1, ge=1)
+    #: Attempts per test task; `group_size` when unset.
+    test_group_size: int | None = Field(default=None, ge=1)
     epochs: int = Field(default=1, ge=1)
+    #: Evaluate after every this many epochs; 0 is at the end only.
+    evaluate_every: int = Field(default=0, ge=0)
     seed: int = 0
 
-    @field_validator("dataset", mode="before")
+    @model_validator(mode="before")
+    @classmethod
+    def _dataset(cls, value: Any) -> Any:
+        """`dataset` is the older spelling of `train`."""
+        if isinstance(value, dict) and "dataset" in value:
+            if "train" in value:
+                raise ValueError("`dataset` is the older spelling of `train`; name one of them")
+            value = dict(value)
+            value["train"] = value.pop("dataset")
+        return value
+
+    @field_validator("train", "test", mode="before")
     @classmethod
     def _named(cls, value: Any) -> Any:
         """A dataset name or a list of names."""
-        if isinstance(value, str) or (
-            isinstance(value, list) and all(isinstance(item, str) for item in value)
+        if (
+            value is None
+            or isinstance(value, str)
+            or (isinstance(value, list) and all(isinstance(item, str) for item in value))
         ):
             return value
         raise ValueError("a dataset name or a list of them")
@@ -272,10 +300,27 @@ class Blueprint(_Table):
     _raw: dict[str, Any] = PrivateAttr(default_factory=dict)
     _home: Path = PrivateAttr(default_factory=Path)
 
+    @model_validator(mode="after")
+    def _sets(self) -> Blueprint:
+        """The evaluate kind measures: `train` alone is read as `test`."""
+        data = self.data
+        if self.recipe.kind == "evaluate":
+            if data.test is None:
+                data.test, data.train = data.train, None
+            if data.test is None:
+                raise ValueError("[data] test: field required")
+        elif data.train is None:
+            raise ValueError("[data] train: field required")
+        return self
+
     @property
     def datasets(self) -> list[str]:
-        named = self.data.dataset
-        return [named] if isinstance(named, str) else list(named)
+        """The train datasets by name."""
+        return _names(self.data.train)
+
+    @property
+    def test_sets(self) -> list[str]:
+        return _names(self.data.test)
 
     @property
     def raw(self) -> dict[str, Any]:
@@ -291,6 +336,12 @@ class Blueprint(_Table):
     def home(self) -> Path:
         """The directory the blueprint was loaded from; `[recipe] modules` is relative to it."""
         return self._home
+
+
+def _names(value: str | list[str] | None) -> list[str]:
+    if value is None:
+        return []
+    return [value] if isinstance(value, str) else list(value)
 
 
 def config_file(path: Path) -> Path:
@@ -364,6 +415,8 @@ def _problem(error: dict[str, Any]) -> str:
         return "[recipe] kind: field required"
     if message.startswith("Value error, "):
         message = message[len("Value error, ") :]
+    if not loc:
+        return message
     if len(loc) == 1:
         if kind == "extra_forbidden":
             what = "unknown table" if isinstance(error.get("input"), dict) else "unknown key"
@@ -401,14 +454,16 @@ def findings(loaded: Blueprint) -> list[Finding]:
 
     model, rollout = loaded.model, loaded.rollout
     served = " (served by this run)" if model.served else ""
-    plural = "s" if len(loaded.datasets) > 1 else ""
     found = [
         Finding("ok", f"recipe {loaded.recipe.kind}"),
         Finding("ok", f"model {model.name}, provider {model.provider}{served}"),
-        Finding("ok", f"dataset{plural} {', '.join(loaded.datasets)}"),
-        Finding("ok", f"harness {rollout.harness}, sandbox {rollout.sandbox}"),
     ]
-    found += [_dataset_finding(name) for name in loaded.datasets]
+    for label, names in (("train", loaded.datasets), ("test", loaded.test_sets)):
+        if names:
+            found.append(Finding("ok", f"{label} {', '.join(names)}"))
+    found.append(Finding("ok", f"harness {rollout.harness}, sandbox {rollout.sandbox}"))
+    found += [_dataset_finding(name) for name in [*loaded.datasets, *loaded.test_sets]]
+    found += _data_findings(loaded)
     if (checkpoint := _checkpoint_finding(loaded)) is not None:
         found.append(checkpoint)
     if (directory := modules_dir(loaded)) is not None:
@@ -442,6 +497,38 @@ def findings(loaded: Blueprint) -> list[Finding]:
         named = f"no Harbor environment called {rollout.sandbox!r}; one of {', '.join(SANDBOXES)}"
         found.append(Finding("blocked", f"[rollout] sandbox: {named}"))
     found += preflight_findings(loaded)
+    return found
+
+
+def _data_findings(loaded: Blueprint) -> list[Finding]:
+    """The older spelling, a task in both sets, an evaluation cadence past the epochs."""
+    found: list[Finding] = []
+    if "dataset" in loaded.raw.get("data", {}):
+        key = "test" if loaded.recipe.kind == "evaluate" else "train"
+        found.append(Finding("warning", f"[data] dataset: the older spelling of {key}; still read"))
+    if loaded.datasets and loaded.test_sets:
+        try:
+            train = {task for name in loaded.datasets for task in tasks(name)}
+            both = [task for name in loaded.test_sets for task in tasks(name) if task in train]
+        except NoSuchDataset:
+            both = []
+        if both:
+            found.append(
+                Finding(
+                    "warning",
+                    f"[data] test: {_tasks(len(both))} also in train, so the measurement is "
+                    "not held out",
+                )
+            )
+    data = loaded.data
+    if data.evaluate_every > data.epochs:
+        found.append(
+            Finding(
+                "warning",
+                f"[data] evaluate_every: {data.evaluate_every} is past the {data.epochs} "
+                "epoch(s), so the run evaluates at its end only",
+            )
+        )
     return found
 
 

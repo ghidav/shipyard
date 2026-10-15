@@ -20,7 +20,7 @@ HOSTED = """
 name = "m"
 provider = "openrouter"
 [data]
-dataset = "fixture"
+test = "fixture"
 batch_size = 2
 [rollout]
 harness = "pi@0.85.1"
@@ -45,7 +45,7 @@ def test_check_is_only_ok_for_the_evaluate_fixture_over_its_dataset(
     assert [f.text for f in findings] == [
         "recipe evaluate",
         "model some-hosted-model, provider openrouter",
-        "dataset fixture",
+        "test fixture",
         "harness pi@0.85.1, sandbox modal",
         "dataset fixture: 2 tasks under tasks/fixture",
     ]
@@ -63,7 +63,7 @@ def test_check_names_the_facts_then_says_where_the_proxy_stands(
     assert texts[:4] == [
         f"recipe {kind}",
         "model Qwen/Qwen3-8B, provider tinker (served by this run)",
-        "datasets aime-train, math-500" if kind == "gepa" else "dataset aime-train",
+        "train aime-train, math-500" if kind == "gepa" else "train aime-train",
         "harness pi@0.85.1, sandbox docker",
     ]
     assert [f.level for f in findings[:4]] == ["ok"] * 4
@@ -82,7 +82,7 @@ def test_check_blocks_a_missing_dataset_with_its_path(
 ) -> None:
     fixture_tasks(tmp_path)
     monkeypatch.chdir(tmp_path)
-    text = HOSTED.replace('dataset = "fixture"', 'dataset = ["fixture", "absent"]')
+    text = HOSTED.replace('test = "fixture"', 'test = ["fixture", "absent"]')
     findings = check(write_blueprint(tmp_path, text))
     blocked = [f for f in findings if f.level == "blocked"]
     assert len(blocked) == 1
