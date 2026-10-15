@@ -15,22 +15,19 @@ from typer.testing import CliRunner
 from shipyard import record
 from shipyard.cli import app
 from shipyard.config import (
-    NO_REFLECTOR,
     REFLECTION_IMAGE,
     ConfigError,
-    Finding,
-    check,
     load,
-    search_sets,
 )
-from shipyard.data import held_out
+from shipyard.data import held_out, search_sets
 from shipyard.modules import SKILL_FILE, seed
+from shipyard.preflight import NO_REFLECTOR, Finding
 from shipyard.recipes.gepa import BEST, SEED, GEPATrainer
 from shipyard.recipes.gepa.reflect import COLLECTED
 from shipyard.run import Run
 from shipyard.runner import Runner
 from tests.test_cycle import drawn
-from tests.trials import FIXTURES, fixture_tasks, write_blueprint, write_result
+from tests.trials import FIXTURES, check, fixture_tasks, write_blueprint, write_result
 
 BLUEPRINTS = Path(__file__).parent / "blueprints"
 VALID = Path(__file__).parent / "modules" / "valid"

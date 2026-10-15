@@ -19,9 +19,9 @@ from rich.logging import RichHandler
 from rich.markup import escape
 from rich.table import Table
 
-from shipyard import config, data, record, resolved
-from shipyard.config import Finding
+from shipyard import data, record, resolved
 from shipyard.data import NoSuchDataset
+from shipyard.preflight import Finding
 from shipyard.proxy.client import Unreachable
 from shipyard.run import Run, RunRefused, runs_root
 from shipyard.runner import Runner, runner_in
@@ -135,9 +135,10 @@ def run(
         started = _reopened(runs_root(root) / blueprint.name)
         raise typer.Exit(_executed(started.opened, lambda: asyncio.run(started.run())))
     chosen, about = _runner(runner)
-    findings = [*config.check(blueprint), *about]
-    _print_findings([found for found in findings if found.level != "ok"])
-    if _blocked(findings):
+    found = resolved.report(blueprint, chosen.trainer)
+    found.findings.extend(about)
+    _print_findings([one for one in found.findings if one.level != "ok"])
+    if found.blocked:
         console.print("[red]blocked; nothing was started[/red]")
         raise typer.Exit(1)
     try:
@@ -294,10 +295,6 @@ def show(
         print(json.dumps(found, indent=2))
         return
     print_run(run_id, found, full=full)
-
-
-def _blocked(findings: list[Finding]) -> bool:
-    return any(found.level == "blocked" for found in findings)
 
 
 def _print_findings(findings: list[Finding]) -> None:

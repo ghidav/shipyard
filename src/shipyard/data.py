@@ -90,3 +90,40 @@ def _task_dirs(home: Path) -> list[Path]:
         for path in home.iterdir()
         if path.is_dir() and not path.name.startswith(".") and Task.is_valid_dir(path)
     )
+
+
+#: The share of a run's tasks gepa holds out to select on when `[recipe] pareto` is unset,
+#: rounded down, as in three of GEPA's four benchmarks: GEPA §4.1 (split sizes) and §4.3
+#: (the validation set is D_pareto). HotpotQA, IFBench and HoVer hold 300 validation tasks
+#: beside 150 training ones (PUPA alone splits 111 and 111), and the one split the paper
+#: draws itself, IFBench's, is one of those.
+PAPER_PARETO = (2, 3)
+
+
+def search_sets(loaded: Blueprint) -> tuple[list[Path], list[Path]]:
+    """gepa's two task lists, GEPA's D_feedback and D_pareto (Alg. 1 line 1). Minibatches are
+    drawn from the first. Every candidate the search keeps is scored on the second. A dataset
+    name is D_pareto, and the run's tasks are D_feedback. A count holds that many of the run's
+    tasks out, drawn with `[data] seed`. 0 keeps every task in both (GEPA 6). Unset holds out
+    two thirds, as in three of GEPA's four benchmarks. Raises ValueError when either list
+    would be empty."""
+    listed = [task for name in loaded.datasets for task in tasks(name)]
+    named = loaded.recipe.pareto
+    if isinstance(named, str):
+        return listed, tasks(named)
+    if named == 0:
+        return listed, list(listed)
+    share, whole = PAPER_PARETO
+    count = len(listed) * share // whole if named is None else named
+    if count < 1:
+        raise ValueError(
+            "one task cannot be split; 0 selects on the task the search reflects on, and a "
+            "dataset name selects on that dataset"
+        )
+    if count >= len(listed):
+        raise ValueError(f"holding out {count} of {_tasks(len(listed))} leaves none to reflect on")
+    return held_out(listed, count, seed=loaded.data.seed)
+
+
+def _tasks(count: int) -> str:
+    return f"{count} task" if count == 1 else f"{count} tasks"

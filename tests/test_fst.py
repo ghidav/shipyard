@@ -20,7 +20,6 @@ from shipyard.config import (
     DrGrpoRecipe,
     FstRecipe,
     Gradient,
-    check,
     load,
 )
 from shipyard.data import Generator, tasks
@@ -35,7 +34,7 @@ from shipyard.sampling.endpoint import ProviderEndpoint
 from shipyard.types import Agent, Group, Member, Policy, Sequence, Trial, Verdict, harness
 from tests.test_cycle import drawn
 from tests.test_runner import fakes  # noqa: F401 - the proxy and the Tinker service, faked
-from tests.trials import FIXTURES, write_blueprint, write_result
+from tests.trials import FIXTURES, check, write_blueprint, write_result
 
 FST = Path(__file__).parent / "blueprints" / "fst"
 AGENT = Agent(Policy(ProviderEndpoint("m")), [harness("pi")])

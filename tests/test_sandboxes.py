@@ -23,13 +23,13 @@ from typer.testing import CliRunner
 
 from shipyard import preflight
 from shipyard.cli import app
-from shipyard.config import Finding, check
 from shipyard.preflight import (
     INSTEAD,
     LEFTOVER_NETWORKS,
     LOGINS,
     PROVIDERS,
     REMOVE_NETWORKS,
+    Finding,
     docker_running,
     extra_installed,
     extra_missing,
@@ -38,7 +38,7 @@ from shipyard.preflight import (
     modal_finding,
 )
 from shipyard.proxy import tunnel
-from tests.trials import fixture_tasks, write_blueprint
+from tests.trials import check, fixture_tasks, write_blueprint
 
 runner = CliRunner()
 BLUEPRINT = """

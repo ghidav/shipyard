@@ -10,8 +10,9 @@ from pathlib import Path
 import pytest
 
 from shipyard import config, resolved
-from shipyard.config import Blueprint, ConfigError, Finding, check, load
-from tests.trials import fixture_tasks, write_blueprint
+from shipyard.config import Blueprint, ConfigError, load
+from shipyard.preflight import Finding
+from tests.trials import check, fixture_tasks, write_blueprint
 
 BLUEPRINTS = Path(__file__).parent / "blueprints"
 #: The kinds whose recipe is a `Gradient`: the three the loop trains.

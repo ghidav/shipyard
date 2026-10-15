@@ -14,7 +14,9 @@ from typing import Any
 
 from harbor.models.trial.config import TrialConfig
 
+from shipyard import resolved
 from shipyard.modules import Candidate
+from shipyard.preflight import Finding
 from shipyard.run import Run
 from shipyard.training.trainer import Trainer
 from shipyard.types import Agent, Group, Member, Policy, harness
@@ -26,6 +28,11 @@ T0 = datetime(2026, 1, 1, tzinfo=UTC)
 def fixture_tasks(tmp_path: Path) -> Path:
     """The fixture datasets copied to `<tmp>/tasks`."""
     return shutil.copytree(FIXTURES, tmp_path / "tasks")
+
+
+def check(blueprint: Path) -> list[Finding]:
+    """The findings `shipyard check` prints for the blueprint."""
+    return resolved.report(blueprint).findings
 
 
 def write_blueprint(tmp_path: Path, text: str) -> Path:
