@@ -5,7 +5,7 @@ name = "thinkingmachines/Inkling-Small"
 lora_rank = 32
 
 [data]
-dataset = "reasoning-gym-easy"
+train = "reasoning-gym-easy"
 batch_size = 16
 group_size = 8
 
