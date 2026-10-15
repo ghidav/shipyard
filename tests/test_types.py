@@ -1,5 +1,4 @@
-"""The vocabulary module: what it defines, what it re-exports, the one rule a group holds,
-and that it imports none of the loop."""
+"""Test the vocabulary: what it defines and re-exports, the group's rule, no loop imported."""
 
 from __future__ import annotations
 
