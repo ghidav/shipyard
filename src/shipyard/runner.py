@@ -94,7 +94,9 @@ class Runner:
         return runner
 
     async def run(self) -> Agent:
-        """Open the agent, train an epoch at a time, evaluate on the cadence, checkpoint `final`."""
+        """Open the agent, train an epoch at a time, evaluate on the cadence, checkpoint `final`.
+        The client opens as the blueprint says, so the KL anchor is the run's start; a resume
+        then loads the checkpoint's state."""
         run, trainer, generator = self.opened, self.trainer, self.generator
         cfg = run.config
         model, recipe = cfg.model, cfg.recipe
@@ -106,9 +108,9 @@ class Runner:
             client = await TinkerClient.open(
                 service,
                 model.name,
-                from_checkpoint=model.from_checkpoint if row is None else row["state_path"],
+                from_checkpoint=model.from_checkpoint,
                 lora_rank=model.lora_rank,
-                restore_optimizer=model.restore_optimizer if row is None else True,
+                restore_optimizer=model.restore_optimizer,
                 metadata=metadata,
             )
         policy = Policy(run.endpoint, client, None if row is None else row["sampler_path"])
@@ -116,6 +118,8 @@ class Runner:
         async with agent.policy:
             if client is not None and recipe.kl_coef > 0:
                 trainer.anchor = await anchor(service, client, model)
+            if client is not None and row is not None:
+                await client.load_state(row["state_path"])
             evaluated = 0
             for epoch in range(trainer.epoch, self.epochs):
                 trainer.epoch = epoch

@@ -71,8 +71,8 @@ class FST(Search):
     def aggregated(cls) -> str:
         return "averaged per prompt"
 
-    def __init__(self, run: Run, *, anchor: Any = None) -> None:
-        super().__init__(run, anchor=anchor)
+    def __init__(self, run: Run) -> None:
+        super().__init__(run)
         self.fst = run.config.recipe
         self.recipe = slow_recipe(self.fst)
         self.score_group_size = CELL_ROLLOUTS

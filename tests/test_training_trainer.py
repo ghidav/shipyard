@@ -334,7 +334,9 @@ async def test_the_kl_anchor_is_subtracted_per_token_billed_and_reported(
     home = _blueprint(tmp_path, **{"batch_size = 2": "batch_size = 4", **ANCHORED})
     run = Run.open(home, root=tmp_path)
     run.run_trial = Alternating()
-    await _train(run, DAPOTrainer(run, anchor=service.anchor), _agent(run, service))
+    trainer = DAPOTrainer(run)
+    trainer.anchor = service.anchor
+    await _train(run, trainer, _agent(run, service))
     assert len(service.anchor.asked) == 8
     (row,) = _rows(run)
     # mu is the forward's -0.5 and the anchor says -0.1: the gap is -0.4 on every token.

@@ -319,6 +319,31 @@ async def test_a_kl_anchor_from_a_checkpoint_samples_weights_published_from_its_
     assert proxy.swapped[0] == START
 
 
+async def test_a_resumed_run_anchors_kl_to_its_start_before_loading_the_checkpoint(
+    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
+) -> None:
+    _, service = fakes
+    state = "tinker://run:train:0/weights/final"
+    home = _blueprint(
+        tmp_path, **{"[model]\n": f'[model]\nfrom_checkpoint = "{state}"\n', **ANCHORED}
+    )
+    opened = Run.open(home, root=tmp_path / "runs")
+    opened.run_trial = Interrupting(after=5)
+    with pytest.raises(Stopped), opened:
+        await Runner.from_run(opened).run()
+    resumed = Runner.from_checkpoint(opened.directory)
+    resumed.opened.run_trial = Alternating()
+    with resumed.opened:
+        await resumed.run()
+    published = "tinker://fake/sampler_weights/anchor"
+    assert service.calls[-2:] == [("from_state", state), ("sampling", MODEL, published)]
+    calls = service.client.calls
+    published_anchor = ("save_weights_for_sampler", "anchor", SERVE_TTL)
+    anchored = len(calls) - 1 - calls[::-1].index(published_anchor)
+    loaded = calls.index(("load_state_with_optimizer", "tinker://fake/weights/step-1"))
+    assert anchored < loaded, "the anchor is the blueprint's start, not the resume point"
+
+
 async def test_a_run_whose_model_is_not_served_is_refused_before_a_session_opens(
     tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
 ) -> None:
@@ -379,9 +404,11 @@ async def test_a_run_killed_mid_epoch_resumes_from_its_last_checkpoint(
         ("step-2", 2, 2),
         ("final", 2, 2),
     ]
-    # The client came from the checkpoint's state with its optimizer, the proxy served its
-    # sampler weights before the first job, and the weights after the update.
-    assert service.calls[-1] == ("from_state_with_optimizer", "tinker://fake/weights/step-1")
+    # The client opened as the blueprint says and loaded the checkpoint's state with its
+    # optimizer; the proxy served its sampler weights before the first job, and the weights
+    # after the update.
+    assert service.calls[-1] == ("lora", MODEL, 32)
+    assert ("load_state_with_optimizer", "tinker://fake/weights/step-1") in service.client.calls
     assert proxy.swapped == [
         START,
         "tinker://fake/sampler_weights/sample-1",

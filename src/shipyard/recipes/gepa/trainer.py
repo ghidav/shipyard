@@ -86,8 +86,8 @@ class Search:
 
 
 class GEPATrainer(Search, Trainer):
-    def __init__(self, run: Run, *, anchor: Any = None) -> None:
-        super().__init__(run, anchor=anchor)
+    def __init__(self, run: Run) -> None:
+        super().__init__(run)
         recipe = self.recipe
         self.score_group_size = run.config.data.group_size
         self.reflect = reflect(
