@@ -8,12 +8,14 @@ from statistics import fmean, pstdev
 from typing import Any
 
 from shipyard.pack import Sequence, model_input
-from shipyard.types import EPSILON
 
 #: Harbor's reward for a fully solved task. Only solved rollouts are compared on length.
 SOLVED = 1.0
 #: Anchor passes in flight at once.
 LOGPROB_CONCURRENCY = 16
+
+#: The normaliser's floor against a spread of zero.
+EPSILON = 1e-6
 
 
 def shaped(
@@ -52,15 +54,11 @@ def overlong(
     return [-penalty * min(max(float(length) - start, 0.0) / cache, 1.0) for length in lengths]
 
 
-def weights(tokens: Values[int], aggregation: str) -> list[float]:
-    """Each group's factor on its tokens' advantages. Tinker sums token losses. Under
-    "prompt", a group's tokens are scaled by the step's mean group size over the group's
-    own size, so each prompt weighs the same and the sum keeps about its size. "sum" leaves
-    them unscaled."""
-    if aggregation not in ("prompt", "sum"):
-        raise ValueError(f"no token aggregation called {aggregation!r}; 'prompt' or 'sum'")
+def weights(tokens: Values[int]) -> list[float]:
+    """Each group's factor on its tokens' advantages, so each prompt weighs the same: the
+    step's mean group size over the group's own, since Tinker sums token losses."""
     sized = [one for one in tokens if one > 0]
-    if aggregation == "sum" or not sized:
+    if not sized:
         return [1.0] * len(tokens)
     mean = fmean(sized)
     return [mean / one if one > 0 else 1.0 for one in tokens]

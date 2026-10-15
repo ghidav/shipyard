@@ -61,29 +61,24 @@ class Generator:
     test: list[Path] = field(default_factory=list)
 
     @classmethod
-    def of(cls, config: Blueprint, *, root: Path | None = None) -> Generator:
+    def of(cls, config: Blueprint) -> Generator:
         """Over the blueprint's `[data]` table: each set's tasks in list order."""
         data = config.data
 
         def listed(names: Sequence[str]) -> list[Path]:
-            return [task for name in names for task in tasks(name, root=root)]
+            return [task for name in names for task in tasks(name)]
 
         return cls(listed(config.datasets), data.batch_size, data.seed, listed(config.test_sets))
 
     def batches(self, epoch: int) -> Iterator[list[Path]]:
-        """One epoch: the train tasks shuffled under `seed + epoch`, `batch_size` at a time."""
-        return _cut(self.train, size=self.batch_size, seed=self.seed + epoch, epochs=1)
-
-
-def _cut(listed: list[Path], *, size: int, seed: int, epochs: int) -> Iterator[list[Path]]:
-    """One shuffle per epoch under `seed + epoch`, cut into batches; the short last one kept."""
-    if size < 1:
-        raise ValueError(f"size must be at least 1; got {size}")
-    for epoch in range(epochs):
-        order = list(listed)
-        random.Random(seed + epoch).shuffle(order)
-        for start in range(0, len(order), size):
-            yield order[start : start + size]
+        """One epoch: the train tasks shuffled under `seed + epoch`, `batch_size` at a time,
+        the short last batch kept."""
+        if self.batch_size < 1:
+            raise ValueError(f"batch_size must be at least 1; got {self.batch_size}")
+        order = list(self.train)
+        random.Random(self.seed + epoch).shuffle(order)
+        for start in range(0, len(order), self.batch_size):
+            yield order[start : start + self.batch_size]
 
 
 def _task_dirs(home: Path) -> list[Path]:

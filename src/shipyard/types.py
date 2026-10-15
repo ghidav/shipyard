@@ -17,7 +17,6 @@ from shipyard.proxy.profiles import Profile, bare_name, profile_for
 from shipyard.proxy.wire import Picture, Record
 
 __all__ = [
-    "EPSILON",
     "Adam",
     "Agent",
     "Batches",
@@ -52,8 +51,6 @@ Datum = tinker.Datum
 Batches = Iterator[list[Task]]
 #: A job's model calls by trial name.
 Records = dict[str, list[Record]]
-#: Below this spread a group has no gradient.
-EPSILON = 1e-6
 #: How long served sampler weights are kept: past the batch sampled from them, and a
 #: crashed run's leftovers expire on their own.
 SERVE_TTL = 12 * 3600
