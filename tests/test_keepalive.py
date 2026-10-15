@@ -19,6 +19,7 @@ from tests.proxies import (
     BridgeRenderer,
     FakeSampler,
     ScriptedSampler,
+    address,
     ask,
     ask_anthropic,
     ids,
@@ -157,7 +158,7 @@ async def test_a_client_gone_mid_wait_still_records_the_sample() -> None:
         async with httpx.AsyncClient() as http:
             with pytest.raises(httpx.ReadTimeout):
                 await http.post(
-                    f"{started.address_for('t')}/chat/completions",
+                    f"{address(started, 't')}/chat/completions",
                     headers={"Authorization": f"Bearer {started.token}"},
                     json={
                         "model": "m",

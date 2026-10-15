@@ -12,11 +12,11 @@ from typing import Any
 from shipyard.proxy import cookbook
 from shipyard.proxy.bridge import Index, Reply
 from shipyard.proxy.exchange import exchange
+from shipyard.proxy.wire import BUDGET, CONTEXT, SAMPLER_FAILED, Picture, pictured
 
 # `Record`, `IMAGE_TOKEN` and the two readers of a prompt are defined in `wire`, which the
 # run reads without the cookbook. They are re-exported here.
 from shipyard.proxy.wire import IMAGE_TOKEN as IMAGE_TOKEN
-from shipyard.proxy.wire import SAMPLER_FAILED, Picture, pictured
 from shipyard.proxy.wire import Record as Record
 from shipyard.proxy.wire import ids_of as ids_of
 from shipyard.proxy.wire import pictures_of as pictures_of
@@ -50,8 +50,7 @@ class Recorder:
         #: Whether a turn that would overrun the context gets the remaining context as its limit.
         self.fill_context = fill_context
         self.records: dict[str, list[Record]] = {}
-        #: Per trial: requests refused (budget or context), tokens sampled.
-        self.turned_away: dict[str, int] = {}
+        #: Per trial, the tokens sampled.
         self.spoke: dict[str, int] = {}
         self._seq: dict[str, int] = {}
         self._replies: dict[tuple[Any, ...], asyncio.Future[Any]] = {}
@@ -166,7 +165,7 @@ class Recorder:
             spent = self.spoke.get(trial, 0)
             share = (self.budget - spent) // max(1, num_samples)
             if share <= 0:
-                self._refuse(trial, prompt_ids, pinned, "budget")
+                self._refuse(trial, prompt_ids, pinned, BUDGET)
                 raise cookbook.refused(
                     f"This rollout has spent its budget: {spent} sampled tokens of "
                     f"{self.budget}, the model's context length. No further requests are served."
@@ -180,14 +179,13 @@ class Recorder:
             return pinned
         if self.fill_context and asked < self.max_context:
             return pinned.model_copy(update={"max_tokens": self.max_context - asked})
-        self._refuse(trial, prompt_ids, pinned, "context")
+        self._refuse(trial, prompt_ids, pinned, CONTEXT)
         raise cookbook.too_long(
             "Prompt length plus max_tokens exceeds the model's context window: "
             f"{asked} prompt tokens + {wants} max_tokens > {self.max_context}."
         )
 
     def _refuse(self, trial: str, prompt_ids: tuple[int, ...], pinned: Any, why: str) -> None:
-        self.turned_away[trial] = self.turned_away.get(trial, 0) + 1
         self._add(trial, prompt_ids, _params_dict(pinned), self.served, error=why)
 
     def _add(
@@ -275,7 +273,7 @@ class Recorder:
     def _forget(self, trial: str) -> list[Record]:
         for key in [key for key in self._replies if key[0] == trial]:
             del self._replies[key]
-        for counter in (self.turned_away, self.spoke, self._seq, self.indexes):
+        for counter in (self.spoke, self._seq, self.indexes):
             counter.pop(trial, None)
         return self.records.pop(trial, [])
 

@@ -329,7 +329,7 @@ def test_serve_runs_for_real_on_the_fake_sampler(tmp_path: Path) -> None:
             tuple(map(ord, "again")),
         ]
         assert [r.served for r in records] == [None, None, "tinker://run/sampler_weights/step-3"]
-        assert fetched.json()["spoke"] == len("echohiagain")
+        assert sum(len(r.completion_token_ids) for r in records) == len("echohiagain")
         process.send_signal(signal.SIGTERM)
         assert process.wait(timeout=20) == 0
     finally:

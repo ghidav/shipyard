@@ -108,6 +108,11 @@ def root(started: Server) -> str:
     return f"http://127.0.0.1:{started.port}"
 
 
+def address(started: Server, trial: str) -> str:
+    """The trial's base URL on a started server, as the run's `Proxy.address_for` builds it."""
+    return f"{root(started)}/r/trial/{trial}/v1"
+
+
 async def ask(
     started: Server,
     trial: str,
@@ -120,7 +125,7 @@ async def ask(
     sent = {"Authorization": f"Bearer {started.token if key is None else key}", **(headers or {})}
     async with httpx.AsyncClient() as client:
         return await client.post(
-            f"{started.address_for(trial)}/chat/completions",
+            f"{address(started, trial)}/chat/completions",
             headers=sent,
             json={"model": "gpt-oss-20b", "messages": [{"role": "user", "content": "go"}], **body},
         )
@@ -130,7 +135,7 @@ async def ask_anthropic(started: Server, trial: str, **body: Any) -> httpx.Respo
     """One messages request, as Claude Code sends it: `x-api-key`, `/v1/messages`."""
     async with httpx.AsyncClient() as client:
         return await client.post(
-            f"{started.address_for(trial)}/messages",
+            f"{address(started, trial)}/messages",
             headers={"x-api-key": started.token},
             json={
                 "model": "claude-sonnet-4-5",

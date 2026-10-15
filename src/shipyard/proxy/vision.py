@@ -278,13 +278,8 @@ def has_images(messages: Sequence[Any]) -> bool:
 
 
 def takes_images(renderer: Any) -> bool:
-    """Whether a renderer was built with an image processor, looking through wrappers."""
-    for _ in range(8):
-        flag = getattr(renderer, "_has_image_processor", None)
-        if flag is not None or renderer is None:
-            return bool(flag)
-        renderer = getattr(renderer, "_inner", None) or getattr(renderer, "inner", None)
-    return False
+    """Whether the renderer was built with an image processor."""
+    return bool(getattr(renderer, "_has_image_processor", False))
 
 
 def image_key(part: dict[str, Any]) -> str:

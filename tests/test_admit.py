@@ -11,8 +11,6 @@ import pytest
 
 from shipyard.admit import (
     API_ERROR,
-    BUDGET,
-    CONTEXT,
     CONTEXT_OVERFLOW,
     ENDPOINT_FAILED,
     ENV_ERROR,
@@ -27,7 +25,7 @@ from shipyard.admit import (
     verdict,
     verdicts,
 )
-from shipyard.proxy.wire import IMAGE_TOKEN, Picture
+from shipyard.proxy.wire import BUDGET, CONTEXT, IMAGE_TOKEN, Picture
 from shipyard.rollout import Rollouts
 from shipyard.types import Trial, harness
 from tests.records import made

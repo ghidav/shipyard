@@ -43,7 +43,7 @@ SERVE_STUB = textwrap.dedent(
             if path == "/healthz":
                 body = {"status": "ok", "model": model, "serving": model}
             elif path.startswith("/records/"):
-                body = {"trial": path.rsplit("/", 1)[1], "records": [record], "spoke": 1}
+                body = {"records": [record]}
             else:
                 self.send_response(404)
                 self.end_headers()

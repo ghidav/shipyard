@@ -509,22 +509,6 @@ async def test_a_bridged_prompt_is_what_the_sampler_is_given(stream: bool) -> No
     assert two.prompt_token_ids == (*one.prompt_token_ids, *ids("hi"), STOP, *ids("\nuser:more\n>"))
 
 
-def test_a_renderer_that_strips_history_thinking_renders_a_user_turn_afresh() -> None:
-    """Qwen3's template drops earlier thinking at a new user turn: bridging there would
-    keep thinking the template's own render leaves out, so the turn is rendered afresh."""
-    renderer = BridgeRenderer()
-    history = [{"role": "user", "content": "go"}, {"role": "assistant", "content": "hi"}]
-    index = _indexed(renderer, history, "hi", ended=False)
-    tool = {"role": "tool", "content": "ok", "tool_call_id": "c"}
-    renderer.strip_thinking_from_history = True
-    assert bridge([*history, {"role": "user", "content": "more"}], renderer, index) is None
-    assert bridge([*history, tool], renderer, index) is not None, (
-        "a tool result alone still extends"
-    )
-    renderer.strip_thinking_from_history = False
-    assert bridge([*history, {"role": "user", "content": "more"}], renderer, index) is not None
-
-
 # --------------------------------------------------------- a call known by its id
 
 

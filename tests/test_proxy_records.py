@@ -15,11 +15,24 @@ from shipyard.proxy import cookbook
 from shipyard.proxy import server as server_module
 from shipyard.proxy.exchange import Exchange, exchange
 from shipyard.proxy.recorder import IMAGE_TOKEN, Record, Recorder, ids_of, pictures_of
-from shipyard.proxy.wire import Picture, delta_encoded, pictured, record_of, records_of
+from shipyard.proxy.wire import (
+    BUDGET,
+    CONTEXT,
+    Picture,
+    delta_encoded,
+    pictured,
+    record_of,
+    records_of,
+)
 from tests.proxies import FakeSampler, ask, fetch, ids, server
 
 OK = ids("ok")
-EMPTY = {"records": [], "turned_away": 0, "spoke": 0}
+EMPTY = {"records": []}
+
+
+def refused(recorder: Recorder, trial: str) -> list[str]:
+    """The proxy's refusals on the trial's record, in order."""
+    return [r.error for r in recorder.records_for(trial) if r.error in (BUDGET, CONTEXT)]
 
 
 def planted(**fields: Any) -> Record:
@@ -59,7 +72,7 @@ async def test_a_trials_records_come_back_in_order_with_their_ids() -> None:
     assert [tuple(r["completion_token_ids"]) for r in records] == [OK, OK, OK]
     assert [r["seq"] for r in records] == [1, 2, 3]
     assert {r["requested_model"] for r in records} == {"gpt-oss-20b"}
-    assert (payload["turned_away"], payload["spoke"]) == (0, 6)
+    assert sum(len(r["completion_token_ids"]) for r in records) == 6
 
 
 async def test_the_fetch_drains_and_an_unknown_trial_is_empty_not_an_error() -> None:
@@ -71,8 +84,8 @@ async def test_the_fetch_drains_and_an_unknown_trial_is_empty_not_an_error() -> 
         unknown = await fetch(served, "no-such-trial")
         assert served.records_for("task-1") == [] and len(served.records_for("task-2")) == 1
     assert len(first.json()["records"]) == 1
-    assert second.json() == {"trial": "task-1", **EMPTY}
-    assert unknown.status_code == 200 and unknown.json() == {"trial": "no-such-trial", **EMPTY}
+    assert second.json() == EMPTY
+    assert unknown.status_code == 200 and unknown.json() == EMPTY
 
 
 async def test_a_fetch_without_the_token_is_refused_and_leaves_the_records() -> None:
@@ -212,7 +225,6 @@ async def test_a_turn_that_does_not_fit_is_refused_before_it_is_paid_for() -> No
     assert sampler.asked == 0
     assert "context window" in str(refused.value), "what the cookbook classifies an overflow by"
     assert "1500 prompt tokens" in str(refused.value) and "2048" in str(refused.value)
-    assert recorder.turned_away == {"t-1": 1}
     (record,) = recorder.records_for("t-1")
     assert record.error == "context" and record.completion_token_ids == ()
     assert record.prompt_token_ids == tuple(range(1500)) and record.seq == 1
@@ -225,7 +237,7 @@ async def test_a_turn_that_fits_is_not_refused_and_nothing_is_refused_without_a_
     ):
         with pytest.raises(AssertionError, match="should not have been asked"):
             await under("t-1", recorder, tinker.ModelInput.from_ints(list(range(1500))))
-        assert recorder.turned_away == {}
+        assert refused(recorder, "t-1") == []
 
 
 async def test_filling_the_context_gives_a_turn_what_is_left_of_it() -> None:
@@ -233,10 +245,10 @@ async def test_filling_the_context_gives_a_turn_what_is_left_of_it() -> None:
     recorder = Recorder(sampler, max_tokens=1000, max_context=2048, fill_context=True)
     with pytest.raises(AssertionError, match="should not have been asked"):
         await under("t-1", recorder, tinker.ModelInput.from_ints(list(range(1500))))
-    assert sampler.params.max_tokens == 548 and recorder.turned_away == {}
+    assert sampler.params.max_tokens == 548 and refused(recorder, "t-1") == []
     with pytest.raises(tinker.BadRequestError):
         await under("t-1", recorder, tinker.ModelInput.from_ints(list(range(2048))))
-    assert recorder.turned_away == {"t-1": 1}
+    assert refused(recorder, "t-1") == [CONTEXT]
 
 
 async def test_a_trial_past_its_budget_is_refused_with_the_cookbooks_own_400() -> None:
@@ -248,7 +260,7 @@ async def test_a_trial_past_its_budget_is_refused_with_the_cookbooks_own_400() -
     assert sampler.asked[1].max_tokens == 2
     with pytest.raises(cookbook.private("_BadRequest"), match="spent its budget"):
         await under("t", recorder, tinker.ModelInput.from_ints([1]))
-    assert len(sampler.asked) == 2 and recorder.turned_away == {"t": 1}
+    assert len(sampler.asked) == 2
     assert [r.error for r in recorder.records_for("t")] == [None, None, "budget"]
     assert [r.seq for r in recorder.records_for("t")] == [1, 2, 3]
     assert recorder.spoke == {"t": 8}
@@ -262,7 +274,7 @@ async def test_the_budget_refusal_is_a_400_over_the_wire_and_the_record_crosses(
         assert refused.status_code == 400 and "budget" in refused.text
         payload = (await fetch(served, "t")).json()
     assert [r["error"] for r in payload["records"]] == [None, "budget"]
-    assert (payload["turned_away"], payload["spoke"]) == (1, 4)
+    assert sum(len(r["completion_token_ids"]) for r in payload["records"]) == 4
 
 
 async def test_a_turn_that_does_not_fit_is_a_400_the_harness_compacts_on() -> None:
@@ -271,7 +283,7 @@ async def test_a_turn_that_does_not_fit_is_a_400_the_harness_compacts_on() -> No
         assert refused.status_code == 400 and "prompt is too long" in refused.text
         payload = (await fetch(served, "t")).json()
     assert [r["error"] for r in payload["records"]] == ["context"]
-    assert payload["turned_away"] == 1
+    assert list(payload) == ["records"]
 
 
 async def test_a_failed_sample_leaves_a_record_and_re_raises() -> None:

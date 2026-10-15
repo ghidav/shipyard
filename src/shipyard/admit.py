@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from shipyard.proxy.profiles import bare_name
-from shipyard.proxy.wire import Record, pictured
+from shipyard.proxy.wire import BUDGET, CONTEXT, Record, pictured
 from shipyard.types import Trial, Verdict
 
 if TYPE_CHECKING:
@@ -39,10 +39,6 @@ MULTIMODAL = "multimodal"
 
 #: What Harbor names on a trial its clock cut.
 TIMED_OUT = "AgentTimeoutError"
-#: The proxy's two refusals, each the policy's own doing: a spent budget, a full context.
-BUDGET = "budget"
-CONTEXT = "context"
-
 #: Harbor's `ApiError` subclasses that are the endpoint's doing, from
 #: `harbor.agents.installed.base`. The three left out are the policy's own
 #: (`OutputTokenExceededError`, `ContextWindowExceededError`, `AgentSafetyRefusalError`),
