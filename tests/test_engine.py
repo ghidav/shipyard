@@ -30,7 +30,7 @@ from shipyard.sampling.engine import (
     quiet_litellm,
 )
 from shipyard.types import Agent, Connection, Endpoint, Policy, Settings, Trial, harness
-from tests.records import FakeProxy, blueprint
+from tests.records import FakeProxy, served
 from tests.trials import FakeTrials
 
 
@@ -298,9 +298,9 @@ async def test_every_trial_is_pointed_at_the_address_that_names_it(tmp_path: Pat
         harbor,
         env={"OPENAI_BASE_URL": "https://api.openai.com/v1", "HTTPS_PROXY": "corp"},
     )
-    served = ProxyEndpoint(blueprint(), tmp_path, proxy=proxy)
+    endpoint = ProxyEndpoint(served(), tmp_path, proxy=proxy)
     found = await engine.run(
-        "j", _batch(tmp_path, "alpha", "beta"), 2, agent=_agent("pi@0.85.1", endpoint=served)
+        "j", _batch(tmp_path, "alpha", "beta"), 2, agent=_agent("pi@0.85.1", endpoint=endpoint)
     )
     assert len(harbor.configs) == 4
     addresses = [config.agent.env["OPENAI_BASE_URL"] for config in harbor.configs]
@@ -328,7 +328,7 @@ def _dialled(
         harness(deployed),
         tmp_path / "jobs" / "j" / config.trial_name,
     )
-    return ProxyEndpoint(blueprint(**rollout), tmp_path, proxy=proxy).connection(trial)
+    return ProxyEndpoint(served(**rollout), tmp_path, proxy=proxy).connection(trial)
 
 
 def test_claude_code_is_handed_the_anthropic_wire_without_the_v1(tmp_path: Path) -> None:
