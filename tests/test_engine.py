@@ -1,6 +1,4 @@
-"""What the engine passes to Harbor and leaves on disk: configs in plan order, one agent
-config per harness, the settings a call brings or the table's, a slot kept for a trial that
-could not run, one concurrency limit across jobs, and the connection each trial dials."""
+"""Test the engine: what reaches Harbor, a failed trial's slot, one concurrency limit per run."""
 
 from __future__ import annotations
 
@@ -293,8 +291,6 @@ def _task_toml(tmp_path: Path, name: str, text: str) -> Path:
 
 
 async def test_every_trial_is_pointed_at_the_address_that_names_it(tmp_path: Path) -> None:
-    """One address per trial, layered over the job's env. The shared agent config is
-    copied for each trial, so no trial gets another's address."""
     harbor = FakeTrials()
     proxy = FakeProxy(origin="http://host.docker.internal:8000", token="secret")
     engine = _engine(
