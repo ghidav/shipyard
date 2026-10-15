@@ -15,7 +15,7 @@ from typer.testing import CliRunner
 from shipyard import record, session
 from shipyard.cli import app
 from shipyard.config import load
-from shipyard.data import batches
+from shipyard.data import Generator
 from shipyard.modules import seed
 from shipyard.run import Run
 from shipyard.smoke import Smoked, Trial, carried, planned, wiring
@@ -85,7 +85,7 @@ def report_of(output: str) -> list[str]:
 
 def test_the_smoke_task_is_the_first_of_the_first_batch(here: Path) -> None:
     cfg = load(blueprint(here, "dapo"))
-    first = next(batches(cfg.datasets, size=cfg.data.batch_size, seed=0, epochs=1))
+    first = next(Generator.of(cfg).batches(0))
     assert planned(cfg) == first[:1] and len(first) == 2
     assert carried(cfg) is None
 

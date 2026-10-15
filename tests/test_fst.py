@@ -23,7 +23,7 @@ from shipyard.config import (
     check,
     load,
 )
-from shipyard.data import batches
+from shipyard.data import Generator, tasks
 from shipyard.modules import SKILL_FILE, seed
 from shipyard.recipes import resolution, run_recipe, trainer_for
 from shipyard.recipes.fst import ADAM, BUDGET_PASSES, fst_trainer, slow_recipe
@@ -275,13 +275,14 @@ async def test_cycle_c_draws_its_minibatches_with_data_seed_plus_c(tmp_path: Pat
     cycles = [
         row["cycle"] for row in record.read(opened.directory / record.METRICS) if "round" in row
     ]
-    planned = list(batches(["four"], size=2, seed=3, epochs=2))
+    made = Generator(tasks("four"), 2, 3)
+    planned = [*made.batches(0), *made.batches(1)]
     for cycle in (0, 1):
-        tasks = list(
+        asked = list(
             dict.fromkeys(task for batch in planned[2 * cycle : 2 * cycle + 2] for task in batch)
         )
         ran = [batch for batch, at in zip(runs, cycles, strict=True) if at == cycle]
-        assert ran and ran == drawn(tasks, 3, random.Random(3 + cycle), len(ran))
+        assert ran and ran == drawn(asked, 3, random.Random(3 + cycle), len(ran))
 
 
 def test_fst_averages_per_prompt_whatever_its_slow_loss(tmp_path: Path) -> None:

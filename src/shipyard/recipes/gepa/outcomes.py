@@ -9,9 +9,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from shipyard.admit import Verdict, verdicts
+from shipyard.admit import Verdict
 from shipyard.recipes.gepa.fitness import Outcome
-from shipyard.rollout import Rollouts
 
 if TYPE_CHECKING:
     from shipyard.types import Group
@@ -36,28 +35,7 @@ NOT_TRANSCRIPTS = ("instruction.txt",)
 INSTRUCTION = "instruction.md"
 
 
-def outcomes(rollouts: Rollouts, tasks: Sequence[Path], group_size: int = 1) -> list[Outcome]:
-    """One outcome per task from a job's trials, which arrive in plan order, `group_size`
-    per task. The reward is the mean over the measured verdicts (a budget-cut rollout counts
-    as 0, as in admission). Feedback and transcript come from the worst rollout, inputs from
-    the task."""
-    if group_size < 1:
-        raise ValueError(f"group_size must be at least 1; got {group_size}")
-    trials = [Path(trial) for trial in rollouts.trials]
-    if len(trials) != len(tasks) * group_size:
-        raise ValueError(
-            f"{len(trials)} trial(s) do not divide into {len(tasks)} task(s) at {group_size} "
-            "rollout(s) each. A crashed trial keeps its slot, so this job was not rolled out "
-            "against this task list"
-        )
-    judged = list(zip(trials, verdicts(rollouts), strict=True))
-    return [
-        _outcome(Path(task), judged[index * group_size : (index + 1) * group_size])
-        for index, task in enumerate(tasks)
-    ]
-
-
-def outcomes_of(groups: Sequence[Group]) -> list[Outcome]:
+def outcomes(groups: Sequence[Group]) -> list[Outcome]:
     """One outcome per group, judged by its members' verdicts."""
     return [
         _outcome(group.task, [(one.trial.dir, one.verdict) for one in group.members])

@@ -11,16 +11,19 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from shipyard import record
-from shipyard.admit import verdicts
+from shipyard.admit import Verdict, verdicts
 from shipyard.config import Blueprint, FstRecipe, GepaRecipe
-from shipyard.data import batches
+from shipyard.data import Generator
 from shipyard.modules import Candidate
 from shipyard.proxy.profiles import PROFILES, bare_name, profile_for
 from shipyard.run import seeded
 from shipyard.sampling.endpoint import NothingServed, ProxyEndpoint
+from shipyard.training.trainer import Trainer
+from shipyard.types import Agent, Policy, harness
 
 if TYPE_CHECKING:
-    from shipyard.rollout import Rollouts
+    from collections.abc import Sequence
+
     from shipyard.run import Run
 
 #: The `purpose` of a smoke job's row.
@@ -34,11 +37,12 @@ class SmokeFailed(RuntimeError):
 
 
 def planned(cfg: Blueprint) -> list[Path]:
-    """The first task of the first batch, of the test set when there is no train set."""
-    data = cfg.data
-    names = cfg.datasets or cfg.test_sets
-    first = next(batches(names, size=data.batch_size, seed=data.seed, epochs=1))
-    return first[:1]
+    """The task a smoke run samples: the first of the first batch, of the test set when there is
+    no train set."""
+    made = Generator.of(cfg)
+    if not made.train:
+        made = replace(made, train=made.test)
+    return next(made.batches(0))[:1]
 
 
 def carried(cfg: Blueprint) -> Candidate | None:
@@ -108,39 +112,43 @@ class Smoked:
 
 
 async def smoke(run: Run) -> Smoked:
-    """Run the smoke job, recorded with `purpose = "smoke"`. A job the proxy served nothing
-    for is still reported, and its stop is kept for `verify`."""
+    """Run the smoke job through the trainer's `job`, recorded with `purpose = "smoke"`. A job
+    the proxy served nothing for is still reported, and its stop is kept for `verify`."""
+    cfg = run.config
+    agent = Agent(Policy(run.endpoint), [harness(cfg.rollout.harness)], carried(cfg))
+    await run.endpoint.open()
     try:
-        rolled = await run.sample(
-            planned(run.config), rollouts=1, index=0, modules=carried(run.config), purpose=PURPOSE
-        )
+        found = await Trainer(run).job(agent, planned(cfg), 1, purpose=PURPOSE)
     except NothingServed as dead:
         if dead.rolled is None:
             raise
-        return replace(report(run, dead.rolled), dead=dead)
-    return report(run, rolled)
+        return replace(report(run, dead.rolled.trials, verdicts(dead.rolled)), dead=dead)
+    members = [one for group in found for one in group.members]
+    return report(run, [one.trial.dir for one in members], [one.verdict for one in members])
 
 
-def report(run: Run, rolled: Rollouts) -> Smoked:
-    """Build the smoke report: where the proxy stood, how the harness was wired, each
-    trial's records, weights and verdict, and the job row's seconds and tokens."""
+def report(run: Run, trials: Sequence[Path], judged: Sequence[Verdict]) -> Smoked:
+    """The smoke report: where the proxy stood, how the harness was wired, each trial's
+    records, weights and verdict off the record, and the job row's seconds and tokens."""
     cfg = run.config
     serving = run.endpoint if isinstance(run.endpoint, ProxyEndpoint) else None
-    judged = verdicts(rolled)
-    trials = []
-    for trial, verdict in zip(rolled.trials, judged, strict=True):
-        name = Path(trial).name
-        taken = None if rolled.records is None else rolled.records.get(name) or []
-        if taken is None:
-            served = cfg.model.provider
-        else:
-            paths = sorted({item.served or cfg.model.name for item in taken})
-            served = ", ".join(paths) or "nothing"
-        said = f"masked {verdict.mask}" if verdict.reward is None else str(verdict.reward)
-        trials.append(
-            Trial(name, None if taken is None else len(taken), served, said, verdict.mask is None)
-        )
     *_, row = record.read(run.directory / record.JOBS)
+    requests = [
+        one for one in record.read(run.directory / record.REQUESTS) if one["job"] == row["job"]
+    ]
+    found = []
+    for trial, verdict in zip(trials, judged, strict=True):
+        name = Path(trial).name
+        if serving is None:
+            served, records = cfg.model.provider, None
+        else:
+            taken = [one for one in requests if one["trial"] == name]
+            served = (
+                ", ".join(sorted({one["served"] or cfg.model.name for one in taken})) or "nothing"
+            )
+            records = len(taken)
+        said = f"masked {verdict.mask}" if verdict.reward is None else str(verdict.reward)
+        found.append(Trial(name, records, served, said, verdict.mask is None))
     cached, prompt = int(row["cache_tokens"]), int(row["input_tokens"])
     if serving is not None:  # the proxy's `input_tokens` leave the cached ones out
         proxy, prompt = f"{serving.origin}  ({serving.placement})", prompt + cached
@@ -153,7 +161,7 @@ def report(run: Run, rolled: Rollouts) -> Smoked:
         harness=cfg.rollout.harness,
         profile=wiring(cfg) if serving is not None else "none (provider-served)",
         proxied=serving is not None,
-        trials=trials,
+        trials=found,
         seconds=float(row["sandbox_seconds"]),
         tokens=(prompt, cached, int(row["output_tokens"])),
     )
