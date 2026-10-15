@@ -22,12 +22,11 @@ DEFAULT_LORA_RANK = 32
 
 
 class TinkerClient(TrainingClient):
-    """Over an SDK training client; `restored` means the optimizer state came with the weights."""
+    """Over an SDK training client."""
 
-    def __init__(self, client: Any, *, service: Any = None, restored: bool = False) -> None:
+    def __init__(self, client: Any, *, service: Any = None) -> None:
         self.client = client
         self.service = service
-        self.restored = restored
 
     @classmethod
     async def open(
@@ -58,7 +57,7 @@ class TinkerClient(TrainingClient):
         except BaseException as failed:
             await quietly_closed(service, failed)
             raise
-        return cls(client, service=service, restored=bool(from_checkpoint) and restore_optimizer)
+        return cls(client, service=service)
 
     async def forward_backward(
         self, datums: Values[Datum], loss_fn: str, loss_config: Mapping[str, float] | None
@@ -108,10 +107,9 @@ class TinkerClient(TrainingClient):
         return str((await future.result_async()).path)
 
     async def load_state(self, path: str) -> None:
-        """The weights and the optimizer state at `path`; the client is then `restored`."""
+        """The weights and the optimizer state at `path`."""
         future = await self.client.load_state_with_optimizer_async(path)
         await future.result_async()
-        self.restored = True
 
     async def close(self, status: str = "success", detail: str | None = None) -> None:
         """Finish the session; idempotent, and quiet when the server already finished it."""

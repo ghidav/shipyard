@@ -370,9 +370,11 @@ class Trainer:
         datums = [one for piece in pieces for one in piece]
         train_tokens = sum(int(one.model_input.length) for one in datums)
         adam = replace(self.ADAM, warmup=recipe.warmup)
+        # An earlier run's optimizer state continues its schedule; a resume stands at `updates`.
+        model = self.run.config.model
         rate = (
             recipe.learning_rate
-            if client.restored
+            if model.from_checkpoint and model.restore_optimizer
             else adam.rate(recipe.learning_rate, self.updates)
         )
         trained: list[torch.Tensor] = []
