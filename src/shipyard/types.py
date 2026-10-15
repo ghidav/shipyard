@@ -264,8 +264,7 @@ class Agent:
 
 @dataclass(frozen=True)
 class Settings:
-    """What one `engine.run` call runs under. The engine's own, from `[rollout]`, stand
-    when a call brings none."""
+    """What one `engine.run` call runs under; the engine's own stand when a call brings none."""
 
     verify: bool = True
     setup_timeout: float | None = None

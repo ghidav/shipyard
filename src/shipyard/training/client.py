@@ -1,5 +1,4 @@
-"""Tinker's training client, reduced to what a recipe needs: a step's parts submitted
-ahead of their results, logprobs from one batched forward, and saves with a TTL."""
+"""Tinker's training client, reduced to what a recipe needs."""
 
 from __future__ import annotations
 
@@ -23,8 +22,7 @@ DEFAULT_LORA_RANK = 32
 
 
 class TinkerClient(TrainingClient):
-    """Over an SDK training client. `restored` says the optimizer state was loaded with
-    the weights, so the run continues an earlier run's schedule."""
+    """Over an SDK training client; `restored` means the optimizer state came with the weights."""
 
     def __init__(self, client: Any, *, service: Any = None, restored: bool = False) -> None:
         self.client = client
@@ -42,10 +40,7 @@ class TinkerClient(TrainingClient):
         restore_optimizer: bool = False,
         metadata: dict[str, str] | None = None,
     ) -> TinkerClient:
-        """A LoRA on `base_model`, or the weights at `from_checkpoint`, with the optimizer
-        state too when `restore_optimizer`; tagged with `metadata` on Tinker's side. The
-        server's capabilities are checked before the session spends anything, and a
-        session whose factory refused is closed as errored."""
+        """A LoRA on `base_model`, or the weights at `from_checkpoint`; the server is checked."""
         try:
             await server_has(service, base_model)
             if from_checkpoint:
@@ -87,9 +82,7 @@ class TinkerClient(TrainingClient):
         return _done(await self.client.optim_step_async(params))
 
     async def compute_logprobs(self, sequences: Values[Sequence]) -> list[list[float]]:
-        """One `cross_entropy` forward over the `shifted` sequences. Position `j` of the
-        output scores `tokens[j + 1]`, so a target at `p` reads `scored[p - 1]`, and a
-        target nothing scores is 0.0."""
+        """One `cross_entropy` forward; target `p` reads position `p - 1`, 0.0 where unscored."""
         if not sequences:
             return []
         data: list[tinker.Datum] = []
@@ -121,8 +114,7 @@ class TinkerClient(TrainingClient):
         self.restored = True
 
     async def close(self, status: str = "success", detail: str | None = None) -> None:
-        """Finish the session, whose heartbeat otherwise runs for the life of the process.
-        Idempotent, and quiet when the server has already finished the session."""
+        """Finish the session; idempotent, and quiet when the server already finished it."""
         service, self.service = self.service, None
         if service is None:
             return
