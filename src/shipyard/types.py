@@ -320,11 +320,13 @@ class RolloutEngine(ABC):
 
 @dataclass(frozen=True)
 class Verdict:
-    """A trial's reward or its mask, never both, and how Harbor said it ended."""
+    """A trial's reward or its mask, never both, and how Harbor said it ended. `rewards`
+    is every number the verifier returned, when the reward is its."""
 
     reward: float | None
     mask: str | None
     ended: str | None
+    rewards: Mapping[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
