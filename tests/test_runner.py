@@ -10,7 +10,7 @@ import pytest
 from harbor.models.trial.config import TrialConfig
 
 from shipyard import record, session
-from shipyard.data import batches
+from shipyard.data import batches, tasks
 from shipyard.recipes import run_recipe, trainer_for
 from shipyard.run import Run
 from shipyard.runner import Runner
@@ -43,6 +43,25 @@ class Alternating:
         task = Path(str(config.task.path)).name
         self.seen[task] = self.seen.get(task, 0) + 1
         write_result(Path(config.trials_dir) / config.trial_name, reward=float(self.seen[task] % 2))
+
+
+class Stopped(BaseException):
+    pass
+
+
+class Interrupting:
+    """Alternating rewards, and the `after`-th trial stops the run as a signal would."""
+
+    def __init__(self, after: int) -> None:
+        self.inner = Alternating()
+        self.after = after
+        self.calls = 0
+
+    async def __call__(self, config: TrialConfig) -> None:
+        self.calls += 1
+        if self.calls == self.after:
+            raise Stopped("SIGINT")
+        await self.inner(config)
 
 
 def _blueprint(tmp_path: Path, kind: str = "dapo", *, tasks: int = 4, **replacements: str) -> Path:
@@ -326,3 +345,80 @@ async def test_a_step_that_fails_closes_the_session_as_errored_and_the_run_as_fa
     assert _rows(opened) == [] and _checkpoints(opened) == [] and proxy.closed == 1
     note = Run.read(opened.directory)
     assert note["failed"] is True and note["error"] == "RuntimeError: the backend went away"
+
+
+async def test_a_run_killed_mid_epoch_resumes_from_its_last_checkpoint(
+    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
+) -> None:
+    proxy, service = fakes
+    opened = Run.open(_blueprint(tmp_path), root=tmp_path / "runs")
+    opened.run_trial = Interrupting(after=5)  # the second batch's first trial
+    started = Runner.of(opened, trainer_for(opened.config.recipe))
+    with pytest.raises(Stopped), opened:
+        await started.run()
+    assert [c["tag"] for c in _checkpoints(opened)] == ["step-1"]
+    assert Run.read(opened.directory)["error"] == "Stopped: SIGINT"
+    assert service.closed[-1][0] == "interrupted"
+
+    resumed = Runner.from_run(opened.directory)
+    row, consumed = resumed.position
+    assert (row["tag"], consumed) == ("step-1", 1), "one batch of the epoch was stepped"
+    trainer = resumed.trainer
+    assert (trainer.steps, trainer.updates, trainer.epoch) == (1, 1, 0)
+    again = resumed.opened
+    again.run_trial = trials = Alternating()
+    with again:
+        await resumed.run()
+    planned = list(batches(["four"], size=2, seed=0, epochs=1, root=tmp_path / "tasks"))
+    second = [task.name for task in planned[1]]
+    assert list(dict.fromkeys(Path(str(c.task.path)).name for c in trials.configs)) == second
+    rows = _rows(again)
+    assert [(r["step"], r["seq"], r["trained"]) for r in rows] == [(0, 1, True), (1, 2, True)]
+    assert [(c["tag"], c["step"], c["updates"]) for c in _checkpoints(again)] == [
+        ("step-1", 1, 1),
+        ("step-2", 2, 2),
+        ("final", 2, 2),
+    ]
+    # The client came from the checkpoint's state with its optimizer, the proxy served its
+    # sampler weights before the first job, and the weights after the update.
+    assert service.calls[-1] == ("from_state_with_optimizer", "tinker://fake/weights/step-1")
+    assert proxy.swapped == [
+        START,
+        "tinker://fake/sampler_weights/sample-1",
+        "tinker://fake/sampler_weights/step-1",
+        "tinker://fake/sampler_weights/sample-2",
+    ]
+    assert service.closed[-1] == ("success", None)
+    note = Run.read(again.directory)
+    assert note["resumed"] == "step-1" and note["failed"] is False and note["finished_at"]
+    assert [n["error"] for n in note["earlier"]] == ["Stopped: SIGINT"]
+    jobs = list(record.read(again.directory / record.JOBS))
+    assert [(job["batch"], job["epoch"]) for job in jobs] == [(0, 0), (1, 0)], (
+        "the interrupted job was never recorded; the resumed step drew its batch again"
+    )
+
+
+async def test_a_run_is_evaluated_at_a_checkpoint_as_one_more_row(
+    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
+) -> None:
+    proxy, service = fakes
+    opened, _ = await _run(_blueprint(tmp_path), tmp_path, Alternating())
+    _two(tmp_path)
+    reopened = Runner.from_run(opened.directory, checkpoint="step-1")
+    reopened.opened.run_trial = Alternating()
+    calls = len(service.calls)
+    with reopened.opened:
+        result = await reopened.evaluate(tasks("two", root=tmp_path / "tasks"))
+    assert result is not None
+    assert (result.step, result.epoch, result.tasks, result.rollouts) == (1, 0, 2, 4)
+    assert result.mean == 0.5
+    rows = _rows(reopened.opened)
+    assert rows[-1]["evaluation"] is True and rows[-1]["checkpoint"] == "step-1"
+    assert rows[-1]["seq"] == 3, "numbered after the run's own rows"
+    assert len(service.calls) == calls, "no training client was opened"
+    assert proxy.swapped[-1] == "tinker://fake/sampler_weights/step-1"
+    jobs = list(record.read(reopened.opened.directory / record.JOBS))
+    assert jobs[-1]["purpose"] == "evaluation"
+    assert Run.read(reopened.opened.directory)["resumed"] == "step-1"
+    with pytest.raises(ValueError, match="no checkpoint tagged 'step-9'"):
+        Runner.from_run(opened.directory, checkpoint="step-9")

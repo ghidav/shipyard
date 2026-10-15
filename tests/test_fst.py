@@ -6,6 +6,7 @@ from __future__ import annotations
 import random
 import shutil
 from pathlib import Path
+from typing import Any
 
 import pytest
 from harbor.models.trial.config import TrialConfig
@@ -28,6 +29,7 @@ from shipyard.recipes import resolution, run_recipe, trainer_for
 from shipyard.recipes.fst import ADAM, BUDGET_PASSES, fst_trainer, slow_recipe
 from shipyard.recipes.gepa.reflect import COLLECTED
 from shipyard.run import Run
+from shipyard.runner import Runner
 from shipyard.sampling.endpoint import ProviderEndpoint
 from shipyard.training.trainer import CISPOTrainer
 from shipyard.types import Agent, Group, Member, Policy, Sequence, Trial, Verdict, harness
@@ -302,3 +304,74 @@ def test_fsts_warmup_key_reaches_its_slow_step(tmp_path: Path) -> None:
     recipe = load(write_blueprint(tmp_path, text)).recipe
     assert slow_recipe(recipe).warmup == 10 and trainer_for(recipe).ADAM.beta2 == 0.999
     assert "learning rate warmed up over 10 steps" in resolution(recipe)
+
+
+class Alternating(Trials):
+    """A reflection as `Trials` does it; a policy trial scores its job's parity."""
+
+    async def __call__(self, config: TrialConfig) -> None:
+        if Path(str(config.task.path)).name == "reflection":
+            await super().__call__(config)
+            return
+        self.configs.append(config)
+        number = int(Path(config.trials_dir).name.rsplit("-", 1)[1])
+        write_result(Path(config.trials_dir) / config.trial_name, reward=float(number % 2 == 0))
+
+
+class Stopped(BaseException):
+    pass
+
+
+@pytest.mark.usefixtures("fakes")
+async def test_a_cycle_interrupted_after_a_slow_step_resumes_without_another_fast_phase(
+    tmp_path: Path,
+) -> None:
+    for name in ("a", "b", "c", "d"):
+        shutil.copytree(FIXTURES / "fixture" / "alpha", tmp_path / "tasks" / "four" / name)
+    home = write_blueprint(
+        tmp_path, _text(**{'"aime-train"': '"four"', "group_size = 4": "group_size = 2"})
+    )
+    shutil.copytree(VALID, home / "modules")
+    opened = Run.open(home, root=tmp_path / "runs")
+    opened.run_trial = Alternating()
+    started = Runner.of(opened, trainer_for(opened.config.recipe))
+    trainer = started.trainer
+    checkpointed, job = trainer.checkpoint, trainer.job
+    stopping = False
+
+    async def stop_after_the_checkpoint(agent: Any, tag: str, **more: Any) -> Any:
+        nonlocal stopping
+        saved = await checkpointed(agent, tag, **more)
+        stopping = True
+        return saved
+
+    async def stopped_job(agent: Any, tasks: Any, *rest: Any, **more: Any) -> Any:
+        if stopping:
+            raise Stopped("after step-1")
+        return await job(agent, tasks, *rest, **more)
+
+    trainer.checkpoint = stop_after_the_checkpoint  # type: ignore[method-assign]
+    trainer.job = stopped_job  # type: ignore[method-assign]
+    with pytest.raises(Stopped), opened:
+        await started.run()
+    (saved,) = list(record.read(opened.directory / record.CHECKPOINTS))
+    assert (saved["tag"], saved["cycle"]) == ("step-1", 0)
+    before = list(record.read(opened.directory / record.JOBS))
+
+    resumed = Runner.from_run(opened.directory)
+    assert resumed.position[1] == 1 and resumed.trainer.offset == 1
+    assert resumed.trainer.cycles == 0
+    population = [one.modules.digest for one in resumed.trainer.population]
+    assert len(population) == 2 and resumed.modules is not None
+    assert resumed.modules.digest == population[0]
+    resumed.opened.run_trial = Alternating()
+    with resumed.opened:
+        await resumed.run()
+    after = list(record.read(resumed.opened.directory / record.JOBS))[len(before) :]
+    assert [job["purpose"] for job in after] == ["rollout", "rollout"], "the cycle's last step only"
+    assert [job["modules"] for job in after] == population
+    rows = [row for row in record.read(resumed.opened.directory / record.METRICS) if "step" in row]
+    assert [(row["step"], row["cycle"]) for row in rows] == [(0, 0), (1, 0)]
+    saved = list(record.read(resumed.opened.directory / record.CHECKPOINTS))
+    assert [(c["tag"], c["cycle"]) for c in saved] == [("step-1", 0), ("step-2", 0), ("final", 1)]
+    assert seed(resumed.opened.directory / record.MODULES / "best").digest == population[0]

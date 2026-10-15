@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import AsyncIterator, Awaitable
+from collections.abc import AsyncIterator, Awaitable, Mapping
 from collections.abc import Sequence as Values
 from dataclasses import dataclass, replace
 from statistics import fmean, pstdev
@@ -24,6 +24,7 @@ from shipyard.types import (
     Evaluation,
     Forward,
     Group,
+    Modules,
     Sequence,
     Task,
     TrainingClient,
@@ -210,7 +211,13 @@ class Trainer:
         trials = await run.engine.run(job, tasks, attempts, agent=agent)
         run.progress.done(job)
         rolled = await run.recorded(
-            job, trials, batch=self.steps, modules=agent.modules, purpose=purpose, **about
+            job,
+            trials,
+            batch=self.steps,
+            modules=agent.modules,
+            purpose=purpose,
+            epoch=self.epoch,
+            **about,
         )
         found = groups(trials, rolled, agent)
         for group in found:
@@ -218,7 +225,7 @@ class Trainer:
             group.advantages = self.advantage(group)
         return found
 
-    async def evaluate(self, agent: Agent, tasks: Values[Task]) -> Evaluation | None:
+    async def evaluate(self, agent: Agent, tasks: Values[Task], **more: Any) -> Evaluation | None:
         """One job per batch of `tasks` at `[data] test_group_size`, then one row with the mean."""
         if not tasks:
             return None
@@ -239,7 +246,7 @@ class Trainer:
             masked=rollouts - len(measured),
             mean=fmean(float(one.verdict.reward or 0.0) for one in measured) if measured else None,
         )
-        self.run.log(evaluation=True, **vars(result))
+        self.run.log(evaluation=True, **vars(result), **more)
         return result
 
     def shape(self, group: Group) -> list[float | None]:
@@ -440,7 +447,9 @@ class Trainer:
         self.run.log(**kept, **rest)
         return {**kept, **rest}
 
-    async def checkpoint(self, agent: Agent, tag: str, *, keep: bool = False) -> Checkpoint | None:
+    async def checkpoint(
+        self, agent: Agent, tag: str, *, keep: bool = False, **more: Any
+    ) -> Checkpoint | None:
         """Save state and sampler weights under `tag`, and the agent written down to the record."""
         client = agent.policy.client
         if client is None:
@@ -472,10 +481,26 @@ class Trainer:
                 "epoch": saved.epoch,
                 "modules": saved.modules,
                 "harness": list(saved.harness),
+                **more,
             },
         )
         logger.info("checkpoint %s: %s", saved.tag, saved.sampler_path)
         return saved
+
+    def consumed(self, jobs: Values[Mapping[str, Any]], row: Mapping[str, Any]) -> int:
+        """The batches of the checkpoint's epoch stepped before it: its rollout jobs."""
+        return sum(
+            1
+            for job in jobs
+            if job.get("purpose") == "rollout"
+            and job.get("epoch") == row["epoch"]
+            and job.get("batch", -1) < row["step"]
+        )
+
+    def restore(self, row: Mapping[str, Any], consumed: int) -> Modules | None:
+        """Stand where the checkpoint row stood; returns the modules the agent carries."""
+        self.steps, self.updates, self.epoch = row["step"], row["updates"], row["epoch"]
+        return self.run.carried
 
 
 class DAPOTrainer(Trainer):
