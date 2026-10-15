@@ -1,7 +1,4 @@
-"""The procedure: `train` is one epoch, `job` the one place a policy is sampled, `step`
-the gradient over the groups a step holds. The base is the plain policy gradient. A recipe
-is a subclass that replaces the rules it changes, and the only values it reads are its own
-`[recipe]` table."""
+"""The procedure: `train`, `job`, `step`. A recipe is a subclass overriding the rules it changes."""
 
 from __future__ import annotations
 
@@ -71,8 +68,7 @@ ROW = (
 
 
 def clipped(low: float, high: float) -> dict[str, float]:
-    """`loss_fn_config` for a ratio clipped to `[1 - low, 1 + high]`. Tinker's `ppo` and
-    `cispo` take the bounds, while DAPO's `clip_low` / `clip_high` are epsilons."""
+    """`loss_fn_config` for a ratio clipped to `[1 - low, 1 + high]`; DAPO's are epsilons."""
     # The route and the key names are the installed SDK's: tinker/types/
     # forward_backward_input.py:21 documents `loss_fn_config` as "Optional configuration
     # parameters for the loss function (e.g., PPO clip thresholds, DPO beta)", and
@@ -93,8 +89,7 @@ def centred(rewards: Values[float | None], *, normalize: bool) -> list[float | N
 
 @dataclass(frozen=True)
 class Credit:
-    """What a step trains on: the datums by group, empty for a group it skipped, and what
-    the reference and anchor passes cost."""
+    """What a step trains on: the datums by group, empty where skipped, and the passes' cost."""
 
     datums: list[list[Datum]]
     reference_tokens: int
@@ -107,10 +102,7 @@ class Credit:
 
 
 class Trainer:
-    """The plain policy gradient: the rewards as scored, the advantage is the reward less
-    the group's mean, Tinker's importance-sampling loss summed over tokens, the cookbook's
-    optimizer. `anchor` is a Tinker sampling client on the agent's starting weights, needed
-    when `[recipe] kl_coef` is set."""
+    """The plain policy gradient; `anchor` is a sampling client on the start, for `kl_coef`."""
 
     #: Tinker's loss, with `bounds` as its config.
     loss_fn = "importance_sampling"
@@ -126,8 +118,7 @@ class Trainer:
         self.epoch = 0
 
     async def train(self, agent: Agent, tasks: Batches) -> Agent:
-        """One epoch: a step per yield of `sample`, the weights served after each update, a
-        checkpoint every `[checkpoints] every` updates."""
+        """One epoch: a step per yield of `sample`, the weights served after each update."""
         every = self.run.config.checkpoints.every
         async for found in self.sample(agent, tasks):
             update = await self.step(agent, found)
@@ -154,8 +145,7 @@ class Trainer:
         *,
         purpose: str = "rollout",
     ) -> list[Group]:
-        """The one place a policy is sampled: run, record, group, and fill each group's
-        shaped rewards and advantages. `attempts` defaults to `[data] group_size`."""
+        """The one place a policy is sampled: run, record, group, shape, advantage."""
         run = self.run
         attempts = run.config.data.group_size if attempts is None else attempts
         run.noted()
@@ -183,8 +173,7 @@ class Trainer:
         return centred(group.shaped, normalize=False)
 
     def weights(self, sizes: Values[int]) -> list[float]:
-        """Each credited group's factor on its tokens' advantages, from the groups' target
-        counts. Tinker sums token losses, and the base leaves that."""
+        """Each credited group's factor on its tokens' advantages; the base leaves Tinker's sum."""
         return [1.0] * len(sizes)
 
     def bounds(self) -> dict[str, float] | None:
@@ -192,9 +181,7 @@ class Trainer:
         return None
 
     async def credit(self, agent: Agent, found: Values[Group]) -> Credit:
-        """The datums: a group with no reward spread has none. Each sequence takes its
-        member's advantage at every target, less `kl_coef` times the gap to the anchor,
-        scaled by its group's weight."""
+        """The datums by group, none for a flat one; the anchor gap times `kl_coef` subtracted."""
         recipe = self.recipe
         kept: list[list[tuple[Any, float]]] = []
         for group in found:
@@ -249,8 +236,7 @@ class Trainer:
         return Credit(datums, reference_tokens, anchor_tokens, gap_mean)
 
     async def mu(self, agent: Agent, sequences: Values[Sequence]) -> list[list[float]]:
-        """The sampler's logprobs at every target, from the records or from one batched
-        forward on the training client, as `[recipe] reference` says."""
+        """The sampler's logprobs at every target, from the records or the training client."""
         if self.recipe.reference == "sampler":
             return [sampler_logprobs(one) for one in sequences]
         client = agent.policy.client
@@ -277,9 +263,7 @@ class Trainer:
         ]
 
     async def step(self, agent: Agent, found: Values[Group]) -> Update | None:
-        """Credit the groups and take the gradient in `substeps` parts of whole groups, each
-        part's forward and optimizer call submitted before the part before is read. None
-        when the agent has no client or nothing was credited."""
+        """The gradient in `substeps` parts of whole groups; None without a client or datums."""
         # Reproduces `train_step` of tinker_cookbook/rl/train.py (Thinking Machines Lab,
         # Apache-2.0).
         recipe, run = self.recipe, self.run
@@ -379,9 +363,7 @@ class Trainer:
         return {**kept, **rest}
 
     async def checkpoint(self, agent: Agent, tag: str, *, keep: bool = False) -> Checkpoint | None:
-        """Save the state and the sampler weights under `tag` with `[checkpoints] ttl_hours`,
-        or with none when `keep`, and append the agent written down to the record. None
-        for an agent with no client."""
+        """Save state and sampler weights under `tag`, and the agent written down to the record."""
         client = agent.policy.client
         if client is None:
             return None
@@ -419,13 +401,7 @@ class Trainer:
 
 
 class DAPOTrainer(Trainer):
-    """DAPO (Yu et al., arXiv 2503.14476): the advantage divided by the group's spread, PPO
-    with asymmetric clipping (`clip_low` / `clip_high`, 4.1, are epsilons; Tinker's `ppo`
-    takes bounds), each prompt's token losses averaged (Eq. 8), the soft overlong
-    punishment (Eq. 13), and dynamic sampling (Alg. 1) as accumulation: jobs are held until
-    as many groups have a reward spread as a batch yields, and the step takes them all at
-    the weights they were sampled at. The epoch bounds it; the last step takes what it
-    has."""
+    """DAPO (Yu et al., arXiv 2503.14476), with dynamic sampling as accumulation across jobs."""
 
     loss_fn = "ppo"
     #: 4.1 states no betas, eps, weight decay or gradient clipping. The authors' released
@@ -445,6 +421,7 @@ class DAPOTrainer(Trainer):
         return await super().train(agent, tasks)
 
     async def sample(self, agent: Agent, tasks: Batches) -> AsyncIterator[list[Group]]:
+        """Jobs are held until a batch's worth of groups have spread; the epoch bounds it."""
         target = self.run.config.data.batch_size * len(agent.harness)
         held: list[Group] = []
         for batch in tasks:
@@ -467,8 +444,7 @@ class DAPOTrainer(Trainer):
         )
 
     def docked(self, group: Group) -> list[float | None]:
-        """The overlong term per member, against the endpoint's token budget; None on an
-        unmeasured one."""
+        """The overlong term per member against the token budget; None on an unmeasured one."""
         recipe = self.recipe
         measured = group.measured
         terms = iter(
@@ -482,16 +458,14 @@ class DAPOTrainer(Trainer):
         return [next(terms) if one.measured else None for one in group.members]
 
     def weights(self, sizes: Values[int]) -> list[float]:
-        """Each prompt weighs the same (Eq. 8): a group's tokens are scaled by the step's
-        mean group size over its own."""
+        """Each prompt weighs the same (Eq. 8): the mean group size over the group's own."""
         return weights(sizes, "prompt")
 
     def bounds(self) -> dict[str, float] | None:
         return clipped(self.recipe.clip_low, self.recipe.clip_high)
 
     def log(self, found: Values[Group], update: Update | None, **more: Any) -> dict[str, Any]:
-        """The row with `overlong`, the graded members the term docked, when the term is
-        on and the budget known."""
+        """The row with `overlong`, the docked members, when the term is on and the budget known."""
         budget = found[0].agent.policy.endpoint.budget if found else None
         if self.recipe.overlong_penalty > 0 and budget:
             more["overlong"] = sum(
@@ -501,11 +475,7 @@ class DAPOTrainer(Trainer):
 
 
 class DrGRPOTrainer(Trainer):
-    """Dr. GRPO (Liu et al., arXiv 2503.20783): the base advantage, with no division by the
-    spread, PPO with one symmetric `clip` (0.2, App. G), token losses summed (Tinker's sum
-    is the constant normalizer of 3.2), and AdamW as App. G sets it. The length rule among
-    solved answers (`length_penalty`, `length_floor`, `length_cap`) is shipyard's addition
-    and off by default; the paper has none."""
+    """Dr. GRPO (Liu et al., arXiv 2503.20783); the length rule is shipyard's, off by default."""
 
     loss_fn = "ppo"
     #: App. G (Table 6): betas 0.9 / 0.95, weight decay 0, the gradient norm clipped at
@@ -532,10 +502,7 @@ class DrGRPOTrainer(Trainer):
 
 
 class CISPOTrainer(DAPOTrainer):
-    """CISPO (MiniMax-M1, arXiv 2506.13585): DAPO's rules under Tinker's `cispo` loss, whose
-    truncated importance weight is detached from the gradient, and AdamW at betas 0.9 /
-    0.95 and eps 1e-15 (3.2). `clip_high` (3.0) is an epsilon on the weight's ceiling, with
-    no lower bound."""
+    """CISPO (MiniMax-M1, arXiv 2506.13585): DAPO's rules under Tinker's `cispo` loss."""
 
     loss_fn = "cispo"
     #: 3.2 sets the betas and eps for gradients mostly below 1e-14. It states no weight
@@ -551,18 +518,14 @@ class CISPOTrainer(DAPOTrainer):
 
 
 def split(items: list[Any], parts: int) -> list[list[Any]]:
-    """`parts` slices in order, with sizes differing by at most one. This is the cut of the
-    cookbook's `split_list` (`np.linspace(0, len, parts + 1).astype(int)`), with its float
-    arithmetic kept so a batch splits as it did under the cookbook."""
+    """`parts` slices, sizes within one of each other, cut as the cookbook's `split_list`."""
     step = len(items) / parts
     edges = [int(index * step) for index in range(parts)] + [len(items)]
     return [items[start:end] for start, end in zip(edges[:-1], edges[1:], strict=True)]
 
 
 def observed(datums: Values[Any], trained: Values[Any]) -> dict[str, float]:
-    """kl_v1 = mean(mu - pi), kl_v2 = half the mean square, entropy = mean(-mu) over the
-    acted tokens (the cookbook's `compute_kl_sample_train`). Returns {} when a datum carries
-    no mu or mask or the logprobs do not line up."""
+    """kl_v1, kl_v2 and entropy over the acted tokens, as the cookbook's; {} when unreadable."""
     if len(trained) != len(datums):
         return {}
     try:

@@ -548,8 +548,7 @@ class Budgeted(Endpoint):
 
 
 def typed(found: Values[Group], agent: Agent) -> list[types.Group]:
-    """The case's groups as the trainer takes them: one trial per member, under the
-    agent's one harness."""
+    """The case's groups as the trainer takes them, under the agent's one harness."""
     out: list[types.Group] = []
     for each in found:
         members = [
@@ -568,8 +567,7 @@ def typed(found: Values[Group], agent: Agent) -> list[types.Group]:
 async def _stepped_by(
     trainer: Procedure, agent: Agent, found: list[types.Group], client: FakeTrainingClient
 ) -> dict[str, Any]:
-    """`step` and `log` through the trainer, in the frozen shape. A save is the policy's,
-    not the step's, so the client's calls are read without it."""
+    """`step` and `log` through the trainer, the policy's save left out of the client's calls."""
     for each in found:
         each.shaped = trainer.shape(each)
         each.advantages = trainer.advantage(each)
@@ -585,8 +583,7 @@ async def _stepped_by(
 
 
 async def trained(name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    """The case through the trainer: a credit case stepped from its groups, a job case
-    sampled through `job` first."""
+    """The case through the trainer; a job case is sampled through `job` first."""
     if name in CREDITED:
         return await _credited_by(CREDITED[name], tmp_path)
     return await _jobbed_by(JOBBED[name], tmp_path, monkeypatch)
@@ -635,8 +632,7 @@ async def _jobbed_by(
 def _staged(
     case: Jobbed, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[Path, ScriptedProxy]:
-    """The fixture tasks and the case's blueprint in a working directory, the proxy
-    scripted."""
+    """The fixture tasks and the blueprint in a working directory, the proxy scripted."""
     monkeypatch.chdir(tmp_path)
     for task in case.tasks:
         source = FIXTURES / "fixture" / ("alpha" if task not in ("alpha", "beta") else task)

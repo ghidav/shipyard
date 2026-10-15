@@ -1,6 +1,4 @@
-"""The procedure on fakes: `train` over an epoch with a FakeProxy, a stand-in for Harbor's
-trial and a fake Tinker client; a step where nothing was credited; DAPO's accumulation; the
-job on a provider agent; the anchor, the overlong term and the checkpoint row."""
+"""Test the procedure on fakes: an epoch, DAPO's accumulation, the anchor, the provider job."""
 
 from __future__ import annotations
 
@@ -35,8 +33,7 @@ ANCHORED = {"learning_rate = 2e-5": "learning_rate = 2e-5\nkl_coef = 0.1"}
 
 
 class Alternating:
-    """Harbor's trial replaced: rewards 1, 0, 1, 0 per task in call order, so every group
-    of two has spread."""
+    """Rewards 1, 0, 1, 0 per task in call order, so every group of two has spread."""
 
     def __init__(self) -> None:
         self.seen: dict[str, int] = {}
@@ -48,8 +45,7 @@ class Alternating:
 
 
 class Spread:
-    """Harbor's trial replaced: a task in `spread` scores 1, 0, 1, 0 in call order, any
-    other task 1 every time."""
+    """A task in `spread` scores 1, 0, 1, 0 in call order; any other scores 1."""
 
     def __init__(self, spread: set[str]) -> None:
         self.spread = spread
@@ -63,8 +59,7 @@ class Spread:
 
 
 def _blueprint(tmp_path: Path, kind: str = "dapo", *, tasks: int = 4, **replacements: str) -> Path:
-    """The recipe's fixture over `tasks` tasks named a, b, c..., two per batch, groups of
-    two."""
+    """The recipe's fixture over `tasks` tasks named a, b, c..., two per batch, groups of two."""
     home = tmp_path / "tasks" / "four"
     if not home.is_dir():
         for name in "abcdefgh"[:tasks]:
@@ -228,8 +223,6 @@ async def test_a_step_with_every_group_flat_logs_untrained_and_takes_no_gradient
 async def test_dapo_holds_jobs_until_a_batchs_worth_of_groups_have_spread(
     tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
 ) -> None:
-    """The first batch brings one group with spread, short of the batch size of two, so
-    the step waits for the next job, which brings two more: one step over both jobs."""
     _, service = fakes
     run = Run.open(_blueprint(tmp_path), root=tmp_path / "runs")
     first, second = _plan(tmp_path)

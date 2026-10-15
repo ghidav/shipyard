@@ -92,10 +92,7 @@ def verdict(
     asked: int | None = None,
     failed: bool = False,
 ) -> Verdict:
-    """With records, the served endings come first (`served_verdict`). Then: no result is
-    `env_error`, the clock's cut is `timeout`, an endpoint failure is `api_error`, a
-    numeric `rewards.reward` is the reward, carried with the verifier's other numbers, and
-    anything else is `grading_error`."""
+    """The served endings first, then `result.json`: a reward with its numbers, or a mask."""
     payload = result_of(trial)
     why = _ended(payload)
     if records is not None:
