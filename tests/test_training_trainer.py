@@ -116,7 +116,7 @@ async def test_an_epoch_serves_the_start_samples_steps_syncs_and_checkpoints(
 ) -> None:
     proxy, service = fakes
     run = Run.open(_blueprint(tmp_path), root=tmp_path / "runs")
-    run.run_trial = Alternating()
+    run.engine.run_trial = Alternating()
     agent = _agent(run, service)
     trainer = DAPOTrainer(run)
     await _train(run, trainer, agent)
@@ -204,7 +204,7 @@ async def test_a_step_with_every_group_flat_logs_untrained_and_takes_no_gradient
 ) -> None:
     proxy, service = fakes
     run = Run.open(_blueprint(tmp_path, **{"batch_size = 2": "batch_size = 4"}), root=tmp_path)
-    run.run_trial = FakeTrials()
+    run.engine.run_trial = FakeTrials()
     trainer = DAPOTrainer(run)
     await _train(run, trainer, _agent(run, service))
     calls = [c[0] for c in service.client.calls]
@@ -226,7 +226,7 @@ async def test_dapo_holds_jobs_until_a_batchs_worth_of_groups_have_spread(
     _, service = fakes
     run = Run.open(_blueprint(tmp_path), root=tmp_path / "runs")
     first, second = _plan(tmp_path)
-    run.run_trial = Spread({first[0], *second})
+    run.engine.run_trial = Spread({first[0], *second})
     trainer = DAPOTrainer(run)
     await _train(run, trainer, _agent(run, service))
     (row,) = _rows(run)
@@ -251,7 +251,7 @@ async def test_the_epochs_last_step_takes_what_it_holds(
 ) -> None:
     _, service = fakes
     run = Run.open(_blueprint(tmp_path, tasks=6), root=tmp_path / "runs")
-    run.run_trial = FakeTrials()
+    run.engine.run_trial = FakeTrials()
     trainer = DAPOTrainer(run)
     await _train(run, trainer, _agent(run, service))
     (row,) = _rows(run)
@@ -265,7 +265,7 @@ async def test_dr_grpo_keeps_the_base_sample_and_steps_once_per_batch(
     _, service = fakes
     run = Run.open(_blueprint(tmp_path, "dr-grpo"), root=tmp_path / "runs")
     first, second = _plan(tmp_path)
-    run.run_trial = Spread({first[0], *second})
+    run.engine.run_trial = Spread({first[0], *second})
     trainer = DrGRPOTrainer(run)
     await _train(run, trainer, _agent(run, service))
     rows = _rows(run)
@@ -285,7 +285,7 @@ async def test_the_base_trainer_is_the_plain_policy_gradient(
 ) -> None:
     _, service = fakes
     run = Run.open(_blueprint(tmp_path), root=tmp_path / "runs")
-    run.run_trial = Alternating()
+    run.engine.run_trial = Alternating()
     await _train(run, Trainer(run), _agent(run, service))
     client = service.client
     sent = [c for c in client.calls if c[0] == "forward_backward"]
@@ -314,7 +314,7 @@ async def test_cispo_reads_the_samplers_logprobs_and_makes_no_forward(
     run = Run.open(
         _blueprint(tmp_path, "cispo", **{"batch_size = 2": "batch_size = 4"}), root=tmp_path
     )
-    run.run_trial = Alternating()
+    run.engine.run_trial = Alternating()
     await _train(run, CISPOTrainer(run), _agent(run, service))
     client = service.client
     assert not any(c[0] == "forward" for c in client.calls)
@@ -336,7 +336,7 @@ async def test_the_kl_anchor_is_subtracted_per_token_billed_and_reported(
     _, service = fakes
     home = _blueprint(tmp_path, **{"batch_size = 2": "batch_size = 4", **ANCHORED})
     run = Run.open(home, root=tmp_path)
-    run.run_trial = Alternating()
+    run.engine.run_trial = Alternating()
     trainer = DAPOTrainer(run)
     trainer.anchor = service.anchor
     await _train(run, trainer, _agent(run, service))
@@ -355,7 +355,7 @@ async def test_a_kl_term_without_an_anchor_is_refused_at_the_step(
 ) -> None:
     _, service = fakes
     run = Run.open(_blueprint(tmp_path, **ANCHORED), root=tmp_path / "runs")
-    run.run_trial = Alternating()
+    run.engine.run_trial = Alternating()
     with pytest.raises(ValueError, match="needs the starting weights to anchor to"):
         await _train(run, DAPOTrainer(run), _agent(run, service))
     assert service.closed == [
@@ -369,7 +369,7 @@ async def test_the_overlong_term_docks_against_the_budget_or_warns_once_that_it_
     proxy, service = fakes
     home = _blueprint(tmp_path)
     run = Run.open(home, root=tmp_path / "runs")
-    run.run_trial = Alternating()
+    run.engine.run_trial = Alternating()
     with caplog.at_level(logging.WARNING):
         await _train(run, DAPOTrainer(run), _agent(run, service))
     rows = _rows(run)
@@ -383,7 +383,7 @@ async def test_the_overlong_term_docks_against_the_budget_or_warns_once_that_it_
     proxy.budget = 2
     caplog.clear()
     run = Run.open(home, root=tmp_path / "runs")
-    run.run_trial = Alternating()
+    run.engine.run_trial = Alternating()
     with caplog.at_level(logging.WARNING):
         await _train(run, DAPOTrainer(run), _agent(run, service))
     assert [row["overlong"] for row in _rows(run)] == [4, 4]
@@ -397,7 +397,7 @@ async def test_a_job_on_a_provider_agent_groups_the_verdicts_and_the_step_takes_
     monkeypatch.chdir(tmp_path)
     home = _blueprint(tmp_path, **{"lora_rank = 32": 'lora_rank = 32\nprovider = "openrouter"'})
     run = Run.open(home, root=tmp_path / "runs")
-    run.run_trial = Alternating()
+    run.engine.run_trial = Alternating()
     trainer = DAPOTrainer(run)
     agent = Agent(Policy(run.endpoint), [harness("pi@0.85.1"), harness("claude-code")])
     assert isinstance(run.endpoint, ProviderEndpoint)

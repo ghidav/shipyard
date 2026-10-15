@@ -41,7 +41,7 @@ def _blueprint(tmp_path: Path, **replacements: str) -> Path:
 
 async def _run(home: Path, tmp_path: Path, trials: FakeTrials) -> Run:
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.run_trial = trials
+    opened.engine.run_trial = trials
     with opened:
         await Runner.from_run(opened).run()
     return opened
@@ -116,14 +116,14 @@ async def test_a_served_model_runs_through_its_proxy_and_is_judged_by_its_record
     home = _blueprint(tmp_path, **replacements)
     opened = Run.open(home, root=tmp_path / "runs")
     assert opened.config.model.served and isinstance(opened.endpoint, ProxyEndpoint)
-    opened.run_trial = FakeTrials(breaks=("d",), outcomes={**OUTCOMES, "b": {"reward": 1.0}})
+    opened.engine.run_trial = FakeTrials(breaks=("d",), outcomes={**OUTCOMES, "b": {"reward": 1.0}})
     with opened:
         await Runner.from_run(opened).run()
     assert fake.placed[0][0] == "local" and fake.placed[0][2]["host"] == "proxy.lan"
     assert len(fake.placed) == 1, "started once, by the first job"
     assert fake.closed == 1, "stopped when the run closed"
     assert sorted(fake.addressed) == sorted(fake.fetched) and len(fake.fetched) == 4
-    for config in opened.run_trial.configs:
+    for config in opened.engine.run_trial.configs:
         assert config.agent.model_name == "openai/some-hosted-model"
         assert config.agent.env["OPENAI_BASE_URL"].endswith(f"/r/trial/{config.trial_name}/v1")
         assert config.agent.env["OPENAI_API_KEY"] == fake.token

@@ -110,7 +110,7 @@ def opened(tmp_path: Path, sandbox: str) -> Run:
     home.mkdir(exist_ok=True)
     (home / "run.toml").write_text(SERVED.format(sandbox=sandbox), encoding="utf-8")
     run = Run.open(home, root=tmp_path / "runs")
-    run.run_trial = FakeTrials()
+    run.engine.run_trial = FakeTrials()
     return run
 
 
@@ -178,7 +178,7 @@ async def test_a_tunnel_that_does_not_answer_refuses_the_run_before_any_trial(
     run = opened(stubs, "modal")
     with pytest.raises(Unreachable, match=f"the tunnel at {ORIGIN} does not answer"), run:
         await sampled(run, task(stubs), rollouts=1, index=0)
-    assert run.run_trial.configs == []  # type: ignore[union-attr]
+    assert run.engine.run_trial.configs == []  # type: ignore[union-attr]
     assert not (stubs / "jobs").exists() and not (run.directory / record.JOBS).exists()
     note = Run.read(run.directory)
     assert note["failed"] is True and "does not answer" in note["error"]
@@ -314,7 +314,7 @@ async def test_a_tunnel_that_dies_under_a_batch_stops_the_run_once_the_job_is_re
         await trials(config)
         proxy.exited = f"the tunnel at {proxy.origin} exited with 1"
 
-    run.run_trial = dying
+    run.engine.run_trial = dying
     with pytest.raises(ProxyGone, match="exited with 1"), run:
         await Runner.from_run(run).run()
     assert len(list(record.read(run.directory / record.JOBS))) == 1, "the batch is on record"

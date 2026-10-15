@@ -22,7 +22,7 @@ from harbor.models.trial.config import (
 
 from shipyard.admit import verdict
 from shipyard.harnesses import bare_name
-from shipyard.modules import deliver, merge_fields
+from shipyard.modules import deliver
 from shipyard.types import Agent, Connection, Harness, RolloutEngine, Settings, Task, Trial
 
 if TYPE_CHECKING:
@@ -140,8 +140,7 @@ class HarborEngine(RolloutEngine):
             "override_setup_timeout_sec": settings.setup_timeout,
             "override_timeout_sec": settings.timeout,
         }
-        merge_fields(fields, delivered)
-        return AgentConfig(**fields)
+        return AgentConfig(**laid_over(fields, delivered))
 
 
 def quiet_litellm() -> None:
