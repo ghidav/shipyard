@@ -38,16 +38,16 @@ class Report:
         return f"{toml}{self.resolution}\n" if self.resolution else toml
 
 
-def report(blueprint: Path) -> Report:
-    """Run `check` on a blueprint path. A blueprint that does not load yields only its
-    problems."""
+def report(blueprint: Path, trainer: Any = None) -> Report:
+    """Run `check` on a blueprint path, the resolution line under `trainer` when given. A
+    blueprint that does not load yields only its problems."""
     from shipyard.recipes import resolution
 
     try:
         loaded = load(blueprint)
     except ConfigError as error:
         return Report(None, None, [Finding("blocked", problem) for problem in error.problems])
-    return Report(resolved(loaded), resolution(loaded.recipe), findings(loaded))
+    return Report(resolved(loaded), resolution(loaded.recipe, trainer), findings(loaded))
 
 
 def resolved(loaded: Blueprint) -> dict[str, Any]:

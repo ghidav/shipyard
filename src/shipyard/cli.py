@@ -23,9 +23,8 @@ from shipyard import config, data, record, resolved
 from shipyard.config import ConfigError, Finding
 from shipyard.data import NoSuchDataset
 from shipyard.proxy.client import Unreachable
-from shipyard.recipes import run_recipe
 from shipyard.run import Run, RunRefused, runs_root
-from shipyard.runner import Runner
+from shipyard.runner import Runner, runner_in
 from shipyard.sampling.endpoint import NothingServed, ProxyGone
 from shipyard.show import fitted, print_run, sections, state_of, styled
 from shipyard.smoke import SmokeFailed
@@ -42,6 +41,10 @@ BlueprintArgument = Annotated[
     Path, typer.Argument(help="a directory holding run.toml, or the file; with --resume, a run id")
 ]
 RunArgument = Annotated[str, typer.Argument(help="a run id, `<blueprint>__<7 chars>`")]
+RunnerArgument = Annotated[
+    Path | None,
+    typer.Argument(help="a Python file defining one Runner subclass; the run keeps a copy"),
+]
 RootOption = Annotated[
     Path | None, typer.Option("--root", help="where runs live; SHIPYARD_RUNS or ./runs by default")
 ]
@@ -96,11 +99,16 @@ def main() -> None:
 
 @app.command()
 def check(
-    blueprint: BlueprintArgument, as_json: JsonOption = False, verbose: VerboseOption = False
+    blueprint: BlueprintArgument,
+    runner: RunnerArgument = None,
+    as_json: JsonOption = False,
+    verbose: VerboseOption = False,
 ) -> None:
     """Check whether a blueprint can run, before anything is spent. Prints the resolved
     config, then every problem at once. The `ok` lines print only under --verbose."""
-    found = resolved.report(blueprint)
+    chosen, about = _runner(runner)
+    found = resolved.report(blueprint, chosen.trainer)
+    found.findings.extend(about)
     if as_json:
         report = {"config": found.config, "findings": [asdict(f) for f in found.findings]}
         print(json.dumps(report, indent=2))
@@ -114,27 +122,30 @@ def check(
 @app.command()
 def run(
     blueprint: BlueprintArgument,
+    runner: RunnerArgument = None,
     root: RootOption = None,
     smoke: SmokeOption = False,
     resume: ResumeOption = False,
 ) -> None:
-    """Check the blueprint, open a run, execute its recipe (with --smoke, sample one trial
-    and report it), and record how it ended. With --resume, go on with a run from its
-    last checkpoint."""
+    """Check the blueprint, open a run, execute its recipe under the runner file when one is
+    given (with --smoke, sample one trial and report it), and record how it ended. With
+    --resume, go on with a run from its last checkpoint, under the runner it was opened
+    with."""
     if resume:
         started = _reopened(runs_root(root) / blueprint.name)
         raise typer.Exit(_executed(started.opened, lambda: asyncio.run(started.run())))
-    findings = config.check(blueprint)
+    chosen, about = _runner(runner)
+    findings = [*config.check(blueprint), *about]
     _print_findings([found for found in findings if found.level != "ok"])
     if _blocked(findings):
         console.print("[red]blocked; nothing was started[/red]")
         raise typer.Exit(1)
     try:
-        opened = Run.open(blueprint, root=root, smoke=smoke)
+        opened = Run.open(blueprint, root=root, smoke=smoke, runner=runner)
     except RunRefused as refused:
         console.print(f"[red]{escape(str(refused))}[/red]")
         raise typer.Exit(1) from None
-    work = (lambda: _smoke(opened)) if smoke else (lambda: asyncio.run(run_recipe(opened)))
+    work = (lambda: _smoke(opened)) if smoke else (lambda: asyncio.run(chosen.of(opened).run()))
     raise typer.Exit(_executed(opened, work))
 
 
@@ -170,6 +181,19 @@ def _reopened(directory: Path, *, checkpoint: str = "last") -> Runner:
     except (ValueError, ConfigError) as refused:
         console.print(f"[red]{escape(str(refused))}[/red]")
         raise typer.Exit(1) from None
+
+
+def _runner(path: Path | None) -> tuple[type[Runner], list[Finding]]:
+    """The runner class of the file given, with the finding `check` prints about it."""
+    if path is None:
+        return Runner, []
+    try:
+        found = runner_in(path)
+    except Exception as error:  # the file is the user's; whatever it raised is the finding
+        said = str(error) if isinstance(error, ValueError) else f"{path}: {error!r}"
+        return Runner, [Finding("blocked", said)]
+    trainer = "the kind's" if found.trainer is None else found.trainer.__name__
+    return found, [Finding("ok", f"runner {found.__name__} from {path}, trainer {trainer}")]
 
 
 def _executed(opened: Run, work: Callable[[], Any]) -> int:

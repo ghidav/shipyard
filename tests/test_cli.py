@@ -16,6 +16,7 @@ from typer.testing import CliRunner
 from shipyard import record
 from shipyard.cli import app
 from shipyard.run import Run
+from shipyard.runner import Runner
 from shipyard.show import state_of
 from tests.trials import FakeTrials, fixture_tasks
 
@@ -36,9 +37,9 @@ def isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("COLUMNS", "200")
 
 
-async def _finishes(run: Run) -> None:
-    run.log(reward=1.0)
-    run.note(hello="world")
+async def _finishes(self: Runner) -> None:
+    self.opened.log(reward=1.0)
+    self.opened.note(hello="world")
 
 
 def _only_run(root: Path) -> Path:
@@ -224,8 +225,8 @@ def test_run_on_a_fixture_ends_failed_with_the_recipes_refusal(tmp_path: Path) -
 def test_run_with_a_recipe_that_returns_ends_finished(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("shipyard.cli.run_recipe", _finishes)
-    root, home = tmp_path / "r", _hosted_dapo(tmp_path)
+    monkeypatch.setattr(Runner, "run", _finishes)
+    root, home = tmp_path / "r", EVALUATE
     result = runner.invoke(app, ["run", str(home), "--root", str(root)])
     assert result.exit_code == 0, result.output
     directory = _only_run(root)
@@ -237,7 +238,7 @@ def test_run_with_a_recipe_that_returns_ends_finished(
     listed = runner.invoke(app, ["runs", "--root", str(root)])
     assert listed.exit_code == 0
     assert directory.name in listed.output and "finished" in listed.output
-    assert "dapo" in listed.output
+    assert "evaluate" in listed.output
 
     shown = runner.invoke(app, ["show", directory.name, "--root", str(root)])
     assert shown.exit_code == 0, shown.output
@@ -248,14 +249,14 @@ def test_run_with_a_recipe_that_returns_ends_finished(
 def test_run_stopped_by_sigterm_records_the_signal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def stopped(run: Run) -> None:
+    async def stopped(self: Runner) -> None:
         os.kill(os.getpid(), signal.SIGTERM)
         await asyncio.sleep(5)
 
-    monkeypatch.setattr("shipyard.cli.run_recipe", stopped)
+    monkeypatch.setattr(Runner, "run", stopped)
     root = tmp_path / "r"
     before = signal.getsignal(signal.SIGTERM)
-    result = runner.invoke(app, ["run", str(_hosted_dapo(tmp_path)), "--root", str(root)])
+    result = runner.invoke(app, ["run", str(EVALUATE), "--root", str(root)])
     assert signal.getsignal(signal.SIGTERM) is before
     assert result.exit_code == 130, result.output
     note = Run.read(_only_run(root))
@@ -273,7 +274,7 @@ def test_runs_and_show_with_nothing(tmp_path: Path) -> None:
 def test_root_flag_env_and_default_are_honored_alike(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("shipyard.cli.run_recipe", _finishes)
+    monkeypatch.setattr(Runner, "run", _finishes)
     flagged, env = tmp_path / "flag", tmp_path / "env"
 
     assert runner.invoke(app, ["run", str(EVALUATE), "--root", str(flagged)]).exit_code == 0
@@ -449,3 +450,84 @@ def test_resume_and_evaluate_refuse_a_run_with_no_checkpoint(tmp_path: Path) -> 
     assert result.exit_code == 1 and "no checkpoint to go on from" in result.output
     result = runner.invoke(app, ["evaluate", "nope__0000000", "--root", str(root)])
     assert result.exit_code == 1 and "no run at" in result.output
+
+
+RUNNER_FILE = """\
+from shipyard.runner import Runner
+from shipyard.training.trainer import Trainer
+
+
+class Marked(Trainer):
+    @classmethod
+    def rules(cls, recipe):
+        return ["advantage = marked", *super().rules(recipe)[1:]]
+
+
+class MyRunner(Runner):
+    trainer = Marked
+"""
+
+
+def _runner_file(path: Path, text: str = RUNNER_FILE) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_check_with_a_runner_file_names_it_and_resolves_under_its_trainer(tmp_path: Path) -> None:
+    home = _hosted_dapo(tmp_path)
+    file = _runner_file(home / "run.py")
+    result = runner.invoke(app, ["check", str(home / "run.toml"), str(file), "--verbose"])
+    assert result.exit_code == 0, result.output
+    assert "# dapo: advantage = marked; loss = importance_sampling" in result.output
+    assert f"ok  runner MyRunner from {file}, trainer Marked" in result.output
+    empty = _runner_file(tmp_path / "empty" / "run.py", "x = 1\n")
+    result = runner.invoke(app, ["check", str(home), str(empty)])
+    assert (
+        result.exit_code == 1 and f"blocked  {empty} defines 0 Runner subclasses" in result.output
+    )
+
+
+def test_run_under_a_runner_file_keeps_a_copy_and_resumes_under_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def marks(self: Runner) -> None:
+        self.opened.note(ran=type(self).__name__, under=type(self.trainer).__name__)
+        record.append(
+            self.opened.directory / record.CHECKPOINTS,
+            {
+                "tag": "final",
+                "state_path": "s",
+                "sampler_path": "p",
+                "step": 1,
+                "updates": 1,
+                "epoch": 0,
+            },
+        )
+
+    monkeypatch.setattr(Runner, "run", marks)
+    root, file = tmp_path / "r", _runner_file(tmp_path / "bp" / "run.py")
+    result = runner.invoke(app, ["run", str(EVALUATE / "run.toml"), str(file), "--root", str(root)])
+    assert result.exit_code == 0, result.output
+    directory = _only_run(root)
+    note = Run.read(directory)
+    assert note["ran"] == "MyRunner" and note["under"] == "Marked"
+    assert note["runner"] == str(file.resolve())
+    assert (directory / record.RUNNER).read_text(encoding="utf-8") == RUNNER_FILE
+    assert "runner MyRunner" not in result.output, "the ok line is check's"
+
+    file.unlink()
+    result = runner.invoke(app, ["run", directory.name, "--resume", "--root", str(root)])
+    assert result.exit_code == 0, result.output
+    note = Run.read(directory)
+    assert note["ran"] == "MyRunner" and note["under"] == "Marked", "the copy, not the file"
+    assert note["resumed"] == "final"
+
+
+def test_run_with_a_broken_runner_file_starts_nothing(tmp_path: Path) -> None:
+    broken = _runner_file(tmp_path / "bp" / "run.py", "1 / 0\n")
+    root = tmp_path / "none"
+    result = runner.invoke(app, ["run", str(EVALUATE), str(broken), "--root", str(root)])
+    assert result.exit_code == 1, result.output
+    assert f"blocked  {broken}: ZeroDivisionError" in result.output
+    assert "blocked; nothing was started" in result.output and not root.exists()

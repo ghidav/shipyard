@@ -1,19 +1,15 @@
-"""The recipes: a trainer class per `[recipe] kind`, and the runner over them."""
+"""The recipes: a trainer class per `[recipe] kind`."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from shipyard.config import Gradient
 from shipyard.recipes.fst import SLOW, fst_trainer
 from shipyard.recipes.gepa import GEPATrainer
-from shipyard.runner import Runner
 from shipyard.training.trainer import CISPOTrainer, DAPOTrainer, DrGRPOTrainer, Trainer
 
-if TYPE_CHECKING:
-    from shipyard.run import Run
-
-__all__ = ["TRAINERS", "resolution", "run_recipe", "trainer_for"]
+__all__ = ["TRAINERS", "resolution", "trainer_for"]
 
 #: The trainer class of each `[recipe] kind` the runner runs.
 TRAINERS: dict[str, type[Trainer]] = {
@@ -32,10 +28,9 @@ def trainer_for(recipe: Any) -> type[Trainer]:
     return TRAINERS[recipe.kind]
 
 
-async def run_recipe(run: Run) -> None:
-    await Runner.of(run, trainer_for(run.config.recipe)).run()
-
-
-def resolution(recipe: Any) -> str | None:
-    """The line `check` prints for a recipe that trains; None for the others."""
-    return trainer_for(recipe).resolution(recipe) if isinstance(recipe, Gradient) else None
+def resolution(recipe: Any, trainer: type[Trainer] | None = None) -> str | None:
+    """The line `check` prints for a recipe that trains, under `trainer` or the kind's class;
+    None for the others."""
+    if not isinstance(recipe, Gradient):
+        return None
+    return (trainer or trainer_for(recipe)).resolution(recipe)

@@ -11,8 +11,8 @@ import pytest
 from shipyard import record
 from shipyard.config import KINDS, ConfigError
 from shipyard.data import NoSuchDataset
-from shipyard.recipes import run_recipe
 from shipyard.run import Run, RunRefused, runs_root, version
+from shipyard.runner import Runner
 from shipyard.show import alive, state_of
 
 BLUEPRINTS = Path(__file__).parent / "blueprints"
@@ -78,12 +78,12 @@ def test_exit_records_a_bare_interrupt_as_sigint(tmp_path: Path) -> None:
     assert Run.read(run.directory)["error"] == "stopped: SIGINT"
 
 
-async def test_run_recipe_dispatches_to_the_kind(tmp_path: Path, monkeypatch) -> None:
+async def test_a_runner_dispatches_to_the_kinds_trainer(tmp_path: Path, monkeypatch) -> None:
     assert set(KINDS) == {"dapo", "dr-grpo", "cispo", "gepa", "fst", "evaluate"}
     monkeypatch.chdir(tmp_path)
     opened = Run.open(BLUEPRINTS / "gepa", root=tmp_path / "runs")
     with pytest.raises(NoSuchDataset, match="aime-train"):
-        await run_recipe(opened)
+        await Runner.of(opened).run()
 
 
 def test_open_refuses_an_existing_directory(tmp_path: Path, monkeypatch) -> None:
