@@ -163,10 +163,10 @@ class Trainer:
     def aggregated(cls) -> str:
         return "summed over tokens"
 
-    def __init__(self, run: Run, *, anchor: Any = None) -> None:
+    def __init__(self, run: Run) -> None:
         self.run = run
         self.recipe = run.config.recipe
-        self.anchor = anchor
+        self.anchor: Any = None
         self.steps = 0
         self.updates = 0
         self.epoch = 0
