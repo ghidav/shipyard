@@ -106,10 +106,12 @@ def test_costs_accumulate_per_party_and_per_sandbox() -> None:
             },
             "openai": {"trials": 1, "input_tokens": 1, "cache_tokens": 0, "output_tokens": 1},
         },
-        "sandbox": {"docker": {"trials": 7, "seconds": 13.0}},
+        "sandboxes": {"docker": {"trials": 7, "seconds": 13.0}},
     }
     assert Costs.from_dict(costs.to_dict()).to_dict() == costs.to_dict()
-    assert Costs.from_dict({}).to_dict() == {"parties": {}, "sandbox": {}}
+    assert Costs.from_dict({}).to_dict() == {"parties": {}, "sandboxes": {}}
+    older = {"parties": {}, "sandbox": {"docker": {"trials": 2, "seconds": 3.0}}}
+    assert Costs.from_dict(older).to_dict()["sandboxes"] == older["sandbox"]
 
 
 def test_training_counts_join_a_party_only_once_spent_and_survive_a_round_trip() -> None:

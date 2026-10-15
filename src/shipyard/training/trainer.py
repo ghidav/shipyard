@@ -201,7 +201,7 @@ class Trainer:
         return found
 
     async def evaluate(self, agent: Agent, tasks: Values[Task], **more: Any) -> Evaluation | None:
-        """One job per batch of `tasks` at `[data] test_group_size`, then one row with the mean."""
+        """One job per batch of `tasks` at `[data] test_group_size`, then one row with the mean reward."""
         if not tasks:
             return None
         data = self.run.config.data
@@ -219,7 +219,9 @@ class Trainer:
             rollouts=rollouts,
             graded=len(measured),
             masked=rollouts - len(measured),
-            mean=fmean(float(one.verdict.reward or 0.0) for one in measured) if measured else None,
+            reward_mean=fmean(float(one.verdict.reward or 0.0) for one in measured)
+            if measured
+            else None,
         )
         self.run.log(evaluation=True, **vars(result), **more)
         return result

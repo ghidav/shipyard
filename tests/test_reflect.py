@@ -331,7 +331,7 @@ async def test_the_reflector_runs_the_trial_our_way_and_records_it_as_a_reflecti
     assert costs["parties"] == {
         "anthropic": {"trials": 1, "input_tokens": 2000, "cache_tokens": 500, "output_tokens": 30}
     }
-    assert costs["sandbox"] == {"modal": {"trials": 1, "seconds": 12.0}}
+    assert costs["sandboxes"] == {"modal": {"trials": 1, "seconds": 12.0}}
 
 
 async def test_a_reflection_that_published_nothing_or_crashed_is_a_decline(

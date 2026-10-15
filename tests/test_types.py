@@ -210,4 +210,4 @@ async def test_a_policy_closes_its_client_with_how_the_run_ended(
 
 
 def test_an_evaluation_carries_its_mean() -> None:
-    assert types.Evaluation(0, 0, 4, 8, 7, 1, 0.5).mean == 0.5
+    assert types.Evaluation(0, 0, 4, 8, 7, 1, 0.5).reward_mean == 0.5

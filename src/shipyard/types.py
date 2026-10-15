@@ -347,5 +347,5 @@ class Evaluation:
     rollouts: int
     graded: int
     masked: int
-    #: None when nothing was graded.
-    mean: float | None
+    #: Over the graded rollouts; None when nothing was graded.
+    reward_mean: float | None

@@ -136,7 +136,7 @@ async def test_the_job_row_counts_verdicts_endings_tokens_and_seconds(
                 "output_tokens": 20,
             }
         },
-        "sandbox": {"modal": {"trials": 4, "seconds": 80.0}},
+        "sandboxes": {"modal": {"trials": 4, "seconds": 80.0}},
     }
     assert opened.costs.to_dict() == costs
 
@@ -162,7 +162,7 @@ async def test_empty_maps_are_left_off_and_costs_add_up_across_jobs(
     assert costs["parties"] == {
         "openrouter": {"trials": 3, "input_tokens": 0, "cache_tokens": 0, "output_tokens": 0}
     }
-    assert costs["sandbox"] == {"modal": {"trials": 3, "seconds": 0.0}}
+    assert costs["sandboxes"] == {"modal": {"trials": 3, "seconds": 0.0}}
 
 
 async def test_jobs_dir_comes_from_the_blueprint(
