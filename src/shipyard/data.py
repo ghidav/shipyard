@@ -84,8 +84,7 @@ class Generator:
         return cls(listed, data.batch_size, data.seed)
 
     def batches(self, epoch: int) -> Iterator[list[Path]]:
-        """One epoch: the train tasks shuffled under `seed + epoch`, `batch_size` at a time,
-        the last short batch kept."""
+        """One epoch: the train tasks shuffled under `seed + epoch`, `batch_size` at a time."""
         return _cut(self.train, size=self.batch_size, seed=self.seed + epoch, epochs=1)
 
 

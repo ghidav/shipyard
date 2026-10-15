@@ -1,6 +1,4 @@
-"""The runner end to end on fakes: a dapo run through `run_recipe` with a FakeProxy, a
-stand-in for Harbor's trial and a fake Tinker service; two epochs; the KL anchor's wiring;
-each kind reaching its class, and a class of one's own; the refusals."""
+"""Test the runner on fakes: a dapo run, two epochs, the anchor, each kind's class, the refusals."""
 
 from __future__ import annotations
 
@@ -34,8 +32,7 @@ ANCHORED = {"learning_rate = 2e-5": "learning_rate = 2e-5\nkl_coef = 0.1"}
 
 
 class Alternating:
-    """Harbor's trial replaced: rewards 1, 0, 1, 0 per task in call order, so every group
-    of two has spread."""
+    """Rewards 1, 0, 1, 0 per task in call order, so every group of two has spread."""
 
     def __init__(self) -> None:
         self.configs: list[TrialConfig] = []
@@ -49,8 +46,7 @@ class Alternating:
 
 
 def _blueprint(tmp_path: Path, kind: str = "dapo", *, tasks: int = 4, **replacements: str) -> Path:
-    """The recipe's fixture over `tasks` tasks named a, b, c..., two per batch, groups of
-    two."""
+    """The recipe's fixture over `tasks` tasks named a, b, c..., two per batch, groups of two."""
     home = tmp_path / "tasks" / "four"
     if not home.is_dir():
         for name in "abcdefgh"[:tasks]:
@@ -235,8 +231,6 @@ async def test_a_kl_anchor_is_a_sampling_client_on_the_starting_weights(
 async def test_a_kl_anchor_from_a_checkpoint_samples_weights_published_from_its_state(
     tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
 ) -> None:
-    """Tinker samples only a sampler path, and `from_checkpoint` of a training run is a state
-    path: the anchor gets the loaded state published, and the proxy starts on it too."""
     proxy, service = fakes
     state = "tinker://run:train:0/weights/final"
     home = _blueprint(

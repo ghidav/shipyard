@@ -1,6 +1,4 @@
-"""What a blueprint builds: the run, its generator and its trainer, and the agent the run
-opens. The runner loops over epochs and owns the cadence; it never sees weights, rollouts
-or groups."""
+"""What a blueprint builds; the runner loops over epochs and never sees weights or groups."""
 
 from __future__ import annotations
 
@@ -35,8 +33,7 @@ class Runner:
 
     @classmethod
     def of(cls, run: Run, *, trainer: type[Trainer] | None = None) -> Runner:
-        """The runner an open run's blueprint describes. `trainer` replaces the class its
-        kind names, which is how a `run.py` plugs in a recipe of its own."""
+        """The runner for an open run; `trainer` replaces the class its kind names."""
         cfg = run.config
         if not cfg.model.served:
             raise ValueError(
@@ -48,8 +45,7 @@ class Runner:
         return cls(run, Generator.of(cfg), procedure, epochs=cfg.data.epochs)
 
     async def run(self) -> Agent:
-        """Open the agent on a training client, train it an epoch at a time, and write it
-        down as `final`."""
+        """Open the agent on a training client, train an epoch at a time, checkpoint `final`."""
         run, trainer = self.opened, self.trainer
         cfg = run.config
         model, recipe = cfg.model, cfg.recipe
@@ -75,8 +71,7 @@ class Runner:
 
 
 async def anchor(service: Any, client: TinkerClient, model: Model) -> Any:
-    """The KL anchor: a sampling client on the starting weights. The base model, or the
-    loaded state published as sampler weights, since Tinker samples only a sampler path."""
+    """The KL anchor: a sampling client on the start, published first when it is a loaded state."""
     start = (
         await client.save_weights_for_sampler("anchor", ttl_seconds=SERVE_TTL)
         if model.from_checkpoint

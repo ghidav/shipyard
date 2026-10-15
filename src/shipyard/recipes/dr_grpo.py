@@ -1,9 +1,4 @@
-"""Dr. GRPO (Liu et al., arXiv 2503.20783): advantage = r - mean (no division by spread), PPO
-with one symmetric `clip` (0.2, App. G; the bounds `1 - clip` / `1 + clip` via
-`gradient.clipped`), token losses summed (Tinker's sum is the constant normalizer of
-3.2), and AdamW as App. G sets it. Degenerate groups are dropped. The length rule among
-solved answers (`length_penalty`, `length_floor`, `length_cap`; `credit.shaped`) is
-shipyard's addition and off by default. The paper has none."""
+"""Dr. GRPO (Liu et al., arXiv 2503.20783), as `check` resolves it."""
 
 from __future__ import annotations
 

@@ -1,9 +1,4 @@
-"""DAPO (Yu et al., arXiv 2503.14476), as `check` resolves it: advantage = (r - mean) / spread,
-PPO with asymmetric clipping, each prompt's token losses averaged (Eq. 8), 16 substeps by
-prompt (4.1), the soft overlong punishment (Eq. 13), and AdamW (4.1; the `warmup` key sets
-its 20-step warm-up). `clip_low` /
-`clip_high` (0.2 / 0.28, 4.1) are epsilons. Tinker's `ppo` takes bounds, so `loss_fn_config`
-gets `1 - clip_low` and `1 + clip_high` (`gradient.clipped`)."""
+"""DAPO (Yu et al., arXiv 2503.14476), as `check` resolves it."""
 
 from __future__ import annotations
 

@@ -1,6 +1,4 @@
-"""The old training step, kept for fst until it has a trainer class. `Preset` holds what a
-recipe name resolves to. `step` publishes the weights, points the proxy, samples, credits,
-applies, logs, and checkpoints every `every` steps."""
+"""The old training step, kept for fst until it has a trainer class."""
 
 from __future__ import annotations
 
@@ -74,14 +72,7 @@ ROW = (
 
 @dataclass(frozen=True, kw_only=True)
 class Preset:
-    """What a recipe name and its knobs resolve to. `loss_config` is Tinker's
-    `loss_fn_config` for the step (see `clipped`); `clipping` describes it for `check`.
-    `aggregation` is "prompt" (each prompt's token losses averaged, so every prompt weighs
-    the same) or "sum" (Tinker's sum over tokens). `refill` is read and unused, since the
-    step that refilled a batch is gone. The length rule docks solved answers
-    (`credit.shaped`). The overlong term docks a rollout that sampled into the last
-    `overlong_buffer` of its token budget (`credit.overlong`). `adam` is the optimizer as
-    the recipe's paper sets it."""
+    """What a recipe name and its knobs resolve to, for the old step and `check`."""
 
     name: str
     normalize: bool
@@ -219,10 +210,7 @@ async def step(
     sample: Sampler | None = None,
     about: Mapping[str, Any] | None = None,
 ) -> None:
-    """One step over `tasks`. Publish the weights and point the proxy at them, sample the
-    batch (with `sample` when given), credit it, apply the gradient unless nothing was
-    credited, log the row with `about`, and checkpoint when `index + 1` divides by
-    `[checkpoints] every`."""
+    """One step over `tasks`: publish and serve, sample, credit, apply, log, checkpoint."""
     serving = serving_of(run, preset)
     data, every = run.config.data, run.config.checkpoints.every
     # Published as `sample-<index>`, since the spec's `step-<index>` collides with the
@@ -265,8 +253,7 @@ def serving_of(run: Run, preset: Preset) -> ProxyEndpoint:
 
 
 def row(index: int, batch: Batch, update: Update | None) -> dict[str, Any]:
-    """The step's metrics row in `ROW` order. `trained` says whether a gradient was taken.
-    A measure that was not taken is absent."""
+    """The step's metrics row in `ROW` order; a measure not taken is absent."""
     found: dict[str, Any] = {"step": index, "trained": update is not None}
     for source in (batch, update):
         found.update({key: getattr(source, key) for key in ROW if hasattr(source, key)})

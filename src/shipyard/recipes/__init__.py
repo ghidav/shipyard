@@ -1,5 +1,4 @@
-"""The recipes: a trainer class per gradient `[recipe] kind`, run by the runner; the other
-kinds are modules with an `async def run(run: Run)`."""
+"""The recipes: a trainer class per gradient kind; the other kinds are modules with `run`."""
 
 from __future__ import annotations
 
@@ -24,8 +23,7 @@ def module_for(kind: str) -> ModuleType:
 
 
 async def run_recipe(run: Run) -> None:
-    """Run the kind's procedure: the runner for a kind with a trainer class, else the
-    module's `run(run)`."""
+    """The runner for a kind with a trainer class, else the module's `run(run)`."""
     kind = run.config.recipe.kind
     if kind in TRAINERS:
         await Runner.of(run).run()
