@@ -66,6 +66,9 @@ class Run:
         self._noted = False
         self._next_job = next_job(self.id, directory, self.jobs_dir)
         self._seq = 0
+        #: Set by `reopen`: the process note is written on entry, keeping the earlier ones.
+        self._reopened = False
+        self._resumed: str | None = None
 
     @classmethod
     def open(
@@ -95,42 +98,25 @@ class Run:
             keep(carried, directory / record.MODULES / CARRIED)
         record.write_json(
             directory / record.PROCESS,
-            {
-                "pid": os.getpid(),
-                "started_at": record.now(),
-                "version": version(),
-                "blueprint": str(home.resolve()),
-                "kind": config.recipe.kind,
-                **({"runner": str(Path(runner).resolve())} if runner is not None else {}),
-                **({"tinker_base_url": tinker_base_url()} if config.model.served else {}),
-                **({"smoke": True} if smoke else {}),
-            },
+            _process(
+                config,
+                str(home.resolve()),
+                runner=None if runner is None else str(Path(runner).resolve()),
+                smoke=smoke,
+            ),
         )
         return cls(directory, config, carried)
 
     @classmethod
     def reopen(cls, directory: Path, *, resumed: str | None = None) -> Self:
-        """The run as it stands, to go on: a new process note keeps the earlier ones."""
+        """The run as it stands, to go on; its process note is written on entry, so a refusal
+        before the work leaves the earlier one as it was."""
         directory = Path(directory)
         config = load(directory)
         carried = directory / record.MODULES / CARRIED
         run = cls(directory, config, seed(carried) if carried.is_dir() else None)
         run._seq = sum(1 for _ in record.read(directory / record.METRICS))
-        earlier = record.read_json(directory / record.PROCESS)
-        before = earlier.pop("earlier", [])
-        record.write_json(
-            directory / record.PROCESS,
-            {
-                "pid": os.getpid(),
-                "started_at": record.now(),
-                "version": version(),
-                "blueprint": earlier.get("blueprint"),
-                "kind": config.recipe.kind,
-                **({"tinker_base_url": tinker_base_url()} if config.model.served else {}),
-                **({"resumed": resumed} if resumed else {}),
-                "earlier": [*before, earlier] if earlier else before,
-            },
-        )
+        run._reopened, run._resumed = True, resumed
         return run
 
     @staticmethod
@@ -288,6 +274,13 @@ class Run:
         record.write_json(self.directory / record.COSTS, self.costs.to_dict())
 
     def __enter__(self) -> Self:
+        if self._reopened:
+            earlier = record.read_json(self.directory / record.PROCESS)
+            before = earlier.pop("earlier", [])
+            note = _process(self.config, earlier.get("blueprint"), resumed=self._resumed)
+            note["earlier"] = [*before, earlier] if earlier else before
+            record.write_json(self.directory / record.PROCESS, note)
+            self._reopened = False
         return self
 
     def __exit__(
@@ -308,6 +301,19 @@ class Run:
         else:
             error = f"{type(exc).__name__}: {exc}"
         self.note(finished_at=record.now(), failed=exc is not None, error=error)
+
+
+def _process(config: Blueprint, blueprint: str | None, **extra: Any) -> dict[str, Any]:
+    """A process note: this invocation, the blueprint and the kind, then `extra` where set."""
+    return {
+        "pid": os.getpid(),
+        "started_at": record.now(),
+        "version": version(),
+        "blueprint": blueprint,
+        "kind": config.recipe.kind,
+        **({"tinker_base_url": tinker_base_url()} if config.model.served else {}),
+        **{key: value for key, value in extra.items() if value},
+    }
 
 
 def carried_modules(config: Blueprint) -> Candidate | None:

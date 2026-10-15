@@ -57,6 +57,19 @@ def test_exit_records_finished(tmp_path: Path) -> None:
     assert state_of(note) == "finished"
 
 
+def test_a_reopened_run_writes_its_note_on_entry_keeping_the_earlier_one(tmp_path: Path) -> None:
+    with Run.open(DAPO, root=tmp_path) as run:
+        pass
+    before = Run.read(run.directory)
+    again = Run.reopen(run.directory, resumed="step-1")
+    assert Run.read(run.directory) == before, "nothing is written until the run is entered"
+    with again:
+        pass
+    note = Run.read(run.directory)
+    assert note["resumed"] == "step-1" and note["earlier"] == [before]
+    assert note["finished_at"] and note["failed"] is False and state_of(note) == "finished"
+
+
 def test_exit_records_failed_with_the_exception_text(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError), Run.open(DAPO, root=tmp_path) as run:
         raise RuntimeError("the loop broke")
