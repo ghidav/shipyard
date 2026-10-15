@@ -176,8 +176,7 @@ def verdicts(rollouts: Rollouts) -> list[Verdict]:
 def read_logs(
     trials: Sequence[Trial], records: Mapping[str, Sequence[Record]], *, check_turns: bool
 ) -> tuple[dict[str, int], set[str]]:
-    """What each harness's own log says, by trial name: the turns it asked for, when
-    `check_turns` and its profile count them, and whether its last model call failed."""
+    """By trial name: the turns the harness asked for, and whether its last model call failed."""
     asked: dict[str, int] = {}
     failed: set[str] = set()
     for trial in trials:

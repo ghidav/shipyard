@@ -1,6 +1,4 @@
-"""The run's side of the proxy, faked: a record as the proxy would have kept it, and a
-`Proxy` that notes how it was placed, probed, addressed, fetched and swapped, answering each
-trial's records by its task name, so `ProxyEndpoint` and the recipes run without a server."""
+"""The run's side of the proxy, faked: records and a `Proxy` that notes what it was asked."""
 
 from __future__ import annotations
 
@@ -56,9 +54,7 @@ def made(
 
 @dataclass
 class FakeProxy:
-    """`Proxy` as `ProxyEndpoint` drives it: every placement hands back this instance, which
-    notes how it was placed, which trials it addressed, fetched and swapped, and answers
-    each trial's records by its task name (`answers`, else `default`, else one record)."""
+    """`Proxy` as `ProxyEndpoint` drives it; answers each trial's records by its task name."""
 
     origin: str = "http://host.docker.internal:8000"
     token: str = "harness-token"

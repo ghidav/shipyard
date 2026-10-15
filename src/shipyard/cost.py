@@ -93,8 +93,7 @@ def reported(rollouts: Rollouts) -> dict[str, int]:
 
 
 def sampled(rollouts: Rollouts) -> tuple[dict[str, int], dict[str, int]]:
-    """For a served job: the party's counts, the trials with a result and the tokens the
-    proxy's records hold, and the calls the proxy refused and bridged."""
+    """A served job's bill off its records: counts, graded trials, refused and bridged calls."""
     calls = [item for found in (rollouts.records or {}).values() for item in found]
     counted = {
         "trials": sum(1 for _ in results(rollouts)),

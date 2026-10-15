@@ -11,10 +11,7 @@ from shipyard.types import Records, Trial
 
 @dataclass(frozen=True)
 class Rollouts:
-    """A finished job: its name, one directory per planned trial, and the plan (task and
-    rollout index of each). Once the run has recorded the job it also holds the proxy's
-    records and what the harness logs said, by trial name, which admission reads beside
-    each `result.json`."""
+    """A finished job: its trials in plan order, and once recorded, its records and harness logs."""
 
     job: str
     trials: list[Path]
