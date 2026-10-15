@@ -8,8 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from shipyard.data import NoSuchDataset, batches, held_out, home_of, tasks
-from tests.trials import FIXTURES, fixture_tasks
+from shipyard.config import load
+from shipyard.data import Generator, NoSuchDataset, batches, held_out, home_of, tasks
+from tests.trials import FIXTURES, fixture_tasks, write_blueprint
 
 
 def _dataset(root: Path, name: str, *names: str) -> Path:
@@ -111,3 +112,29 @@ def test_held_out_draws_a_seeded_count_and_keeps_list_order() -> None:
     assert held_out(listed, 0, seed=0) == (listed, [])
     with pytest.raises(ValueError, match="cannot hold out 10 of 9"):
         held_out(listed, 10, seed=0)
+
+
+def test_a_generator_cuts_one_epoch_at_a_time_as_batches_does(tmp_path: Path) -> None:
+    _dataset(tmp_path, "d", "a", "b", "c", "d", "e")
+    made = Generator(tasks("d", root=tmp_path), 2, 7)
+    whole = list(batches(["d"], size=2, seed=7, epochs=2, root=tmp_path))
+    assert list(made.batches(0)) + list(made.batches(1)) == whole
+    assert [len(batch) for batch in made.batches(0)] == [2, 2, 1]
+    assert list(made.batches(0)) != list(made.batches(1))
+    assert list(made.batches(0)) == list(made.batches(0)), "a fresh iterator each call"
+
+
+def test_a_generator_is_built_from_the_blueprints_data_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    fixture_tasks(tmp_path)
+    home = write_blueprint(
+        tmp_path,
+        '[model]\nname = "Qwen/Qwen3-8B"\n[data]\ndataset = "fixture"\nbatch_size = 1\nseed = 3\n'
+        '[rollout]\nharness = "pi@0.85.1"\n[recipe]\nkind = "dapo"\nlearning_rate = 2e-5\n',
+    )
+    made = Generator.of(load(home))
+    assert [task.name for task in made.train] == ["alpha", "beta"]
+    assert (made.batch_size, made.seed) == (1, 3)
+    assert [[task.name for task in batch] for batch in made.batches(0)] == [["beta"], ["alpha"]]

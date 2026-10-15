@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import random
 from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from harbor.models.task.task import Task
+
+if TYPE_CHECKING:
+    from shipyard.config import Blueprint
 
 #: Where datasets live, relative to the working directory, the way Harbor takes `tasks/`.
 TASKS_DIR = "tasks"
@@ -61,6 +66,27 @@ def held_out(listed: Sequence[Path], count: int, *, seed: int) -> tuple[list[Pat
     drawn = set(random.Random(seed).sample(range(len(listed)), count))
     kept = [task for at, task in enumerate(listed) if at not in drawn]
     return kept, [task for at, task in enumerate(listed) if at in drawn]
+
+
+@dataclass(frozen=True)
+class Generator:
+    """How tasks are fed to the trainer: batches of task references and nothing else."""
+
+    train: list[Path]
+    batch_size: int
+    seed: int
+
+    @classmethod
+    def of(cls, config: Blueprint, *, root: Path | None = None) -> Generator:
+        """Over the blueprint's `[data]` table: its datasets' tasks in list order."""
+        data = config.data
+        listed = [task for dataset in config.datasets for task in tasks(dataset, root=root)]
+        return cls(listed, data.batch_size, data.seed)
+
+    def batches(self, epoch: int) -> Iterator[list[Path]]:
+        """One epoch: the train tasks shuffled under `seed + epoch`, `batch_size` at a time,
+        the last short batch kept."""
+        return _cut(self.train, size=self.batch_size, seed=self.seed + epoch, epochs=1)
 
 
 def _cut(listed: list[Path], *, size: int, seed: int, epochs: int) -> Iterator[list[Path]]:
