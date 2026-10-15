@@ -116,15 +116,13 @@ class Update:
 class TrainingClient(ABC):
     """Tinker's training client; a step call submits on await and returns the result's awaitable."""
 
-    updates: int = 0
-
     @abstractmethod
-    def forward_backward(
+    async def forward_backward(
         self, datums: Values[Datum], loss_fn: str, loss_config: Mapping[str, float] | None
     ) -> Awaitable[Forward]: ...
 
     @abstractmethod
-    def optim_step(self, adam: Adam, rate: float) -> Awaitable[None]: ...
+    async def optim_step(self, adam: Adam, rate: float) -> Awaitable[None]: ...
 
     @abstractmethod
     async def compute_logprobs(self, sequences: Values[Sequence]) -> list[list[float]]:
@@ -224,15 +222,13 @@ class Agent:
 
 @dataclass(frozen=True)
 class Settings:
-    """What one `engine.run` call overrides in `[rollout]`; None keeps the blueprint's."""
+    """What one `engine.run` call runs under; the engine's own stand when a call brings none."""
 
-    sandbox: str | None = None
-    concurrency: int | None = None
-    timeout: float | None = None
+    verify: bool = True
     setup_timeout: float | None = None
-    verify: bool | None = None
-    env: Mapping[str, str] | None = None
-    kwargs: Mapping[str, Any] | None = None
+    timeout: float | None = None
+    env: Mapping[str, str] = field(default_factory=dict)
+    kwargs: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -260,6 +256,7 @@ class RolloutEngine(ABC):
     @abstractmethod
     async def run(
         self,
+        job: str,
         tasks: Values[Task],
         attempts: int,
         *,

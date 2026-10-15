@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from shipyard.rollout import MODAL_IMAGE_BUILDER
+from shipyard.sampling.engine import MODAL_IMAGE_BUILDER
 
 SHELL_VARS = (
     "TINKER_API_KEY",

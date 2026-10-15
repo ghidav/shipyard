@@ -1,26 +1,23 @@
-"""The training client over the Tinker SDK. It opens on a base model or a saved state,
-publishes weights for the proxy, saves checkpoints, takes a step, and closes the session."""
+"""The loop's handle on the training side until the trainer takes it, over the `TinkerClient`."""
 
 from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Awaitable
 from collections.abc import Sequence as Values
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-import tinker
 import torch
 
 from shipyard.config import MIN_TTL_HOURS
-from shipyard.session import quietly_closed, server_has
-from shipyard.types import Adam, Update
+from shipyard.training.client import DEFAULT_LORA_RANK, SERVE_TTL, TinkerClient
+from shipyard.types import Adam, Forward, Update
 
 if TYPE_CHECKING:
     from shipyard.credit import Batch
     from shipyard.gradient import Preset
-
-logger = logging.getLogger(__name__)
 
 __all__ = [
     "COOKBOOK",
@@ -34,11 +31,8 @@ __all__ = [
     "split",
 ]
 
-#: Tinker's default rank, used when the blueprint names none.
-DEFAULT_LORA_RANK = 32
-#: How long a step's published sampler weights are kept. They outlive the batch sampled
-#: from them, and a crashed run's leftovers expire on their own.
-SERVE_TTL = 12 * 3600
+logger = logging.getLogger(__name__)
+
 SECONDS_PER_HOUR = 3600
 
 #: Adam as the cookbook's `train_step` sets it (no weight decay, gradient clipping or
@@ -59,16 +53,16 @@ class Checkpoint:
 
 @dataclass
 class Trainer:
-    """A Tinker training client. `updates` counts the gradients applied. Credit reads it to
-    tell whether the weights a batch was sampled at have moved, and `Adam.rate` reads it to
-    tell how far the run's warm-up has gone. `restored` is set when the optimizer state was
-    loaded with the weights. The run then continues an earlier run's optimizer state and has
-    no warm-up."""
+    """`updates` counts the gradients applied; `restored` means the optimizer state was loaded."""
 
     client: Any
     updates: int = 0
     service: Any = None
     restored: bool = False
+    tinker: TinkerClient = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.tinker = TinkerClient(self.client, service=self.service, restored=self.restored)
 
     @classmethod
     async def create(
@@ -80,38 +74,19 @@ class Trainer:
         restore_optimizer: bool = False,
         metadata: dict[str, str] | None = None,
     ) -> Trainer:
-        """Open a LoRA on `base_model`, or the weights at `from_checkpoint`, tagged with
-        `metadata` on Tinker's side. The SDK's `from_state` loads no optimizer state;
-        `restore_optimizer` uses the variant that does, and the trainer is then `restored`.
-        The server's capabilities are checked before the session spends anything."""
-        try:
-            await server_has(service, base_model)
-            if from_checkpoint:
-                resume = (
-                    service.create_training_client_from_state_with_optimizer_async
-                    if restore_optimizer
-                    else service.create_training_client_from_state_async
-                )
-                client = await resume(from_checkpoint, user_metadata=metadata)
-            else:
-                rank = DEFAULT_LORA_RANK if lora_rank is None else int(lora_rank)
-                client = await service.create_lora_training_client_async(
-                    base_model=base_model, rank=rank, user_metadata=metadata
-                )
-        except BaseException as failed:
-            await quietly_closed(service, failed)
-            raise
-        return cls(client, service=service, restored=bool(from_checkpoint) and restore_optimizer)
+        opened = await TinkerClient.open(
+            service,
+            base_model,
+            from_checkpoint=from_checkpoint,
+            lora_rank=lora_rank,
+            restore_optimizer=restore_optimizer,
+            metadata=metadata,
+        )
+        return cls(opened.client, service=service, restored=opened.restored)
 
     async def publish(self, name: str, *, ttl_seconds: int = SERVE_TTL) -> str:
-        """Save the current weights as sampler weights and return their `tinker://` path,
-        which a proxy anywhere can resolve. They are kept for `ttl_seconds`.
-        `save_weights_for_sampler_async` keeps them forever by default."""
-        future = await self.client.save_weights_for_sampler_async(
-            name, ttl_seconds=int(ttl_seconds)
-        )
-        saved = await future.result_async()
-        return str(saved.path)
+        """Save the current weights as sampler weights for `ttl_seconds`; returns their path."""
+        return await self.tinker.save_weights_for_sampler(name, ttl_seconds=int(ttl_seconds))
 
     async def save(self, tag: str, *, ttl_hours: float | None = None) -> Checkpoint:
         """Save state and sampler weights under `tag` with one TTL. None keeps them forever
@@ -121,13 +96,9 @@ class Trainer:
                 f"ttl_hours = {ttl_hours}: Tinker keeps a checkpoint for an hour at least"
             )
         ttl_seconds = None if ttl_hours is None else int(ttl_hours * SECONDS_PER_HOUR)
-        state_future = await self.client.save_state_async(tag, ttl_seconds=ttl_seconds)
-        state = await state_future.result_async()
-        weights_future = await self.client.save_weights_for_sampler_async(
-            tag, ttl_seconds=ttl_seconds
-        )
-        weights = await weights_future.result_async()
-        return Checkpoint(tag, str(state.path), str(weights.path), ttl_hours)
+        state = await self.tinker.save_state(tag, ttl_seconds=ttl_seconds)
+        weights = await self.tinker.save_weights_for_sampler(tag, ttl_seconds=ttl_seconds)
+        return Checkpoint(tag, state, weights, ttl_hours)
 
     async def apply(self, batch: Batch, preset: Preset) -> Update:
         """Take the gradient over the batch's datums in `substeps` parts of whole groups, with
@@ -136,10 +107,8 @@ class Trainer:
         logprobs of the weights the batch was sampled at, so the ratio moves from the second
         part on."""
         # Reproduces `train_step` of tinker_cookbook/rl/train.py (Thinking Machines Lab,
-        # Apache-2.0). Each substep's forward_backward and optim_step are enqueued before the
-        # previous substep is consumed. Per-datum training logprobs are read from
-        # `loss_fn_outputs[i]["logprobs"]`, as its `_training_logprobs_from_fwd_bwd` does, and
-        # `mask` is stripped from what is sent, as its `_remove_mask` does.
+        # Apache-2.0). Each substep's forward_backward and optim_step are submitted before
+        # the previous substep is read.
         began = time.monotonic()
         if not batch.datums:
             raise ValueError("the batch holds no datums; the loop logs such a step untrained")
@@ -149,36 +118,27 @@ class Trainer:
         split_parts = [[one for group in part for one in group] for part in split(groups, parts)]
         datums = [one for part in split_parts for one in part]
         train_tokens = sum(int(one.model_input.length) for one in datums)
-        optimizer = preset.adam
         # The optimizer state loaded with the weights continues the earlier run's, so the
         # rate does not warm up again.
         rate = (
             preset.learning_rate
             if self.restored
-            else optimizer.rate(preset.learning_rate, self.updates)
-        )
-        adam = tinker.AdamParams(
-            learning_rate=rate,
-            beta1=optimizer.beta1,
-            beta2=optimizer.beta2,
-            eps=optimizer.eps,
-            weight_decay=optimizer.weight_decay,
-            grad_clip_norm=optimizer.grad_clip_norm,
+            else preset.adam.rate(preset.learning_rate, self.updates)
         )
         # Incremented before the call and not rolled back. A substep that fails after the
         # first leaves optimizer steps landed, and credit's mu guard reads this count.
         self.updates += 1
         trained: list[torch.Tensor] = []
-        forward, optim = await self._enqueue(split_parts[0], preset, adam)
+        forward, optim = await self._submit(split_parts[0], preset, rate)
         for index in range(parts):
             following = (
-                await self._enqueue(split_parts[index + 1], preset, adam)
+                await self._submit(split_parts[index + 1], preset, rate)
                 if index + 1 < parts
                 else None
             )
-            result = await forward.result_async()
-            trained.extend(output["logprobs"].to_torch() for output in result.loss_fn_outputs)
-            await optim.result_async()
+            result = await forward
+            trained.extend(torch.tensor(row) for row in result.logprobs)
+            await optim
             if following is not None:
                 forward, optim = following
         observed = _observed(datums, trained)
@@ -193,25 +153,15 @@ class Trainer:
             seconds=round(time.monotonic() - began, 3),
         )
 
-    async def _enqueue(self, part: list[Any], preset: Preset, adam: Any) -> tuple[Any, Any]:
-        """Submit one substep: forward_backward, then optim_step."""
-        forward = await self.client.forward_backward_async(
-            [_unmasked(one) for one in part],
-            loss_fn=preset.loss_fn,
-            loss_fn_config=dict(preset.loss_config) or None,
-        )
-        return forward, await self.client.optim_step_async(adam)
+    async def _submit(
+        self, part: list[Any], preset: Preset, rate: float
+    ) -> tuple[Awaitable[Forward], Awaitable[None]]:
+        forward = await self.tinker.forward_backward(part, preset.loss_fn, preset.loss_config)
+        return forward, await self.tinker.optim_step(preset.adam, rate)
 
     async def close(self, status: str = "success", detail: str | None = None) -> None:
-        """Finish the session, whose heartbeat otherwise runs for the life of the process.
-        Idempotent, and quiet when the server has already finished the session."""
-        service, self.service = self.service, None
-        if service is None:
-            return
-        try:
-            await service.close(status, detail)
-        except Exception:  # noqa: BLE001 - a session that will not finish is not a run failure
-            logger.warning("could not finish the Tinker session", exc_info=True)
+        await self.tinker.close(status, detail)
+        self.service = None
 
 
 def grouped(datums: Values[Any], owners: Values[int]) -> list[list[Any]]:
@@ -231,14 +181,6 @@ def split(items: list[Any], parts: int) -> list[list[Any]]:
     step = len(items) / parts
     edges = [int(index * step) for index in range(parts)] + [len(items)]
     return [items[start:end] for start, end in zip(edges[:-1], edges[1:], strict=True)]
-
-
-def _unmasked(datum: Any) -> tinker.Datum:
-    """The datum without `mask`, which only this side uses."""
-    return tinker.Datum(
-        model_input=datum.model_input,
-        loss_fn_inputs={key: value for key, value in datum.loss_fn_inputs.items() if key != "mask"},
-    )
 
 
 def _observed(datums: Values[Any], trained: Values[Any]) -> dict[str, float]:

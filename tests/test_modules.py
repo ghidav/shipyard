@@ -16,7 +16,7 @@ from typer.testing import CliRunner
 
 from shipyard import record
 from shipyard.cli import app
-from shipyard.config import Finding, check
+from shipyard.config import Finding, Rollout, check
 from shipyard.modules import (
     KINDS,
     PROMPT,
@@ -37,9 +37,10 @@ from shipyard.modules import (
     seed,
     write,
 )
-from shipyard.rollout import DELIVERED, rollout
 from shipyard.run import CARRIED, Run
 from shipyard.sampling.endpoint import ProviderEndpoint
+from shipyard.sampling.engine import DELIVERED, HarborEngine
+from shipyard.types import Agent, Policy, harness
 from tests.trials import FakeTrials, fixture_tasks, write_blueprint
 
 FIXTURES = Path(__file__).parent / "modules"
@@ -338,7 +339,7 @@ async def test_a_kinds_fields_land_on_the_agent_config_beside_the_rollouts_own(
     """The seam a harness or tool kind would use: fields the rollout sets itself merge,
     so such a kind is a class and a table row and needs no rollout edit."""
     monkeypatch.setattr(
-        "shipyard.rollout.deliver",
+        "shipyard.sampling.engine.deliver",
         lambda candidate, into: {
             "name": "other",
             "kwargs": {"turns": 3},
@@ -347,19 +348,17 @@ async def test_a_kinds_fields_land_on_the_agent_config_beside_the_rollouts_own(
         },
     )
     runner = FakeTrials()
-    await rollout(
-        [tmp_path / "tasks" / "alpha"],
-        "run-0000",
+    table = Rollout(
         harness="pi@0.85.1",
-        endpoint=ProviderEndpoint("m"),
         sandbox="docker",
         concurrency=1,
-        rollouts=1,
-        jobs_dir=tmp_path / "jobs",
+        jobs_dir=str(tmp_path / "jobs"),
         env={"KEEP": "1"},
         kwargs={"thinking": "high"},
-        run_trial=runner,
-        modules=seed(VALID),
+    )
+    carrying = Agent(Policy(ProviderEndpoint("m")), [harness("pi@0.85.1")], seed(VALID))
+    await HarborEngine(table, run_trial=runner).run(
+        "run-0000", [tmp_path / "tasks" / "alpha"], 1, agent=carrying
     )
     agent = runner.configs[0].agent
     assert agent.name == "other" and agent.model_name == "m"

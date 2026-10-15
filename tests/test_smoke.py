@@ -65,7 +65,7 @@ def proxy(monkeypatch: pytest.MonkeyPatch) -> FakeProxy:
 @pytest.fixture
 def trials(monkeypatch: pytest.MonkeyPatch) -> FakeTrials:
     fake = FakeTrials(default={"reward": 1.0, "seconds": 12.5})
-    monkeypatch.setattr("shipyard.rollout._run_trial", fake)
+    monkeypatch.setattr("shipyard.sampling.engine._run_trial", fake)
     return fake
 
 

@@ -21,14 +21,15 @@ from shipyard.config import Blueprint, FstRecipe, GepaRecipe, config_file, load,
 from shipyard.cost import Costs, billed_by, reported, sampled, sandbox_seconds
 from shipyard.modules import Candidate, keep, seed
 from shipyard.progress import Reporter, reporter
-from shipyard.rollout import Rollouts, Runner, rollout, trials_of
+from shipyard.rollout import Rollouts
 from shipyard.sampling.endpoint import (
     NothingServed,
     ProviderEndpoint,
     ProxyEndpoint,
     tinker_base_url,
 )
-from shipyard.types import Endpoint
+from shipyard.sampling.engine import HarborEngine, Runner
+from shipyard.types import Agent, Endpoint, Policy
 
 if TYPE_CHECKING:
     from shipyard.trainer import Checkpoint
@@ -58,8 +59,7 @@ class Run:
         self.costs = Costs.from_dict(record.read_json(directory / record.COSTS))
         self.jobs_dir = Path(config.rollout.jobs_dir)
         self.progress: Reporter = reporter()
-        #: How one trial is run; None is Harbor's `Trial`. A test hands in its own.
-        self.run_trial: Runner | None = None
+        self.engine = HarborEngine(config.rollout, progress=self.progress)
         #: The proxy over this run's weights, or the provider the harness dials itself.
         self.endpoint: Endpoint = (
             ProxyEndpoint(config, directory)
@@ -67,6 +67,7 @@ class Run:
             else ProviderEndpoint(config.model.name)
         )
         self._noted = False
+        self._next_job = next_job(self.id, directory, self.jobs_dir)
         #: The trainer whose weights the proxy serves, for the update count every batch
         #: is stamped with; None for a run that trains nothing.
         self.trainer: Any | None = None
@@ -118,15 +119,23 @@ class Run:
         current.update(about)
         record.write_json(self.directory / record.PROCESS, current)
 
+    @property
+    def run_trial(self) -> Runner | None:
+        """How one trial is run; None is Harbor's `Trial`. A test hands in its own."""
+        return self.engine.run_trial
+
+    @run_trial.setter
+    def run_trial(self, runner: Runner | None) -> None:
+        self.engine.run_trial = runner
+
     def reserve_job(self) -> str:
-        """The next job name, `<run id>-NNNN`, counted from the rows in `jobs.jsonl`.
-        Creates its directory and raises `FileExistsError` if it exists."""
-        count = sum(1 for _ in record.read(self.directory / record.JOBS))
-        name = f"{self.id}-{count:04d}"
+        """The next job name, `<run id>-NNNN`, with its directory created; raises if it exists."""
+        name = f"{self.id}-{self._next_job:04d}"
         try:
             (self.jobs_dir / name).mkdir(parents=True)
         except FileExistsError:
             raise FileExistsError(f"job {name} is taken: {self.jobs_dir / name} exists") from None
+        self._next_job += 1
         return name
 
     async def sample(
@@ -146,27 +155,12 @@ class Run:
             self._noted = True
         updates = getattr(self.trainer, "updates", None)
         candidate = self.carried if modules is None else modules
+        agent = Agent(Policy(endpoint), [types.harness(cfg.rollout.harness)], candidate)
         job = self.reserve_job()
         self.progress.started(job, trials=len(batch) * rollouts, batch=index)
-        rolled = await rollout(
-            batch,
-            job,
-            harness=cfg.rollout.harness,
-            endpoint=endpoint,
-            sandbox=cfg.rollout.sandbox,
-            concurrency=cfg.rollout.concurrency,
-            rollouts=rollouts,
-            jobs_dir=self.jobs_dir,
-            env=cfg.rollout.env,
-            kwargs=cfg.rollout.kwargs,
-            setup_timeout=cfg.rollout.setup_timeout,
-            timeout=cfg.rollout.timeout,
-            run_trial=self.run_trial,
-            progress=self.progress,
-            modules=candidate,
-        )
+        trials = await self.engine.run(job, batch, rollouts, agent=agent)
         self.progress.done(job)
-        trials = trials_of(rolled, types.harness(cfg.rollout.harness))
+        rolled = Rollouts.of(job, trials)
         records = await endpoint.record(job, trials)
         if records is not None:
             asked, failed = read_logs(trials, records, check_turns=cfg.rollout.check_turns)
@@ -307,6 +301,20 @@ def seeded(config: Blueprint) -> Candidate | None:
     """The candidate `[recipe] modules` seeds, for any recipe. None when it is unset."""
     directory = modules_dir(config)
     return None if directory is None else seed(directory)
+
+
+def next_job(run_id: str, directory: Path, jobs_dir: Path) -> int:
+    """One past the highest job number on the record or on disk; 0 for a new run."""
+    named = [row.get("job") for row in record.read(directory / record.JOBS)]
+    if jobs_dir.is_dir():
+        named += [one.name for one in jobs_dir.iterdir()]
+    prefix = f"{run_id}-"
+    numbers = [
+        int(name[len(prefix) :])
+        for name in named
+        if isinstance(name, str) and name.startswith(prefix) and name[len(prefix) :].isdigit()
+    ]
+    return max(numbers, default=-1) + 1
 
 
 def runs_root(flag: Path | None = None) -> Path:
