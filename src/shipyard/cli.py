@@ -20,7 +20,7 @@ from rich.markup import escape
 from rich.table import Table
 
 from shipyard import config, data, record, resolved
-from shipyard.config import ConfigError, Finding
+from shipyard.config import Finding
 from shipyard.data import NoSuchDataset
 from shipyard.proxy.client import Unreachable
 from shipyard.run import Run, RunRefused, runs_root
@@ -180,7 +180,7 @@ def _reopened(directory: Path, *, checkpoint: str = "last") -> Runner:
     """The runner over a run reopened at a checkpoint, or exit 1 saying why not."""
     try:
         return Runner.from_checkpoint(directory, tag=checkpoint)
-    except (ValueError, ConfigError) as refused:
+    except (ValueError, NoSuchDataset) as refused:
         console.print(f"[red]{escape(str(refused))}[/red]")
         raise typer.Exit(1) from None
 

@@ -441,6 +441,32 @@ def test_an_evaluate_run_shows_its_jobs_and_costs(
     assert "total" not in json.dumps(as_json["costs"])
 
 
+def test_a_refused_evaluate_leaves_a_finished_runs_note_as_it_was(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def checkpoints(self: Runner) -> None:
+        record.append(
+            self.opened.directory / record.CHECKPOINTS,
+            {
+                "tag": "final",
+                "state_path": "s",
+                "sampler_path": "p",
+                "step": 1,
+                "updates": 1,
+                "epoch": 0,
+            },
+        )
+
+    monkeypatch.setattr(Runner, "run", checkpoints)
+    root = tmp_path / "r"
+    assert runner.invoke(app, ["run", str(EVALUATE), "--root", str(root)]).exit_code == 0
+    directory = _only_run(root)
+    before = Run.read(directory)
+    result = runner.invoke(app, ["evaluate", directory.name, "--root", str(root), "--test", "nope"])
+    assert result.exit_code == 1 and "nope" in result.output
+    assert Run.read(directory) == before and state_of(before) == "finished"
+
+
 def test_resume_and_evaluate_refuse_a_run_with_no_checkpoint(tmp_path: Path) -> None:
     root = tmp_path / "r"
     opened = Run.open(EVALUATE, root=root)
