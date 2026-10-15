@@ -1,6 +1,4 @@
-"""The training client over a fake SDK client: how it opens, that a step call is submitted
-on the first await and read on the second, the logprobs from one batched forward, the saves
-with their TTLs, the load, and the close."""
+"""Test the training client over a fake SDK client."""
 
 from __future__ import annotations
 
