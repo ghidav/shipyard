@@ -15,8 +15,8 @@ from harbor.models.trial.config import AgentConfig, TrialConfig
 
 from shipyard.admit import result_of
 from shipyard.config import Rollout
+from shipyard.harnesses import PROFILES
 from shipyard.progress import Reporter
-from shipyard.proxy.profiles import PROFILES
 from shipyard.sampling.endpoint import ProviderEndpoint, ProxyEndpoint
 from shipyard.sampling.engine import (
     MODAL_IMAGE_BUILDER,

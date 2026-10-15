@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from shipyard import admit, pack, types
-from shipyard.proxy.profiles import PROFILES, Profile
+from shipyard.harnesses import PROFILES, Profile
 from shipyard.training import trainer
 from shipyard.training.client import TinkerClient
 from shipyard.types import (
@@ -97,7 +97,7 @@ def test_the_module_imports_no_part_of_the_loop() -> None:
         for node in tree.body
         if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("shipyard")
     )
-    assert imported == ["shipyard.modules", "shipyard.proxy.profiles", "shipyard.proxy.wire"]
+    assert imported == ["shipyard.harnesses", "shipyard.modules", "shipyard.proxy.wire"]
 
 
 def test_a_part_missing_a_method_cannot_be_built() -> None:

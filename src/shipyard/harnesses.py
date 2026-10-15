@@ -1,5 +1,5 @@
-"""Per-harness profiles: which wire a harness speaks and what it needs beyond Harbor's
-model connection. A harness without a profile gets the generic one."""
+"""The harnesses: per-harness profiles of which wire a harness speaks and what it needs
+beyond Harbor's model connection. A harness without a profile gets the generic one."""
 
 from __future__ import annotations
 

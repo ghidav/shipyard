@@ -17,7 +17,6 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.markup import escape
-from rich.table import Table
 
 from shipyard import data, record, resolved
 from shipyard.data import NoSuchDataset
@@ -26,7 +25,7 @@ from shipyard.proxy.client import Unreachable
 from shipyard.run import Run, RunRefused, runs_root
 from shipyard.runner import Runner, runner_in
 from shipyard.sampling.endpoint import NothingServed, ProxyGone
-from shipyard.show import fitted, print_run, sections, state_of, styled
+from shipyard.show import print_run, print_runs, sections, state_of, styled
 from shipyard.smoke import SmokeFailed
 from shipyard.smoke import smoke as smoke_job
 
@@ -78,7 +77,6 @@ TestOption = Annotated[
 ]
 
 #: The columns of `runs`, with their styles.
-RUN_COLUMNS = {"id": "cyan", "kind": None, "state": None, "started": "dim", "finished": "dim"}
 MARKS = {
     "ok": "[green]ok[/green]",
     "warning": "[yellow]warning[/yellow]",
@@ -253,27 +251,7 @@ def serve(ctx: typer.Context) -> None:
 def runs(root: RootOption = None) -> None:
     """List every run under the root, newest first, as a table, or as a block per run when
     the table is wider than the console."""
-    found = [(directory.name, Run.read(directory)) for directory in _run_dirs(runs_root(root))]
-    if not found:
-        console.print("[dim](no runs)[/dim]")
-        return
-    found.sort(key=lambda pair: str(pair[1].get("started_at") or ""), reverse=True)
-    rows = [
-        {
-            "id": escape(run_id),
-            "kind": escape(str(note.get("kind") or "")),
-            "state": styled(state_of(note)),
-            "started": str(note.get("started_at") or "")[:19],
-            "finished": str(note.get("finished_at") or "")[:19],
-        }
-        for run_id, note in found
-    ]
-    table = Table(show_header=True, header_style="bold")
-    for column, style in RUN_COLUMNS.items():
-        table.add_column(column, style=style, no_wrap=column == "id")
-    for row in rows:
-        table.add_row(*row.values())
-    fitted(table, rows)
+    print_runs(runs_root(root))
 
 
 @app.command()
@@ -302,13 +280,6 @@ def _print_findings(findings: list[Finding]) -> None:
         console.print(
             f"{MARKS[found.level]}  {escape(found.text)}", highlight=False, soft_wrap=True
         )
-
-
-def _run_dirs(root: Path) -> list[Path]:
-    """Every directory under the root that holds a `run.toml`."""
-    if not root.is_dir():
-        return []
-    return sorted(found for found in root.iterdir() if (found / record.CONFIG).is_file())
 
 
 def _stop_on_signals() -> Callable[[], None]:
