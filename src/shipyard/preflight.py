@@ -23,7 +23,7 @@ from shipyard.config import Blueprint, Finding
 from shipyard.proxy import tunnel
 from shipyard.proxy.profiles import PROFILES, bare_name, profile_for
 from shipyard.proxy.wire import CONTROL_TOKEN_ENV, PROXY_TOKEN_ENV
-from shipyard.serving import LOCAL_SANDBOXES, backend, placement
+from shipyard.sampling.endpoint import LOCAL_SANDBOXES, backend, placement
 
 #: Over this, a reply to a sandbox elsewhere takes long enough for a harness to give up on it.
 REMOTE_MAX_TOKENS = 16384

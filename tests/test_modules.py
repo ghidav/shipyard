@@ -39,6 +39,7 @@ from shipyard.modules import (
 )
 from shipyard.rollout import DELIVERED, rollout
 from shipyard.run import CARRIED, Run
+from shipyard.sampling.endpoint import ProviderEndpoint
 from tests.trials import FakeTrials, fixture_tasks, write_blueprint
 
 FIXTURES = Path(__file__).parent / "modules"
@@ -350,7 +351,7 @@ async def test_a_kinds_fields_land_on_the_agent_config_beside_the_rollouts_own(
         [tmp_path / "tasks" / "alpha"],
         "run-0000",
         harness="pi@0.85.1",
-        model="m",
+        endpoint=ProviderEndpoint("m"),
         sandbox="docker",
         concurrency=1,
         rollouts=1,

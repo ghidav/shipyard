@@ -11,6 +11,7 @@ import pytest
 from shipyard import record
 from shipyard.rollout import Rollouts
 from shipyard.run import Run
+from shipyard.sampling.endpoint import ProviderEndpoint
 from tests.trials import FakeTrials, fixture_tasks
 
 EVALUATE = Path(__file__).parent / "blueprints" / "evaluate"
@@ -45,7 +46,8 @@ async def test_jobs_are_named_from_the_rows_and_reserved_by_directory_first(
     assert first.job == f"{opened.id}-0000" and second.job == f"{opened.id}-0001"
     assert [(job, reserved) for job, reserved, _ in seen] == [(first.job, True), (second.job, True)]
     options = seen[0][2]
-    assert options["harness"] == "pi@0.85.1" and options["model"] == "some-hosted-model"
+    assert options["harness"] == "pi@0.85.1"
+    assert options["endpoint"] == ProviderEndpoint("some-hosted-model")
     assert options["sandbox"] == "modal" and options["concurrency"] == 4
     assert options["jobs_dir"] == Path("jobs") and options["rollouts"] == 2
     assert options["env"] == {} and options["kwargs"] == {}

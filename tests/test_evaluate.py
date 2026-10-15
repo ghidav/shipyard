@@ -10,12 +10,13 @@ from statistics import fmean
 
 import pytest
 
-from shipyard import record, serving
+from shipyard import record
 from shipyard.admit import BUDGET
 from shipyard.data import batches
 from shipyard.recipes import run_recipe
 from shipyard.recipes.evaluate import mean
 from shipyard.run import Run
+from shipyard.sampling.endpoint import ProxyEndpoint
 from tests.records import FakeProxy, made
 from tests.trials import FIXTURES, FakeTrials
 
@@ -105,16 +106,15 @@ async def test_a_served_model_runs_through_its_proxy_and_is_judged_by_its_record
             "c": [made(seq=1)],
             "d": [],
         },
-        counts={"b": {"turned_away": 1, "spoke": 2}},
     )
-    monkeypatch.setattr(serving, "Proxy", fake)
+    monkeypatch.setattr("shipyard.sampling.endpoint.Proxy", fake)
     replacements = {
         'provider = "openrouter"': 'provider = "tinker"',
         'sandbox = "modal"': 'sandbox = "docker"\nhost = "proxy.lan"',
     }
     home = _blueprint(tmp_path, **replacements)
     opened = Run.open(home, root=tmp_path / "runs")
-    assert opened.config.model.served and opened.serving is not None
+    assert opened.config.model.served and isinstance(opened.endpoint, ProxyEndpoint)
     opened.run_trial = FakeTrials(breaks=("d",), outcomes={**OUTCOMES, "b": {"reward": 1.0}})
     with opened:
         await run_recipe(opened)

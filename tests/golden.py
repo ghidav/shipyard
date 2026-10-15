@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 import tinker
 
-from shipyard import record, serving
+from shipyard import record
 from shipyard.admit import BUDGET, CONTEXT, Verdict, verdicts
 from shipyard.config import load
 from shipyard.credit import Batch, credit
@@ -92,9 +92,7 @@ class ScriptedProxy(FakeProxy):
 
     async def records(self, trial: str) -> list[Record]:
         self.fetched.append(trial)
-        task = trial.split("__")[0]
-        self.counters[trial] = dict(self.counts.get(task) or {"turned_away": 0, "spoke": 0})
-        return list(self.queues[task].pop(0))
+        return list(self.queues[trial.split("__")[0]].pop(0))
 
 
 # ------------------------------------------------------------- building groups
@@ -167,7 +165,6 @@ class Jobbed:
     records: Mapping[str, list[list[Record]]]
     preset: Preset | None = None
     budget: int | None = None
-    counts: Mapping[str, dict[str, int]] = field(default_factory=dict)
     texts: int = 1
     anchored: bool = False
 
@@ -383,7 +380,6 @@ def _served() -> Jobbed:
         },
         preset=preset_of("dapo"),
         budget=100,
-        counts={"a": {"turned_away": 1, "spoke": 4}},
     )
 
 
@@ -479,10 +475,9 @@ async def _jobbed(case: Jobbed, tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     (home / "run.toml").write_text(text, encoding="utf-8")
     proxy = ScriptedProxy(
         queues={task: list(found) for task, found in case.records.items()},
-        counts=dict(case.counts),
         budget=case.budget,
     )
-    monkeypatch.setattr(serving, "Proxy", proxy)
+    monkeypatch.setattr("shipyard.sampling.endpoint.Proxy", proxy)
     opened = Run.open(home, root=tmp_path / "runs")
     opened.run_trial = ScriptedTrials(case.outcomes)
     trainer = Trainer(FakeTrainingClient(positional=True))
@@ -495,7 +490,7 @@ async def _jobbed(case: Jobbed, tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
             await opened.sample(batch_tasks, rollouts=share, index=0, modules=one) for one in texts
         ]
         # The proxy's budget, read while it is up, as the step reads it.
-        budget = opened.serving.budget if opened.serving is not None else None
+        budget = opened.endpoint.budget
     rolled = parts[0] if len(parts) == 1 else merged(parts, share)
     out: dict[str, Any] = {
         "verdicts": [_verdict(one) for one in verdicts(rolled)],

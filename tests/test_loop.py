@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 from harbor.models.trial.config import TrialConfig
 
-from shipyard import record, serving, session
+from shipyard import record, session
 from shipyard.data import batches
 from shipyard.recipes import run_recipe
 from shipyard.run import Run
@@ -82,7 +82,7 @@ def fakes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[FakeProxy, F
     """The proxy and the Tinker service replaced, from a working directory of fixtures."""
     monkeypatch.chdir(tmp_path)
     proxy = FakeProxy()
-    monkeypatch.setattr(serving, "Proxy", proxy)
+    monkeypatch.setattr("shipyard.sampling.endpoint.Proxy", proxy)
     service = FakeService(capabilities=capable((MODEL, True)))
     service.client.trained = -0.3
     monkeypatch.setattr(session, "service_client", lambda metadata=None: service)

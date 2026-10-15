@@ -16,6 +16,7 @@ from shipyard.gepa.fitness import Outcome
 from shipyard.gepa.propose import Proposer, Reflection
 from shipyard.modules import KINDS, Module, read, write
 from shipyard.rollout import Rollouts, rollout
+from shipyard.sampling.endpoint import ProviderEndpoint
 
 if TYPE_CHECKING:
     from shipyard.run import Run
@@ -81,7 +82,7 @@ async def _job(
         [task],
         job,
         harness=harness,
-        model=model,
+        endpoint=ProviderEndpoint(model),
         sandbox=cfg.rollout.sandbox,
         concurrency=1,
         rollouts=1,

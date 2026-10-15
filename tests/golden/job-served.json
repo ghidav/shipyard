@@ -59,7 +59,7 @@
         "AgentTimeoutError": 1
       },
       "served": "tinker",
-      "turned_away": 4,
+      "turned_away": 2,
       "bridged": 1,
       "party": "tinker",
       "input_tokens": 30,

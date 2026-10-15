@@ -4,17 +4,31 @@ and, for a served run, off the proxy's records of what the policy was asked and 
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator, Sequence
+import logging
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from shipyard.proxy.profiles import bare_name
 from shipyard.proxy.wire import Record, pictured
-from shipyard.types import Verdict
+from shipyard.types import Trial, Verdict
 
 if TYPE_CHECKING:
     from shipyard.rollout import Rollouts
 
-__all__ = ["Verdict", "endpoint_failed", "result_of", "results", "scores", "verdict", "verdicts"]
+__all__ = [
+    "Verdict",
+    "endpoint_failed",
+    "harness_log",
+    "read_logs",
+    "result_of",
+    "results",
+    "scores",
+    "verdict",
+    "verdicts",
+]
+
+logger = logging.getLogger(__name__)
 
 #: The masks: a trial left out of every mean and every gradient, by reason.
 ENV_ERROR = "env_error"
@@ -151,6 +165,46 @@ def verdicts(rollouts: Rollouts) -> list[Verdict]:
         )
         for trial in rollouts.trials
     ]
+
+
+def read_logs(
+    trials: Sequence[Trial], records: Mapping[str, Sequence[Record]], *, check_turns: bool
+) -> tuple[dict[str, int], set[str]]:
+    """By trial name: the turns the harness asked for, and whether its last model call failed."""
+    asked: dict[str, int] = {}
+    failed: set[str] = set()
+    for trial in trials:
+        profile = trial.harness.profile
+        counter = profile.turns if check_turns else None
+        reader = profile.failed_last
+        if counter is None and reader is None:
+            continue
+        text = harness_log(trial.dir, trial.harness.name)
+        if text is None:
+            continue
+        if counter is not None:
+            asked[trial.name] = turns = int(counter(text))
+            if turns == 0 and records.get(trial.name):
+                logger.warning(
+                    "%s: the %s turn counter found no turns beside %d record(s); its log "
+                    "format may have moved, so this trial is not checked",
+                    trial.name,
+                    trial.harness.name,
+                    len(records[trial.name]),
+                )
+        if reader is not None and reader(text):
+            failed.add(trial.name)
+    return asked, failed
+
+
+def harness_log(trial: Path, harness: str) -> str | None:
+    """`agent/<harness>.txt` under the trial; None without it."""
+    try:
+        return (trial / "agent" / f"{bare_name(harness)}.txt").read_text(
+            encoding="utf-8", errors="replace"
+        )
+    except OSError:
+        return None
 
 
 def scores(rollouts: Rollouts) -> list[float]:

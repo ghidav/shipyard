@@ -7,7 +7,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from shipyard.config import check, load
-from shipyard.serving import endpoint_settings, start_weights
+from shipyard.sampling.endpoint import endpoint_settings, start_weights
 from tests.trials import write_blueprint
 
 BLUEPRINTS = Path(__file__).parent / "blueprints"

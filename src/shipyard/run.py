@@ -15,14 +15,20 @@ from typing import TYPE_CHECKING, Any, Self
 
 from shortuuid import ShortUUID
 
-from shipyard import record
-from shipyard.admit import verdicts
+from shipyard import record, types
+from shipyard.admit import read_logs, verdicts
 from shipyard.config import Blueprint, FstRecipe, GepaRecipe, config_file, load, modules_dir
-from shipyard.cost import Costs, billed_by, reported, sandbox_seconds
+from shipyard.cost import Costs, billed_by, reported, sampled, sandbox_seconds
 from shipyard.modules import Candidate, keep, seed
 from shipyard.progress import Reporter, reporter
-from shipyard.rollout import Rollouts, Runner, rollout
-from shipyard.serving import Harvest, NothingServed, Serving, served_nothing, tinker_base_url
+from shipyard.rollout import Rollouts, Runner, rollout, trials_of
+from shipyard.sampling.endpoint import (
+    NothingServed,
+    ProviderEndpoint,
+    ProxyEndpoint,
+    tinker_base_url,
+)
+from shipyard.types import Endpoint
 
 if TYPE_CHECKING:
     from shipyard.trainer import Checkpoint
@@ -54,8 +60,13 @@ class Run:
         self.progress: Reporter = reporter()
         #: How one trial is run; None is Harbor's `Trial`. A test hands in its own.
         self.run_trial: Runner | None = None
-        #: The proxy and its records, for a run serving its own weights; else None.
-        self.serving: Serving | None = Serving(config, directory) if config.model.served else None
+        #: The proxy over this run's weights, or the provider the harness dials itself.
+        self.endpoint: Endpoint = (
+            ProxyEndpoint(config, directory)
+            if config.model.served
+            else ProviderEndpoint(config.model.name)
+        )
+        self._noted = False
         #: The trainer whose weights the proxy serves, for the update count every batch
         #: is stamped with; None for a run that trains nothing.
         self.trainer: Any | None = None
@@ -127,18 +138,12 @@ class Run:
         modules: Candidate | None = None,
         purpose: str = "rollout",
     ) -> Rollouts:
-        """Run one Harbor job over `batch`, the recipe's batch `index`, carrying `modules`
-        (the run's own when None). Stamp it with the trainer's update count and put every
-        verdict on the job row. Raises `NothingServed` for a served job the proxy served
-        nothing for."""
-        cfg = self.config
-        if self.serving is not None:
-            first = self.serving.proxy is None
-            await self.serving.start()
-            self.serving.alive()
-            if first:
-                placed = {"placement": self.serving.placement, "origin": self.serving.origin}
-                self.note(proxy=placed)
+        """One Harbor job over `batch`: the verdicts on its row, then the endpoint's check."""
+        cfg, endpoint = self.config, self.endpoint
+        await endpoint.open()
+        if isinstance(endpoint, ProxyEndpoint) and not self._noted:
+            self.note(proxy={"placement": endpoint.placement, "origin": endpoint.origin})
+            self._noted = True
         updates = getattr(self.trainer, "updates", None)
         candidate = self.carried if modules is None else modules
         job = self.reserve_job()
@@ -147,7 +152,7 @@ class Run:
             batch,
             job,
             harness=cfg.rollout.harness,
-            model=self.serving.model_name() if self.serving else cfg.model.name,
+            endpoint=endpoint,
             sandbox=cfg.rollout.sandbox,
             concurrency=cfg.rollout.concurrency,
             rollouts=rollouts,
@@ -158,27 +163,22 @@ class Run:
             timeout=cfg.rollout.timeout,
             run_trial=self.run_trial,
             progress=self.progress,
-            served=self.serving.served() if self.serving else None,
             modules=candidate,
         )
         self.progress.done(job)
-        harvested = await self.serving.harvest(rolled) if self.serving else None
-        if harvested is not None:
-            rolled = harvested.rollouts
+        trials = trials_of(rolled, types.harness(cfg.rollout.harness))
+        records = await endpoint.record(job, trials)
+        if records is not None:
+            asked, failed = read_logs(trials, records, check_turns=cfg.rollout.check_turns)
+            rolled = replace(rolled, records=records, asked=asked, failed=failed)
         rolled = replace(rolled, updates=updates)
-        self._record_job(
-            rolled,
-            batch=index,
-            tasks=len(batch),
-            harvested=harvested,
-            modules=candidate,
-            purpose=purpose,
-        )
-        if self.serving is not None:
-            self.serving.alive()  # a proxy that died under the batch: its masks are not data
-        why = served_nothing(rolled) if harvested is not None else None
-        if why is not None:
-            raise NothingServed(f"job {rolled.job}: {why}", rolled)
+        self._record_job(rolled, batch=index, tasks=len(batch), modules=candidate, purpose=purpose)
+        if records is not None:
+            try:
+                endpoint.check(job, records)
+            except NothingServed as dead:
+                dead.rolled = rolled
+                raise
         return rolled
 
     async def checkpoint(self, trainer: Any, tag: str, *, keep: bool = False) -> Checkpoint:
@@ -208,16 +208,15 @@ class Run:
         *,
         batch: int,
         tasks: int,
-        harvested: Harvest | None = None,
         modules: Candidate | None = None,
         purpose: str = "rollout",
     ) -> dict[str, Any]:
-        """Record a rollout of the policy: the modules' digest if it carried any, the graded
-        count, the masks, how each trial ended, and the party billed with its counts (from
-        the proxy's records and notes for a served job)."""
+        """The job row: modules digest, graded count, masks, endings, and the party billed."""
         judged = verdicts(rolled)
-        if harvested is not None and self.serving is not None:
-            counted, party, noted = harvested.counted, self.serving.party, harvested.noted
+        served = rolled.records is not None
+        if served:
+            counted, noted = sampled(rolled)
+            party = self.endpoint.party
         else:
             counted, party, noted = reported(rolled), billed_by(rolled), {}
         masked = _tally(each.mask for each in judged)
@@ -233,7 +232,7 @@ class Run:
             graded=sum(each.reward is not None for each in judged),
             **({"masked": masked} if masked else {}),
             **({"ended": ended} if ended else {}),
-            served="tinker" if harvested is not None else "provider",
+            served="tinker" if served else "provider",
             **{key: value for key, value in noted.items() if value},
         )
 
@@ -288,8 +287,7 @@ class Run:
         the loop raised. A `KeyboardInterrupt` from a signal is recorded as
         `stopped: <signal>`."""
         self.progress.close()
-        if self.serving is not None:
-            self.serving.close()
+        self.endpoint.close()
         if exc is None:
             error = None
         elif isinstance(exc, KeyboardInterrupt):

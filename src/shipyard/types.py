@@ -168,13 +168,14 @@ class Endpoint(ABC):
     async def open(self) -> None: ...
 
     @abstractmethod
-    async def close(self) -> None: ...
+    def close(self) -> None: ...
 
     @abstractmethod
     def connection(self, trial: Trial) -> Connection: ...
 
     @abstractmethod
-    def serve(self, path: str) -> None: ...
+    async def serve(self, path: str | None) -> None:
+        """Point at sampler weights, None for the base model."""
 
     @abstractmethod
     async def record(self, job: str, trials: Values[Trial]) -> Records | None:

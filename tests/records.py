@@ -1,6 +1,4 @@
-"""The run's side of the proxy, faked: a record as the proxy would have kept it, and a
-`Proxy` that notes how it was placed, probed, addressed, fetched and swapped, answering each
-trial's records by its task name, so `Serving` and the recipes run without a server."""
+"""The run's side of the proxy, faked: records and a `Proxy` that notes what it was asked."""
 
 from __future__ import annotations
 
@@ -56,9 +54,7 @@ def made(
 
 @dataclass
 class FakeProxy:
-    """`Proxy` as `Serving` drives it: every placement hands back this one instance, which
-    notes how it was placed, which trials it addressed, fetched and swapped, and answers
-    each trial's records by its task name (`answers`, else `default`, else one record)."""
+    """`Proxy` as `ProxyEndpoint` drives it; answers each trial's records by its task name."""
 
     origin: str = "http://host.docker.internal:8000"
     token: str = "harness-token"
@@ -66,12 +62,10 @@ class FakeProxy:
     answers: dict[str, list[Record]] = field(default_factory=dict)
     default: list[Record] | None = None
     failing: set[str] = field(default_factory=set)
-    counts: dict[str, dict[str, int]] = field(default_factory=dict)
     placed: list[tuple[str, Any, dict[str, Any]]] = field(default_factory=list)
     addressed: list[str] = field(default_factory=list)
     fetched: list[str] = field(default_factory=list)
     swapped: list[str | None] = field(default_factory=list)
-    counters: dict[str, dict[str, int]] = field(default_factory=dict)
     #: The token budget `/healthz` reports; None: the proxy enforces none.
     budget: int | None = None
     closed: int = 0
@@ -118,7 +112,6 @@ class FakeProxy:
         task = trial.split("__")[0]
         if task in self.failing:
             raise httpx.ConnectError("the proxy went away")
-        self.counters[trial] = dict(self.counts.get(task) or {"turned_away": 0, "spoke": 0})
         found = self.answers.get(task, self.default)
         return list(found if found is not None else [made()])
 

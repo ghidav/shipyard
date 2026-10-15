@@ -17,7 +17,7 @@ from shipyard.data import batches
 from shipyard.modules import Candidate
 from shipyard.proxy.profiles import PROFILES, bare_name, profile_for
 from shipyard.run import seeded
-from shipyard.serving import NothingServed
+from shipyard.sampling.endpoint import NothingServed, ProxyEndpoint
 
 if TYPE_CHECKING:
     from shipyard.rollout import Rollouts
@@ -123,7 +123,8 @@ async def smoke(run: Run) -> Smoked:
 def report(run: Run, rolled: Rollouts) -> Smoked:
     """Build the smoke report: where the proxy stood, how the harness was wired, each
     trial's records, weights and verdict, and the job row's seconds and tokens."""
-    cfg, serving = run.config, run.serving
+    cfg = run.config
+    serving = run.endpoint if isinstance(run.endpoint, ProxyEndpoint) else None
     judged = verdicts(rolled)
     trials = []
     for trial, verdict in zip(rolled.trials, judged, strict=True):
