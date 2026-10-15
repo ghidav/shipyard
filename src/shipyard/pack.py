@@ -217,8 +217,7 @@ def group(rollouts: Rollouts, group_size: int) -> list[Group]:
 
 
 def groups(trials: Values[Trial], rolled: Rollouts, agent: Agent) -> list[types.Group]:
-    """One group per task and harness in plan order, each trial a member: its verdict, its
-    sequences unless masked, and the tokens the policy wrote across its calls."""
+    """One group per task and harness in plan order, each trial a member."""
     judged = verdicts(rolled)
     records = rolled.records or {}
     out: list[types.Group] = []

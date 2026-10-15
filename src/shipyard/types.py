@@ -197,8 +197,7 @@ class Endpoint(ABC):
 
 @dataclass(frozen=True)
 class Policy:
-    """The model behind an agent. Entering it opens the endpoint with the starting weights
-    served; leaving it closes the endpoint, and the client with how the run ended."""
+    """The model behind an agent; entering serves the start, leaving closes endpoint and client."""
 
     endpoint: Endpoint
     #: None for a provider.
@@ -313,8 +312,7 @@ class RolloutEngine(ABC):
 
 @dataclass(frozen=True)
 class Verdict:
-    """A trial's reward or its mask, never both, and how Harbor said it ended. `rewards`
-    is every number the verifier returned, when the reward is its."""
+    """A reward or a mask, never both; how Harbor said it ended; the verifier's numbers."""
 
     reward: float | None
     mask: str | None

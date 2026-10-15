@@ -125,8 +125,6 @@ def test_differences_report_a_moved_number_and_pass_over_rounding() -> None:
 async def test_the_trainer_reproduces_the_frozen_case(
     name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The same datums, calls, anchor queries, update and row as the frozen case, from the
-    trainer's `job`, `shape`, `advantage`, `credit`, `step` and `log`."""
     if golden.updating():
         pytest.skip("regenerating")
     frozen = golden.read_frozen(name)

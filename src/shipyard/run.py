@@ -168,8 +168,7 @@ class Run:
         modules: Candidate | None = None,
         purpose: str = "rollout",
     ) -> Rollouts:
-        """The job's record side: its model calls drained, the harness logs read, the job
-        row written, and the endpoint's check after the row."""
+        """The job's record side: records drained, logs read, row written, the endpoint checked."""
         endpoint = self.endpoint
         rolled = Rollouts.of(job, trials)
         records = await endpoint.record(job, trials)
