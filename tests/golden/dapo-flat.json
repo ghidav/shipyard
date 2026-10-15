@@ -1,0 +1,39 @@
+{
+  "batch": {
+    "datums": [],
+    "owners": [],
+    "groups": 3,
+    "rollouts": 5,
+    "graded": 5,
+    "masked": 0,
+    "degenerate": 3,
+    "surplus": null,
+    "overlong": null,
+    "credited": 0,
+    "sequences": 0,
+    "reward_mean": 0.6,
+    "reward_spread": 0.0,
+    "length_mean": 1.0,
+    "anchor_kl": null,
+    "reference_tokens": 0,
+    "anchor_tokens": 0
+  },
+  "client": [],
+  "sent": [],
+  "anchor": null,
+  "update": null,
+  "row": {
+    "step": 0,
+    "trained": false,
+    "groups": 3,
+    "rollouts": 5,
+    "graded": 5,
+    "masked": 0,
+    "degenerate": 3,
+    "sequences": 0,
+    "reward_mean": 0.6,
+    "reward_spread": 0.0,
+    "length_mean": 1.0
+  },
+  "updates": 0
+}

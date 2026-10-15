@@ -1,0 +1,64 @@
+{
+  "verdicts": [
+    {
+      "reward": 1.0,
+      "mask": null,
+      "ended": null
+    },
+    {
+      "reward": 0.5,
+      "mask": null,
+      "ended": null
+    },
+    {
+      "reward": null,
+      "mask": "timeout",
+      "ended": "AgentTimeoutError"
+    },
+    {
+      "reward": null,
+      "mask": "env_error",
+      "ended": null
+    }
+  ],
+  "jobs": [
+    {
+      "purpose": "rollout",
+      "trials": 4,
+      "batch": 0,
+      "tasks": 2,
+      "graded": 2,
+      "masked": {
+        "timeout": 1,
+        "env_error": 1
+      },
+      "ended": {
+        "AgentTimeoutError": 1
+      },
+      "served": "provider",
+      "party": "openrouter",
+      "input_tokens": 180,
+      "cache_tokens": 20,
+      "output_tokens": 22,
+      "sandbox": "modal",
+      "sandbox_seconds": 52.0
+    }
+  ],
+  "requests": [],
+  "costs": {
+    "parties": {
+      "openrouter": {
+        "trials": 3,
+        "input_tokens": 180,
+        "cache_tokens": 20,
+        "output_tokens": 22
+      }
+    },
+    "sandbox": {
+      "modal": {
+        "trials": 3,
+        "seconds": 52.0
+      }
+    }
+  }
+}

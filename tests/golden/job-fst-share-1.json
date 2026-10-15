@@ -1,0 +1,723 @@
+{
+  "verdicts": [
+    {
+      "reward": 1.0,
+      "mask": null,
+      "ended": null
+    },
+    {
+      "reward": 0.0,
+      "mask": null,
+      "ended": null
+    },
+    {
+      "reward": 1.0,
+      "mask": null,
+      "ended": null
+    },
+    {
+      "reward": 0.0,
+      "mask": null,
+      "ended": null
+    }
+  ],
+  "jobs": [
+    {
+      "purpose": "rollout",
+      "trials": 2,
+      "batch": 0,
+      "tasks": 2,
+      "modules": "20548fd212df4aec",
+      "graded": 2,
+      "served": "tinker",
+      "party": "tinker",
+      "input_tokens": 11,
+      "cache_tokens": 0,
+      "output_tokens": 3,
+      "sandbox": "docker",
+      "sandbox_seconds": 0.0
+    },
+    {
+      "purpose": "rollout",
+      "trials": 2,
+      "batch": 0,
+      "tasks": 2,
+      "modules": "9f62bf85b4f11256",
+      "graded": 2,
+      "served": "tinker",
+      "party": "tinker",
+      "input_tokens": 6,
+      "cache_tokens": 0,
+      "output_tokens": 3,
+      "sandbox": "docker",
+      "sandbox_seconds": 0.0
+    }
+  ],
+  "requests": [
+    {
+      "seq": 1,
+      "prompt_tokens": 3,
+      "cached_tokens": 0,
+      "completion_tokens": 1,
+      "stop_reason": "stop",
+      "sample_ms": 12.0,
+      "served": null,
+      "request_id": null,
+      "bridged": false,
+      "error": null,
+      "trial": 0
+    },
+    {
+      "seq": 2,
+      "prompt_tokens": 5,
+      "cached_tokens": 0,
+      "completion_tokens": 1,
+      "stop_reason": "stop",
+      "sample_ms": 12.0,
+      "served": null,
+      "request_id": null,
+      "bridged": false,
+      "error": null,
+      "trial": 0
+    },
+    {
+      "seq": 1,
+      "prompt_tokens": 3,
+      "cached_tokens": 0,
+      "completion_tokens": 1,
+      "stop_reason": "stop",
+      "sample_ms": 12.0,
+      "served": null,
+      "request_id": null,
+      "bridged": false,
+      "error": null,
+      "trial": 2
+    },
+    {
+      "seq": 1,
+      "prompt_tokens": 3,
+      "cached_tokens": 0,
+      "completion_tokens": 1,
+      "stop_reason": "stop",
+      "sample_ms": 12.0,
+      "served": null,
+      "request_id": null,
+      "bridged": false,
+      "error": null,
+      "trial": 1
+    },
+    {
+      "seq": 1,
+      "prompt_tokens": 3,
+      "cached_tokens": 0,
+      "completion_tokens": 2,
+      "stop_reason": "stop",
+      "sample_ms": 12.0,
+      "served": null,
+      "request_id": null,
+      "bridged": false,
+      "error": null,
+      "trial": 3
+    }
+  ],
+  "costs": {
+    "parties": {
+      "tinker": {
+        "trials": 4,
+        "input_tokens": 17,
+        "cache_tokens": 0,
+        "output_tokens": 6
+      }
+    },
+    "sandbox": {
+      "docker": {
+        "trials": 4,
+        "seconds": 0.0
+      }
+    }
+  },
+  "groups": [
+    {
+      "task": "a",
+      "updates": 0,
+      "members": [
+        {
+          "reward": 1.0,
+          "mask": null,
+          "ended": null,
+          "sampled_tokens": 2,
+          "sequences": [
+            {
+              "tokens": [
+                1,
+                2,
+                3,
+                10,
+                50,
+                20
+              ],
+              "spans": [
+                [
+                  3,
+                  4
+                ],
+                [
+                  5,
+                  6
+                ]
+              ],
+              "mu": [
+                -1.0,
+                -2.0
+              ],
+              "images": []
+            }
+          ]
+        },
+        {
+          "reward": 0.0,
+          "mask": null,
+          "ended": null,
+          "sampled_tokens": 1,
+          "sequences": [
+            {
+              "tokens": [
+                1,
+                2,
+                3,
+                30
+              ],
+              "spans": [
+                [
+                  3,
+                  4
+                ]
+              ],
+              "mu": [
+                -3.0
+              ],
+              "images": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task": "b",
+      "updates": 0,
+      "members": [
+        {
+          "reward": 1.0,
+          "mask": null,
+          "ended": null,
+          "sampled_tokens": 1,
+          "sequences": [
+            {
+              "tokens": [
+                1,
+                2,
+                3,
+                40
+              ],
+              "spans": [
+                [
+                  3,
+                  4
+                ]
+              ],
+              "mu": [
+                -4.0
+              ],
+              "images": []
+            }
+          ]
+        },
+        {
+          "reward": 0.0,
+          "mask": null,
+          "ended": null,
+          "sampled_tokens": 2,
+          "sequences": [
+            {
+              "tokens": [
+                1,
+                2,
+                3,
+                60,
+                61
+              ],
+              "spans": [
+                [
+                  3,
+                  5
+                ]
+              ],
+              "mu": [
+                -6.0,
+                -6.1000000000000005
+              ],
+              "images": []
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "batch": {
+    "datums": [
+      {
+        "input": [
+          [
+            1,
+            2,
+            3,
+            10,
+            50
+          ]
+        ],
+        "target_tokens": [
+          2,
+          3,
+          10,
+          50,
+          20
+        ],
+        "logprobs": [
+          0.0,
+          0.0,
+          -10.0,
+          0.0,
+          -20.0
+        ],
+        "advantages": [
+          0.0,
+          0.0,
+          1.0089980363845825,
+          0.0,
+          1.0179979801177979
+        ],
+        "mask": [
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          1.0
+        ]
+      },
+      {
+        "input": [
+          [
+            1,
+            2,
+            3
+          ]
+        ],
+        "target_tokens": [
+          2,
+          3,
+          30
+        ],
+        "logprobs": [
+          0.0,
+          0.0,
+          -30.0
+        ],
+        "advantages": [
+          0.0,
+          0.0,
+          -0.9729980230331421
+        ],
+        "mask": [
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      {
+        "input": [
+          [
+            1,
+            2,
+            3
+          ]
+        ],
+        "target_tokens": [
+          2,
+          3,
+          40
+        ],
+        "logprobs": [
+          0.0,
+          0.0,
+          -40.0
+        ],
+        "advantages": [
+          0.0,
+          0.0,
+          1.035997986793518
+        ],
+        "mask": [
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      {
+        "input": [
+          [
+            1,
+            2,
+            3,
+            60
+          ]
+        ],
+        "target_tokens": [
+          2,
+          3,
+          60,
+          61
+        ],
+        "logprobs": [
+          0.0,
+          0.0,
+          -60.0,
+          -61.0
+        ],
+        "advantages": [
+          0.0,
+          0.0,
+          -0.9459980130195618,
+          -0.9450979828834534
+        ],
+        "mask": [
+          0.0,
+          0.0,
+          1.0,
+          1.0
+        ]
+      }
+    ],
+    "owners": [
+      0,
+      0,
+      1,
+      1
+    ],
+    "groups": 2,
+    "rollouts": 4,
+    "graded": 4,
+    "masked": 0,
+    "degenerate": 0,
+    "surplus": null,
+    "overlong": null,
+    "credited": 4,
+    "sequences": 4,
+    "reward_mean": 0.5,
+    "reward_spread": 0.5,
+    "length_mean": 1.5,
+    "anchor_kl": -33.15,
+    "reference_tokens": 15,
+    "anchor_tokens": 19
+  },
+  "client": [
+    [
+      "forward",
+      [
+        5,
+        3,
+        3,
+        4
+      ],
+      "cross_entropy"
+    ],
+    [
+      "forward_backward",
+      [
+        5,
+        3,
+        3,
+        4
+      ],
+      "cispo",
+      {
+        "clip_low_threshold": 0.0,
+        "clip_high_threshold": 4.0
+      }
+    ],
+    [
+      "optim_step",
+      {
+        "learning_rate": 2e-05,
+        "beta1": 0.9,
+        "beta2": 0.999,
+        "eps": 1e-08,
+        "weight_decay": 0.0,
+        "grad_clip_norm": 0.0
+      }
+    ],
+    [
+      "consumed",
+      "fb"
+    ],
+    [
+      "consumed",
+      "optim"
+    ]
+  ],
+  "sent": [
+    {
+      "input": [
+        [
+          1,
+          2,
+          3,
+          10,
+          50
+        ]
+      ],
+      "target_tokens": [
+        2,
+        3,
+        10,
+        50,
+        20
+      ],
+      "weights": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "input": [
+        [
+          1,
+          2,
+          3
+        ]
+      ],
+      "target_tokens": [
+        2,
+        3,
+        30
+      ],
+      "weights": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "input": [
+        [
+          1,
+          2,
+          3
+        ]
+      ],
+      "target_tokens": [
+        2,
+        3,
+        40
+      ],
+      "weights": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "input": [
+        [
+          1,
+          2,
+          3,
+          60
+        ]
+      ],
+      "target_tokens": [
+        2,
+        3,
+        60,
+        61
+      ],
+      "weights": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "input": [
+        [
+          1,
+          2,
+          3,
+          10,
+          50
+        ]
+      ],
+      "target_tokens": [
+        2,
+        3,
+        10,
+        50,
+        20
+      ],
+      "logprobs": [
+        0.0,
+        0.0,
+        -10.0,
+        0.0,
+        -20.0
+      ],
+      "advantages": [
+        0.0,
+        0.0,
+        1.0089980363845825,
+        0.0,
+        1.0179979801177979
+      ]
+    },
+    {
+      "input": [
+        [
+          1,
+          2,
+          3
+        ]
+      ],
+      "target_tokens": [
+        2,
+        3,
+        30
+      ],
+      "logprobs": [
+        0.0,
+        0.0,
+        -30.0
+      ],
+      "advantages": [
+        0.0,
+        0.0,
+        -0.9729980230331421
+      ]
+    },
+    {
+      "input": [
+        [
+          1,
+          2,
+          3
+        ]
+      ],
+      "target_tokens": [
+        2,
+        3,
+        40
+      ],
+      "logprobs": [
+        0.0,
+        0.0,
+        -40.0
+      ],
+      "advantages": [
+        0.0,
+        0.0,
+        1.035997986793518
+      ]
+    },
+    {
+      "input": [
+        [
+          1,
+          2,
+          3,
+          60
+        ]
+      ],
+      "target_tokens": [
+        2,
+        3,
+        60,
+        61
+      ],
+      "logprobs": [
+        0.0,
+        0.0,
+        -60.0,
+        -61.0
+      ],
+      "advantages": [
+        0.0,
+        0.0,
+        -0.9459980130195618,
+        -0.9450979828834534
+      ]
+    }
+  ],
+  "anchor": [
+    [
+      1,
+      2,
+      3,
+      10,
+      50,
+      20
+    ],
+    [
+      1,
+      2,
+      3,
+      30
+    ],
+    [
+      1,
+      2,
+      3,
+      40
+    ],
+    [
+      1,
+      2,
+      3,
+      60,
+      61
+    ]
+  ],
+  "update": {
+    "train_tokens": 15,
+    "substeps": 1,
+    "learning_rate": 2e-05,
+    "loss_fn": "cispo",
+    "kl_v1": -36.33333206176758,
+    "kl_v2": 841.7916870117188,
+    "entropy": 36.83333206176758
+  },
+  "row": {
+    "step": 0,
+    "trained": true,
+    "groups": 2,
+    "rollouts": 4,
+    "graded": 4,
+    "masked": 0,
+    "degenerate": 0,
+    "sequences": 4,
+    "sequences_per_rollout": 1.0,
+    "train_tokens": 15,
+    "reward_mean": 0.5,
+    "reward_spread": 0.5,
+    "length_mean": 1.5,
+    "kl_v1": -36.33333206176758,
+    "kl_v2": 841.7916870117188,
+    "entropy": 36.83333206176758,
+    "anchor_kl": -33.15,
+    "learning_rate": 2e-05,
+    "substeps": 1,
+    "loss_fn": "cispo"
+  },
+  "updates": 1
+}
