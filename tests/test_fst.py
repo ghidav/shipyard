@@ -169,7 +169,7 @@ async def test_a_cycle_evolves_two_texts_then_splits_every_group_across_them(
     jobs = [
         job
         for job in record.read(opened.directory / record.JOBS)
-        if job["purpose"] in ("rollout", "search")
+        if job["purpose"] in ("training", "search")
     ]
     assert [job["modules"] for job in jobs[-4:]] == population * 2, "one job per text per step"
     # The anchor set is both what the search learns from and what it keeps texts by: the
@@ -200,7 +200,7 @@ async def test_the_fast_phase_scores_each_cell_with_one_rollout_on_five_passes(
     jobs = [
         job
         for job in record.read(opened.directory / record.JOBS)
-        if job["purpose"] in ("rollout", "search")
+        if job["purpose"] in ("training", "search")
     ]
     fast, slow = jobs[:-4], jobs[-4:]
     assert fast and all(job["trials"] == job["tasks"] for job in fast), "one rollout a cell"
@@ -336,7 +336,9 @@ async def test_a_cycle_interrupted_after_a_slow_step_resumes_without_another_fas
     with resumed.opened:
         await resumed.run()
     after = list(record.read(resumed.opened.directory / record.JOBS))[len(before) :]
-    assert [job["purpose"] for job in after] == ["rollout", "rollout"], "the cycle's last step only"
+    assert [job["purpose"] for job in after] == ["training", "training"], (
+        "the cycle's last step only"
+    )
     assert [job["modules"] for job in after] == population
     rows = [row for row in record.read(resumed.opened.directory / record.METRICS) if "step" in row]
     assert [(row["step"], row["cycle"]) for row in rows] == [(0, 0), (1, 0)]

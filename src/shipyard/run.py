@@ -149,9 +149,9 @@ class Run:
         job: str,
         trials: Sequence[types.Trial],
         *,
-        batch: int,
+        step: int,
         modules: Candidate | None = None,
-        purpose: str = "rollout",
+        purpose: str = "training",
         **about: Any,
     ) -> Rollouts:
         """The job's record side: records drained, logs read, the row written with its modules
@@ -177,7 +177,7 @@ class Run:
             purpose=purpose,
             party=party or self.config.model.provider,
             counted=counted,
-            batch=batch,
+            step=step,
             tasks=tasks,
             **about,
             **({"modules": modules.digest} if modules is not None else {}),

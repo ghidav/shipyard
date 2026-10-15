@@ -23,9 +23,9 @@ runner = CliRunner()
 ROW = {
     "at": "2026-10-07T20:57:50.871956+00:00",
     "job": "02-eval-tinker-docker__eTNXY25-0000",
-    "purpose": "rollout",
+    "purpose": "training",
     "trials": 2,
-    "batch": 0,
+    "step": 0,
     "tasks": 1,
     "graded": 2,
     "served": "tinker",
@@ -77,7 +77,7 @@ def test_show_at_eighty_columns_prints_the_jobs_as_blocks(
     monkeypatch.setenv("COLUMNS", "80")
     shown = runner.invoke(app, ["show", run.id, "--root", str(tmp_path)])
     assert shown.exit_code == 0, shown.output
-    assert "  purpose          rollout" in shown.output and "…" not in shown.output
+    assert "  purpose          training" in shown.output and "…" not in shown.output
     monkeypatch.setenv("COLUMNS", "400")
     shown = runner.invoke(app, ["show", run.id, "--root", str(tmp_path)])
     header = next(line for line in shown.output.splitlines() if "purpose" in line)

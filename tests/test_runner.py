@@ -102,9 +102,9 @@ async def test_a_two_step_dapo_run_opens_a_client_serves_samples_steps_andcheckp
     assert tinker["train_tokens"] == tinker["reference_tokens"] == 2 * 4 * INPUT_TOKENS
     assert "anchor_tokens" not in tinker and tinker["trials"] == 8
     assert list(costs["parties"]) == ["tinker"]
-    assert [(job["batch"], job["purpose"], job["graded"]) for job in jobs] == [
-        (0, "rollout", 4),
-        (1, "rollout", 4),
+    assert [(job["step"], job["purpose"], job["graded"]) for job in jobs] == [
+        (0, "training", 4),
+        (1, "training", 4),
     ]
     note = Run.read(opened.directory)
     assert note["failed"] is False and note["kind"] == "dapo"
@@ -130,7 +130,7 @@ async def test_each_epoch_is_one_pass_over_the_train_set_and_the_steps_count_thr
         ("step-4", 4, 1),
         ("final", 4, 1),
     ]
-    assert [job["batch"] for job in record.read(opened.directory / record.JOBS)] == [0, 1, 2, 3]
+    assert [job["step"] for job in record.read(opened.directory / record.JOBS)] == [0, 1, 2, 3]
 
 
 async def test_a_run_that_names_a_test_set_evaluates_on_the_cadence(
@@ -157,8 +157,8 @@ async def test_a_run_that_names_a_test_set_evaluates_on_the_cadence(
         for row in evaluations
     ] == [(2, 0, 2, 4, 4, 0.5), (4, 1, 2, 4, 4, 0.5)]
     jobs = list(record.read(opened.directory / record.JOBS))
-    assert [job["purpose"] for job in jobs] == ["rollout", "rollout", "evaluation"] * 2
-    assert [job["batch"] for job in jobs] == [0, 1, 2, 2, 3, 4]
+    assert [job["purpose"] for job in jobs] == ["training", "training", "evaluation"] * 2
+    assert [job["step"] for job in jobs] == [0, 1, 2, 2, 3, 4]
     assert [c["tag"] for c in checkpoints(opened)][-1] == "final"
 
 
@@ -367,7 +367,7 @@ async def test_a_run_killed_mid_epoch_resumes_from_its_last_checkpoint(
     assert note["resumed"] == "step-1" and note["failed"] is False and note["finished_at"]
     assert [n["error"] for n in note["earlier"]] == ["Stopped: SIGINT"]
     jobs = list(record.read(again.directory / record.JOBS))
-    assert [(job["batch"], job["epoch"]) for job in jobs] == [(0, 0), (1, 0)], (
+    assert [(job["step"], job["epoch"]) for job in jobs] == [(0, 0), (1, 0)], (
         "the interrupted job was never recorded; the resumed step drew its batch again"
     )
 
