@@ -1,6 +1,4 @@
-"""What the gradient path produces on fixed inputs, frozen as JSON under `tests/golden/`.
-The credit cases run `credit`, the step and the row on hand-built groups; the job cases run
-`Run.sample` on fakes first. `GOLDEN_UPDATE=1` rewrites the files."""
+"""Test the gradient path on fixed inputs."""
 
 from __future__ import annotations
 
@@ -55,8 +53,7 @@ PNG = base64.b64encode(b"png-bytes").decode()
 
 
 def preset_of(kind: str, **recipe: Any) -> Preset:
-    """The preset the fixture blueprint of `kind` resolves to, with these `[recipe]` keys
-    set over its own."""
+    """The fixture blueprint's preset, with these `[recipe]` keys set over its own."""
     loaded = load(BLUEPRINTS / kind).recipe.model_copy(update=recipe)
     module = {"dapo": dapo, "dr-grpo": dr_grpo, "cispo": cispo, "fst": fst}[kind]
     return module.preset(loaded)
@@ -74,8 +71,7 @@ TRAINERS: dict[str, type[Procedure]] = {
 
 
 class PositionalAnchor:
-    """The starting weights' sampler: each position scores minus a tenth of its token, so
-    the KL gap to the trainer's positional mu depends on the position."""
+    """Scores each position minus a tenth of its token."""
 
     def __init__(self) -> None:
         self.asked: list[list[int]] = []
@@ -87,7 +83,7 @@ class PositionalAnchor:
 
 
 class ScriptedTrials:
-    """Harbor's trial replaced: each task's rollouts take its outcomes in plan order."""
+    """Each task's rollouts take its outcomes in order."""
 
     def __init__(self, outcomes: Mapping[str, list[dict[str, Any] | None]]) -> None:
         self.outcomes = {task: list(found) for task, found in outcomes.items()}
@@ -105,8 +101,6 @@ class ScriptedTrials:
 
 @dataclass
 class ScriptedProxy(FakeProxy):
-    """Answers each task's trials with its queued record lists, in plan order."""
-
     queues: dict[str, list[list[Record]]] = field(default_factory=dict)
 
     async def records(self, trial: str) -> list[Record]:
@@ -124,8 +118,7 @@ def sequence(
     scored: bool = True,
     images: tuple[Picture, ...] = (),
 ) -> Sequence:
-    """The prompt, then the actions with `tools` between them; mu is minus a tenth of each
-    action token."""
+    """mu is minus a tenth of each action token."""
     actions = actions or ((10, 11),)
     tokens: list[int] = list(prompt)
     spans: list[tuple[int, int]] = []
@@ -158,7 +151,6 @@ def grouped(*members: Member, task: str = "t", updates: int | None = 0) -> Group
 
 
 def _varied(reward: float, *tokens: int) -> Member:
-    """A member whose one action is `tokens`, so its mu and its length are its own."""
     return member(reward, sequences=[sequence(PROMPT, tuple(tokens))])
 
 
@@ -185,8 +177,7 @@ class Credited:
 
 @dataclass(frozen=True)
 class Jobbed:
-    """A job through `Run.sample`; `texts` above one is an fst step, one job per text,
-    merged."""
+    """A job through `Run.sample`; `texts` above one is an fst step."""
 
     kind: str
     group_size: int
@@ -200,8 +191,7 @@ class Jobbed:
 
 
 def _mixed() -> list[Group]:
-    """Spread with varied lengths, flat, spread with a masked member, spread: at a limit of
-    two the last is surplus."""
+    """Spread, flat, spread with a mask, spread."""
     return [
         grouped(
             _varied(1.0, 10, 11, 12),
@@ -225,8 +215,7 @@ def _mixed() -> list[Group]:
 
 
 def _overlong() -> list[Group]:
-    """Under a budget of 100: a docked group, an all-failed group that is flat before the
-    term, a group inside the buffer."""
+    """Under a budget of 100: docked, flat before the term, inside the buffer."""
     return [
         grouped(
             member(1.0, wrote=50, sequences=[sequence(PROMPT, (10, 11))]),
@@ -250,7 +239,7 @@ def _overlong() -> list[Group]:
 
 
 def _chained() -> list[Group]:
-    """Several chains and several spans: owners and the per-prompt weights."""
+    """Several chains and spans."""
     two_chains = member(1.0, sequences=[sequence(PROMPT, (10, 11)), sequence((4, 5), (12, 13, 14))])
     three_spans = member(
         0.0, sequences=[sequence(PROMPT, (20,), (21, 22), (23,), tools=((50, 51), (52,)))]
@@ -271,7 +260,7 @@ def _partial() -> list[Group]:
 
 
 def _masked() -> list[Group]:
-    """All masked; one measured; a measured pair around masked members."""
+    """All masked; one measured; a pair around masked members."""
     return [
         grouped(
             member(None, mask="env_error", wrote=0, ended=None),
@@ -318,7 +307,6 @@ def _lengths() -> list[Group]:
 
 
 def _pictured() -> list[Group]:
-    """A member whose chain carries a picture, beside plain ones."""
     shot = Picture(1, 3, "png", PNG)
     seen = sequence(
         (1, IMAGE_TOKEN, IMAGE_TOKEN, IMAGE_TOKEN, 5), (6, 7), (8,), tools=((9,),), images=(shot,)
@@ -363,8 +351,7 @@ CREDITED: dict[str, Credited] = {
 
 
 def _tool_loop(*actions: tuple[int, ...]) -> list[Record]:
-    """One rollout's records, each prompt extending the last, scored minus a tenth of each
-    token."""
+    """Each prompt extends the last, scored minus a tenth of each token."""
     out: list[Record] = []
     prompt: tuple[int, ...] = PROMPT
     for at, action in enumerate(actions):
@@ -375,8 +362,7 @@ def _tool_loop(*actions: tuple[int, ...]) -> list[Record]:
 
 
 def _served() -> Jobbed:
-    """Clean, cut by the budget, a first turn that never fit, a quit on a failed call; never
-    seen, clean, bridged and cached, cut by the clock."""
+    """The served endings, one per trial."""
     return Jobbed(
         kind="dapo",
         group_size=4,
@@ -415,7 +401,7 @@ def _served() -> Jobbed:
 
 
 def _fst(share: int) -> Jobbed:
-    """Task a's spread comes from the two texts, task b's from sampling."""
+    """Task a's spread comes from the texts, task b's from sampling."""
     first = [{"reward": 1.0}] * share + [{"reward": float(n % 2 == 0)} for n in range(share)]
     second = [{"reward": 0.0}] * share + [{"reward": float(n % 2 == 1)} for n in range(share)]
     return Jobbed(
@@ -436,7 +422,6 @@ def _fst(share: int) -> Jobbed:
 
 
 def _provider() -> Jobbed:
-    """A provider's model: no proxy, the verdicts and the counts read off `result.json`."""
     return Jobbed(
         kind="evaluate",
         group_size=2,
@@ -467,7 +452,6 @@ CASES: tuple[str, ...] = (*CREDITED, *JOBBED)
 
 
 async def replay(name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    """Run the case and return what it produced, in the frozen shape."""
     if name in CREDITED:
         return await _credited(CREDITED[name])
     return await _jobbed(JOBBED[name], tmp_path, monkeypatch)
@@ -528,7 +512,6 @@ async def _jobbed(case: Jobbed, tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
 
 
 def _texts(tmp_path: Path, count: int) -> list[Candidate | None]:
-    """The valid fixture and copies that add a line to its skill; [None] for no text."""
     if count == 1:
         return [None]
     found: list[Candidate | None] = []
@@ -721,7 +704,6 @@ def _datum(one: tinker.Datum) -> dict[str, Any]:
 
 
 def _chunks(found: tinker.ModelInput) -> list[Any]:
-    """Text chunks as their ids; an image chunk as its length, format and bytes."""
     out: list[Any] = []
     for chunk in found.chunks:
         if hasattr(chunk, "tokens"):
@@ -735,7 +717,6 @@ def _chunks(found: tinker.ModelInput) -> list[Any]:
 
 
 def _call(one: tuple[Any, ...]) -> list[Any]:
-    """A training client call: an `optim_step` with its parameters, the rest as recorded."""
     if one[0] == "optim_step":
         return ["optim_step", one[1].model_dump()]
     return [_plain(part) for part in one]
@@ -789,12 +770,10 @@ def _sequence(one: Sequence) -> dict[str, Any]:
 
 
 def _job(one: Mapping[str, Any]) -> dict[str, Any]:
-    """A job row without its name and time, which a run makes up."""
     return {key: value for key, value in one.items() if key not in ("at", "job")}
 
 
 def _requests(directory: Path, rolled: Rollouts) -> list[dict[str, Any]]:
-    """The request rows with each trial named by its place in the plan."""
     return _requests_of(directory, [Path(trial).name for trial in rolled.trials])
 
 
@@ -825,7 +804,6 @@ def _plain(value: Any) -> Any:
 
 
 def differences(found: Any, frozen: Any, at: str = "") -> list[str]:
-    """Where `found` departs from `frozen`; numbers agree within `TOLERANCE`."""
     out: list[str] = []
     if isinstance(frozen, dict) and isinstance(found, dict):
         for key in sorted(set(frozen) | set(found)):
@@ -865,7 +843,6 @@ def frozen_path(name: str) -> Path:
 
 
 def read_frozen(name: str) -> dict[str, Any] | None:
-    """The frozen output of the case, or None when it was never written."""
     path = frozen_path(name)
     return record.read_json(path) if path.is_file() else None
 
