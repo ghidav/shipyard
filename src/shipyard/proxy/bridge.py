@@ -180,12 +180,7 @@ def bridge(
     at, reply = found
     if at < 1 or not tail_extends(messages[at + 1 :]):
         return None
-    # The template drops earlier thinking at a new user turn. Render such a prompt afresh.
-    if getattr(renderer, "strip_thinking_from_history", False) and any(
-        str(_field(message, "role") or "") == "user" for message in messages[at + 1 :]
-    ):
-        return None
-    stops = {int(s) for s in (renderer.get_stop_sequences() or []) if isinstance(s, int)}
+    stops = int_stops(renderer)
     if not stops:
         return None
     head = ids_of(renderer.build_generation_prompt(list(messages[:at])))
@@ -219,3 +214,8 @@ def tail_extends(tail: Sequence[Any]) -> bool:
         return False
     body = roles[:-1] if roles[-1] == "user" else roles
     return all(role == "tool" for role in body)
+
+
+def int_stops(renderer: Any) -> set[int]:
+    """The renderer's stop tokens that are token ids. String stops are skipped."""
+    return {int(s) for s in (renderer.get_stop_sequences() or []) if isinstance(s, int)}

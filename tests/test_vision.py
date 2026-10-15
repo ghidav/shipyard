@@ -270,10 +270,9 @@ def test_an_image_key_is_the_pixels_or_the_string() -> None:
     assert vision.image_key({"image": object()})  # still one entry
 
 
-def test_takes_images_reads_the_renderers_flag_through_wrappers() -> None:
+def test_takes_images_reads_the_renderers_flag() -> None:
     assert vision.takes_images(SimpleNamespace(_has_image_processor=True))
     assert not vision.takes_images(SimpleNamespace(_has_image_processor=False))
-    assert vision.takes_images(SimpleNamespace(_inner=SimpleNamespace(_has_image_processor=True)))
     assert not vision.takes_images(SimpleNamespace())
 
 

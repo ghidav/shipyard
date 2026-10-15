@@ -113,14 +113,13 @@ class ProviderEndpoint(Endpoint):
 
 @dataclass
 class ProxyEndpoint(Endpoint):
-    """The proxy over a Tinker sampler: started by the first job, stopped by the run."""
+    """The proxy over a Tinker sampler: started when the policy opens, stopped by the run."""
 
     config: Blueprint
     directory: Path
     environ: Mapping[str, str] = field(default_factory=lambda: os.environ, repr=False)
     proxy: Proxy | None = None
     told: str | None = None
-    pointed: bool = False
     placement: str | None = None
     origin: str | None = None
     _logs: list[IO[str]] = field(default_factory=list, repr=False)
@@ -157,7 +156,7 @@ class ProxyEndpoint(Endpoint):
                     f"{CONTROL_TOKEN_ENV}, or start it with --weights"
                 )
             else:
-                self.told, self.pointed = None, True
+                self.told = None
             return
         log = self._log(PROXY_LOG)
         settings = endpoint_settings(cfg, run=self.directory.name)
@@ -170,7 +169,7 @@ class ProxyEndpoint(Endpoint):
                 settings, environ=self.environ, log=log, tunnel_log=self._log(TUNNEL_LOG)
             )
         self.origin = self.proxy.origin
-        self.told, self.pointed = weights, True
+        self.told = weights
         served = await self.proxy.ready()
         logger.info("the proxy at %s answers (%s), serving %s", self.origin, where, served)
 
@@ -185,7 +184,7 @@ class ProxyEndpoint(Endpoint):
             raise RuntimeError("the proxy is not started; there is nothing to point")
         self.alive()
         await self.proxy.swap(path)
-        self.told, self.pointed = path, True
+        self.told = path
 
     def connection(self, trial: Trial) -> Connection:
         if self.proxy is None:
@@ -223,8 +222,7 @@ class ProxyEndpoint(Endpoint):
                 raise
             for item in records:
                 record.append(self.directory / record.REQUESTS, _row(job, trial.name, item))
-        if self.pointed:
-            answered_by_ours(job, taken, self.told)
+        answered_by_ours(job, taken, self.told)
         return taken
 
     def check(self, job: str, records: Records) -> None:

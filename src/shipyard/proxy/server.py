@@ -66,7 +66,6 @@ class Server:
     client_factory: ClientFactory | None = field(default=None, repr=False)
 
     _service: Any = field(default=None, repr=False)
-    _client: Any = field(default=None, repr=False)
     _recorder: Recorder | None = field(default=None, repr=False)
     _deps: Any = field(default=None, repr=False)
     _runner: Any = field(default=None, repr=False)
@@ -88,19 +87,6 @@ class Server:
         if self._recorder is None:
             raise RuntimeError("This endpoint is not started, so nothing is recorded.")
         return self._recorder
-
-    def address_for(self, trial: str) -> str:
-        """`http://<host>:<port>/r/trial/<trial>/v1`. The name must be non-empty and contain
-        no `/`, because the cookbook reads the path as key/value pairs. Raises before
-        `start`, when there is no port."""
-        if not trial or "/" in trial:
-            raise ValueError(
-                f"{trial!r} cannot be addressed: a trial name goes in the URL path, "
-                "so it must be non-empty and contain no '/'."
-            )
-        if self._port is None:
-            raise RuntimeError("This endpoint has no port yet; call start() before address_for.")
-        return f"http://{self.host}:{self._port}/r/trial/{trial}/v1"
 
     def records_for(self, trial: str) -> list[Record]:
         return self.recorder.records_for(trial)
@@ -124,11 +110,11 @@ class Server:
             import tinker
 
             self._service = tinker.ServiceClient(user_metadata=self.metadata)
-        self._client = await self._make(self.model_path)
+        client = await self._make(self.model_path)
         if self.max_context is None and self._service is not None:
             self.max_context = await context_of(self._service, self.base_model)
         self._recorder = Recorder(
-            self._client,
+            client,
             temperature=self.temperature,
             top_p=self.top_p,
             top_k=self.top_k,
@@ -166,10 +152,10 @@ class Server:
     async def swap(self, model_path: str | None) -> None:
         """Switch to a sampling client on the path, or on the base model for None. The
         server stays up, so addresses already handed to running trials keep answering."""
-        self._client = await self._make(model_path)
+        client = await self._make(model_path)
         self.model_path = model_path
         if self._recorder is not None:
-            self._recorder.client, self._recorder.served = self._client, model_path
+            self._recorder.client, self._recorder.served = client, model_path
         if self._deps is not None:
             self._deps.model_label = model_path or self.base_model
 
@@ -221,15 +207,8 @@ class Server:
     def _records_payload(self, trial: str, delta: bool) -> dict[str, Any]:
         """An unknown trial gets an empty list and a 200. A rollout whose container never
         reached the proxy made no requests."""
-        recorder = self.recorder
-        turned_away, spoke = recorder.turned_away.get(trial, 0), recorder.spoke.get(trial, 0)
-        records = recorder.take(trial)
-        return {
-            "trial": trial,
-            "records": delta_encoded(records) if delta else [asdict(r) for r in records],
-            "turned_away": turned_away,
-            "spoke": spoke,
-        }
+        records = self.recorder.take(trial)
+        return {"records": delta_encoded(records) if delta else [asdict(r) for r in records]}
 
     def _control_middleware(self) -> Any:
         """Handle two routes ahead of the cookbook. `POST /control/weights` requires the

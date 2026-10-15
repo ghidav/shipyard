@@ -10,7 +10,8 @@ from typing import TYPE_CHECKING, Any
 
 from harbor.models.agent.context import AgentContext
 
-from shipyard.admit import BUDGET, CONTEXT, results
+from shipyard.admit import results
+from shipyard.proxy.wire import BUDGET, CONTEXT
 
 if TYPE_CHECKING:
     from shipyard.proxy.wire import Record

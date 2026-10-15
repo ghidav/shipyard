@@ -156,7 +156,7 @@ async def test_a_local_sandbox_starts_serve_once_with_the_checkpoint_on_its_comm
         and settings["weights"] == "tinker://w/step-2"
     )
     assert named["log"].name == str(tmp_path / PROXY_LOG)
-    assert held.told == "tinker://w/step-2" and held.pointed is True
+    assert held.told == "tinker://w/step-2"
     assert fake.swapped == [], "serve was started on the path; nothing to swap"
     assert held.proxy is fake and held.budget is None
     held.close()
@@ -171,7 +171,7 @@ async def test_a_sandbox_elsewhere_gets_a_tunnel(fake: FakeProxy, tmp_path: Path
     await held.open()
     [(how, settings, named)] = fake.placed
     assert how == "tunnel" and settings["weights"] is None and "tunnel_log" in named
-    assert held.told is None and held.pointed is True
+    assert held.told is None
     assert (held.placement, held.origin) == ("tunnel", fake.origin)
     held.close()
     assert fake.closed == 1
@@ -198,12 +198,12 @@ async def test_a_remote_proxy_is_pointed_through_its_control_route(
     assert fake.placed == [("remote", "https://p.example/", {"token": "t", "control_token": "c"})]
     assert fake.probed == 1, "probed before any sandbox opens"
     assert fake.swapped == ["tinker://w/step-4"]
-    assert held.told == "tinker://w/step-4" and held.pointed is True
+    assert held.told == "tinker://w/step-4"
     assert not (tmp_path / PROXY_LOG).exists()
     await held.serve("tinker://w/step-5")
     assert fake.swapped[-1] == "tinker://w/step-5" and held.told == "tinker://w/step-5"
     await held.serve(None)
-    assert held.told is None and held.pointed is True
+    assert held.told is None
 
 
 async def test_a_remote_proxy_without_a_control_token_serves_only_what_it_was_started_on(
@@ -212,7 +212,7 @@ async def test_a_remote_proxy_without_a_control_token_serves_only_what_it_was_st
     environ = {PROXY_TOKEN_ENV: "t"}
     held = ProxyEndpoint(blueprint(endpoint_url="https://p.example"), tmp_path, environ=environ)
     await held.open()
-    assert fake.swapped == [] and held.pointed is True and held.told is None, "base, checked"
+    assert fake.swapped == [] and held.told is None, "base, checked"
     with pytest.raises(RuntimeError, match="not started"):
         await ProxyEndpoint(blueprint(endpoint_url="https://p.example"), tmp_path).serve(None)
     cfg = blueprint(endpoint_url="https://p.example", from_checkpoint="tinker://w/step-4")

@@ -15,26 +15,14 @@ import tinker
 from shipyard.proxy.exchange import Exchange, exchange
 from shipyard.proxy.recorder import Recorder
 from shipyard.proxy.server import DEFAULT_MAX_TOKENS, Server, context_of
-from tests.proxies import FakeSampler, ask, ask_anthropic, control, ids, server
+from tests.proxies import FakeSampler, address, ask, ask_anthropic, control, ids, server
 
 # ------------------------------------------------------------------ before it starts
-
-
-def test_address_for_refuses_before_start() -> None:
-    with pytest.raises(RuntimeError, match="start"):
-        server().address_for("task-1")
 
 
 def test_nothing_is_recorded_before_start() -> None:
     with pytest.raises(RuntimeError):
         server().records_for("task-1")
-
-
-@pytest.mark.parametrize("name", ["", "org/name", "org/name/task"])
-async def test_a_trial_name_that_cannot_ride_in_the_path_is_refused(name: str) -> None:
-    async with server() as started:
-        with pytest.raises(ValueError):
-            started.address_for(name)
 
 
 def test_each_endpoint_has_its_own_token_and_an_empty_one_is_replaced() -> None:
@@ -56,7 +44,7 @@ def test_neither_token_is_in_the_endpoints_repr() -> None:
 async def test_the_port_is_ephemeral_and_two_endpoints_do_not_collide() -> None:
     async with server() as first, server() as second:
         assert first.port and second.port and first.port != second.port
-        assert first.address_for("task-1") == f"http://127.0.0.1:{first.port}/r/trial/task-1/v1"
+        assert address(first, "task-1") == f"http://127.0.0.1:{first.port}/r/trial/task-1/v1"
 
 
 async def test_the_port_is_given_back_on_stop() -> None:
@@ -64,8 +52,6 @@ async def test_the_port_is_given_back_on_stop() -> None:
     await started.start()
     await started.stop()
     assert started.port is None
-    with pytest.raises(RuntimeError):
-        started.address_for("task-1")
 
 
 # ------------------------------------------------------------------ serving a trial
@@ -151,7 +137,7 @@ async def test_swap_changes_what_is_served_and_every_record_says_who_answered() 
             "tinker://run/sampler_weights/step-1",
             None,
         ]
-        assert started.address_for("t").startswith(f"http://127.0.0.1:{started.port}/")
+        assert address(started, "t").startswith(f"http://127.0.0.1:{started.port}/")
 
 
 async def test_a_path_given_before_start_is_what_start_serves() -> None:

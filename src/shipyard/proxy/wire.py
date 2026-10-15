@@ -22,6 +22,10 @@ CONTROL_PATH = "/control/weights"
 HEALTH_PATH = "/healthz"
 #: Prefix of `error` on a record whose request the sampler failed: `sampler: <type>`.
 SAMPLER_FAILED = "sampler: "
+#: `error` on a record the proxy refused, each the policy's own doing: a spent budget, a
+#: full context.
+BUDGET = "budget"
+CONTEXT = "context"
 #: Placeholder id for an image's tokens in a record's prompt ids, one per token of the
 #: chunk, so the record keeps the prompt's length. The image itself is a `Picture` on the
 #: record. Admission sets aside a rollout whose record did not keep one.

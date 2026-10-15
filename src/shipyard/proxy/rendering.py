@@ -8,7 +8,7 @@ import hashlib
 from typing import Any
 
 from shipyard.proxy import cookbook
-from shipyard.proxy.bridge import bridge, chain, digest, digests_of
+from shipyard.proxy.bridge import bridge, chain, digest, digests_of, int_stops
 from shipyard.proxy.exchange import Exchange, exchange
 from shipyard.proxy.thinking import thinking_of
 from shipyard.proxy.vision import has_images, takes_images
@@ -19,7 +19,7 @@ class Rendering:
     """Wraps a renderer. It overrides `build_generation_prompt` and `parse_response`.
     Every other attribute comes from the inner renderer."""
 
-    def __init__(self, inner: Any, recorder: Any = None) -> None:
+    def __init__(self, inner: Any, recorder: Any) -> None:
         self._inner = inner
         self._recorder = recorder
 
@@ -35,12 +35,11 @@ class Rendering:
         digests = digests_of(messages)
         if found is not None:
             found.prompt_digests = digests
-            if self._recorder is not None:
-                index = self._recorder.index_for(found.trial)
-                built = bridge(messages, self._inner, index, digests)
-                if built is not None:
-                    found.bridged, found.rendered = True, built.rendered
-                    return model_input(built.ids, built.pictures)
+            index = self._recorder.index_for(found.trial)
+            built = bridge(messages, self._inner, index, digests)
+            if built is not None:
+                found.bridged, found.rendered = True, built.rendered
+                return model_input(built.ids, built.pictures)
         return self._inner.build_generation_prompt(messages, **kwargs)
 
     def parse_response(self, tokens: Any) -> Any:
@@ -49,7 +48,7 @@ class Rendering:
         message = with_call_ids(message, tokens, found)
         if found is not None:
             found.thinking = thinking_of(message)
-            if self._recorder is not None and found.seq is not None:
+            if found.seq is not None:
                 ended = bool(tokens) and int(tokens[-1]) in int_stops(self._inner)
                 self._recorder.reply(
                     found.trial,
@@ -98,8 +97,3 @@ def with_call_ids(message: Any, tokens: Any, found: Exchange | None) -> Any:
 
 def _call_id(call: Any) -> str | None:
     return call.get("id") if isinstance(call, dict) else getattr(call, "id", None)
-
-
-def int_stops(renderer: Any) -> set[int]:
-    """The renderer's stop tokens that are token ids. String stops are skipped."""
-    return {int(s) for s in (renderer.get_stop_sequences() or []) if isinstance(s, int)}
