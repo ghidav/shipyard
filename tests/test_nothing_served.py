@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from shipyard import record, session
+from shipyard import record
 from shipyard.run import Run
 from shipyard.runner import Runner
 from shipyard.sampling.endpoint import NothingServed, served_nothing
@@ -135,7 +135,7 @@ def test_served_nothing_is_about_records_not_rewards() -> None:
 @pytest.fixture
 def service(monkeypatch: pytest.MonkeyPatch) -> FakeService:
     made_service = FakeService(capabilities=capable((MODEL, True)))
-    monkeypatch.setattr(session, "service_client", lambda metadata=None: made_service)
+    monkeypatch.setattr("shipyard.runner.service_client", lambda metadata=None: made_service)
     return made_service
 
 
