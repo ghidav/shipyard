@@ -477,7 +477,7 @@ from shipyard.training.trainer import DAPOTrainer
 
 class Marked(DAPOTrainer):
     def log(self, found, update, **more):
-        return super().log(found, update, marked=True, **more)
+        super().log(found, update, marked=True, **more)
 
 
 class MyRunner(Runner):

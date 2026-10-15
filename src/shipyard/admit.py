@@ -23,7 +23,6 @@ __all__ = [
     "read_logs",
     "result_of",
     "results",
-    "scores",
     "verdict",
     "verdicts",
 ]
@@ -208,11 +207,6 @@ def harness_log(trial: Path, harness: str) -> str | None:
         )
     except OSError:
         return None
-
-
-def scores(rollouts: Rollouts) -> list[float]:
-    """The rewards of the graded trials. A masked trial is left out, not scored zero."""
-    return [found.reward for found in verdicts(rollouts) if found.reward is not None]
 
 
 def results(rollouts: Rollouts) -> Iterator[tuple[Path, dict[str, Any]]]:

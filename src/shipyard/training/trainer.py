@@ -264,7 +264,7 @@ class Trainer:
         """`loss_fn_config` for the step; the base loss takes none."""
         return None
 
-    async def credit(self, agent: Agent, found: Values[Group]) -> Credit:
+    async def credit(self, client: TrainingClient, found: Values[Group]) -> Credit:
         """The datums by group, none for a flat one; the anchor gap times `kl_coef` subtracted."""
         recipe = self.recipe
         kept: list[list[tuple[Any, float]]] = []
@@ -282,7 +282,7 @@ class Trainer:
         sequences = [one for members in kept for member, _ in members for one in member.sequences]
         if not sequences:
             return Credit([[] for _ in found], 0, 0, None)
-        mu = await self.mu(agent, sequences)
+        mu = await self.mu(client, sequences)
         reference_tokens = (
             0 if recipe.reference == "sampler" else sum(len(one.tokens) - 1 for one in sequences)
         )
@@ -319,16 +319,10 @@ class Trainer:
         gap_mean = fmean(g for row in gaps for g in row) if gaps and any(gaps) else None
         return Credit(datums, reference_tokens, anchor_tokens, gap_mean)
 
-    async def mu(self, agent: Agent, sequences: Values[Sequence]) -> list[list[float]]:
+    async def mu(self, client: TrainingClient, sequences: Values[Sequence]) -> list[list[float]]:
         """The sampler's logprobs at every target, from the records or the training client."""
         if self.recipe.reference == "sampler":
             return [sampler_logprobs(one) for one in sequences]
-        client = agent.policy.client
-        if client is None:
-            raise ValueError(
-                '`[recipe] reference = "trainer"` recomputes mu on the training client, '
-                "and this agent has none"
-            )
         return await client.compute_logprobs(sequences)
 
     async def gaps(
@@ -356,7 +350,7 @@ class Trainer:
             return None
         began = time.monotonic()
         party = agent.policy.endpoint.party or run.config.model.provider
-        credit = await self.credit(agent, found)
+        credit = await self.credit(client, found)
         run.spent(
             party, reference_tokens=credit.reference_tokens, anchor_tokens=credit.anchor_tokens
         )
@@ -410,9 +404,10 @@ class Trainer:
         forward = await client.forward_backward(part, self.loss_fn, self.bounds())
         return forward, await client.optim_step(adam, rate)
 
-    def log(self, found: Values[Group], update: Update | None, **more: Any) -> dict[str, Any]:
+    def log(self, found: Values[Group], update: Update | None, **more: Any) -> None:
         """The step's row in `ROW` order, naming its jobs, with `more` in it or after it."""
         measured = [one for group in found for one in group.measured]
+        rollouts = sum(len(group.members) for group in found)
         spreads = [
             pstdev(rewards) if len(rewards) > 1 else 0.0
             for group in found
@@ -426,9 +421,9 @@ class Trainer:
             "trained": update is not None,
             "jobs": jobs,
             "groups": len(found),
-            "rollouts": sum(len(group.members) for group in found),
+            "rollouts": rollouts,
             "graded": len(measured),
-            "masked": sum(len(group.members) for group in found) - len(measured),
+            "masked": rollouts - len(measured),
             "degenerate": sum(
                 1 for group in found if group.measured and group.reward_variance <= 0
             ),
@@ -446,7 +441,6 @@ class Trainer:
         kept = {key: value for key in ROW if (value := row.get(key)) is not None}
         rest = {key: value for key, value in more.items() if key not in ROW}
         self.run.log(**kept, **rest)
-        return {**kept, **rest}
 
     async def checkpoint(self, agent: Agent, tag: str, *, keep: bool = False, **more: Any) -> None:
         """Save state and sampler weights under `tag`, and the agent written down to the record."""
@@ -562,19 +556,19 @@ class DAPOTrainer(Trainer):
 
     def weights(self, sizes: Values[int]) -> list[float]:
         """Each prompt weighs the same (Eq. 8): the mean group size over the group's own."""
-        return weights(sizes, "prompt")
+        return weights(sizes)
 
     def bounds(self) -> dict[str, float] | None:
         return clipped(self.recipe.clip_low, self.recipe.clip_high)
 
-    def log(self, found: Values[Group], update: Update | None, **more: Any) -> dict[str, Any]:
+    def log(self, found: Values[Group], update: Update | None, **more: Any) -> None:
         """The row with `overlong`, the docked members, when the term is on and the budget known."""
         budget = found[0].agent.policy.endpoint.budget if found else None
         if self.recipe.overlong_penalty > 0 and budget:
             more["overlong"] = sum(
                 term is not None and term < 0 for group in found for term in self.docked(group)
             )
-        return super().log(found, update, **more)
+        super().log(found, update, **more)
 
 
 class DrGRPOTrainer(Trainer):

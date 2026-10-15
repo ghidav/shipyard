@@ -182,10 +182,10 @@ class FST(Search):
 
     def weights(self, sizes: Values[int]) -> list[float]:
         """Each prompt weighs the same (Eq. 4), whatever the slow recipe does."""
-        return weights(sizes, "prompt")
+        return weights(sizes)
 
-    def log(self, found: Values[Group], update: Update | None, **more: Any) -> dict[str, Any]:
-        return super().log(found, update, cycle=self.cycles, **more)
+    def log(self, found: Values[Group], update: Update | None, **more: Any) -> None:
+        super().log(found, update, cycle=self.cycles, **more)
 
 
 def fst_trainer(slow: type[Trainer]) -> type[Trainer]:
