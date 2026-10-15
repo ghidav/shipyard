@@ -7,15 +7,14 @@ from collections.abc import Sequence as Values
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from shipyard import record
 from shipyard.config import search_sets
-from shipyard.modules import Candidate, Module, keep, seed
+from shipyard.modules import Candidate, keep, seed
 from shipyard.recipes.gepa.cycle import Evolution, Log, evolve
 from shipyard.recipes.gepa.fitness import Outcome
 from shipyard.recipes.gepa.outcomes import outcomes
-from shipyard.recipes.gepa.propose import Proposer, Reflection
 from shipyard.recipes.gepa.reflect import reflect
 from shipyard.training.trainer import Trainer
 from shipyard.types import Agent, Batches
@@ -31,14 +30,23 @@ BEST = "best"
 DEFAULT_PASSES = 2
 
 
-class Search:
-    """The search a trainer mixes in: candidates scored through `job`, rewritten by a reflector."""
+class GEPATrainer(Trainer):
+    """The search over the modules: candidates scored through `job`, rewritten by a reflector."""
 
-    run: Run
-    recipe: Any
     #: Rollouts per candidate per task when the search scores it.
     score_group_size: int
-    reflect: Proposer
+
+    def __init__(self, run: Run) -> None:
+        super().__init__(run)
+        search = run.config.recipe
+        self.score_group_size = run.config.data.group_size
+        self.reflect = reflect(
+            run,
+            harness=search.reflection_harness,
+            model=search.reflection_model,
+            image=search.reflection_image,
+            incremental=search.edits == "incremental",
+        )
 
     async def evolve(
         self,
@@ -58,7 +66,7 @@ class Search:
             seed,
             tasks,
             pareto=pareto,
-            write=self.propose,
+            write=self.reflect,
             score=partial(self.score, agent),
             minibatch=minibatch,
             budget=budget,
@@ -72,7 +80,7 @@ class Search:
         self, agent: Agent, candidate: Candidate, tasks: Values[Path], round: int
     ) -> list[Outcome]:
         """One job of `candidate` over `tasks`, `score_group_size` attempts each."""
-        found = await self.job(  # type: ignore[attr-defined]
+        found = await self.job(
             replace(agent, modules=candidate),
             list(tasks),
             self.score_group_size,
@@ -80,23 +88,6 @@ class Search:
             round=round,
         )
         return outcomes(found)
-
-    async def propose(self, reflection: Reflection) -> Module | None:
-        return await self.reflect(reflection)
-
-
-class GEPATrainer(Search, Trainer):
-    def __init__(self, run: Run) -> None:
-        super().__init__(run)
-        recipe = self.recipe
-        self.score_group_size = run.config.data.group_size
-        self.reflect = reflect(
-            run,
-            harness=recipe.reflection_harness,
-            model=recipe.reflection_model,
-            image=recipe.reflection_image,
-            incremental=recipe.edits == "incremental",
-        )
 
     async def train(self, agent: Agent, tasks: Batches) -> Agent:
         """One search over the train list as `search_sets` splits it; the batches go unused."""

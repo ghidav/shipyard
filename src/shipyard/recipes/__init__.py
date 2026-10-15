@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from shipyard.config import Gradient
-from shipyard.recipes.fst import SLOW, fst_trainer
+from shipyard.recipes.fst import fst_trainer
 from shipyard.recipes.gepa import GEPATrainer
 from shipyard.training.trainer import CISPOTrainer, DAPOTrainer, DrGRPOTrainer, Trainer
 
@@ -24,7 +24,7 @@ TRAINERS: dict[str, type[Trainer]] = {
 def trainer_for(recipe: Any) -> type[Trainer]:
     """The trainer class of the recipe: its kind's, or for fst the mix over its slow kind."""
     if recipe.kind == "fst":
-        return fst_trainer(SLOW[recipe.slow][1])
+        return fst_trainer(TRAINERS[recipe.slow])
     return TRAINERS[recipe.kind]
 
 

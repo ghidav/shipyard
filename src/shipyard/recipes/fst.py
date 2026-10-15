@@ -14,20 +14,15 @@ from shipyard import record
 from shipyard.config import SLOW_KNOBS, CispoRecipe, DapoRecipe, DrGrpoRecipe
 from shipyard.credit import weights
 from shipyard.modules import Candidate, keep, seed
-from shipyard.recipes.gepa import BEST, SEED, Search
-from shipyard.recipes.gepa.reflect import reflect
-from shipyard.training.trainer import CISPOTrainer, DAPOTrainer, DrGRPOTrainer, Trainer
-from shipyard.types import Adam, Agent, Batches, Group, Policy, Update
+from shipyard.recipes.gepa import BEST, SEED, GEPATrainer
+from shipyard.training.trainer import Trainer
+from shipyard.types import Adam, Agent, Batches, Group, Update
 
 if TYPE_CHECKING:
     from shipyard.run import Run
 
-#: The config model and the trainer class of the slow recipe each `slow` value names.
-SLOW: dict[str, tuple[type, type[Trainer]]] = {
-    "dapo": (DapoRecipe, DAPOTrainer),
-    "dr-grpo": (DrGrpoRecipe, DrGRPOTrainer),
-    "cispo": (CispoRecipe, CISPOTrainer),
-}
+#: The config model of the slow recipe each `slow` value names; its trainer is the kind's.
+SLOW: dict[str, type] = {"dapo": DapoRecipe, "dr-grpo": DrGrpoRecipe, "cispo": CispoRecipe}
 #: Gepa's budget per cycle, in passes over the anchor tasks with one rollout per (task, text)
 #: cell. App. D uses 960 metric calls over 192 examples, a metric call being one rollout.
 BUDGET_PASSES = 5
@@ -41,7 +36,7 @@ PAPER_WARMUP = 10
 
 def slow_recipe(recipe: Any) -> Any:
     """The slow recipe's config: the shared knobs, its own that are set, no overlong term."""
-    model, _ = SLOW[recipe.slow]
+    model = SLOW[recipe.slow]
     knobs = {knob: getattr(recipe, knob) for knob in SLOW_KNOBS[recipe.slow]}
     knobs = {knob: value for knob, value in knobs.items() if value is not None}
     if model is not DrGrpoRecipe:
@@ -52,8 +47,8 @@ def slow_recipe(recipe: Any) -> Any:
     return model(kind=recipe.slow, kl_coef=recipe.kl_coef, **shared, **knobs)
 
 
-class FST(Search):
-    """The fast-slow pass over the slow trainer it is mixed with."""
+class FST(GEPATrainer):
+    """The fast-slow pass: the search, then the slow trainer it is mixed with."""
 
     ADAM = ADAM
     PAPER_WARMUP = PAPER_WARMUP
@@ -76,14 +71,7 @@ class FST(Search):
         self.fst = run.config.recipe
         self.recipe = slow_recipe(self.fst)
         self.score_group_size = CELL_ROLLOUTS
-        self.reflect = reflect(
-            run,
-            harness=self.fst.reflection_harness,
-            model=self.fst.reflection_model,
-            image=self.fst.reflection_image,
-            incremental=self.fst.edits == "incremental",
-        )
-        self.population: list[Agent] = []
+        self.population: list[Candidate] = []
         self.cycles = 0
         #: Batches of the cycle in progress already stepped, on a resume.
         self.offset = 0
@@ -95,10 +83,8 @@ class FST(Search):
         if not self.population:
             seeded = seed(self.run.config.home / fst.modules)
             keep(seeded, kept / SEED)
-            self.population = [replace(agent, modules=seeded)]
-        else:
-            self.population = [replace(agent, modules=one.modules) for one in self.population]
-            agent = self.population[0]
+            self.population = [seeded]
+        agent = replace(agent, modules=self.population[0])
         batches = list(tasks)
         start = 0
         while start < len(batches):
@@ -107,38 +93,39 @@ class FST(Search):
             cycle = self.cycles
             if self.offset:
                 self.offset = 0
-                agent = await super().train(agent, iter(chunk))
+                agent = await Trainer.train(self, agent, iter(chunk))
                 self.cycles += 1
                 continue
             anchor = list(dict.fromkeys(task for batch in chunk for task in batch))
             anchor = anchor[: fst.anchor] if fst.anchor else anchor
             # Scoring the carried-in population is added to the budget, except its first member.
-            carried = len({one.modules.digest for one in self.population}) - 1
+            carried = len({one.digest for one in self.population}) - 1
             cells = len(anchor) * CELL_ROLLOUTS
             result = await self.evolve(
                 agent,
                 anchor,
-                [one.modules for one in self.population],
+                self.population,
                 budget=(fst.budget or BUDGET_PASSES * cells) + carried * cells,
                 minibatch=fst.minibatch,
                 patience=fst.patience,
                 rng=random.Random(data.seed + cycle),
                 log=partial(self.run.log, cycle=cycle),
             )
-            self.population = [replace(agent, modules=text) for text in result.top(fst.population)]
-            agent = self.population[0]
-            for rank, one in enumerate(self.population):
-                keep(one.modules, kept / f"cycle-{cycle}" / str(rank))
+            self.population = result.top(fst.population)
+            agent = replace(agent, modules=self.population[0])
+            for rank, text in enumerate(self.population):
+                keep(text, kept / f"cycle-{cycle}" / str(rank))
             self.run.log(
                 cycle=cycle,
                 evolution=True,
                 rounds=result.rounds,
                 spent=result.spent,
-                population=[one.modules.digest for one in self.population],
+                population=[one.digest for one in self.population],
                 frontier=len(result.fitness.frontier()),
                 pool=len(result.pool),
             )
-            agent = await super().train(agent, iter(chunk))
+            # The slow steps: the base pass over the chunk, under the slow class's rules.
+            agent = await Trainer.train(self, agent, iter(chunk))
             self.cycles += 1
         keep(agent.modules, kept / BEST)
         return agent
@@ -147,7 +134,10 @@ class FST(Search):
         """One job per text at its share of the group, merged into one group per task."""
         share = self.run.config.data.group_size // self.fst.population
         for batch in tasks:
-            parts = [await self.job(one, batch, share) for one in self.population]
+            parts = [
+                await self.job(replace(agent, modules=text), batch, share)
+                for text in self.population
+            ]
             yield self.merged(parts)
 
     def merged(self, parts: Values[list[Group]]) -> list[Group]:
@@ -175,7 +165,7 @@ class FST(Search):
         super().restore(row, consumed)
         kept = self.run.directory / record.MODULES / f"cycle-{row['cycle']}"
         texts = [seed(kept / str(rank)) for rank in range(self.fst.population)]
-        self.population = [Agent(Policy(self.run.endpoint), [], text) for text in texts]
+        self.population = texts
         self.offset = consumed % self.fst.cycle
         self.cycles = row["cycle"] if self.offset else row["cycle"] + 1
         return texts[0]

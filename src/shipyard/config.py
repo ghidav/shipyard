@@ -199,21 +199,27 @@ PAPER_MINIBATCH = 3
 GEPA_PATIENCE = None
 
 
-class GepaRecipe(_Table):
-    """The search's knobs: the reflector (harness, model and image), the seed modules
-    directory, the tasks held out to select on, the minibatch a child is judged on, the
-    rollout budget, and the number of rounds without a better Pareto that ends the search."""
+class Search(_Table):
+    """The search's knobs, gepa's and fst's: the reflector (harness, model and image), the
+    seed modules directory, the minibatch a child is judged on, the rollout budget, the
+    number of rounds without a better Pareto that ends the search, and how the reflector
+    edits."""
 
-    kind: Literal["gepa"]
     reflection_harness: str
     reflection_model: str | None = None
     reflection_image: str = REFLECTION_IMAGE
     modules: str = "modules"
-    pareto: int | str | None = None
     minibatch: int = Field(default=PAPER_MINIBATCH, ge=1)
     budget: int | None = Field(default=None, ge=1)
     patience: int | None = Field(default=GEPA_PATIENCE, ge=1)
     edits: Literal["rewrite", "incremental"] = "rewrite"
+
+
+class GepaRecipe(Search):
+    """The search alone, with the tasks held out to select on."""
+
+    kind: Literal["gepa"]
+    pareto: int | str | None = None
 
     @field_validator("pareto", mode="before")
     @classmethod
@@ -234,9 +240,9 @@ SLOW_KNOBS = {
 }
 
 
-class FstRecipe(Gradient):
-    """Fast-slow training: a slow recipe for the weights, gepa's knobs for the population
-    of texts, and the cycle that interleaves them. Defaults are the paper's."""
+class FstRecipe(Search, Gradient):
+    """Fast-slow training: a slow recipe for the weights, the search's knobs for the
+    population of texts, and the cycle that interleaves them. Defaults are the paper's."""
 
     kind: Literal["fst"]
     slow: Literal["dapo", "dr-grpo", "cispo"] = "cispo"
@@ -250,13 +256,6 @@ class FstRecipe(Gradient):
     length_penalty: float | None = Field(default=None, ge=0)
     length_floor: int | None = Field(default=None, ge=0)
     length_cap: float | None = Field(default=None, gt=0)
-    reflection_harness: str
-    reflection_model: str | None = None
-    reflection_image: str = REFLECTION_IMAGE
-    modules: str = "modules"
-    minibatch: int = Field(default=3, ge=1)
-    budget: int | None = Field(default=None, ge=1)
-    patience: int | None = Field(default=GEPA_PATIENCE, ge=1)
     edits: Literal["rewrite", "incremental"] = "incremental"
 
     @field_validator(
@@ -465,7 +464,7 @@ def findings(loaded: Blueprint) -> list[Finding]:
         found.append(_modules_finding(directory))
         if (template := _template_finding(loaded, directory)) is not None:
             found.append(template)
-    if isinstance(loaded.recipe, GepaRecipe | FstRecipe):
+    if isinstance(loaded.recipe, Search):
         found.append(_reflector_finding(loaded.recipe))
     if isinstance(loaded.recipe, GepaRecipe):
         found += _pareto_findings(loaded)
@@ -599,7 +598,7 @@ def _template_finding(loaded: Blueprint, directory: Path) -> Finding | None:
     )
 
 
-def _reflector_finding(recipe: GepaRecipe | FstRecipe) -> Finding:
+def _reflector_finding(recipe: Search) -> Finding:
     """`ok` naming the reflector's harness, model and image, or `blocked` for a blank
     harness. The image is not checked: Harbor pulls it at the first round."""
     if not recipe.reflection_harness.strip():

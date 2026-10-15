@@ -362,7 +362,7 @@ async def test_a_cycle_interrupted_after_a_slow_step_resumes_without_another_fas
     resumed = Runner.from_checkpoint(opened.directory)
     assert resumed.position[1] == 1 and resumed.trainer.offset == 1
     assert resumed.trainer.cycles == 0
-    population = [one.modules.digest for one in resumed.trainer.population]
+    population = [one.digest for one in resumed.trainer.population]
     assert len(population) == 2 and resumed.modules is not None
     assert resumed.modules.digest == population[0]
     resumed.opened.run_trial = Alternating()
