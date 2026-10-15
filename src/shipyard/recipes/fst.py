@@ -25,7 +25,7 @@ from shipyard.recipes import cispo, dapo, dr_grpo
 from shipyard.recipes.gepa import BEST, SEED
 from shipyard.rollout import Rollouts
 from shipyard.trainer import Adam
-from shipyard.training.client import SERVE_TTL
+from shipyard.types import SERVE_TTL
 
 if TYPE_CHECKING:
     from shipyard.run import Run

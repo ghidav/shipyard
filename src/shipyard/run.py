@@ -150,23 +150,34 @@ class Run:
         """One Harbor job over `batch`: the verdicts on its row, then the endpoint's check."""
         cfg, endpoint = self.config, self.endpoint
         await endpoint.open()
-        if isinstance(endpoint, ProxyEndpoint) and not self._noted:
-            self.note(proxy={"placement": endpoint.placement, "origin": endpoint.origin})
-            self._noted = True
-        updates = getattr(self.trainer, "updates", None)
+        self.noted()
         candidate = self.carried if modules is None else modules
         agent = Agent(Policy(endpoint), [types.harness(cfg.rollout.harness)], candidate)
         job = self.reserve_job()
         self.progress.started(job, trials=len(batch) * rollouts, batch=index)
         trials = await self.engine.run(job, batch, rollouts, agent=agent)
         self.progress.done(job)
+        return await self.recorded(job, trials, batch=index, modules=candidate, purpose=purpose)
+
+    async def recorded(
+        self,
+        job: str,
+        trials: Sequence[types.Trial],
+        *,
+        batch: int,
+        modules: Candidate | None = None,
+        purpose: str = "rollout",
+    ) -> Rollouts:
+        """The job's record side: records drained, logs read, row written, the endpoint checked."""
+        endpoint = self.endpoint
         rolled = Rollouts.of(job, trials)
         records = await endpoint.record(job, trials)
         if records is not None:
-            asked, failed = read_logs(trials, records, check_turns=cfg.rollout.check_turns)
+            asked, failed = read_logs(trials, records, check_turns=self.config.rollout.check_turns)
             rolled = replace(rolled, records=records, asked=asked, failed=failed)
-        rolled = replace(rolled, updates=updates)
-        self._record_job(rolled, batch=index, tasks=len(batch), modules=candidate, purpose=purpose)
+        rolled = replace(rolled, updates=getattr(self.trainer, "updates", None))
+        tasks = len({one.task for one in trials})
+        self._record_job(rolled, batch=batch, tasks=tasks, modules=modules, purpose=purpose)
         if records is not None:
             try:
                 endpoint.check(job, records)
@@ -174,6 +185,14 @@ class Run:
                 dead.rolled = rolled
                 raise
         return rolled
+
+    def noted(self) -> None:
+        """Note the proxy's placement and origin on `process.json`, once it is open."""
+        endpoint = self.endpoint
+        if self._noted or not isinstance(endpoint, ProxyEndpoint) or endpoint.proxy is None:
+            return
+        self.note(proxy={"placement": endpoint.placement, "origin": endpoint.origin})
+        self._noted = True
 
     async def checkpoint(self, trainer: Any, tag: str, *, keep: bool = False) -> Checkpoint:
         """Save state and sampler weights under `tag` with `[checkpoints] ttl_hours`, or with

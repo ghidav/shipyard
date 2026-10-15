@@ -8,7 +8,16 @@ from pathlib import Path
 import pytest
 
 from tests import golden
-from tests.golden import CASES, CREDITED, JOBBED, differences, replay
+from tests.golden import CASES, CREDITED, JOBBED, TRAINERS, differences, replay, trained
+
+#: The cases the trainer replays: every credit case of a recipe class, without a batch
+#: limit, which the accumulating `sample` has no use for, and without a preset field the
+#: class cannot express; and the two one-job cases.
+THROUGH_THE_TRAINER = tuple(
+    name
+    for name, case in CREDITED.items()
+    if case.limit is None and not case.preset_only and case.kind in TRAINERS
+) + ("job-served", "job-provider")
 
 
 @pytest.mark.parametrize("name", CASES)
@@ -110,3 +119,21 @@ def test_differences_report_a_moved_number_and_pass_over_rounding() -> None:
         ".x: 'b', frozen 'a'",
     ]
     assert differences([1, 2], [1, 2, 3]) == [": 2 item(s), frozen 3"]
+
+
+@pytest.mark.parametrize("name", THROUGH_THE_TRAINER)
+async def test_the_trainer_reproduces_the_frozen_case(
+    name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if golden.updating():
+        pytest.skip("regenerating")
+    frozen = golden.read_frozen(name)
+    assert frozen is not None
+    found = await trained(name, tmp_path, monkeypatch)
+    expected = {key: frozen[key] for key in found if key != "groups"}
+    if "groups" in found:
+        expected["groups"] = [
+            {"task": one["task"], "members": one["members"]} for one in frozen["groups"]
+        ]
+    found_differences = differences(found, expected)
+    assert not found_differences, "\n".join(found_differences)

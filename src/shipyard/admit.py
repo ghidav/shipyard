@@ -92,9 +92,7 @@ def verdict(
     asked: int | None = None,
     failed: bool = False,
 ) -> Verdict:
-    """With records, the served endings come first (`served_verdict`). Then: no result is
-    `env_error`, the clock's cut is `timeout`, an endpoint failure is `api_error`, a
-    numeric `rewards.reward` is the reward, and anything else is `grading_error`."""
+    """The served endings first, then `result.json`: a reward with its numbers, or a mask."""
     payload = result_of(trial)
     why = _ended(payload)
     if records is not None:
@@ -110,9 +108,14 @@ def verdict(
     verifier = payload.get("verifier_result")
     rewards = verifier.get("rewards") if isinstance(verifier, dict) else None
     reward = rewards.get("reward") if isinstance(rewards, dict) else None
-    if isinstance(reward, int | float) and not isinstance(reward, bool):
-        return Verdict(float(reward), None, why)
+    if _number(reward):
+        numbers = {key: float(one) for key, one in rewards.items() if _number(one)}
+        return Verdict(float(reward), None, why, numbers)
     return Verdict(None, GRADING_ERROR, why)
+
+
+def _number(value: Any) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool)
 
 
 def served_verdict(

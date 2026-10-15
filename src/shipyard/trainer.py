@@ -12,8 +12,10 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 from shipyard.config import MIN_TTL_HOURS
-from shipyard.training.client import DEFAULT_LORA_RANK, SERVE_TTL, TinkerClient
-from shipyard.types import Adam, Forward, Update
+from shipyard.training.client import DEFAULT_LORA_RANK, TinkerClient
+from shipyard.training.trainer import COOKBOOK, split
+from shipyard.training.trainer import observed as _observed
+from shipyard.types import SERVE_TTL, Adam, Forward, Update
 
 if TYPE_CHECKING:
     from shipyard.credit import Batch
@@ -34,10 +36,6 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 SECONDS_PER_HOUR = 3600
-
-#: Adam as the cookbook's `train_step` sets it (no weight decay, gradient clipping or
-#: warm-up), for whatever a paper leaves unstated. The SDK's `eps` default is 1e-12.
-COOKBOOK = Adam(beta1=0.9, beta2=0.95, eps=1e-8)
 
 
 @dataclass(frozen=True)
@@ -151,6 +149,8 @@ class Trainer:
             kl_v2=observed.get("kl_v2"),
             entropy=observed.get("entropy"),
             seconds=round(time.monotonic() - began, 3),
+            sequences=len(batch.datums),
+            anchor_kl=batch.anchor_kl,
         )
 
     async def _submit(
@@ -172,44 +172,3 @@ def grouped(datums: Values[Any], owners: Values[int]) -> list[list[Any]]:
     for owner, one in zip(owners, datums, strict=True):
         found.setdefault(owner, []).append(one)
     return list(found.values())
-
-
-def split(items: list[Any], parts: int) -> list[list[Any]]:
-    """`parts` slices in order, with sizes differing by at most one. This is the cut of the
-    cookbook's `split_list` (`np.linspace(0, len, parts + 1).astype(int)`), with its float
-    arithmetic kept so a batch splits as it did under the cookbook."""
-    step = len(items) / parts
-    edges = [int(index * step) for index in range(parts)] + [len(items)]
-    return [items[start:end] for start, end in zip(edges[:-1], edges[1:], strict=True)]
-
-
-def _observed(datums: Values[Any], trained: Values[Any]) -> dict[str, float]:
-    """kl_v1 = mean(mu - pi), kl_v2 = half the mean square, entropy = mean(-mu) over the
-    acted tokens (the cookbook's `compute_kl_sample_train`). Returns {} when a datum carries
-    no mu or mask or the logprobs do not line up."""
-    if len(trained) != len(datums):
-        return {}
-    try:
-        drifts: list[torch.Tensor] = []
-        chosen: list[torch.Tensor] = []
-        for datum, scored in zip(datums, trained, strict=True):
-            inputs = datum.loss_fn_inputs
-            if "logprobs" not in inputs or "mask" not in inputs or scored is None:
-                return {}
-            mu = inputs["logprobs"].to_torch()
-            acted = inputs["mask"].to_torch() > 0
-            if not bool(acted.any()):
-                continue
-            drifts.append(mu[acted] - scored[acted])
-            chosen.append(mu[acted])
-        if not drifts:
-            return {}
-        moved, sampled = torch.cat(drifts), torch.cat(chosen)
-        return {
-            "kl_v1": float(moved.mean()),
-            "kl_v2": float(0.5 * (moved**2).mean()),
-            "entropy": float(-sampled.mean()),
-        }
-    except Exception:  # noqa: BLE001 - these numbers are extras and must not fail the step
-        logger.warning("could not read the step's own logprobs; the row goes without them")
-        return {}

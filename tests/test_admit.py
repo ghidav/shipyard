@@ -41,6 +41,10 @@ POLICY_OWN = frozenset(
 )
 
 
+def verified(reward: float, ended: str | None = None) -> Verdict:
+    return Verdict(reward, None, ended, {"reward": reward})
+
+
 def test_no_result_is_an_env_error(tmp_path: Path) -> None:
     assert verdict(tmp_path / "never-written") == Verdict(None, ENV_ERROR, None)
     (tmp_path / "empty").mkdir()
@@ -78,7 +82,7 @@ def test_an_api_error_the_policy_caused_keeps_the_verifiers_number(
     tmp_path: Path, named: str
 ) -> None:
     trial = write_result(tmp_path / "t", reward=0.0, exception=named)
-    assert verdict(trial) == Verdict(0.0, None, named)
+    assert verdict(trial) == verified(0.0, named)
     assert not endpoint_failed(named)
 
 
@@ -100,16 +104,16 @@ def test_every_api_error_harbor_defines_is_decided_one_way_or_the_other() -> Non
 
 
 def test_a_numeric_reward_is_the_verdict(tmp_path: Path) -> None:
-    assert verdict(write_result(tmp_path / "one", reward=1.0)) == Verdict(1.0, None, None)
-    assert verdict(write_result(tmp_path / "zero", reward=0)) == Verdict(0.0, None, None)
+    assert verdict(write_result(tmp_path / "one", reward=1.0)) == verified(1.0)
+    assert verdict(write_result(tmp_path / "zero", reward=0)) == verified(0.0)
     assert verdict(write_result(tmp_path / "half", rewards={"reward": 0.5, "style": 2})) == (
-        Verdict(0.5, None, None)
+        Verdict(0.5, None, None, {"reward": 0.5, "style": 2.0})
     )
 
 
 def test_a_graded_trial_that_ended_badly_keeps_its_ending(tmp_path: Path) -> None:
     trial = write_result(tmp_path / "t", reward=0.0, exception="NonZeroAgentExitCodeError")
-    assert verdict(trial) == Verdict(0.0, None, "NonZeroAgentExitCodeError")
+    assert verdict(trial) == verified(0.0, "NonZeroAgentExitCodeError")
 
 
 def test_no_number_is_a_grading_error(tmp_path: Path) -> None:
@@ -142,8 +146,8 @@ def test_no_records_is_an_env_error_whatever_the_verifier_wrote(tmp_path: Path) 
     graded = write_result(tmp_path / "t", reward=1.0)
     assert verdict(graded, []) == Verdict(None, ENV_ERROR, None)
     assert verdict(tmp_path / "gone", []) == Verdict(None, ENV_ERROR, None)
-    assert verdict(graded) == Verdict(1.0, None, None), "no records given is the block-2 rule"
-    assert verdict(graded, [made()]) == Verdict(1.0, None, None)
+    assert verdict(graded) == verified(1.0), "no records given is the block-2 rule"
+    assert verdict(graded, [made()]) == verified(1.0)
 
 
 def test_a_first_turn_that_never_fit_is_a_context_overflow(tmp_path: Path) -> None:
@@ -171,8 +175,8 @@ def test_a_context_the_policy_filled_before_its_harness_quit_is_zero(tmp_path: P
     assert verdict(crashed, records) == Verdict(0.0, None, "NonZeroAgentExitCodeError")
     # Compacted and finished: the verifier's number stands.
     finished = write_result(tmp_path / "finished", reward=1.0)
-    assert verdict(finished, [*records, made(seq=3)]) == Verdict(1.0, None, None)
-    assert verdict(finished, records) == Verdict(1.0, None, None)
+    assert verdict(finished, [*records, made(seq=3)]) == verified(1.0)
+    assert verdict(finished, records) == verified(1.0)
     # The clock's cut and the grader's failure are not the harness giving up.
     timed = write_result(tmp_path / "timed", reward=1.0, exception="AgentTimeoutError")
     assert verdict(timed, records) == Verdict(None, TIMEOUT, "AgentTimeoutError")
@@ -185,7 +189,7 @@ def test_a_harness_that_quit_on_a_failed_call_is_an_api_error(tmp_path: Path) ->
     failed = [made(seq=1), made(seq=2, error="sampler: ConnectError")]
     assert verdict(graded, failed) == Verdict(None, API_ERROR, None)
     recovered = [*failed, made(seq=3)]
-    assert verdict(graded, recovered) == Verdict(0.0, None, None)
+    assert verdict(graded, recovered) == verified(0.0)
     only = [made(seq=1, error="sampler: ConnectError")]
     assert verdict(graded, only) == Verdict(None, API_ERROR, None)
     # Budget and context endings are decided above.
@@ -199,9 +203,9 @@ def test_an_image_the_record_did_not_keep_masks_the_rollout_multimodal(tmp_path:
     assert verdict(graded, [made(seq=1, error=BUDGET), *seen]) == Verdict(0.0, None, None)
     shot = Picture(1, 2, "png", "cG5nIQ==")
     kept = [made(seq=1), made((1, IMAGE_TOKEN, IMAGE_TOKEN, 2), seq=2, images=(shot,))]
-    assert verdict(graded, kept) == Verdict(1.0, None, None), "a kept image trains"
+    assert verdict(graded, kept) == verified(1.0), "a kept image trains"
     failed_first = [made((1, IMAGE_TOKEN, 2), seq=1, error="sampler: Boom"), made(seq=2)]
-    assert verdict(graded, failed_first) == Verdict(1.0, None, None), "nothing trains on it"
+    assert verdict(graded, failed_first) == verified(1.0), "nothing trains on it"
 
 
 def test_a_harness_that_asked_more_turns_than_were_recorded_is_an_env_error(
@@ -210,9 +214,9 @@ def test_a_harness_that_asked_more_turns_than_were_recorded_is_an_env_error(
     graded = write_result(tmp_path / "t", reward=1.0)
     records = [made(seq=1), made(seq=2, error=CONTEXT)]
     assert verdict(graded, records, asked=3) == Verdict(None, ENV_ERROR, None)
-    assert verdict(graded, records, asked=2) == Verdict(1.0, None, None)
-    assert verdict(graded, records, asked=1) == Verdict(1.0, None, None)
-    assert verdict(graded, records) == Verdict(1.0, None, None)
+    assert verdict(graded, records, asked=2) == verified(1.0)
+    assert verdict(graded, records, asked=1) == verified(1.0)
+    assert verdict(graded, records) == verified(1.0)
     assert served_verdict([], None, asked=0) == Verdict(None, ENV_ERROR, None)
 
 
@@ -222,9 +226,9 @@ def test_a_last_call_the_harness_logged_as_failed_and_the_proxy_never_saw_is_mas
     graded = write_result(tmp_path / "t", reward=0.0)
     clean = [made(seq=1), made(seq=2)]
     assert verdict(graded, clean, failed=True) == Verdict(None, API_ERROR, None)
-    assert verdict(graded, clean) == Verdict(0.0, None, None)
+    assert verdict(graded, clean) == verified(0.0)
     refused = [made(seq=1), made(seq=2, error=CONTEXT)]
-    assert verdict(graded, refused, failed=True) == Verdict(0.0, None, None), "the proxy saw it"
+    assert verdict(graded, refused, failed=True) == verified(0.0), "the proxy saw it"
 
 
 def test_the_served_endings_come_before_the_block_2_rules(tmp_path: Path) -> None:

@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 import tinker
 
-from shipyard import record
+from shipyard import record, types
 from shipyard.admit import BUDGET, CONTEXT, Verdict, verdicts
 from shipyard.config import load
 from shipyard.credit import Batch, credit
@@ -27,6 +27,10 @@ from shipyard.recipes.fst import merged
 from shipyard.rollout import Rollouts
 from shipyard.run import Run
 from shipyard.trainer import Trainer
+from shipyard.training.client import TinkerClient
+from shipyard.training.trainer import CISPOTrainer, DAPOTrainer, DrGRPOTrainer
+from shipyard.training.trainer import Trainer as Procedure
+from shipyard.types import Agent, Connection, Endpoint, Policy, Records, Trial, harness
 from tests.records import FakeProxy, made
 from tests.trainers import FakeTrainingClient, chunk_ids
 from tests.trials import FIXTURES, write_result
@@ -48,10 +52,19 @@ PNG = base64.b64encode(b"png-bytes").decode()
 # ------------------------------------------------------------------- the presets
 
 
-def preset_of(kind: str, **changes: Any) -> Preset:
-    recipe = load(BLUEPRINTS / kind).recipe
+def preset_of(kind: str, **recipe: Any) -> Preset:
+    """The fixture blueprint's preset, with these `[recipe]` keys set over its own."""
+    loaded = load(BLUEPRINTS / kind).recipe.model_copy(update=recipe)
     module = {"dapo": dapo, "dr-grpo": dr_grpo, "cispo": cispo, "fst": fst}[kind]
-    return replace(module.preset(recipe), **changes)
+    return module.preset(loaded)
+
+
+#: The recipe classes by `[recipe] kind`.
+TRAINERS: dict[str, type[Procedure]] = {
+    "dapo": DAPOTrainer,
+    "dr-grpo": DrGRPOTrainer,
+    "cispo": CISPOTrainer,
+}
 
 
 # ------------------------------------------------------------------- the fakes
@@ -147,11 +160,19 @@ def _varied(reward: float, *tokens: int) -> Member:
 @dataclass(frozen=True)
 class Credited:
     groups: Callable[[], list[Group]]
-    preset: Preset
+    kind: str
+    #: `[recipe]` keys set over the fixture blueprint's.
+    recipe: Mapping[str, Any] = field(default_factory=dict)
+    #: Preset fields the trainer cannot express; such a case replays on the old path alone.
+    preset_only: Mapping[str, Any] = field(default_factory=dict)
     limit: int | None = None
     budget: int | None = None
     anchored: bool = False
     updates: int = 0
+
+    @property
+    def preset(self) -> Preset:
+        return replace(preset_of(self.kind, **self.recipe), **self.preset_only)
 
 
 @dataclass(frozen=True)
@@ -305,31 +326,27 @@ def _flat() -> list[Group]:
 
 #: The credit cases by name.
 CREDITED: dict[str, Credited] = {
-    "dapo-mixed": Credited(_mixed, preset_of("dapo"), limit=2),
-    "dapo-mixed-unlimited": Credited(_mixed, preset_of("dapo")),
-    "dapo-overlong": Credited(_overlong, preset_of("dapo"), budget=100),
-    "dapo-overlong-no-budget": Credited(_overlong, preset_of("dapo")),
-    "dapo-chained": Credited(_chained, preset_of("dapo")),
-    "dapo-partial": Credited(_partial, preset_of("dapo")),
-    "dapo-masked": Credited(_masked, preset_of("dapo")),
-    "dapo-pictured-kl": Credited(_pictured, preset_of("dapo", kl_coef=0.5), anchored=True),
-    "dapo-kl": Credited(_chained, preset_of("dapo", kl_coef=0.5), anchored=True),
-    "dapo-flat": Credited(_flat, preset_of("dapo")),
-    "dapo-warmup": Credited(
-        _chained,
-        preset_of("dapo", adam=replace(preset_of("dapo").adam, warmup=5)),
-        updates=2,
-    ),
-    "dapo-sum": Credited(_chained, preset_of("dapo", aggregation="sum")),
-    "dr-grpo-lengths": Credited(_lengths, preset_of("dr-grpo")),
-    "dr-grpo-partial": Credited(_partial, preset_of("dr-grpo")),
+    "dapo-mixed": Credited(_mixed, "dapo", limit=2),
+    "dapo-mixed-unlimited": Credited(_mixed, "dapo"),
+    "dapo-overlong": Credited(_overlong, "dapo", budget=100),
+    "dapo-overlong-no-budget": Credited(_overlong, "dapo"),
+    "dapo-chained": Credited(_chained, "dapo"),
+    "dapo-partial": Credited(_partial, "dapo"),
+    "dapo-masked": Credited(_masked, "dapo"),
+    "dapo-pictured-kl": Credited(_pictured, "dapo", {"kl_coef": 0.5}, anchored=True),
+    "dapo-kl": Credited(_chained, "dapo", {"kl_coef": 0.5}, anchored=True),
+    "dapo-flat": Credited(_flat, "dapo"),
+    "dapo-warmup": Credited(_chained, "dapo", {"warmup": 5}, updates=2),
+    "dapo-sum": Credited(_chained, "dapo", preset_only={"aggregation": "sum"}),
+    "dr-grpo-lengths": Credited(_lengths, "dr-grpo"),
+    "dr-grpo-partial": Credited(_partial, "dr-grpo"),
     "dr-grpo-floor-cap": Credited(
-        _lengths, preset_of("dr-grpo", length_penalty=0.5, length_floor=10, length_cap=0.9)
+        _lengths, "dr-grpo", {"length_penalty": 0.5, "length_floor": 10, "length_cap": 0.9}
     ),
-    "cispo-chained": Credited(_chained, preset_of("cispo")),
-    "cispo-mixed": Credited(_mixed, preset_of("cispo"), limit=2),
-    "cispo-kl": Credited(_chained, preset_of("cispo", kl_coef=0.5), anchored=True),
-    "fst-chained": Credited(_chained, preset_of("fst"), anchored=True),
+    "cispo-chained": Credited(_chained, "cispo"),
+    "cispo-mixed": Credited(_mixed, "cispo", limit=2),
+    "cispo-kl": Credited(_chained, "cispo", {"kl_coef": 0.5}, anchored=True),
+    "fst-chained": Credited(_chained, "fst", anchored=True),
 }
 
 
@@ -464,20 +481,7 @@ async def _stepped(batch: Batch, preset: Preset, trainer: Trainer, anchor: Any) 
 
 
 async def _jobbed(case: Jobbed, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    monkeypatch.chdir(tmp_path)
-    for task in case.tasks:
-        source = FIXTURES / "fixture" / ("alpha" if task not in ("alpha", "beta") else task)
-        shutil.copytree(source, tmp_path / "tasks" / "golden" / task)
-    home = tmp_path / "bp"
-    home.mkdir()
-    text = (BLUEPRINTS / case.kind / "run.toml").read_text(encoding="utf-8")
-    text = text.replace('"aime-train"', '"golden"').replace('"fixture"', '"golden"')
-    (home / "run.toml").write_text(text, encoding="utf-8")
-    proxy = ScriptedProxy(
-        queues={task: list(found) for task, found in case.records.items()},
-        budget=case.budget,
-    )
-    monkeypatch.setattr("shipyard.sampling.endpoint.Proxy", proxy)
+    home, _ = _staged(case, tmp_path, monkeypatch)
     opened = Run.open(home, root=tmp_path / "runs")
     opened.run_trial = ScriptedTrials(case.outcomes)
     trainer = Trainer(FakeTrainingClient(positional=True))
@@ -519,6 +523,145 @@ def _texts(tmp_path: Path, count: int) -> list[Candidate | None]:
             skill.write_text(skill.read_text() + f"\nText {at}.\n", encoding="utf-8")
         found.append(seed(home))
     return found
+
+
+# ------------------------------------------------------- through the trainer
+
+
+class Budgeted(Endpoint):
+    """An endpoint that only reports its token budget."""
+
+    def __init__(self, budget: int | None) -> None:
+        self.budget = budget
+
+    async def open(self) -> None: ...
+
+    def close(self) -> None: ...
+
+    def connection(self, trial: Trial) -> Connection:
+        return Connection(model="m")
+
+    async def serve(self, path: str | None) -> None: ...
+
+    async def record(self, job: str, trials: Values[Trial]) -> Records | None:
+        return None
+
+
+def typed(found: Values[Group], agent: Agent) -> list[types.Group]:
+    """The case's groups as the trainer takes them, under the agent's one harness."""
+    out: list[types.Group] = []
+    for each in found:
+        members = [
+            types.Member(
+                Trial("g", each.task, at, agent.harness[0], Path("g") / f"{each.task.name}__{at}"),
+                one.verdict,
+                one.sequences,
+                one.sampled_tokens,
+            )
+            for at, one in enumerate(each.members)
+        ]
+        out.append(types.Group(each.task, agent, agent.harness[0], members))
+    return out
+
+
+async def _stepped_by(
+    trainer: Procedure, agent: Agent, found: list[types.Group], client: FakeTrainingClient
+) -> dict[str, Any]:
+    """`step` and `log` through the trainer, the policy's save left out of the client's calls."""
+    for each in found:
+        each.shaped = trainer.shape(each)
+        each.advantages = trainer.advantage(each)
+    update = await trainer.step(agent, found)
+    row = trainer.log(found, update)
+    return {
+        "client": [_call(one) for one in client.calls if one[0] != "save_weights_for_sampler"],
+        "sent": [_sent(one) for one in client.sent],
+        "anchor": None if trainer.anchor is None else list(trainer.anchor.asked),
+        "update": None if update is None else _update(update),
+        "row": {key: value for key, value in row.items() if key not in ("seconds", "jobs")},
+    }
+
+
+async def trained(name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """The case through the trainer; a job case is sampled through `job` first."""
+    if name in CREDITED:
+        return await _credited_by(CREDITED[name], tmp_path)
+    return await _jobbed_by(JOBBED[name], tmp_path, monkeypatch)
+
+
+async def _credited_by(case: Credited, tmp_path: Path) -> dict[str, Any]:
+    run = Run.open(BLUEPRINTS / case.kind, root=tmp_path / "runs")
+    run.config.recipe = run.config.recipe.model_copy(update=dict(case.recipe))
+    client = FakeTrainingClient(positional=True)
+    agent = Agent(Policy(Budgeted(case.budget), TinkerClient(client)), [harness("pi")])
+    trainer = TRAINERS[case.kind](run, anchor=PositionalAnchor() if case.anchored else None)
+    trainer.updates = case.updates
+    with run:
+        return await _stepped_by(trainer, agent, typed(case.groups(), agent), client)
+
+
+async def _jobbed_by(
+    case: Jobbed, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> dict[str, Any]:
+    home, proxy = _staged(case, tmp_path, monkeypatch)
+    opened = Run.open(home, root=tmp_path / "runs")
+    opened.run_trial = ScriptedTrials(case.outcomes)
+    client = FakeTrainingClient(positional=True)
+    served = opened.config.model.served
+    policy = Policy(opened.endpoint, TinkerClient(client) if served else None)
+    agent = Agent(policy, [harness(opened.config.rollout.harness)])
+    procedure = TRAINERS.get(case.kind, Procedure)
+    trainer = procedure(opened, anchor=PositionalAnchor() if case.anchored else None)
+    batch_tasks = [tmp_path / "tasks" / "golden" / task for task in case.tasks]
+    with opened:
+        async with agent.policy:
+            found = await trainer.job(agent, batch_tasks)
+            members = [one for group in found for one in group.members]
+            out: dict[str, Any] = {
+                "verdicts": [_verdict(one.verdict) for one in members],
+                "jobs": [_job(one) for one in record.read(opened.directory / record.JOBS)],
+                "requests": _requests_of(opened.directory, [one.trial.name for one in members]),
+                "costs": record.read_json(opened.directory / record.COSTS),
+            }
+            if case.preset is None:
+                return out
+            out["groups"] = [_members(group) for group in found]
+            return {**out, **(await _stepped_by(trainer, agent, found, client))}
+
+
+def _staged(
+    case: Jobbed, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, ScriptedProxy]:
+    """The fixture tasks and the blueprint in a working directory, the proxy scripted."""
+    monkeypatch.chdir(tmp_path)
+    for task in case.tasks:
+        source = FIXTURES / "fixture" / ("alpha" if task not in ("alpha", "beta") else task)
+        shutil.copytree(source, tmp_path / "tasks" / "golden" / task)
+    home = tmp_path / "bp"
+    home.mkdir()
+    text = (BLUEPRINTS / case.kind / "run.toml").read_text(encoding="utf-8")
+    text = text.replace('"aime-train"', '"golden"').replace('"fixture"', '"golden"')
+    (home / "run.toml").write_text(text, encoding="utf-8")
+    proxy = ScriptedProxy(
+        queues={task: list(found) for task, found in case.records.items()},
+        budget=case.budget,
+    )
+    monkeypatch.setattr("shipyard.sampling.endpoint.Proxy", proxy)
+    return home, proxy
+
+
+def _members(one: types.Group) -> dict[str, Any]:
+    return {
+        "task": one.task.name,
+        "members": [
+            {
+                **_verdict(each.verdict),
+                "sampled_tokens": each.sampled_tokens,
+                "sequences": [_sequence(found) for found in each.sequences],
+            }
+            for each in one.members
+        ],
+    }
 
 
 # ------------------------------------------------------------------ the shape
@@ -627,7 +770,11 @@ def _job(one: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _requests(directory: Path, rolled: Rollouts) -> list[dict[str, Any]]:
-    places = {Path(trial).name: at for at, trial in enumerate(rolled.trials)}
+    return _requests_of(directory, [Path(trial).name for trial in rolled.trials])
+
+
+def _requests_of(directory: Path, trials: Values[str]) -> list[dict[str, Any]]:
+    places = {name: at for at, name in enumerate(trials)}
     out: list[dict[str, Any]] = []
     for one in record.read(directory / record.REQUESTS):
         out.append(

@@ -9,8 +9,8 @@ import tinker
 
 from shipyard.pack import datum
 from shipyard.proxy.wire import Picture
-from shipyard.training.client import DEFAULT_LORA_RANK, SERVE_TTL, TinkerClient
-from shipyard.types import Adam, Forward, Sequence
+from shipyard.training.client import DEFAULT_LORA_RANK, TinkerClient
+from shipyard.types import SERVE_TTL, Adam, Forward, Sequence
 from tests.trainers import FakeService, FakeTrainingClient, capable
 
 MODEL = "Qwen/Qwen3-8B"

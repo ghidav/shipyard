@@ -14,12 +14,16 @@ import tinker
 import torch
 from tinker import TensorData
 
+from shipyard import types
 from shipyard.admit import Verdict, verdicts
 from shipyard.proxy.wire import IMAGE_TOKEN, Picture, Record, model_input, pictured
 from shipyard.types import Sequence
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence as Values
+
     from shipyard.rollout import Rollouts
+    from shipyard.types import Agent, Trial
 
 __all__ = [
     "Group",
@@ -28,6 +32,7 @@ __all__ = [
     "chains",
     "datum",
     "group",
+    "groups",
     "model_input",
     "packable",
     "sequences",
@@ -209,3 +214,23 @@ def group(rollouts: Rollouts, group_size: int) -> list[Group]:
             )
         groups.append(Group(tasks.pop(), tuple(members), rollouts.updates))
     return groups
+
+
+def groups(trials: Values[Trial], rolled: Rollouts, agent: Agent) -> list[types.Group]:
+    """One group per task and harness in plan order, each trial a member."""
+    judged = verdicts(rolled)
+    records = rolled.records or {}
+    out: list[types.Group] = []
+    for trial, verdict in zip(trials, judged, strict=True):
+        taken = list(records.get(trial.name) or [])
+        member = types.Member(
+            trial,
+            verdict,
+            tuple(sequences(taken)) if verdict.mask is None else (),
+            sum(len(one.completion_token_ids) for one in taken if one.error is None),
+        )
+        if out and out[-1].task == trial.task and out[-1].harness == trial.harness:
+            out[-1].members.append(member)
+        else:
+            out.append(types.Group(trial.task, agent, trial.harness, [member]))
+    return out
