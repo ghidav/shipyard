@@ -30,6 +30,7 @@ from shipyard.rollout import Rollouts
 from shipyard.run import Run
 from shipyard.trainer import Trainer
 from shipyard.training.client import TinkerClient
+from shipyard.training.trainer import CISPOTrainer, DAPOTrainer, DrGRPOTrainer
 from shipyard.training.trainer import Trainer as Procedure
 from shipyard.types import Agent, Connection, Endpoint, Policy, Records, Trial, harness
 from tests.records import FakeProxy, made
@@ -53,11 +54,20 @@ PNG = base64.b64encode(b"png-bytes").decode()
 # ------------------------------------------------------------------- the presets
 
 
-def preset_of(kind: str, **changes: Any) -> Preset:
-    """The preset the fixture blueprint of `kind` resolves to, any field replaced."""
-    recipe = load(BLUEPRINTS / kind).recipe
+def preset_of(kind: str, **recipe: Any) -> Preset:
+    """The preset the fixture blueprint of `kind` resolves to, with these `[recipe]` keys
+    set over its own."""
+    loaded = load(BLUEPRINTS / kind).recipe.model_copy(update=recipe)
     module = {"dapo": dapo, "dr-grpo": dr_grpo, "cispo": cispo, "fst": fst}[kind]
-    return replace(module.preset(recipe), **changes)
+    return module.preset(loaded)
+
+
+#: The recipe classes by `[recipe] kind`.
+TRAINERS: dict[str, type[Procedure]] = {
+    "dapo": DAPOTrainer,
+    "dr-grpo": DrGRPOTrainer,
+    "cispo": CISPOTrainer,
+}
 
 
 # ------------------------------------------------------------------- the fakes
@@ -158,11 +168,19 @@ def _varied(reward: float, *tokens: int) -> Member:
 @dataclass(frozen=True)
 class Credited:
     groups: Callable[[], list[Group]]
-    preset: Preset
+    kind: str
+    #: `[recipe]` keys set over the fixture blueprint's.
+    recipe: Mapping[str, Any] = field(default_factory=dict)
+    #: Preset fields the trainer cannot express; such a case replays on the old path alone.
+    preset_only: Mapping[str, Any] = field(default_factory=dict)
     limit: int | None = None
     budget: int | None = None
     anchored: bool = False
     updates: int = 0
+
+    @property
+    def preset(self) -> Preset:
+        return replace(preset_of(self.kind, **self.recipe), **self.preset_only)
 
 
 @dataclass(frozen=True)
@@ -320,31 +338,27 @@ def _flat() -> list[Group]:
 
 #: The credit cases by name.
 CREDITED: dict[str, Credited] = {
-    "dapo-mixed": Credited(_mixed, preset_of("dapo"), limit=2),
-    "dapo-mixed-unlimited": Credited(_mixed, preset_of("dapo")),
-    "dapo-overlong": Credited(_overlong, preset_of("dapo"), budget=100),
-    "dapo-overlong-no-budget": Credited(_overlong, preset_of("dapo")),
-    "dapo-chained": Credited(_chained, preset_of("dapo")),
-    "dapo-partial": Credited(_partial, preset_of("dapo")),
-    "dapo-masked": Credited(_masked, preset_of("dapo")),
-    "dapo-pictured-kl": Credited(_pictured, preset_of("dapo", kl_coef=0.5), anchored=True),
-    "dapo-kl": Credited(_chained, preset_of("dapo", kl_coef=0.5), anchored=True),
-    "dapo-flat": Credited(_flat, preset_of("dapo")),
-    "dapo-warmup": Credited(
-        _chained,
-        preset_of("dapo", adam=replace(preset_of("dapo").adam, warmup=5)),
-        updates=2,
-    ),
-    "dapo-sum": Credited(_chained, preset_of("dapo", aggregation="sum")),
-    "dr-grpo-lengths": Credited(_lengths, preset_of("dr-grpo")),
-    "dr-grpo-partial": Credited(_partial, preset_of("dr-grpo")),
+    "dapo-mixed": Credited(_mixed, "dapo", limit=2),
+    "dapo-mixed-unlimited": Credited(_mixed, "dapo"),
+    "dapo-overlong": Credited(_overlong, "dapo", budget=100),
+    "dapo-overlong-no-budget": Credited(_overlong, "dapo"),
+    "dapo-chained": Credited(_chained, "dapo"),
+    "dapo-partial": Credited(_partial, "dapo"),
+    "dapo-masked": Credited(_masked, "dapo"),
+    "dapo-pictured-kl": Credited(_pictured, "dapo", {"kl_coef": 0.5}, anchored=True),
+    "dapo-kl": Credited(_chained, "dapo", {"kl_coef": 0.5}, anchored=True),
+    "dapo-flat": Credited(_flat, "dapo"),
+    "dapo-warmup": Credited(_chained, "dapo", {"warmup": 5}, updates=2),
+    "dapo-sum": Credited(_chained, "dapo", preset_only={"aggregation": "sum"}),
+    "dr-grpo-lengths": Credited(_lengths, "dr-grpo"),
+    "dr-grpo-partial": Credited(_partial, "dr-grpo"),
     "dr-grpo-floor-cap": Credited(
-        _lengths, preset_of("dr-grpo", length_penalty=0.5, length_floor=10, length_cap=0.9)
+        _lengths, "dr-grpo", {"length_penalty": 0.5, "length_floor": 10, "length_cap": 0.9}
     ),
-    "cispo-chained": Credited(_chained, preset_of("cispo")),
-    "cispo-mixed": Credited(_mixed, preset_of("cispo"), limit=2),
-    "cispo-kl": Credited(_chained, preset_of("cispo", kl_coef=0.5), anchored=True),
-    "fst-chained": Credited(_chained, preset_of("fst"), anchored=True),
+    "cispo-chained": Credited(_chained, "cispo"),
+    "cispo-mixed": Credited(_mixed, "cispo", limit=2),
+    "cispo-kl": Credited(_chained, "cispo", {"kl_coef": 0.5}, anchored=True),
+    "fst-chained": Credited(_chained, "fst", anchored=True),
 }
 
 
@@ -596,10 +610,11 @@ async def trained(name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
 
 
 async def _credited_by(case: Credited, tmp_path: Path) -> dict[str, Any]:
-    run = Run.open(BLUEPRINTS / case.preset.name, root=tmp_path / "runs")
+    run = Run.open(BLUEPRINTS / case.kind, root=tmp_path / "runs")
+    run.config.recipe = run.config.recipe.model_copy(update=dict(case.recipe))
     client = FakeTrainingClient(positional=True)
     agent = Agent(Policy(Budgeted(case.budget), TinkerClient(client)), [harness("pi")])
-    trainer = Procedure(run, case.preset, anchor=PositionalAnchor() if case.anchored else None)
+    trainer = TRAINERS[case.kind](run, anchor=PositionalAnchor() if case.anchored else None)
     trainer.updates = case.updates
     with run:
         return await _stepped_by(trainer, agent, typed(case.groups(), agent), client)
@@ -615,8 +630,8 @@ async def _jobbed_by(
     served = opened.config.model.served
     policy = Policy(opened.endpoint, TinkerClient(client) if served else None)
     agent = Agent(policy, [harness(opened.config.rollout.harness)])
-    preset = case.preset if case.preset is not None else preset_of("dapo")
-    trainer = Procedure(opened, preset, anchor=PositionalAnchor() if case.anchored else None)
+    procedure = TRAINERS.get(case.kind, Procedure)
+    trainer = procedure(opened, anchor=PositionalAnchor() if case.anchored else None)
     batch_tasks = [tmp_path / "tasks" / "golden" / task for task in case.tasks]
     with opened:
         async with agent.policy:

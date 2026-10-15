@@ -18,6 +18,7 @@ from shipyard.data import batches
 from shipyard.pack import Group, group
 from shipyard.sampling.endpoint import ProxyEndpoint
 from shipyard.trainer import Adam, Trainer, Update
+from shipyard.training.trainer import clipped
 from shipyard.types import SERVE_TTL
 
 if TYPE_CHECKING:
@@ -127,20 +128,6 @@ def shared(recipe: Any) -> dict[str, Any]:
         "substeps": int(recipe.substeps),
         "refill": int(recipe.refill),
     }
-
-
-def clipped(low: float, high: float) -> dict[str, float]:
-    """`loss_fn_config` for a ratio clipped to `[1 - low, 1 + high]`. Tinker's `ppo` and
-    `cispo` take the bounds, while DAPO's `clip_low` / `clip_high` are epsilons."""
-    # The route and the key names are the installed SDK's: tinker/types/
-    # forward_backward_input.py:21 documents `loss_fn_config` as "Optional configuration
-    # parameters for the loss function (e.g., PPO clip thresholds, DPO beta)", and
-    # tinker/types/datum.py:32-33 names `clip_low_threshold` / `clip_high_threshold`.
-    # That they are bounds is the losses page's `torch.clamp(prob_ratio,
-    # clip_low_threshold, clip_high_threshold)` with the example `{"clip_low_threshold":
-    # 0.9, "clip_high_threshold": 1.1}` (https://tinker-docs.thinkingmachines.ai/losses);
-    # the installed SDK spells out neither that nor a default for `cispo`.
-    return {"clip_low_threshold": round(1.0 - low, 6), "clip_high_threshold": round(1.0 + high, 6)}
 
 
 def resolution(preset: Preset) -> str:

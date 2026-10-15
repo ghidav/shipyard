@@ -14,8 +14,8 @@ import torch
 
 from shipyard.config import MIN_TTL_HOURS
 from shipyard.training.client import DEFAULT_LORA_RANK, TinkerClient
+from shipyard.training.trainer import COOKBOOK, split
 from shipyard.training.trainer import observed as _observed
-from shipyard.training.trainer import split
 from shipyard.types import SERVE_TTL, Adam, Forward, Update
 
 if TYPE_CHECKING:
@@ -37,10 +37,6 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 SECONDS_PER_HOUR = 3600
-
-#: Adam as the cookbook's `train_step` sets it (no weight decay, gradient clipping or
-#: warm-up), for whatever a paper leaves unstated. The SDK's `eps` default is 1e-12.
-COOKBOOK = Adam(beta1=0.9, beta2=0.95, eps=1e-8)
 
 
 @dataclass(frozen=True)

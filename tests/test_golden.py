@@ -10,14 +10,16 @@ from pathlib import Path
 import pytest
 
 from tests import golden
-from tests.golden import CASES, CREDITED, JOBBED, differences, replay, trained
+from tests.golden import CASES, CREDITED, JOBBED, TRAINERS, differences, replay, trained
 
-#: The cases the trainer replays: every credit case without a batch limit, which the
-#: accumulating `sample` has no use for, and the two one-job cases.
-THROUGH_THE_TRAINER = tuple(name for name, case in CREDITED.items() if case.limit is None) + (
-    "job-served",
-    "job-provider",
-)
+#: The cases the trainer replays: every credit case of a recipe class, without a batch
+#: limit, which the accumulating `sample` has no use for, and without a preset field the
+#: class cannot express; and the two one-job cases.
+THROUGH_THE_TRAINER = tuple(
+    name
+    for name, case in CREDITED.items()
+    if case.limit is None and not case.preset_only and case.kind in TRAINERS
+) + ("job-served", "job-provider")
 
 
 @pytest.mark.parametrize("name", CASES)
