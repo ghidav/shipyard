@@ -16,13 +16,12 @@ import torch
 from tinker import TensorData
 
 from shipyard.pack import Group, Member, Sequence, datum, model_input, shifted
+from shipyard.types import EPSILON
 
 if TYPE_CHECKING:
     from shipyard.gradient import Preset
     from shipyard.trainer import Trainer
 
-#: Guards the division when a group has no reward spread.
-EPSILON = 1e-6
 #: Harbor's reward for a fully solved task. Only solved rollouts are compared on length.
 SOLVED = 1.0
 #: Anchor passes in flight at once.

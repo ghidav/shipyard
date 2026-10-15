@@ -16,6 +16,7 @@ from tinker import TensorData
 
 from shipyard.admit import Verdict, verdicts
 from shipyard.proxy.wire import IMAGE_TOKEN, Picture, Record, model_input, pictured
+from shipyard.types import Sequence
 
 if TYPE_CHECKING:
     from shipyard.rollout import Rollouts
@@ -32,25 +33,6 @@ __all__ = [
     "sequences",
     "shifted",
 ]
-
-
-@dataclass(frozen=True)
-class Sequence:
-    """One chain as the trainer reads it: the last record's prompt and completion, which
-    hold every earlier prompt and completion as a prefix. `spans` are where each completion
-    sits, in chain order. `mu` holds the sampler's logprobs there, or None when a record had
-    none."""
-
-    tokens: tuple[int, ...]
-    spans: tuple[tuple[int, int], ...]
-    mu: tuple[float, ...] | None
-    #: The pictures behind the `IMAGE_TOKEN` runs in `tokens`, from the chain's last record.
-    images: tuple[Picture, ...] = ()
-
-    @property
-    def targets(self) -> tuple[int, ...]:
-        """Every position the policy wrote, ascending, each once."""
-        return tuple(at for start, end in self.spans for at in range(start, end))
 
 
 @dataclass(frozen=True)

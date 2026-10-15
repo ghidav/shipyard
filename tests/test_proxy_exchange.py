@@ -3,13 +3,13 @@ request replayed from the stored reply even after a budget cut."""
 
 from __future__ import annotations
 
-from tests.proxies import FakeSampler, ask, endpoint
+from tests.proxies import FakeSampler, ask, server
 
 # ------------------------------------------------------------------- the exchange
 
 
 async def test_the_headers_the_sdk_sends_land_on_the_record() -> None:
-    async with endpoint(FakeSampler("ok")) as started:
+    async with server(FakeSampler("ok")) as started:
         await ask(started, "t", headers={"x-request-id": "req-1"})
         await ask(started, "t", headers={"Idempotency-Key": "idem-2", "x-request-id": "req-2"})
         await ask(started, "t")
@@ -18,7 +18,7 @@ async def test_the_headers_the_sdk_sends_land_on_the_record() -> None:
 
 async def test_a_retry_is_answered_with_the_stored_reply_not_a_second_sample() -> None:
     sampler = FakeSampler("ok")
-    async with endpoint(sampler) as started:
+    async with server(sampler) as started:
         first = await ask(started, "t")
         again = await ask(started, "t", headers={"x-stainless-retry-count": "1"})
         other = await ask(started, "t", headers={"x-stainless-retry-count": "not-a-number"})
@@ -29,7 +29,7 @@ async def test_a_retry_is_answered_with_the_stored_reply_not_a_second_sample() -
 
 async def test_an_idempotency_key_replays_without_a_retry_header() -> None:
     sampler = FakeSampler("ok")
-    async with endpoint(sampler) as started:
+    async with server(sampler) as started:
         await ask(started, "t", headers={"Idempotency-Key": "k"})
         await ask(started, "t", headers={"Idempotency-Key": "k"}, max_tokens=7)
         await ask(started, "t", headers={"Idempotency-Key": "other"})
@@ -40,7 +40,7 @@ async def test_a_retry_after_a_budget_cut_still_replays() -> None:
     """With 95 of a 100-token budget spent, the retry's max_tokens would be cut from 10 to 5.
     The key uses the params before the cut, so the stored reply is found."""
     sampler = FakeSampler("x" * 95)
-    async with endpoint(sampler, max_context=100) as started:
+    async with server(sampler, max_context=100) as started:
         first = await ask(started, "t", max_tokens=10)
         again = await ask(started, "t", max_tokens=10, headers={"x-stainless-retry-count": "1"})
         assert first.json()["choices"] == again.json()["choices"]

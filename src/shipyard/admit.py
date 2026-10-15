@@ -5,14 +5,16 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from shipyard.proxy.wire import Record, pictured
+from shipyard.types import Verdict
 
 if TYPE_CHECKING:
     from shipyard.rollout import Rollouts
+
+__all__ = ["Verdict", "endpoint_failed", "result_of", "results", "scores", "verdict", "verdicts"]
 
 #: The masks: a trial left out of every mean and every gradient, by reason.
 ENV_ERROR = "env_error"
@@ -55,15 +57,6 @@ GRADER_FAILED = frozenset(
         "VerifierOutputParseError",
     }
 )
-
-
-@dataclass(frozen=True)
-class Verdict:
-    """A trial's reward or its mask (exactly one is set), and how Harbor said it ended."""
-
-    reward: float | None
-    mask: str | None
-    ended: str | None
 
 
 def _ended(payload: dict[str, Any] | None) -> str | None:

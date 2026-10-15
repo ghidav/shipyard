@@ -21,16 +21,16 @@ from typer.testing import CliRunner
 import shipyard
 from shipyard.cli import app
 from shipyard.proxy import serve
-from shipyard.proxy.endpoint import Endpoint
+from shipyard.proxy.server import Server
 from shipyard.proxy.wire import records_of
-from tests.proxies import endpoint
+from tests.proxies import server
 
 runner = CliRunner()
 
 
 @dataclass
 class FakeEndpoint:
-    """Stands in for `Endpoint` with the attributes serve uses. `called` records start and
+    """Stands in for `Server` with the attributes serve uses. `called` records start and
     stop in order."""
 
     base_model: str = "Qwen/Qwen3-8B"
@@ -86,10 +86,10 @@ def test_main_says_what_is_wrong_rather_than_serving_nowhere(capsys: Any) -> Non
     assert "--advertise" in capsys.readouterr().out
 
 
-# ------------------------------------------------------------------- the endpoint
+# ------------------------------------------------------------------- the server
 
 
-def build(**overrides: Any) -> Endpoint:
+def build(**overrides: Any) -> Server:
     named: dict[str, Any] = dict(
         weights=None,
         bind="127.0.0.1",
@@ -100,12 +100,12 @@ def build(**overrides: Any) -> Endpoint:
         token="k",
         control_token="c",
     )
-    return serve.endpoint_for("Qwen/Qwen3-8B", **{**named, **overrides})
+    return serve.server_for("Qwen/Qwen3-8B", **{**named, **overrides})
 
 
 def test_the_flags_reach_the_real_endpoint() -> None:
     made = build(weights="tinker://w/step-1", bind="0.0.0.0", port=8000, advertise="proxy")
-    assert isinstance(made, Endpoint)
+    assert isinstance(made, Server)
     assert (made.base_model, made.model_path) == ("Qwen/Qwen3-8B", "tinker://w/step-1")
     assert (made.bind, made.bind_port, made.host) == ("0.0.0.0", 8000, "proxy")
     assert (made.token, made.control_token) == ("k", "c")
@@ -170,7 +170,7 @@ async def test_a_token_the_caller_supplied_is_not_printed_back() -> None:
 
 
 async def test_the_banner_names_the_real_endpoints_port() -> None:
-    async with endpoint(control_token="c") as started:
+    async with server(control_token="c") as started:
         line, port = serve.banner(started), started.port
     assert line == f"serving Qwen/Qwen3-8B at http://127.0.0.1:{port} (control: on)"
 
