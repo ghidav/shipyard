@@ -424,8 +424,8 @@ async def test_open_keeps_the_carried_modules_once_and_each_job_delivers_them(
     assert kept == [carried] and _files(carried) == _files(VALID)
     assert seed(carried).digest == opened.carried.digest
     opened.engine.run_trial = runner = FakeTrials()
-    first = await job(opened, _batch(tmp_path, "alpha", "beta"), rollouts=2, index=0)
-    second = await job(opened, _batch(tmp_path, "alpha"), rollouts=1, index=1)
+    first = await job(opened, _batch(tmp_path, "alpha", "beta"), rollouts=2, step=0)
+    second = await job(opened, _batch(tmp_path, "alpha"), rollouts=1, step=1)
     assert kept == [carried], "the carried copy is written once, at open"
     assert len(runner.configs) == 5
     for config, name in zip(runner.configs, [job_of(first)] * 4 + [job_of(second)], strict=True):
@@ -440,7 +440,7 @@ async def test_open_keeps_the_carried_modules_once_and_each_job_delivers_them(
         "job",
         "purpose",
         "trials",
-        "batch",
+        "step",
         "tasks",
         "epoch",
         "modules",
@@ -457,13 +457,13 @@ async def test_a_job_delivers_the_candidate_it_is_handed_and_nothing_otherwise(
     opened = Run.open(BLUEPRINTS / "evaluate", root=tmp_path / "runs")
     assert opened.carried is None and not (opened.directory / record.MODULES).exists()
     opened.engine.run_trial = runner = FakeTrials()
-    bare = await job(opened, _batch(tmp_path, "alpha"), rollouts=1, index=0)
+    bare = await job(opened, _batch(tmp_path, "alpha"), rollouts=1, step=0)
     assert runner.configs[0].agent.skills == []
     assert sorted(p.name for p in (tmp_path / "jobs" / job_of(bare)).iterdir()) == [
         trials_of(bare)[0].name
     ], "nothing of ours in a job carrying nothing"
     handed = seed(VALID).with_component("solving", _module(_skill("read it three times")))
-    carried = await job(opened, _batch(tmp_path, "alpha"), rollouts=1, index=1, modules=handed)
+    carried = await job(opened, _batch(tmp_path, "alpha"), rollouts=1, step=1, modules=handed)
     root = (tmp_path / "jobs" / job_of(carried) / DELIVERED / "skills").resolve()
     assert runner.configs[1].agent.skills == [str(root)]
     assert (root / "solving" / SKILL_FILE).read_text() == _skill("read it three times")
@@ -480,7 +480,7 @@ async def test_a_handed_candidate_wins_over_the_carried_one(
     planning = _module(_skill("plan first", name="planning"))
     other = Candidate({}).with_component("planning", planning)
     assert other.components["planning"].name == "planning", "named by its component"
-    rolled = await job(opened, _batch(tmp_path, "alpha"), rollouts=1, index=0, modules=other)
+    rolled = await job(opened, _batch(tmp_path, "alpha"), rollouts=1, step=0, modules=other)
     root = Path(runner.configs[0].agent.skills[0])
     assert sorted(p.name for p in root.iterdir()) == ["planning"]
     assert _rows(opened)[0]["modules"] == other.digest != opened.carried.digest
@@ -494,7 +494,7 @@ async def test_a_job_hands_a_prompt_to_harbor_as_the_agents_prompt_template(
     opened = Run.open(_carrying(tmp_path), root=tmp_path / "runs")
     opened.engine.run_trial = runner = FakeTrials()
     prompted = Candidate({}).with_component("guidance", _prompt("Run the tests.\n"))
-    rolled = await job(opened, _batch(tmp_path, "alpha"), rollouts=1, index=0, modules=prompted)
+    rolled = await job(opened, _batch(tmp_path, "alpha"), rollouts=1, step=0, modules=prompted)
     kwargs = runner.configs[0].agent.kwargs
     template = (tmp_path / "jobs" / job_of(rolled) / DELIVERED / "prompt" / "template.j2").resolve()
     assert kwargs == {"version": "0.85.1", "prompt_template_path": str(template)}

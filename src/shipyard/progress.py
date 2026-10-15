@@ -33,8 +33,8 @@ def reporter(console: Console | None = None) -> Reporter:
 class Reporter:
     """Receives a run's job events. This base class ignores them; `Bars` draws them."""
 
-    def started(self, job: str, *, trials: int, batch: int | None = None) -> None:
-        """A job of `trials` planned trials has begun, for batch `batch`."""
+    def started(self, job: str, *, trials: int, step: int | None = None) -> None:
+        """A job of `trials` planned trials has begun, for step `step`."""
 
     def finished(self, trial: Path, *, masked: bool) -> None:
         """One trial of a started job is back; `masked` says admission left it out."""
@@ -47,7 +47,7 @@ class Reporter:
 
 
 class Bars(Reporter):
-    """One bar per job: trials finished out of planned, trials masked, the batch index and
+    """One bar per job: trials finished out of planned, trials masked, the step and
     the elapsed time. Redrawn in place, as Harbor draws a job."""
 
     def __init__(self, console: Console) -> None:
@@ -65,11 +65,11 @@ class Bars(Reporter):
         self._tasks: dict[str, Any] = {}
         self._masked: dict[str, int] = {}
 
-    def started(self, job: str, *, trials: int, batch: int | None = None) -> None:
+    def started(self, job: str, *, trials: int, step: int | None = None) -> None:
         if self._live is None:
             self._live = Live(self.bars, console=self.console, refresh_per_second=8)
             self._live.start()
-        label = f"batch {batch}  {job}" if batch is not None else job
+        label = f"step {step}  {job}" if step is not None else job
         self._masked[job] = 0
         self._tasks[job] = self.bars.add_task(label, total=trials, masked=0)
 

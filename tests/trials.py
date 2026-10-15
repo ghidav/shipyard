@@ -271,12 +271,12 @@ async def job(
     batch: list[Path],
     *,
     rollouts: int,
-    index: int = 0,
+    step: int = 0,
     modules: Candidate | None = None,
 ) -> list[Group]:
     """One job through the trainer, the endpoint left open as a run leaves it."""
     trainer = Trainer(run)
-    trainer.steps = index
+    trainer.steps = step
     carried = run.carried if modules is None else modules
     agent = Agent(Policy(run.endpoint), [harness(run.config.rollout.harness)], carried)
     await run.endpoint.open()

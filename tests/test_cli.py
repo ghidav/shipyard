@@ -415,7 +415,7 @@ def test_an_evaluate_run_shows_its_jobs_and_costs(
     assert _headings(shown.output) == ["process", "metrics", "jobs", "costs"]
     assert "jobs  2 rows" in shown.output
     header = next(line for line in shown.output.splitlines() if "purpose" in line)
-    for column in ("job", "purpose", "batch", "tasks", "trials", "graded", "masked"):
+    for column in ("job", "purpose", "step", "tasks", "trials", "graded", "masked"):
         assert column in header
     for column in ("party", "input_tokens", "output_tokens", "sandbox", "sandbox_seconds"):
         assert column in header
@@ -428,7 +428,7 @@ def test_an_evaluate_run_shows_its_jobs_and_costs(
         runner.invoke(app, ["show", directory.name, "--root", str(root), "--json"]).stdout
     )
     rows = as_json["jobs"]["rows"]
-    assert as_json["jobs"]["count"] == 2 and [row["batch"] for row in rows] == [0, 0]
+    assert as_json["jobs"]["count"] == 2 and [row["step"] for row in rows] == [0, 0]
     assert [row["purpose"] for row in rows] == ["evaluation", "evaluation"]
     assert sum(row["graded"] for row in rows) == 2 and sum(row["trials"] for row in rows) == 4
     assert as_json["costs"]["parties"]["openrouter"]["input_tokens"] == 20

@@ -173,7 +173,7 @@ class Trainer:
         tasks: Values[Task],
         attempts: int | None = None,
         *,
-        purpose: str = "rollout",
+        purpose: str = "training",
         **about: Any,
     ) -> list[Group]:
         """The one place a policy is sampled: run, record, group, shape, advantage."""
@@ -181,14 +181,14 @@ class Trainer:
         attempts = run.config.data.group_size if attempts is None else attempts
         job = run.reserve_job()
         run.progress.started(
-            job, trials=len(tasks) * len(agent.harness) * attempts, batch=self.steps
+            job, trials=len(tasks) * len(agent.harness) * attempts, step=self.steps
         )
         trials = await run.engine.run(job, tasks, attempts, agent=agent)
         run.progress.done(job)
         rolled = await run.recorded(
             job,
             trials,
-            batch=self.steps,
+            step=self.steps,
             modules=agent.modules,
             purpose=purpose,
             epoch=self.epoch,
@@ -445,13 +445,14 @@ class Trainer:
         logger.info("checkpoint %s: %s", tag, sampler)
 
     def consumed(self, jobs: Values[Mapping[str, Any]], row: Mapping[str, Any]) -> int:
-        """The batches of the checkpoint's epoch stepped before it: its rollout jobs."""
+        """The batches of the checkpoint's epoch stepped before it: its training jobs. A run
+        recorded before the keys were `step` and `training` wrote `batch` and `rollout`."""
         return sum(
             1
             for job in jobs
-            if job.get("purpose") == "rollout"
+            if job.get("purpose") in ("training", "rollout")
             and job.get("epoch") == row["epoch"]
-            and job.get("batch", -1) < row["step"]
+            and job.get("step", job.get("batch", -1)) < row["step"]
         )
 
     def restore(self, row: Mapping[str, Any], consumed: int) -> Candidate | None:

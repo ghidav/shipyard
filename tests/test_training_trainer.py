@@ -146,9 +146,9 @@ async def test_an_epoch_serves_the_start_samples_steps_syncs_andcheckpoints(
     costs = record.read_json(run.directory / record.COSTS)["parties"]["tinker"]
     assert costs["train_tokens"] == costs["reference_tokens"] == 2 * 4 * INPUT_TOKENS
     assert "anchor_tokens" not in costs and costs["trials"] == 8
-    assert [(job["batch"], job["purpose"], job["served"]) for job in jobs] == [
-        (0, "rollout", "tinker"),
-        (1, "rollout", "tinker"),
+    assert [(job["step"], job["purpose"], job["served"]) for job in jobs] == [
+        (0, "training", "tinker"),
+        (1, "training", "tinker"),
     ]
     assert Run.read(run.directory)["proxy"]["placement"] == "local"
 
@@ -189,7 +189,7 @@ async def test_dapo_holds_jobs_until_a_batchs_worth_of_groups_have_spread(
     assert row["jobs"] == [job["job"] for job in jobs] and len(jobs) == 2
     assert (row["groups"], row["rollouts"], row["degenerate"]) == (4, 8, 1)
     assert (row["sequences"], row["substeps"], row["train_tokens"]) == (6, 3, 6 * INPUT_TOKENS)
-    assert [(job["batch"], job["trials"]) for job in jobs] == [(0, 4), (0, 4)]
+    assert [(job["step"], job["trials"]) for job in jobs] == [(0, 4), (0, 4)]
     (forward,) = [c for c in service.client.calls if c[0] == "forward"]
     assert forward[1] == [INPUT_TOKENS] * 6, "the flat group is never sent"
     assert [c for c in service.client.calls if c[0] == "save_weights_for_sampler"] == [
@@ -282,6 +282,16 @@ async def test_cispo_reads_the_samplers_logprobs_and_makes_no_forward(
     assert row["kl_v1"] == pytest.approx(-0.2, abs=1e-5), "mu is the record's -0.5"
     costs = record.read_json(run.directory / record.COSTS)["parties"]["tinker"]
     assert costs["train_tokens"] == 24 and "reference_tokens" not in costs
+
+
+def test_a_run_recorded_with_the_older_job_keys_still_resumes(tmp_path: Path) -> None:
+    trainer = Trainer(Run.open(blueprint(tmp_path), root=tmp_path))
+    jobs = [
+        {"purpose": "training", "epoch": 0, "step": 0},
+        {"purpose": "rollout", "epoch": 0, "batch": 1},
+        {"purpose": "evaluation", "epoch": 0, "step": 2},
+    ]
+    assert trainer.consumed(jobs, {"epoch": 0, "step": 2}) == 2
 
 
 async def test_the_kl_anchor_is_subtracted_per_token_billed_and_reported(
