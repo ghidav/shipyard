@@ -11,9 +11,8 @@ from shipyard.pack import datum
 from shipyard.proxy.wire import Picture
 from shipyard.training.client import DEFAULT_LORA_RANK, TinkerClient
 from shipyard.types import SERVE_TTL, Adam, Forward, Sequence
+from tests.proxies import MODEL
 from tests.trainers import FakeService, FakeTrainingClient, capable
-
-MODEL = "Qwen/Qwen3-8B"
 
 
 def _datum(tokens: int = 4, *, mu: float = -0.5, advantage: float = 1.0) -> tinker.Datum:

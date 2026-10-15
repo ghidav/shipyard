@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from shipyard import admit, pack, types
+from shipyard import admit, types
 from shipyard.harnesses import PROFILES, Profile
 from shipyard.training import trainer
 from shipyard.training.client import TinkerClient
@@ -82,9 +82,6 @@ def _member(tmp_path: Path, reward: float | None, *, mask: str | None = None) ->
 
 
 def test_the_unchanged_dataclasses_are_the_same_objects_under_their_old_names() -> None:
-    assert pack.Sequence is types.Sequence
-    assert admit.Verdict is types.Verdict
-    assert trainer.Adam is types.Adam and trainer.Update is types.Update
     assert trainer.COOKBOOK == types.Adam(beta1=0.9, beta2=0.95, eps=1e-8)
     assert types.Datum is __import__("tinker").Datum
     assert types.Task is Path

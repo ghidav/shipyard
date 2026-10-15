@@ -20,19 +20,15 @@ from shipyard.modules import seed
 from shipyard.run import Run
 from shipyard.smoke import Smoked, Trial, planned, wiring
 from tests.records import FakeProxy, made
-from tests.test_gepa_recipe import BLUEPRINT as GEPA
-from tests.test_gepa_recipe import VALID
-from tests.trials import FIXTURES, FakeTrials, write_blueprint
+from tests.trials import BLUEPRINTS, GEPA, VALID, FakeTrials, dataset, write_blueprint
 
-BLUEPRINTS = Path(__file__).parent / "blueprints"
 runner = CliRunner()
 
 
 @pytest.fixture
 def here(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A four-task dataset, no Tinker session, a wide terminal."""
-    for name in ("a", "b", "c", "d"):
-        shutil.copytree(FIXTURES / "fixture" / "alpha", tmp_path / "tasks" / "four" / name)
+    dataset(tmp_path / "tasks", "four", *"abcd")
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("SHIPYARD_RUNS", raising=False)
     monkeypatch.setenv("COLUMNS", "200")

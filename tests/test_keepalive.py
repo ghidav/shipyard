@@ -18,7 +18,6 @@ from shipyard.proxy.keepalive import FRAME
 from tests.proxies import (
     BridgeRenderer,
     FakeSampler,
-    ScriptedSampler,
     address,
     ask,
     ask_anthropic,
@@ -81,14 +80,7 @@ async def test_the_anthropic_wire_is_kept_alive_the_same_way() -> None:
 
 
 async def test_thinking_still_reaches_a_stream_the_keepalive_opened() -> None:
-    sampler = ScriptedSampler("", answers=["{look}fine"])
-
-    async def slowly(prompt: Any, num_samples: int, sampling_params: Any) -> Any:
-        await asyncio.sleep(SLOW)
-        return await ScriptedSampler.sample_async(sampler, prompt, num_samples, sampling_params)
-
-    sampler.sample_async = slowly  # type: ignore[method-assign]
-    async with kept(sampler, renderer=BridgeRenderer()) as started:
+    async with kept(SlowSampler("{look}fine"), renderer=BridgeRenderer()) as started:
         text = (await ask(started, "t", stream=True)).text
     assert frames_before(text, "data:") >= 2
     first = json.loads(text[text.index("data:") + 6 :].split("\n", 1)[0])

@@ -30,8 +30,7 @@ from shipyard.sampling.engine import (
     quiet_litellm,
 )
 from shipyard.types import Agent, Connection, Endpoint, Policy, Settings, Trial, harness
-from tests.records import FakeProxy
-from tests.test_endpoint import blueprint
+from tests.records import FakeProxy, blueprint
 from tests.trials import FakeTrials
 
 

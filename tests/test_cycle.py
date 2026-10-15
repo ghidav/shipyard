@@ -18,6 +18,7 @@ from shipyard.modules import SKILL_FILE, Candidate, Module
 from shipyard.recipes.gepa.cycle import Evolution, best, evolve, minibatches, perfect
 from shipyard.recipes.gepa.fitness import Outcome, tally
 from shipyard.recipes.gepa.propose import Reflection, component_for, propose
+from tests.trials import drawn
 
 TASKS = tuple(Path("tasks/four") / name for name in ("t1", "t2", "t3", "t4"))
 HELD = tuple(Path("tasks/held") / name for name in ("h1", "h2", "h3"))
@@ -128,18 +129,6 @@ class Logged:
 
     def __call__(self, **row: Any) -> None:
         self.rows.append(row)
-
-
-def drawn(feedback: Sequence[Path], size: int, rng: random.Random, rounds: int) -> list[list[str]]:
-    """By task name, the minibatches of a search's first `rounds` rounds: what
-    `minibatches(feedback, size, rng)` yields, each round's parent drawn from the same `rng`
-    just before its minibatch, as `evolve` draws them."""
-    sampled = minibatches(feedback, size, rng)
-    found = []
-    for _ in range(rounds):
-        rng.random()
-        found.append([task.name for task in next(sampled)])
-    return found
 
 
 async def run(*args: Any, **kwargs: Any) -> Evolution:

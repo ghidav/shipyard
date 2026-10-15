@@ -1,28 +1,58 @@
 """Trials and blueprints without Harbor: `result.json` files in the shape `TrialResult`
-dumps, a runner that stands in for `Trial.create` + `run` and writes them, and a `run.toml`
-writer."""
+dumps, runners that stand in for `Trial.create` + `run` and write them, fixture datasets and
+`run.toml` writers, one job through the trainer, and a run's rows read back."""
 
 from __future__ import annotations
 
 import asyncio
 import json
+import random
 import shutil
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from harbor.models.trial.config import TrialConfig
 
-from shipyard import resolved
-from shipyard.modules import Candidate
+from shipyard import record, resolved
+from shipyard.modules import SKILL_FILE, Candidate
 from shipyard.preflight import Finding
+from shipyard.recipes.gepa.cycle import minibatches
+from shipyard.recipes.gepa.reflect import COLLECTED
 from shipyard.run import Run
 from shipyard.training.trainer import Trainer
 from shipyard.types import Agent, Group, Member, Policy, harness
 
 FIXTURES = Path(__file__).parent / "tasks"
+BLUEPRINTS = Path(__file__).parent / "blueprints"
+VALID = Path(__file__).parent / "modules" / "valid"
 T0 = datetime(2026, 1, 1, tzinfo=UTC)
+#: The fake proxy's one record per trial: prompt "go" + completion "ok" is four tokens,
+#: of which the model reads three.
+SEQUENCE_TOKENS = 4
+INPUT_TOKENS = 3
+START = "tinker://fake/sampler_weights/start"
+#: A blueprint replacement that gives the recipe a KL term.
+ANCHORED = {"learning_rate = 2e-5": "learning_rate = 2e-5\nkl_coef = 0.1"}
+#: A gepa search over the fixture dataset on a hosted model, Claude Code reflecting.
+GEPA = """
+[model]
+name = "some-hosted-model"
+provider = "openrouter"
+[data]
+train = "fixture"
+batch_size = 1
+[rollout]
+harness = "pi@0.85.1"
+sandbox = "modal"
+[recipe]
+kind = "gepa"
+reflection_harness = "claude-code"
+reflection_model = "anthropic/claude-sonnet-5"
+minibatch = 1
+patience = 2
+"""
 
 
 def fixture_tasks(tmp_path: Path) -> Path:
@@ -39,6 +69,28 @@ def write_blueprint(tmp_path: Path, text: str) -> Path:
     """Writes `text` to `<tmp>/bp/run.toml` and returns the blueprint directory, the form
     `load` and `check` take."""
     home = tmp_path / "bp"
+    home.mkdir(parents=True)
+    (home / "run.toml").write_text(text, encoding="utf-8")
+    return home
+
+
+def dataset(root: Path, name: str, *tasks: str) -> Path:
+    """A dataset of copies of the fixture `alpha` task, under the names given."""
+    home = root / name
+    for task in tasks:
+        shutil.copytree(FIXTURES / "fixture" / "alpha", home / task)
+    return home
+
+
+def blueprint(tmp_path: Path, kind: str = "dapo", *, tasks: int = 4, **replacements: str) -> Path:
+    """The recipe's fixture over `tasks` tasks named a, b, c..., two per batch, groups of two."""
+    if not (tmp_path / "tasks" / "four").is_dir():
+        dataset(tmp_path / "tasks", "four", *"abcdefgh"[:tasks])
+    text = (BLUEPRINTS / kind / "run.toml").read_text(encoding="utf-8")
+    text = text.replace('"aime-train"', '"four"').replace("group_size = 4", "group_size = 2")
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    home = tmp_path / "bp" / kind
     home.mkdir(parents=True)
     (home / "run.toml").write_text(text, encoding="utf-8")
     return home
@@ -149,14 +201,78 @@ class FakeTrials:
             self.in_flight -= 1
 
 
-async def sampled(
+class Fakes:
+    """Harbor's trial replaced for both kinds of job a search runs: a policy trial scores 1
+    when the skill it was handed names its task, and a reflection trial publishes a skill
+    naming the task its first trace is about."""
+
+    def __init__(self) -> None:
+        self.configs: list[TrialConfig] = []
+        self.reflected: list[list[str]] = []
+
+    async def __call__(self, config: TrialConfig) -> None:
+        self.configs.append(config)
+        task = Path(str(config.task.path))
+        trial = Path(config.trials_dir) / config.trial_name
+        if task.name == "reflection":
+            traces = sorted((task / "environment" / "traces").iterdir())
+            self.reflected.append([trace.name for trace in traces])
+            named = traces[0].read_text().splitlines()[0].removeprefix("task: ")
+            published = trial.joinpath(*COLLECTED)
+            published.mkdir(parents=True)
+            skill = (
+                f"---\nname: solving\ndescription: what to do.\n---\n\nmention {Path(named).name}\n"
+            )
+            (published / SKILL_FILE).write_text(skill)
+            write_result(trial, tokens=(1000, 100, 50), provider="anthropic")
+            return
+        text = (Path(config.agent.skills[0]) / "solving" / SKILL_FILE).read_text()
+        trial.mkdir(parents=True)
+        (trial / "agent").mkdir()
+        (trial / "agent" / "pi.txt").write_text(f"working on {task.name}")
+        write_result(trial, reward=1.0 if f"mention {task.name}\n" in text else 0.0)
+
+
+class Alternating:
+    """Rewards 1, 0, 1, 0 per task in call order, so every group of two has spread."""
+
+    def __init__(self) -> None:
+        self.configs: list[TrialConfig] = []
+        self.seen: dict[str, int] = {}
+
+    async def __call__(self, config: TrialConfig) -> None:
+        self.configs.append(config)
+        task = Path(str(config.task.path)).name
+        self.seen[task] = self.seen.get(task, 0) + 1
+        write_result(Path(config.trials_dir) / config.trial_name, reward=float(self.seen[task] % 2))
+
+
+class Stopped(BaseException):
+    pass
+
+
+class Interrupting:
+    """Alternating rewards, and the `after`-th trial stops the run as a signal would."""
+
+    def __init__(self, after: int) -> None:
+        self.inner = Alternating()
+        self.after = after
+        self.calls = 0
+
+    async def __call__(self, config: TrialConfig) -> None:
+        self.calls += 1
+        if self.calls == self.after:
+            raise Stopped("SIGINT")
+        await self.inner(config)
+
+
+async def job(
     run: Run,
     batch: list[Path],
     *,
     rollouts: int,
     index: int = 0,
     modules: Candidate | None = None,
-    purpose: str = "rollout",
 ) -> list[Group]:
     """One job through the trainer, the endpoint left open as a run leaves it."""
     trainer = Trainer(run)
@@ -164,7 +280,7 @@ async def sampled(
     carried = run.carried if modules is None else modules
     agent = Agent(Policy(run.endpoint), [harness(run.config.rollout.harness)], carried)
     await run.endpoint.open()
-    return await trainer.job(agent, batch, rollouts, purpose=purpose)
+    return await trainer.job(agent, batch, rollouts)
 
 
 def members_of(found: list[Group]) -> list[Member]:
@@ -177,3 +293,23 @@ def job_of(found: list[Group]) -> str:
 
 def trials_of(found: list[Group]) -> list[Path]:
     return [one.trial.dir for one in members_of(found)]
+
+
+def rows(run: Run) -> list[dict[str, Any]]:
+    return list(record.read(run.directory / record.METRICS))
+
+
+def checkpoints(run: Run) -> list[dict[str, Any]]:
+    return list(record.read(run.directory / record.CHECKPOINTS))
+
+
+def drawn(feedback: Sequence[Path], size: int, rng: random.Random, rounds: int) -> list[list[str]]:
+    """By task name, the minibatches of a search's first `rounds` rounds: what
+    `minibatches(feedback, size, rng)` yields, each round's parent drawn from the same `rng`
+    just before its minibatch, as `evolve` draws them."""
+    sampled = minibatches(feedback, size, rng)
+    found = []
+    for _ in range(rounds):
+        rng.random()
+        found.append([task.name for task in next(sampled)])
+    return found

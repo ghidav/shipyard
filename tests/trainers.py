@@ -46,13 +46,11 @@ class FakeForwardBackward:
 class FakeTrainingClient:
     """`tinker.TrainingClient` without the network. `forward` scores every position
     `logprob` (the reference mu), or, when `positional` is set, minus the token it predicts.
-    `forward_backward` scores `trained` (pi), or raises `failing`. Each `optim_step` moves
-    `trained` by `drift`, as an update moves the weights. Every call is appended to `calls`
-    in order and the datums sent to `sent`."""
+    `forward_backward` scores `trained` (pi), or raises `failing`. Every call is appended to
+    `calls` in order and the datums sent to `sent`."""
 
     logprob: float = -0.5
     trained: float = -0.5
-    drift: float = 0.0
     positional: bool = False
     failing: Exception | None = None
     calls: list[tuple[Any, ...]] = field(default_factory=list)
@@ -92,7 +90,6 @@ class FakeTrainingClient:
 
     async def optim_step_async(self, adam_params: Any) -> Any:
         self.calls.append(("optim_step", adam_params))
-        self.trained += self.drift
         return FakeFuture(FakeOptimStep({"lr": adam_params.learning_rate}), self, "optim")
 
     async def save_state_async(self, name: str, ttl_seconds: int | None = None) -> Any:

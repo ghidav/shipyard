@@ -15,8 +15,9 @@ from typer.testing import CliRunner
 from shipyard import record, show
 from shipyard.cli import app
 from shipyard.run import Run
+from tests.trials import BLUEPRINTS
 
-DAPO = Path(__file__).parent / "blueprints" / "dapo"
+DAPO = BLUEPRINTS / "dapo"
 runner = CliRunner()
 #: A job row as a served run writes it: fifteen keys including `at`.
 ROW = {
@@ -121,7 +122,7 @@ def test_the_process_section_names_the_proxy_the_backend_and_a_smoke_only_when_n
     assert '  proxy      {"placement": "tunnel", "origin": "https://w.trycloudflare.com"}' in shown
     assert "  smoke      true" in shown
     assert "  backend    https://" in shown, "a served run notes its tinker_base_url"
-    with Run.open(Path(__file__).parent / "blueprints" / "evaluate", root=tmp_path) as plain:
+    with Run.open(BLUEPRINTS / "evaluate", root=tmp_path) as plain:
         pass
     shown = runner.invoke(app, ["show", plain.id, "--root", str(tmp_path)]).output
     assert "proxy" not in shown and "smoke" not in shown and "backend" not in shown

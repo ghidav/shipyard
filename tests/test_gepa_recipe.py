@@ -23,67 +23,23 @@ from shipyard.data import held_out, search_sets
 from shipyard.modules import SKILL_FILE, seed
 from shipyard.preflight import NO_REFLECTOR, Finding
 from shipyard.recipes.gepa import BEST, SEED, GEPATrainer
-from shipyard.recipes.gepa.reflect import COLLECTED
 from shipyard.run import Run
 from shipyard.runner import Runner
-from tests.test_cycle import drawn
-from tests.trials import FIXTURES, check, fixture_tasks, write_blueprint, write_result
-
-BLUEPRINTS = Path(__file__).parent / "blueprints"
-VALID = Path(__file__).parent / "modules" / "valid"
-BLUEPRINT = """
-[model]
-name = "some-hosted-model"
-provider = "openrouter"
-[data]
-train = "fixture"
-batch_size = 1
-[rollout]
-harness = "pi@0.85.1"
-sandbox = "modal"
-[recipe]
-kind = "gepa"
-reflection_harness = "claude-code"
-reflection_model = "anthropic/claude-sonnet-5"
-minibatch = 1
-patience = 2
-"""
+from tests.trials import (
+    BLUEPRINTS,
+    GEPA,
+    VALID,
+    Fakes,
+    check,
+    dataset,
+    drawn,
+    fixture_tasks,
+    write_blueprint,
+    write_result,
+)
 
 
-def _skill(body: str) -> str:
-    return f"---\nname: solving\ndescription: what to do.\n---\n\n{body}\n"
-
-
-class Fakes:
-    """Harbor's trial replaced for both kinds of job a search runs: a policy trial scores 1
-    when the skill it was handed names its task, and a reflection trial publishes a skill
-    naming the task its first trace is about."""
-
-    def __init__(self) -> None:
-        self.configs: list[TrialConfig] = []
-        self.reflected: list[list[str]] = []
-
-    async def __call__(self, config: TrialConfig) -> None:
-        self.configs.append(config)
-        task = Path(str(config.task.path))
-        trial = Path(config.trials_dir) / config.trial_name
-        if task.name == "reflection":
-            traces = sorted((task / "environment" / "traces").iterdir())
-            self.reflected.append([trace.name for trace in traces])
-            named = traces[0].read_text().splitlines()[0].removeprefix("task: ")
-            published = trial.joinpath(*COLLECTED)
-            published.mkdir(parents=True)
-            (published / SKILL_FILE).write_text(_skill(f"mention {Path(named).name}"))
-            write_result(trial, tokens=(1000, 100, 50), provider="anthropic")
-            return
-        text = (Path(config.agent.skills[0]) / "solving" / SKILL_FILE).read_text()
-        trial.mkdir(parents=True)
-        (trial / "agent").mkdir()
-        (trial / "agent" / "pi.txt").write_text(f"working on {task.name}")
-        write_result(trial, reward=1.0 if task.name in text else 0.0)
-
-
-def _blueprint(tmp_path: Path, text: str = BLUEPRINT) -> Path:
+def _blueprint(tmp_path: Path, text: str = GEPA) -> Path:
     fixture_tasks(tmp_path)
     home = write_blueprint(tmp_path, text)
     shutil.copytree(VALID, home / "modules")
@@ -99,7 +55,7 @@ async def test_the_recipe_runs_end_to_end_on_fakes(
 ) -> None:
     """`pareto = 0`: both tasks are reflected on and selected on (GEPA section 6)."""
     monkeypatch.chdir(tmp_path)
-    home = _blueprint(tmp_path, BLUEPRINT + "pareto = 0\n")
+    home = _blueprint(tmp_path, GEPA + "pareto = 0\n")
     opened = Run.open(home, root=tmp_path / "runs")
     assert opened.carried is None and opened.config.recipe.budget is None
     opened.engine.run_trial = fakes = Fakes()
@@ -194,11 +150,10 @@ async def test_data_seed_draws_the_minibatches(
     predicts, and another seed draws others."""
     monkeypatch.chdir(tmp_path)
     fixture_tasks(tmp_path)
-    for name in ("t1", "t2", "t3", "t4", "t5", "t6"):
-        shutil.copytree(FIXTURES / "fixture" / "alpha", tmp_path / "tasks" / "six" / name)
+    dataset(tmp_path / "tasks", "six", "t1", "t2", "t3", "t4", "t5", "t6")
     found = {}
     for value in (0, 7):
-        text = BLUEPRINT.replace('"fixture"', '"six"').replace("minibatch = 1", "minibatch = 2")
+        text = GEPA.replace('"fixture"', '"six"').replace("minibatch = 1", "minibatch = 2")
         text = text.replace("batch_size = 1", f"batch_size = 1\nseed = {value}")
         home = write_blueprint(tmp_path / f"seed{value}", text + "pareto = 0\nbudget = 30\n")
         shutil.copytree(VALID, home / "modules")
@@ -289,7 +244,7 @@ def test_the_fixture_loads_with_the_searchs_knobs() -> None:
 
 
 def test_what_the_search_no_longer_takes_is_an_unknown_key(tmp_path: Path) -> None:
-    text = BLUEPRINT + 'tolerance = 0.05\nmax_metric_calls = 10\nbudget = 0\nedits = "all"\n'
+    text = GEPA + 'tolerance = 0.05\nmax_metric_calls = 10\nbudget = 0\nedits = "all"\n'
     with pytest.raises(ConfigError) as caught:
         load(write_blueprint(tmp_path, text))
     assert [p.split(":")[0] for p in caught.value.problems] == [
@@ -321,11 +276,11 @@ def test_check_names_the_reflector_and_blocks_a_blank_one(
     )
     assert texts[7] == "pareto: 1 of 2 tasks held out with seed 0 to select on, 1 to reflect on"
     blank = write_blueprint(
-        tmp_path / "blank", BLUEPRINT.replace('"claude-code"', '" "').replace("anthropic/", "")
+        tmp_path / "blank", GEPA.replace('"claude-code"', '" "').replace("anthropic/", "")
     )
     shutil.copytree(VALID, blank / "modules")
     assert Finding("blocked", NO_REFLECTOR) in check(blank)
-    unnamed = BLUEPRINT.replace('reflection_model = "anthropic/claude-sonnet-5"\n', "")
+    unnamed = GEPA.replace('reflection_model = "anthropic/claude-sonnet-5"\n', "")
     found = check(write_blueprint(tmp_path / "unnamed", unnamed))
     assert [f.text for f in found][6].startswith(
         "reflector claude-code, model the harness's own default, image"
@@ -351,11 +306,11 @@ def test_check_prints_the_resolved_config_and_the_modules_finding(
 
 def test_pareto_takes_a_dataset_name_or_a_count(tmp_path: Path) -> None:
     for value, loaded in (("3", 3), ("0", 0), ('"held"', "held")):
-        text = BLUEPRINT + f"pareto = {value}\n"
+        text = GEPA + f"pareto = {value}\n"
         assert load(write_blueprint(tmp_path / value, text)).recipe.pareto == loaded
     for value in ("-1", "true", '" "', "2.5"):
         with pytest.raises(ConfigError) as refused:
-            load(write_blueprint(tmp_path / f"bad{value}", BLUEPRINT + f"pareto = {value}\n"))
+            load(write_blueprint(tmp_path / f"bad{value}", GEPA + f"pareto = {value}\n"))
         assert refused.value.problems == [
             "[recipe] pareto: a dataset name, or how many of the run's tasks to hold out "
             "(0 or more)"
@@ -367,8 +322,7 @@ def test_the_sets_follow_pareto_and_check_says_how_they_split(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     fixture_tasks(tmp_path)
-    for name in ("a", "b", "c", "d", "e", "f"):
-        shutil.copytree(FIXTURES / "fixture" / "alpha", tmp_path / "tasks" / "six" / name)
+    dataset(tmp_path / "tasks", "six", *"abcdef")
 
     def sets(text: str) -> tuple[list[str], list[str]]:
         found = search_sets(load(write_blueprint(tmp_path / str(len(made)), text)))
@@ -376,7 +330,7 @@ def test_the_sets_follow_pareto_and_check_says_how_they_split(
         return [task.name for task in found[0]], [task.name for task in found[1]]
 
     made: list[str] = []
-    six = BLUEPRINT.replace('"fixture"', '"six"')
+    six = GEPA.replace('"fixture"', '"six"')
     feedback, pareto = sets(six)
     assert (len(feedback), len(pareto)) == (2, 4), (
         "two thirds, as in three of GEPA's four benchmarks"
@@ -408,9 +362,8 @@ def test_the_sets_follow_pareto_and_check_says_how_they_split(
     ]
     [missing] = said(six + 'pareto = "nowhere"\n')
     assert missing.level == "blocked" and missing.text.startswith("no dataset at")
-    one = tmp_path / "tasks" / "one" / "alpha"
-    shutil.copytree(FIXTURES / "fixture" / "alpha", one)
-    assert said(BLUEPRINT.replace('"fixture"', '"one"')) == [
+    dataset(tmp_path / "tasks", "one", "alpha")
+    assert said(GEPA.replace('"fixture"', '"one"')) == [
         Finding(
             "blocked",
             "[recipe] pareto: one task cannot be split; 0 selects on the task the search "

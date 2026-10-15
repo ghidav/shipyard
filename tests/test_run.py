@@ -14,8 +14,8 @@ from shipyard.data import NoSuchDataset
 from shipyard.run import Run, RunRefused, runs_root, version
 from shipyard.runner import Runner
 from shipyard.show import alive, state_of
+from tests.trials import BLUEPRINTS
 
-BLUEPRINTS = Path(__file__).parent / "blueprints"
 DAPO = BLUEPRINTS / "dapo"
 
 
