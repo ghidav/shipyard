@@ -12,9 +12,8 @@ import pytest
 from shipyard import config, resolved
 from shipyard.config import Blueprint, ConfigError, load
 from shipyard.preflight import Finding
-from tests.trials import check, fixture_tasks, write_blueprint
+from tests.trials import BLUEPRINTS, check, fixture_tasks, write_blueprint
 
-BLUEPRINTS = Path(__file__).parent / "blueprints"
 #: The kinds whose recipe is a `Gradient`: the three the loop trains.
 GRADIENT = ("dapo", "dr-grpo", "cispo", "fst")
 

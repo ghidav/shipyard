@@ -13,7 +13,7 @@ from shipyard.proxy import client
 from shipyard.proxy.client import CONTROL_TOKEN_ENV, Proxy, Unreachable
 from shipyard.proxy.exchange import Exchange, exchange
 from shipyard.proxy.wire import Record
-from tests.proxies import FakeSampler, ask, ids, root, server
+from tests.proxies import FakeSampler, ask, by_path, ids, root, server
 
 
 def of(started: Any, **named: Any) -> Proxy:
@@ -148,10 +148,6 @@ async def test_ready_raises_with_the_address_when_nothing_answers(
 
 
 # ------------------------------------------------------------------------ the swap
-
-
-def by_path(path: str | None) -> FakeSampler:
-    return FakeSampler("base" if path is None else path.rsplit("/", 1)[-1])
 
 
 async def test_swap_goes_through_the_control_route_and_changes_what_answers() -> None:

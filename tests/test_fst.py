@@ -23,22 +23,28 @@ from shipyard.config import (
     load,
 )
 from shipyard.data import Generator, tasks
-from shipyard.modules import SKILL_FILE, seed
+from shipyard.modules import seed
 from shipyard.recipes import resolution, trainer_for
 from shipyard.recipes.cispo import CISPOTrainer
 from shipyard.recipes.fst import ADAM, BUDGET_PASSES, fst_trainer, slow_recipe
-from shipyard.recipes.gepa.reflect import COLLECTED
 from shipyard.run import Run
 from shipyard.runner import Runner
 from shipyard.sampling.endpoint import ProviderEndpoint
 from shipyard.types import Agent, Group, Member, Policy, Sequence, Trial, Verdict, harness
-from tests.test_cycle import drawn
-from tests.test_runner import fakes  # noqa: F401 - the proxy and the Tinker service, faked
-from tests.trials import FIXTURES, check, write_blueprint, write_result
+from tests.trials import (
+    BLUEPRINTS,
+    VALID,
+    Fakes,
+    Stopped,
+    check,
+    dataset,
+    drawn,
+    write_blueprint,
+    write_result,
+)
 
-FST = Path(__file__).parent / "blueprints" / "fst"
+FST = BLUEPRINTS / "fst"
 AGENT = Agent(Policy(ProviderEndpoint("m")), [harness("pi")])
-VALID = Path(__file__).parent / "modules" / "valid"
 
 
 def _text(**changes: str) -> str:
@@ -139,47 +145,17 @@ async def test_the_jobs_of_a_step_merge_into_one_group_per_task(tmp_path: Path) 
         trainer.merged([parts[0], parts[1][:1]])
 
 
-class Trials:
-    """A policy trial scores 1 when its skill names its task; a reflection publishes a
-    skill naming the task of its first trace."""
-
-    def __init__(self) -> None:
-        self.configs: list[TrialConfig] = []
-
-    async def __call__(self, config: TrialConfig) -> None:
-        self.configs.append(config)
-        task = Path(str(config.task.path))
-        trial = Path(config.trials_dir) / config.trial_name
-        if task.name == "reflection":
-            traces = sorted((task / "environment" / "traces").iterdir())
-            named = traces[0].read_text().splitlines()[0].removeprefix("task: ")
-            published = trial.joinpath(*COLLECTED)
-            published.mkdir(parents=True)
-            skill = (
-                f"---\nname: solving\ndescription: what to do.\n---\n\nmention {Path(named).name}\n"
-            )
-            (published / SKILL_FILE).write_text(skill)
-            write_result(trial, tokens=(1000, 100, 50), provider="anthropic")
-            return
-        text = (Path(config.agent.skills[0]) / "solving" / SKILL_FILE).read_text()
-        trial.mkdir(parents=True)
-        (trial / "agent").mkdir()
-        (trial / "agent" / "pi.txt").write_text(f"working on {task.name}")
-        write_result(trial, reward=1.0 if f"mention {task.name}\n" in text else 0.0)
-
-
 @pytest.mark.usefixtures("fakes")
 async def test_a_cycle_evolves_two_texts_then_splits_every_group_across_them(
     tmp_path: Path,
 ) -> None:
-    for name in ("a", "b", "c", "d"):
-        shutil.copytree(FIXTURES / "fixture" / "alpha", tmp_path / "tasks" / "four" / name)
+    dataset(tmp_path / "tasks", "four", *"abcd")
     home = write_blueprint(
         tmp_path, _text(**{'"aime-train"': '"four"', "group_size = 4": "group_size = 2"})
     )
     shutil.copytree(VALID, home / "modules")
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.engine.run_trial = Trials()
+    opened.engine.run_trial = Fakes()
     with opened:
         await Runner.from_run(opened).run()
     rows = list(record.read(opened.directory / record.METRICS))
@@ -211,12 +187,11 @@ async def test_the_fast_phase_scores_each_cell_with_one_rollout_on_five_passes(
 ) -> None:
     """FST App. D: 960 metric calls over 192 examples, one rollout each, at any share of
     the group a text takes in the slow steps (here two of four)."""
-    for name in ("a", "b", "c", "d"):
-        shutil.copytree(FIXTURES / "fixture" / "alpha", tmp_path / "tasks" / "four" / name)
+    dataset(tmp_path / "tasks", "four", *"abcd")
     home = write_blueprint(tmp_path, _text(**{'"aime-train"': '"four"'}))
     shutil.copytree(VALID, home / "modules")
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.engine.run_trial = Trials()
+    opened.engine.run_trial = Fakes()
     with opened:
         await Runner.from_run(opened).run()
     rows = list(record.read(opened.directory / record.METRICS))
@@ -237,13 +212,12 @@ async def test_patience_ends_a_fast_phase_as_it_ends_gepa(tmp_path: Path) -> Non
     """`patience = 1` under a budget that would run on: the fast phase stops at its first
     round that does not raise the best anchor-set mean. Each text here names one task, so
     the first child's rise is the only one."""
-    for name in ("a", "b", "c", "d"):
-        shutil.copytree(FIXTURES / "fixture" / "alpha", tmp_path / "tasks" / "four" / name)
+    dataset(tmp_path / "tasks", "four", *"abcd")
     changes = {'"aime-train"': '"four"', 'kind = "fst"': 'kind = "fst"\npatience = 1\nbudget = 100'}
     home = write_blueprint(tmp_path, _text(**changes))
     shutil.copytree(VALID, home / "modules")
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.engine.run_trial = Trials()
+    opened.engine.run_trial = Fakes()
     with opened:
         await Runner.from_run(opened).run()
     rows = list(record.read(opened.directory / record.METRICS))
@@ -257,8 +231,7 @@ async def test_patience_ends_a_fast_phase_as_it_ends_gepa(tmp_path: Path) -> Non
 async def test_cycle_c_draws_its_minibatches_with_data_seed_plus_c(tmp_path: Path) -> None:
     """Two cycles over two epochs of four tasks: each fast phase's parents run on the
     minibatches `[data] seed + cycle` predicts over that cycle's tasks."""
-    for name in ("a", "b", "c", "d"):
-        shutil.copytree(FIXTURES / "fixture" / "alpha", tmp_path / "tasks" / "four" / name)
+    dataset(tmp_path / "tasks", "four", *"abcd")
     changes = {
         '"aime-train"': '"four"',
         "group_size = 4": "group_size = 2\nepochs = 2\nseed = 3",
@@ -266,7 +239,7 @@ async def test_cycle_c_draws_its_minibatches_with_data_seed_plus_c(tmp_path: Pat
     home = write_blueprint(tmp_path, _text(**changes))
     shutil.copytree(VALID, home / "modules")
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.engine.run_trial = trials = Trials()
+    opened.engine.run_trial = trials = Fakes()
     with opened:
         await Runner.from_run(opened).run()
     names = [Path(str(config.task.path)).name for config in trials.configs]
@@ -306,8 +279,8 @@ def test_fsts_warmup_key_reaches_its_slow_step(tmp_path: Path) -> None:
     assert "learning rate warmed up over 10 steps" in resolution(recipe)
 
 
-class Alternating(Trials):
-    """A reflection as `Trials` does it; a policy trial scores its job's parity."""
+class AlternatingFakes(Fakes):
+    """A reflection as `Fakes` does it; a policy trial scores its job's parity."""
 
     async def __call__(self, config: TrialConfig) -> None:
         if Path(str(config.task.path)).name == "reflection":
@@ -318,22 +291,17 @@ class Alternating(Trials):
         write_result(Path(config.trials_dir) / config.trial_name, reward=float(number % 2 == 0))
 
 
-class Stopped(BaseException):
-    pass
-
-
 @pytest.mark.usefixtures("fakes")
 async def test_a_cycle_interrupted_after_a_slow_step_resumes_without_another_fast_phase(
     tmp_path: Path,
 ) -> None:
-    for name in ("a", "b", "c", "d"):
-        shutil.copytree(FIXTURES / "fixture" / "alpha", tmp_path / "tasks" / "four" / name)
+    dataset(tmp_path / "tasks", "four", *"abcd")
     home = write_blueprint(
         tmp_path, _text(**{'"aime-train"': '"four"', "group_size = 4": "group_size = 2"})
     )
     shutil.copytree(VALID, home / "modules")
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.engine.run_trial = Alternating()
+    opened.engine.run_trial = AlternatingFakes()
     started = Runner.from_run(opened)
     trainer = started.trainer
     checkpointed, job = trainer.checkpoint, trainer.job
@@ -364,7 +332,7 @@ async def test_a_cycle_interrupted_after_a_slow_step_resumes_without_another_fas
     population = [one.digest for one in resumed.trainer.population]
     assert len(population) == 2 and resumed.modules is not None
     assert resumed.modules.digest == population[0]
-    resumed.opened.engine.run_trial = Alternating()
+    resumed.opened.engine.run_trial = AlternatingFakes()
     with resumed.opened:
         await resumed.run()
     after = list(record.read(resumed.opened.directory / record.JOBS))[len(before) :]

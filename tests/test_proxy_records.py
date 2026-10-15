@@ -29,6 +29,7 @@ from shipyard.proxy.wire import (
     records_of,
 )
 from tests.proxies import FakeSampler, ask, fetch, ids, server
+from tests.records import made
 
 OK = ids("ok")
 EMPTY = {"records": []}
@@ -37,28 +38,6 @@ EMPTY = {"records": []}
 def refused(recorder: Recorder, trial: str) -> list[str]:
     """The proxy's refusals on the trial's record, in order."""
     return [r.error for r in recorder.records_for(trial) if r.error in (BUDGET, CONTEXT)]
-
-
-def planted(**fields: Any) -> Record:
-    base: dict[str, Any] = dict(
-        seq=1,
-        at=0.0,
-        prompt_token_ids=(7, 7, 7),
-        completion_token_ids=OK,
-        inference_logprobs=(),
-        stop_reason="stop",
-        sampling_params={},
-        requested_model="gpt-oss-20b",
-        sample_ms=0.0,
-        served=None,
-        cached_tokens=0,
-        request_id=None,
-        bridged=False,
-        prompt_digests=(),
-        reply_digest=None,
-        error=None,
-    )
-    return Record(**{**base, **fields})
 
 
 # ------------------------------------------------------------------- what comes back
@@ -141,12 +120,13 @@ def test_a_record_off_the_wire_with_no_ids_is_refused_and_annotations_may_be_mis
 
 def test_every_annotation_survives_the_wire() -> None:
     """Compares every dataclass field, so a newly added field cannot be dropped."""
-    made = planted(
+    record = Record(
         seq=7,
         at=1234.5,
         prompt_token_ids=(1, 2, 3),
         completion_token_ids=(4, 5),
         inference_logprobs=(-0.5, -0.25),
+        stop_reason="stop",
         sampling_params={"temperature": 1.0},
         requested_model="openrouter/a/b",
         sample_ms=12.5,
@@ -158,10 +138,10 @@ def test_every_annotation_survives_the_wire() -> None:
         reply_digest="ef",
         error="context",
     )
-    back = record_of(dataclasses.asdict(made))
+    back = record_of(dataclasses.asdict(record))
     for found in dataclasses.fields(Record):
-        assert getattr(back, found.name) == getattr(made, found.name), found.name
-    assert records_of(delta_encoded([made])) == [made]
+        assert getattr(back, found.name) == getattr(record, found.name), found.name
+    assert records_of(delta_encoded([record])) == [record]
 
 
 # -------------------------------------------------------------------- a lost answer
@@ -459,16 +439,9 @@ def test_pictures_cross_the_wire_once_with_the_record_they_belong_to() -> None:
     from dataclasses import asdict
 
     shot, later = Picture(1, 2, "png", "cG5nIQ=="), Picture(6, 1, "jpeg", "anBn")
-    first = planted(
-        prompt_token_ids=(1, IMAGE_TOKEN, IMAGE_TOKEN, 4),
-        completion_token_ids=(5, 6),
-        images=(shot,),
-    )
-    second = planted(
-        seq=2,
-        prompt_token_ids=(1, IMAGE_TOKEN, IMAGE_TOKEN, 4, 5, 6, IMAGE_TOKEN, 8),
-        completion_token_ids=(9,),
-        images=(shot, later),
+    first = made((1, IMAGE_TOKEN, IMAGE_TOKEN, 4), (5, 6), images=(shot,))
+    second = made(
+        (1, IMAGE_TOKEN, IMAGE_TOKEN, 4, 5, 6, IMAGE_TOKEN, 8), (9,), seq=2, images=(shot, later)
     )
     rows = delta_encoded([first, second])
     assert rows[1]["prompt_from"] == 0 and rows[1]["prompt_token_ids"] == [IMAGE_TOKEN, 8]

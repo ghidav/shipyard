@@ -11,7 +11,7 @@ import pytest
 
 from shipyard.proxy import cookbook, turns
 from shipyard.proxy.turns import as_user_turns
-from tests.proxies import BridgeRenderer, ScriptedSampler, ask, ask_anthropic, chars, ids, server
+from tests.proxies import BridgeRenderer, FakeSampler, ask, ask_anthropic, chars, ids, server
 
 
 @pytest.fixture
@@ -133,7 +133,7 @@ async def test_a_call_that_ends_with_a_new_block_extends_the_previous_prompt() -
     """The second call appends a tool result and a new system-role block, as Claude Code
     does after a file changed on disk. The block is the tail's closing user turn, so the
     prompt is the record's prompt and sampled tokens plus the tail."""
-    sampler = ScriptedSampler("", answers=["CALL ls {}", "two files"])
+    sampler = FakeSampler(["CALL ls {}", "two files"])
     tools = [{"name": "ls", "description": "List", "input_schema": {"type": "object"}}]
     body = {"system": "Be brief.", "tools": tools}
     agent = {"role": "system", "content": [{"type": "text", "text": "# Environment\nA sandbox."}]}
@@ -170,7 +170,7 @@ async def test_the_same_on_the_openai_wire() -> None:
     """A harness on the OpenAI wire that appends a system message after a tool result
     gets the same answer: the message is the tail's closing user turn and the call
     bridges, where the cookbook refused it before."""
-    sampler = ScriptedSampler("", answers=["CALL ls {}", "two files"])
+    sampler = FakeSampler(["CALL ls {}", "two files"])
     note = "Note: a.txt changed on disk."
     async with server(sampler, renderer=BridgeRenderer()) as started:
         messages: list[dict[str, Any]] = [

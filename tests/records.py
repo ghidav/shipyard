@@ -1,4 +1,5 @@
-"""The run's side of the proxy, faked: records and a `Proxy` that notes what it was asked."""
+"""The run's side of the proxy, faked: records, a `Proxy` that notes what it was asked, and a
+blueprint to open an endpoint on."""
 
 from __future__ import annotations
 
@@ -8,9 +9,24 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from shipyard.proxy.client import Unreachable
+from shipyard.config import Blueprint
 from shipyard.proxy.wire import Picture, Record
-from tests.proxies import ids
+from tests.proxies import MODEL, ids
+
+
+def blueprint(**rollout: Any) -> Blueprint:
+    """A served evaluate blueprint: `from_checkpoint` goes to `[model]`, the rest to `[rollout]`."""
+    model = {"name": MODEL}
+    if "from_checkpoint" in rollout:
+        model["from_checkpoint"] = rollout.pop("from_checkpoint")
+    return Blueprint.model_validate(
+        {
+            "model": model,
+            "data": {"dataset": "d", "batch_size": 1},
+            "rollout": {"harness": "pi@0.85.1", **rollout},
+            "recipe": {"kind": "evaluate"},
+        }
+    )
 
 
 def made(
@@ -23,7 +39,6 @@ def made(
     cached: int = 0,
     bridged: bool = False,
     request_id: str | None = None,
-    stop_reason: str = "stop",
     images: tuple[Picture, ...] = (),
 ) -> Record:
     """A record as the proxy would have kept it, with text rendered by character."""
@@ -37,7 +52,7 @@ def made(
         prompt_token_ids=prompt_ids,
         completion_token_ids=completion_ids,
         inference_logprobs=(-0.5,) * len(completion_ids),
-        stop_reason="" if error else stop_reason,
+        stop_reason="" if error else "stop",
         sampling_params={"temperature": 1.0},
         requested_model="m",
         sample_ms=0.0 if error else 12.0,
@@ -69,18 +84,13 @@ class FakeProxy:
     #: The token budget `/healthz` reports; None: the proxy enforces none.
     budget: int | None = None
     closed: int = 0
-    #: How often `/healthz` was probed, whether it answers, and why it is gone (None: alive).
+    #: How often `/healthz` was probed, and why it is gone (None: alive).
     probed: int = 0
-    answering: bool = True
     exited: str | None = None
 
     @property
     def host(self) -> str:
         return urlsplit(self.origin).hostname or ""
-
-    @property
-    def loopback(self) -> str:
-        return self.origin
 
     async def local(self, settings: Any, *, host: str, **named: Any) -> FakeProxy:
         self.placed.append(("local", dict(settings), {"host": host, **named}))
@@ -117,9 +127,7 @@ class FakeProxy:
 
     async def ready(self, seconds: float = 30.0) -> str:
         self.probed += 1
-        if not self.answering:
-            raise Unreachable(f"the tunnel at {self.origin} does not answer: ConnectError")
-        return "Qwen/Qwen3-8B"
+        return MODEL
 
     def gone(self) -> str | None:
         return self.exited

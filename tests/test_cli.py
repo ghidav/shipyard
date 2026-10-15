@@ -18,9 +18,8 @@ from shipyard.cli import app
 from shipyard.run import Run
 from shipyard.runner import Runner
 from shipyard.show import state_of
-from tests.trials import FakeTrials, fixture_tasks
+from tests.trials import BLUEPRINTS, FakeTrials, fixture_tasks
 
-BLUEPRINTS = Path(__file__).parent / "blueprints"
 DAPO = BLUEPRINTS / "dapo"
 EVALUATE = BLUEPRINTS / "evaluate"
 

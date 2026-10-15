@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 import pytest
@@ -13,9 +12,9 @@ from shipyard.run import Run
 from shipyard.runner import Runner
 from shipyard.sampling.endpoint import ProxyEndpoint
 from tests.records import FakeProxy, made
-from tests.trials import FIXTURES, FakeTrials
+from tests.trials import BLUEPRINTS, FakeTrials, dataset
 
-EVALUATE = Path(__file__).parent / "blueprints" / "evaluate"
+EVALUATE = BLUEPRINTS / "evaluate"
 #: One outcome per task of the four-task dataset: two graded, one timeout, one crash.
 OUTCOMES = {
     "a": {"reward": 1.0},
@@ -26,8 +25,7 @@ OUTCOMES = {
 
 def _blueprint(tmp_path: Path, **replacements: str) -> Path:
     """The evaluate fixture over a four-task test set, two tasks per batch, one rollout each."""
-    for name in ("a", "b", "c", "d"):
-        shutil.copytree(FIXTURES / "fixture" / "alpha", tmp_path / "tasks" / "four" / name)
+    dataset(tmp_path / "tasks", "four", *"abcd")
     text = (EVALUATE / "run.toml").read_text(encoding="utf-8")
     text = text.replace('"fixture"', '"four"').replace("batch_size = 1", "batch_size = 2")
     text = text.replace("group_size = 2", "group_size = 1")

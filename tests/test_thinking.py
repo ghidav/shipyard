@@ -14,9 +14,7 @@ from tests.proxies import (
     TOOLS_ANTHROPIC,
     TOOLS_OPENAI,
     BridgeRenderer,
-    FakeResponse,
-    FakeSequence,
-    ScriptedSampler,
+    FakeSampler,
     ask,
     ask_anthropic,
     chars,
@@ -38,7 +36,7 @@ def _events(body: str) -> list[tuple[str, dict[str, Any]]]:
 async def _anthropic_turns(sent_back: Any) -> list[Any]:
     """Two turns of a tool loop: the first reply's blocks, rewritten by `sent_back`, then
     a tool result. Returns the trial's records."""
-    sampler = ScriptedSampler("", answers=["{look}CALL ls {}", "{done}two files"])
+    sampler = FakeSampler(["{look}CALL ls {}", "{done}two files"])
     async with server(sampler, renderer=BridgeRenderer()) as started:
         body = {"system": "be brief", "tools": TOOLS_ANTHROPIC}
         messages: list[dict[str, Any]] = [{"role": "user", "content": "look around"}]
@@ -59,7 +57,7 @@ async def _anthropic_turns(sent_back: Any) -> list[Any]:
 
 
 async def test_the_reply_carries_its_thinking_as_a_signed_block_first() -> None:
-    sampler = ScriptedSampler("", answers=["{look}CALL ls {}"])
+    sampler = FakeSampler("{look}CALL ls {}")
     async with server(sampler, renderer=BridgeRenderer()) as started:
         answered = await ask_anthropic(started, "t", tools=TOOLS_ANTHROPIC)
         blocks = answered.json()["content"]
@@ -69,13 +67,13 @@ async def test_the_reply_carries_its_thinking_as_a_signed_block_first() -> None:
 
 
 async def test_a_reply_without_thinking_carries_no_block() -> None:
-    async with server(ScriptedSampler("", answers=["plain"]), renderer=BridgeRenderer()) as started:
+    async with server(FakeSampler("plain"), renderer=BridgeRenderer()) as started:
         blocks = (await ask_anthropic(started, "t")).json()["content"]
     assert blocks == [{"type": "text", "text": "plain"}]
 
 
 async def test_a_streamed_reply_carries_the_block_at_index_zero() -> None:
-    sampler = ScriptedSampler("", answers=["{look}CALL ls {}"])
+    sampler = FakeSampler("{look}CALL ls {}")
     async with server(sampler, renderer=BridgeRenderer()) as started:
         events = _events(
             (await ask_anthropic(started, "t", tools=TOOLS_ANTHROPIC, stream=True)).text
@@ -145,7 +143,7 @@ async def test_a_redacted_block_is_accepted_and_carries_nothing() -> None:
 
 
 async def test_the_openai_reply_carries_reasoning_and_its_details() -> None:
-    sampler = ScriptedSampler("", answers=["{look}CALL ls {}"])
+    sampler = FakeSampler("{look}CALL ls {}")
     async with server(sampler, renderer=BridgeRenderer()) as started:
         message = (await ask(started, "t", tools=TOOLS_OPENAI)).json()["choices"][0]["message"]
     assert message["reasoning"] == "look" and "reasoning_content" not in message
@@ -156,9 +154,7 @@ async def test_the_openai_reply_carries_reasoning_and_its_details() -> None:
 
 
 async def test_the_openai_stream_carries_the_reasoning_before_any_text() -> None:
-    async with server(
-        ScriptedSampler("", answers=["{look}hello"]), renderer=BridgeRenderer()
-    ) as started:
+    async with server(FakeSampler("{look}hello"), renderer=BridgeRenderer()) as started:
         text = (await ask(started, "t", stream=True)).text
     chunks = [
         json.loads(line.removeprefix("data: "))
@@ -184,7 +180,7 @@ async def test_the_openai_stream_carries_the_reasoning_before_any_text() -> None
 async def test_reasoning_sent_back_in_any_field_is_read_once_and_bridged(
     fields: dict[str, Any],
 ) -> None:
-    sampler = ScriptedSampler("", answers=["{look}CALL ls {}", "done"])
+    sampler = FakeSampler(["{look}CALL ls {}", "done"])
     async with server(sampler, renderer=BridgeRenderer()) as started:
         history: list[dict[str, Any]] = [{"role": "user", "content": "go"}]
         first = await ask(started, "t", messages=history, tools=TOOLS_OPENAI)
@@ -259,16 +255,6 @@ def qwen():
     return tokenizer, cookbook.get_renderer("qwen3", tokenizer)
 
 
-class TokenSampler(ScriptedSampler):
-    """Answers with token ids, as Tinker does."""
-
-    async def sample_async(self, prompt: Any, num_samples: int, sampling_params: Any) -> Any:
-        self.asked.append(sampling_params)
-        self.prompts.append(prompt)
-        tokens = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
-        return FakeResponse([FakeSequence(tokens=list(tokens), logprobs=[-0.5] * len(tokens))])
-
-
 @pytest.mark.parametrize("kept", [True, False])
 async def test_qwen_reads_its_thinking_exactly_when_claude_code_sends_it_back(
     qwen: Any, kept: bool
@@ -282,7 +268,7 @@ async def test_qwen_reads_its_thinking_exactly_when_claude_code_sends_it_back(
     last = tokenizer.encode(
         "<think>\nDone.\n</think>\n\nTwo files.<|im_end|>", add_special_tokens=False
     )
-    sampler = TokenSampler("", answers=[first, last])
+    sampler = FakeSampler([first, last])
     tools = [
         {
             "name": "Bash",

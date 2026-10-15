@@ -8,9 +8,8 @@ from pathlib import Path
 
 from shipyard.config import load
 from shipyard.sampling.endpoint import endpoint_settings, start_weights
-from tests.trials import check, write_blueprint
+from tests.trials import BLUEPRINTS, check, write_blueprint
 
-BLUEPRINTS = Path(__file__).parent / "blueprints"
 STATE = "tinker://abc:train:0/weights/final"
 SAMPLER = "tinker://abc:train:0/sampler_weights/final"
 

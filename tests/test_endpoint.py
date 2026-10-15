@@ -8,7 +8,6 @@ from typing import Any
 import pytest
 
 from shipyard import record
-from shipyard.config import Blueprint
 from shipyard.harnesses import PROFILES, bare_name
 from shipyard.proxy.wire import CONTROL_TOKEN_ENV, PROXY_TOKEN_ENV
 from shipyard.run import Run
@@ -25,24 +24,10 @@ from shipyard.sampling.endpoint import (
     tinker_base_url,
 )
 from shipyard.types import Connection, Trial, harness
-from tests.records import FakeProxy, made
-from tests.trials import write_result
+from tests.records import FakeProxy, blueprint, made
+from tests.trials import BLUEPRINTS, write_result
 
-DAPO = Path(__file__).parent / "blueprints" / "dapo"
-
-
-def blueprint(**rollout: Any) -> Blueprint:
-    model = {"name": "Qwen/Qwen3-8B"}
-    if "from_checkpoint" in rollout:
-        model["from_checkpoint"] = rollout.pop("from_checkpoint")
-    return Blueprint.model_validate(
-        {
-            "model": model,
-            "data": {"dataset": "d", "batch_size": 1},
-            "rollout": {"harness": "pi@0.85.1", **rollout},
-            "recipe": {"kind": "evaluate"},
-        }
-    )
+DAPO = BLUEPRINTS / "dapo"
 
 
 @pytest.fixture

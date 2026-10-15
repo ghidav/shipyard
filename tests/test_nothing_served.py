@@ -1,9 +1,9 @@
-"""The dead-endpoint stop, implemented once in `Run.sample` for every recipe. A served job
-is recorded and then stops the run with `NothingServed` when none of its trials reached the
-proxy, or when every request failed at the sampler (the weights expired under the run). A
-job where some trials were answered is masked trial by trial. A provider-served job never
-stops the run this way. A step whose groups are all degenerate is an untrained step and
-does not stop the run."""
+"""The dead-endpoint stop, implemented once in `Run.recorded` via `Trainer.job` for every
+recipe. A served job is recorded and then stops the run with `NothingServed` when none of its
+trials reached the proxy, or when every request failed at the sampler (the weights expired
+under the run). A job where some trials were answered is masked trial by trial. A
+provider-served job never stops the run this way. A step whose groups are all degenerate is
+an untrained step and does not stop the run."""
 
 from __future__ import annotations
 
@@ -17,32 +17,19 @@ from shipyard import record
 from shipyard.run import Run
 from shipyard.runner import Runner
 from shipyard.sampling.endpoint import NothingServed, served_nothing
+from tests.proxies import MODEL
 from tests.records import FakeProxy, made
-from tests.test_gepa_recipe import BLUEPRINT as GEPA
-from tests.test_gepa_recipe import VALID
 from tests.trainers import FakeService, capable
-from tests.trials import FIXTURES, FakeTrials, fixture_tasks, write_blueprint
+from tests.trials import GEPA, VALID, FakeTrials, blueprint, fixture_tasks, write_blueprint
 
-BLUEPRINTS = Path(__file__).parent / "blueprints"
-MODEL = "Qwen/Qwen3-8B"
 DEAD = "no trial reached the proxy; the endpoint is dead or unreachable"
 POISONED = "every request failed at the sampler (sampler: BadRequestError)"
 
 
 def _four(tmp_path: Path, kind: str, **replacements: str) -> Path:
     """The kind's fixture over a four-task dataset, two tasks per batch, groups of two."""
-    for name in ("a", "b", "c", "d"):
-        shutil.copytree(FIXTURES / "fixture" / "alpha", tmp_path / "tasks" / "four" / name)
-    text = (BLUEPRINTS / kind / "run.toml").read_text(encoding="utf-8")
-    text = text.replace('"aime-train"', '"four"').replace('"fixture"', '"four"')
-    text = text.replace("group_size = 4", "group_size = 2")
-    text = text.replace("batch_size = 1", "batch_size = 2")
-    for old, new in replacements.items():
-        text = text.replace(old, new)
-    home = tmp_path / "bp" / kind
-    home.mkdir(parents=True)
-    (home / "run.toml").write_text(text, encoding="utf-8")
-    return home
+    replacements = {'"fixture"': '"four"', "batch_size = 1": "batch_size = 2", **replacements}
+    return blueprint(tmp_path, kind, **replacements)
 
 
 @pytest.fixture

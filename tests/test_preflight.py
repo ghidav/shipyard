@@ -10,9 +10,7 @@ import pytest
 from shipyard import preflight
 from shipyard.preflight import Finding
 from shipyard.proxy import tunnel
-from tests.trials import check, fixture_tasks, write_blueprint
-
-BLUEPRINTS = Path(__file__).parent / "blueprints"
+from tests.trials import BLUEPRINTS, check, fixture_tasks, write_blueprint
 
 #: An evaluate blueprint `check` passes from a working directory holding the fixtures.
 HOSTED = """

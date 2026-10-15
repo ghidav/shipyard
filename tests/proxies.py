@@ -1,10 +1,10 @@
-"""Fakes for the two ends of the proxy: a sampling client answering a fixed text and a
+"""Fakes for the two ends of the proxy: a sampling client answering scripted replies and a
 renderer of one character per token, so the reply to a request says which client served it.
 The server between them is real: aiohttp, the cookbook's app, and a kernel-assigned port."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -34,10 +34,10 @@ class FakeResponse:
 
 @dataclass
 class FakeSampler:
-    """`tinker.SamplingClient` as the proxy uses it: `answer` comes back as its characters'
-    code points, one sequence per sample asked."""
+    """`tinker.SamplingClient` as the proxy uses it: `answer` is every reply, or the replies in
+    turn with the last repeating; a text comes back as its code points, ids as themselves."""
 
-    answer: str
+    answer: str | Sequence[str | Sequence[int]]
     asked: list[Any] = field(default_factory=list)
     prompts: list[Any] = field(default_factory=list)
     cached: int = 0
@@ -45,7 +45,9 @@ class FakeSampler:
     async def sample_async(self, prompt: Any, num_samples: int, sampling_params: Any) -> Any:
         self.asked.append(sampling_params)
         self.prompts.append(prompt)
-        tokens = [ord(character) for character in self.answer]
+        replies = [self.answer] if isinstance(self.answer, str) else self.answer
+        reply = replies[min(len(self.asked), len(replies)) - 1]
+        tokens = [ord(character) for character in reply] if isinstance(reply, str) else list(reply)
         return FakeResponse(
             [FakeSequence(tokens, [-0.5] * len(tokens)) for _ in range(num_samples)],
             prompt_cache_hit_tokens=self.cached,
@@ -75,7 +77,7 @@ class FakeRenderer:
         return []
 
     def build_generation_prompt(self, messages: list[dict[str, Any]]) -> tinker.ModelInput:
-        text = "".join(_text(message.get("content")) for message in messages)
+        text = "".join(text_of(message.get("content")) for message in messages)
         return tinker.ModelInput.from_ints([ord(character) for character in text])
 
     def parse_response(self, response: list[int]) -> tuple[dict[str, Any], Any]:
@@ -83,7 +85,7 @@ class FakeRenderer:
         return {"role": "assistant", "content": text}, ParseTermination.STOP_SEQUENCE
 
 
-def _text(content: Any) -> str:
+def text_of(content: Any) -> str:
     """A message's text: the string itself, or its text parts joined."""
     if isinstance(content, list):
         return "".join(
@@ -113,6 +115,11 @@ def server(
         "client_factory": factory,
     }
     return Server(**{**fields, **overrides})
+
+
+def by_path(path: str | None) -> FakeSampler:
+    """A sampler answering the last part of its weights' path, or "base" on none."""
+    return FakeSampler("base" if path is None else path.rsplit("/", 1)[-1])
 
 
 def ids(text: str) -> tuple[int, ...]:
@@ -198,20 +205,6 @@ TOOLS_OPENAI = [
 TOOLS_ANTHROPIC = [{"name": "ls", "description": "list", "input_schema": {"type": "object"}}]
 
 
-@dataclass
-class ScriptedSampler(FakeSampler):
-    """One answer per request, in order; the last one repeats."""
-
-    answers: list[str] = field(default_factory=list)
-
-    async def sample_async(self, prompt: Any, num_samples: int, sampling_params: Any) -> Any:
-        self.asked.append(sampling_params)
-        self.prompts.append(prompt)
-        answer = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
-        tokens = [ord(character) for character in answer]
-        return FakeResponse([FakeSequence(tokens, [-0.5] * len(tokens))])
-
-
 class BridgeRenderer(FakeRenderer):
     """Thinking as `{...}` ahead of the text, a tool call as `CALL name {json}`, a tool
     result as `tool[<id>]:text`. An assistant message re-renders UPPER-CASED behind `>` and
@@ -232,7 +225,7 @@ class BridgeRenderer(FakeRenderer):
         out: list[int] = []
         for message in messages:
             role, content = message.get("role"), message.get("content")
-            text = _text(content)
+            text = text_of(content)
             if role == "assistant":
                 thought = "".join(
                     "{" + str(part.get("thinking") or "") + "}"

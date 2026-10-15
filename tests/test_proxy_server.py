@@ -15,7 +15,7 @@ import tinker
 from shipyard.proxy.exchange import Exchange, exchange
 from shipyard.proxy.recorder import Recorder
 from shipyard.proxy.server import DEFAULT_MAX_TOKENS, Server, context_of
-from tests.proxies import FakeSampler, address, ask, ask_anthropic, control, ids, server
+from tests.proxies import FakeSampler, address, ask, ask_anthropic, by_path, control, ids, server
 
 # ------------------------------------------------------------------ before it starts
 
@@ -117,10 +117,6 @@ async def test_the_token_is_the_gate() -> None:
 
 
 # ------------------------------------------------------------------------- swapping
-
-
-def by_path(path: str | None) -> FakeSampler:
-    return FakeSampler("base" if path is None else path.rsplit("/", 1)[-1])
 
 
 async def test_swap_changes_what_is_served_and_every_record_says_who_answered() -> None:

@@ -30,13 +30,14 @@ from tests.proxies import (
     TOOLS_ANTHROPIC,
     TOOLS_OPENAI,
     BridgeRenderer,
-    ScriptedSampler,
+    FakeSampler,
     ask,
     ask_anthropic,
     chars,
     fetch,
     ids,
     server,
+    text_of,
 )
 
 STOP = BridgeRenderer.STOP
@@ -260,7 +261,7 @@ class PicturingRenderer(BridgeRenderer):
                             data=_bytes(part["image"]), format="png", expected_tokens=self.WIDTH
                         )
                     )
-                text += [*ids(_text(content)), ord("\n")]
+                text += [*ids(text_of(content)), ord("\n")]
             else:
                 text += super().build_generation_prompt([message]).to_ints()[:-1]
         chunks.append(tinker.types.EncodedTextChunk(tokens=[*text, ord(">")]))
@@ -273,12 +274,6 @@ def _bytes(image: Any) -> bytes:
     sink = io.BytesIO()
     image.save(sink, format="PNG")
     return sink.getvalue()
-
-
-def _text(content: Any) -> str:
-    return "".join(
-        str(p.get("text", "")) for p in content if isinstance(p, dict) and p.get("type") == "text"
-    )
 
 
 def test_an_image_in_the_head_and_one_in_the_tail_bridge_with_their_pictures() -> None:
@@ -327,7 +322,7 @@ def test_an_image_in_the_head_and_one_in_the_tail_bridge_with_their_pictures() -
 async def _tool_loop(answers: list[str], *, retitle: Any = None) -> tuple[Any, Any]:
     """Three turns on the OpenAI wire: a tool call, its result, a reply with thinking, a
     closing user message. `retitle` may edit the history before the third request."""
-    sampler = ScriptedSampler("", answers=answers)
+    sampler = FakeSampler(answers)
     async with server(sampler, renderer=BridgeRenderer()) as started:
         history: list[dict[str, Any]] = [{"role": "user", "content": "look"}]
         first = await ask(started, "t", messages=history, tools=TOOLS_OPENAI)
@@ -405,7 +400,7 @@ async def test_a_head_that_re_renders_differently_does_not_bridge() -> None:
 
 
 async def test_the_anthropic_wire_bridges_a_tool_loop_too() -> None:
-    sampler = ScriptedSampler("", answers=["CALL ls {}", "two entries"])
+    sampler = FakeSampler(["CALL ls {}", "two entries"])
     async with server(sampler, renderer=BridgeRenderer()) as started:
         messages: list[dict[str, Any]] = [{"role": "user", "content": "look"}]
         body = {"system": "be brief", "tools": TOOLS_ANTHROPIC}
@@ -435,7 +430,7 @@ async def test_the_anthropic_wire_bridges_a_tool_loop_too() -> None:
 async def test_a_retry_replays_one_record_with_its_digest_and_the_index_drains_with_the_trial() -> (
     None
 ):
-    sampler = ScriptedSampler("", answers=["hi"])
+    sampler = FakeSampler("hi")
     async with server(sampler, renderer=BridgeRenderer()) as started:
         await ask(started, "t")
         await ask(started, "t", headers={"x-stainless-retry-count": "1"})
@@ -451,9 +446,7 @@ async def test_a_retry_replays_one_record_with_its_digest_and_the_index_drains_w
 
 
 async def test_a_refused_request_leaves_a_record_with_its_digests_and_no_reply() -> None:
-    async with server(
-        ScriptedSampler("", answers=["hi"]), renderer=BridgeRenderer(), max_context=4
-    ) as started:
+    async with server(FakeSampler("hi"), renderer=BridgeRenderer(), max_context=4) as started:
         refused = await ask(started, "t")
         assert refused.status_code == 400
         (record,) = started.records_for("t")
@@ -462,7 +455,7 @@ async def test_a_refused_request_leaves_a_record_with_its_digests_and_no_reply()
 
 
 async def test_an_image_prompt_bridges_over_the_wire_and_the_sampler_gets_the_chunk() -> None:
-    sampler = ScriptedSampler("", answers=["hi", "bye"])
+    sampler = FakeSampler(["hi", "bye"])
     picture = Image.new("RGB", (8, 8), "blue")
     sink = io.BytesIO()
     picture.save(sink, format="PNG")
@@ -498,7 +491,7 @@ async def test_an_image_prompt_bridges_over_the_wire_and_the_sampler_gets_the_ch
 
 @pytest.mark.parametrize("stream", [False, True])
 async def test_a_bridged_prompt_is_what_the_sampler_is_given(stream: bool) -> None:
-    sampler = ScriptedSampler("", answers=["hi", "bye"])
+    sampler = FakeSampler(["hi", "bye"])
     async with server(sampler, renderer=BridgeRenderer()) as started:
         history = [{"role": "user", "content": "go"}]
         await ask(started, "t", messages=history, stream=stream)
@@ -535,7 +528,7 @@ def _extends(later: Any, earlier: Any) -> bool:
 
 
 async def test_an_echo_whose_arguments_the_harness_rewrote_still_bridges() -> None:
-    sampler = ScriptedSampler("", answers=['CALL ls {"p": "a"}', "done"])
+    sampler = FakeSampler(['CALL ls {"p": "a"}', "done"])
     async with server(sampler, renderer=BridgeRenderer()) as started:
         history: list[dict[str, Any]] = [{"role": "user", "content": "look"}]
         history += _echo(await _reply(started, history), '{"all": false, "p": "a"}', "alpha")
@@ -550,7 +543,7 @@ async def test_of_two_replies_to_one_history_the_one_the_harness_kept_is_bridged
     """Two samples of one history call the same tool on different files. The harness kept
     the first and rewrote its arguments; its ids say which it was."""
     answers = ['CALL ls {"p": "a"}', 'CALL ls {"p": "b"}', "done"]
-    async with server(ScriptedSampler("", answers=answers), renderer=BridgeRenderer()) as started:
+    async with server(FakeSampler(answers), renderer=BridgeRenderer()) as started:
         history: list[dict[str, Any]] = [{"role": "user", "content": "look"}]
         a = await _reply(started, history)
         b = await _reply(started, history)
@@ -576,7 +569,7 @@ class ModelNamedCalls(BridgeRenderer):
 
 async def test_a_model_that_names_its_own_calls_keeps_its_ids_and_two_samples_fork() -> None:
     answers = ['CALL ls {"p": "a"}', 'CALL ls {"p": "b"}', "done"]
-    async with server(ScriptedSampler("", answers=answers), renderer=ModelNamedCalls()) as started:
+    async with server(FakeSampler(answers), renderer=ModelNamedCalls()) as started:
         history: list[dict[str, Any]] = [{"role": "user", "content": "look"}]
         a = await _reply(started, history)
         b = await _reply(started, history)
@@ -585,7 +578,7 @@ async def test_a_model_that_names_its_own_calls_keeps_its_ids_and_two_samples_fo
         await _reply(started, history)
         assert not started.records_for("t")[-1].bridged, "two replies fit: neither is spliced"
     answers = ['CALL ls {"p": "a"}', "done"]
-    async with server(ScriptedSampler("", answers=answers), renderer=ModelNamedCalls()) as started:
+    async with server(FakeSampler(answers), renderer=ModelNamedCalls()) as started:
         history = [{"role": "user", "content": "look"}]
         history += _echo(await _reply(started, history), '{"p": "a", "n": 1}', "alpha")
         await _reply(started, history)
@@ -594,7 +587,7 @@ async def test_a_model_that_names_its_own_calls_keeps_its_ids_and_two_samples_fo
 
 
 async def test_a_replayed_retry_carries_the_ids_its_first_answer_did() -> None:
-    sampler = ScriptedSampler("", answers=["CALL ls {}"])
+    sampler = FakeSampler("CALL ls {}")
     async with server(sampler, renderer=BridgeRenderer()) as started:
         history = [{"role": "user", "content": "look"}]
         first = await _reply(started, history)
@@ -607,7 +600,7 @@ async def test_a_sibling_the_trimmed_echo_of_a_kept_reply_digests_as_is_not_spli
     """Kimi-like ids: the kept reply had thinking, its sibling had none. The harness echoes
     the kept one without its thinking, which digests as the sibling; the shared id forks."""
     answers = ['{plan}CALL ls {"p": "a"}', 'CALL ls {"p": "b"}', "done"]
-    async with server(ScriptedSampler("", answers=answers), renderer=ModelNamedCalls()) as started:
+    async with server(FakeSampler(answers), renderer=ModelNamedCalls()) as started:
         history: list[dict[str, Any]] = [{"role": "user", "content": "look"}]
         a = await _reply(started, history)
         await _reply(started, history)
@@ -618,7 +611,7 @@ async def test_a_sibling_the_trimmed_echo_of_a_kept_reply_digests_as_is_not_spli
 
 async def test_two_turns_that_sample_the_same_call_get_their_own_ids() -> None:
     answers = ["CALL ls {}", "CALL ls {}", "done"]
-    async with server(ScriptedSampler("", answers=answers), renderer=BridgeRenderer()) as started:
+    async with server(FakeSampler(answers), renderer=BridgeRenderer()) as started:
         history: list[dict[str, Any]] = [{"role": "user", "content": "look"}]
         first = await _reply(started, history)
         history += _echo(first, "{}", "alpha")
@@ -628,7 +621,7 @@ async def test_two_turns_that_sample_the_same_call_get_their_own_ids() -> None:
 
 async def test_an_anthropic_echo_that_drops_a_whitespace_only_block_bridges() -> None:
     """Claude Code drops a text block holding only whitespace when it echoes a reply."""
-    sampler = ScriptedSampler("", answers=["\n\nCALL ls {}", "done"])
+    sampler = FakeSampler(["\n\nCALL ls {}", "done"])
     async with server(sampler, renderer=BridgeRenderer()) as started:
         messages: list[dict[str, Any]] = [{"role": "user", "content": "look"}]
         body = {"system": "be brief", "tools": TOOLS_ANTHROPIC}
