@@ -17,7 +17,7 @@ from tinker_cookbook.supervised.common import (
     create_rightshifted_model_input_and_leftshifted_targets as cookbook_shift,
 )
 
-from shipyard.pack import Sequence, chains, datum, group, model_input, packable, sequences, shifted
+from shipyard.pack import Sequence, chains, datum, model_input, packable, sequences, shifted
 from shipyard.proxy.wire import IMAGE_TOKEN, Picture, Record
 from shipyard.rollout import Rollouts
 from tests.records import made
@@ -255,44 +255,3 @@ def _job(tmp_path: Path, records: dict[str, list[Record] | None], outcomes: dict
             plan.append((tmp_path / "tasks" / task, index))
     taken = {name: list(found) for name, found in records.items() if found is not None}
     return Rollouts(job="j", trials=trials, plan=plan, records=taken, updates=3)
-
-
-def test_group_cuts_the_plan_into_tasks_with_verdicts_and_sequences(tmp_path: Path) -> None:
-    first, second, third = _tool_loop()
-    failed = _record((1, 2), (), 1, error="sampler: Boom")
-    rolled = _job(
-        tmp_path,
-        {"a__0": [first, second, third], "a__1": [], "b__0": [first, failed], "b__1": [first]},
-        {
-            "a__0": {"reward": 1.0},
-            "a__1": {"reward": 0.0},
-            "b__0": {"reward": 1.0},
-            "b__1": {"reward": 0.0, "exception": "AgentTimeoutError"},
-        },
-    )
-    found = group(rolled, 2)
-    assert [one.task.name for one in found] == ["a", "b"]
-    assert all(one.updates == 3 for one in found)
-    alpha, beta = found
-    assert [member.verdict.reward for member in alpha.members] == [1.0, None]
-    assert [member.verdict.mask for member in alpha.members] == [None, "env_error"]
-    assert len(alpha.members[0].sequences) == 1 and alpha.members[0].sampled_tokens == 5
-    assert alpha.members[1].sequences == () and alpha.members[1].sampled_tokens == 0
-    assert [member.verdict.mask for member in beta.members] == ["api_error", "timeout"]
-    assert all(member.sequences == () for member in beta.members)
-    assert beta.members[0].sampled_tokens == 2
-
-
-def test_group_refuses_a_job_with_no_records_or_a_size_that_does_not_divide(
-    tmp_path: Path,
-) -> None:
-    rolled = _job(tmp_path, {}, {"a__0": {"reward": 1.0}})
-    with pytest.raises(ValueError, match="do not divide"):
-        group(rolled, 3)
-    with pytest.raises(ValueError, match="at least 1"):
-        group(rolled, 0)
-    with pytest.raises(ValueError, match="recorded no model calls"):
-        group(replace(rolled, records=None), 2)
-    crossed = replace(rolled, plan=[(tmp_path / "tasks" / "a", 0)] * 3 + [(tmp_path / "x", 0)])
-    with pytest.raises(ValueError, match="2 tasks, not one group"):
-        group(crossed, 2)

@@ -1,13 +1,10 @@
-"""The recipes: a trainer class per gradient kind; the other kinds are modules with `run`."""
+"""The recipes: a trainer class per `[recipe] kind`, and the runner over them."""
 
 from __future__ import annotations
 
-import importlib
-import importlib.util
-from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
-from shipyard.config import KINDS
+from shipyard.config import Gradient
 from shipyard.recipes.fst import SLOW, fst_trainer
 from shipyard.recipes.gepa import GEPATrainer
 from shipyard.runner import Runner
@@ -16,7 +13,7 @@ from shipyard.training.trainer import CISPOTrainer, DAPOTrainer, DrGRPOTrainer, 
 if TYPE_CHECKING:
     from shipyard.run import Run
 
-__all__ = ["TRAINERS", "module_for", "resolution", "run_recipe", "trainer_for"]
+__all__ = ["TRAINERS", "resolution", "run_recipe", "trainer_for"]
 
 #: The trainer class of each `[recipe] kind` the runner runs.
 TRAINERS: dict[str, type[Trainer]] = {
@@ -26,13 +23,6 @@ TRAINERS: dict[str, type[Trainer]] = {
     "evaluate": Trainer,
     "gepa": GEPATrainer,
 }
-
-#: The module of each kind. A hyphenated kind imports under its underscore name.
-MODULES = {kind: kind.replace("-", "_") for kind in KINDS}
-
-
-def module_for(kind: str) -> ModuleType:
-    return importlib.import_module(f"shipyard.recipes.{MODULES[kind]}")
 
 
 def trainer_for(recipe: Any) -> type[Trainer]:
@@ -47,16 +37,5 @@ async def run_recipe(run: Run) -> None:
 
 
 def resolution(recipe: Any) -> str | None:
-    """The resolution line `check` prints; None for a kind without a preset."""
-    if importlib.util.find_spec(f"shipyard.recipes.{MODULES[recipe.kind]}") is None:
-        return None
-    module = module_for(recipe.kind)
-    own = getattr(module, "resolution", None)
-    if own is not None:
-        return own(recipe)
-    found = getattr(module, "preset", None)
-    if found is None:
-        return None
-    from shipyard import gradient
-
-    return gradient.resolution(found(recipe))
+    """The line `check` prints for a recipe that trains; None for the others."""
+    return trainer_for(recipe).resolution(recipe) if isinstance(recipe, Gradient) else None

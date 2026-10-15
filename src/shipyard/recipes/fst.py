@@ -8,20 +8,14 @@ from collections.abc import AsyncIterator
 from collections.abc import Sequence as Values
 from dataclasses import replace
 from functools import partial
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from shipyard import gradient, record
+from shipyard import record
 from shipyard.config import SLOW_KNOBS, CispoRecipe, DapoRecipe, DrGrpoRecipe
 from shipyard.credit import weights
-from shipyard.gradient import Preset
 from shipyard.modules import keep, seed
-from shipyard.recipes.cispo import preset as cispo_preset
-from shipyard.recipes.dapo import preset as dapo_preset
-from shipyard.recipes.dr_grpo import preset as dr_grpo_preset
 from shipyard.recipes.gepa import BEST, SEED, Search
 from shipyard.recipes.gepa.reflect import reflect
-from shipyard.rollout import Rollouts
 from shipyard.training.trainer import CISPOTrainer, DAPOTrainer, DrGRPOTrainer, Trainer
 from shipyard.types import Adam, Agent, Batches, Group, Update
 
@@ -34,8 +28,6 @@ SLOW: dict[str, tuple[type, type[Trainer]]] = {
     "dr-grpo": (DrGrpoRecipe, DrGRPOTrainer),
     "cispo": (CispoRecipe, CISPOTrainer),
 }
-#: The old presets, for `check`'s resolution line until it comes off the classes.
-PRESETS = {"dapo": dapo_preset, "dr-grpo": dr_grpo_preset, "cispo": cispo_preset}
 #: Gepa's budget per cycle, in passes over the anchor tasks with one rollout per (task, text)
 #: cell. App. D uses 960 metric calls over 192 examples, a metric call being one rollout.
 BUDGET_PASSES = 5
@@ -64,6 +56,20 @@ class FST(Search):
     """The fast-slow pass over the slow trainer it is mixed with."""
 
     ADAM = ADAM
+    PAPER_WARMUP = PAPER_WARMUP
+
+    @classmethod
+    def rules(cls, recipe: Any) -> list[str]:
+        return [
+            f"cycles of {recipe.cycle} {recipe.slow} steps, each after gepa evolves "
+            f"{recipe.population} texts on the next {recipe.cycle} batches",
+            f"every group split group_size / {recipe.population} per text",
+            *super().rules(slow_recipe(recipe)),
+        ]
+
+    @classmethod
+    def aggregated(cls) -> str:
+        return "averaged per prompt"
 
     def __init__(self, run: Run, *, anchor: Any = None) -> None:
         super().__init__(run, anchor=anchor)
@@ -157,59 +163,3 @@ class FST(Search):
 def fst_trainer(slow: type[Trainer]) -> type[Trainer]:
     """The fst kind over the slow class `[recipe] slow` names."""
     return type(f"FST{slow.__name__}", (FST, slow), {})
-
-
-def preset(recipe: Any) -> Preset:
-    """The slow recipe's preset under fst's name, for `check`'s resolution line."""
-    return replace(
-        PRESETS[recipe.slow](slow_recipe(recipe)),
-        name="fst",
-        refill=0,
-        aggregation="prompt",
-        overlong_penalty=0.0,
-        adam=replace(ADAM, warmup=int(recipe.warmup)),
-        paper_warmup=PAPER_WARMUP,
-    )
-
-
-def resolution(recipe: Any) -> str:
-    """The comment line `check` prints: the cycle, the population, then the slow recipe's."""
-    slow = gradient.resolution(preset(recipe)).removeprefix("# fst: ")
-    return (
-        f"# fst: cycles of {recipe.cycle} {recipe.slow} steps, each after gepa evolves "
-        f"{recipe.population} texts on the next {recipe.cycle} batches; every group split "
-        f"group_size / {recipe.population} per text; {slow}"
-    )
-
-
-def merged_rollouts(parts: Values[Rollouts], share: int) -> Rollouts:
-    """The old merge over rollouts, for the golden harness until the old path goes."""
-    first = parts[0]
-    if any(len(part.trials) != len(first.trials) for part in parts):
-        raise ValueError("the jobs of one step planned different numbers of trials")
-    if len({part.updates for part in parts}) != 1:
-        raise ValueError("the jobs of one step sampled different weights")
-    trials: list[Path] = []
-    plan: list[tuple[Path, int]] = []
-    for start in range(0, len(first.trials), share):
-        for part in parts:
-            trials += part.trials[start : start + share]
-            plan += part.plan[start : start + share]
-    records = None
-    if any(part.records is not None for part in parts):
-        records = {name: found for part in parts for name, found in (part.records or {}).items()}
-    asked = None
-    if any(part.asked is not None for part in parts):
-        asked = {name: count for part in parts for name, count in (part.asked or {}).items()}
-    failed = None
-    if any(part.failed is not None for part in parts):
-        failed = {name for part in parts for name in (part.failed or set())}
-    return Rollouts(
-        job="+".join(part.job for part in parts),
-        trials=trials,
-        plan=plan,
-        records=records,
-        asked=asked,
-        failed=failed,
-        updates=first.updates,
-    )

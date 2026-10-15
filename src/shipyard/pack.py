@@ -6,8 +6,6 @@ It builds no graph."""
 from __future__ import annotations
 
 from collections.abc import Sequence as Values
-from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import tinker
@@ -15,7 +13,7 @@ import torch
 from tinker import TensorData
 
 from shipyard import types
-from shipyard.admit import Verdict, verdicts
+from shipyard.admit import verdicts
 from shipyard.proxy.wire import IMAGE_TOKEN, Picture, Record, model_input, pictured
 from shipyard.types import Sequence
 
@@ -26,38 +24,15 @@ if TYPE_CHECKING:
     from shipyard.types import Agent, Trial
 
 __all__ = [
-    "Group",
-    "Member",
     "Sequence",
     "chains",
     "datum",
-    "group",
     "groups",
     "model_input",
     "packable",
     "sequences",
     "shifted",
 ]
-
-
-@dataclass(frozen=True)
-class Member:
-    """One rollout of a group: its verdict, its sequences (none when masked), and the
-    tokens the policy wrote across its calls, which the length rule measures."""
-
-    verdict: Verdict
-    sequences: tuple[Sequence, ...]
-    sampled_tokens: int
-
-
-@dataclass(frozen=True)
-class Group:
-    """A task's rollouts in plan order, stamped with the trainer's update count at sampling,
-    so credit can refuse a batch whose weights have moved since."""
-
-    task: Path
-    members: tuple[Member, ...]
-    updates: int | None = None
 
 
 def packable(record: Record) -> bool:
@@ -168,52 +143,6 @@ def datum(
             "mask": TensorData.from_torch(torch.tensor(mask)),
         },
     )
-
-
-def group(rollouts: Rollouts, group_size: int) -> list[Group]:
-    """One Group per task in plan order, cut in slices of `group_size` as the plan laid the
-    trials out. A masked member carries no sequences. Raises when the job holds no records
-    (nothing was served, so there is nothing to train on) or its trials do not divide into
-    groups."""
-    if rollouts.records is None:
-        raise ValueError(
-            f"job {rollouts.job} recorded no model calls: a gradient recipe trains on the "
-            "records of a model this run serves"
-        )
-    if group_size < 1:
-        raise ValueError(f"group_size must be at least 1; got {group_size}")
-    trials = list(rollouts.trials)
-    if len(trials) % group_size:
-        raise ValueError(
-            f"job {rollouts.job} has {len(trials)} trial(s), which do not divide into groups "
-            f"of {group_size}: a batch that was not rolled out at this group size"
-        )
-    judged = verdicts(rollouts)
-    groups: list[Group] = []
-    for start in range(0, len(trials), group_size):
-        tasks = {rollouts.plan[at][0] for at in range(start, start + group_size)}
-        if len(tasks) != 1:
-            raise ValueError(
-                f"job {rollouts.job}: trials {start}..{start + group_size - 1} belong to "
-                f"{len(tasks)} tasks, not one group"
-            )
-        members: list[Member] = []
-        for at in range(start, start + group_size):
-            records = list(rollouts.records.get(Path(trials[at]).name) or [])
-            verdict = judged[at]
-            members.append(
-                Member(
-                    verdict=verdict,
-                    sequences=tuple(sequences(records)) if verdict.mask is None else (),
-                    sampled_tokens=sum(
-                        len(record.completion_token_ids)
-                        for record in records
-                        if record.error is None
-                    ),
-                )
-            )
-        groups.append(Group(tasks.pop(), tuple(members), rollouts.updates))
-    return groups
 
 
 def groups(trials: Values[Trial], rolled: Rollouts, agent: Agent) -> list[types.Group]:

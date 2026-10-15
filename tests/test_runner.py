@@ -11,7 +11,7 @@ from harbor.models.trial.config import TrialConfig
 
 from shipyard import record, session
 from shipyard.data import batches
-from shipyard.recipes import run_recipe
+from shipyard.recipes import run_recipe, trainer_for
 from shipyard.run import Run
 from shipyard.runner import Runner
 from shipyard.training.trainer import ROW, Trainer
@@ -72,12 +72,13 @@ def fakes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[FakeProxy, F
     return proxy, service
 
 
-async def _run(home: Path, tmp_path: Path, runner: Any) -> Run:
+async def _run(home: Path, tmp_path: Path, runner: Any) -> tuple[Run, Runner]:
     opened = Run.open(home, root=tmp_path / "runs")
     opened.run_trial = runner
+    started = Runner.of(opened, trainer_for(opened.config.recipe))
     with opened:
-        await run_recipe(opened)
-    return opened
+        await started.run()
+    return opened, started
 
 
 def _two(tmp_path: Path) -> None:
@@ -98,14 +99,14 @@ async def test_a_two_step_dapo_run_opens_a_client_serves_samples_steps_and_check
 ) -> None:
     proxy, service = fakes
     client = service.client
-    opened = await _run(_blueprint(tmp_path), tmp_path, Alternating())
+    opened, started = await _run(_blueprint(tmp_path), tmp_path, Alternating())
     # The client: a LoRA at the blueprint's rank, named after the run, no anchor, the
     # session finished.
     assert service.calls == [("lora", MODEL, 32)]
     assert service.metadata == [{"shipyard_run": opened.id, "shipyard_recipe": "dapo"}]
     assert service.closed == [("success", None)]
-    trainer = opened.trainer
-    assert trainer is not None and (trainer.steps, trainer.updates, trainer.epoch) == (2, 2, 0)
+    trainer = started.trainer
+    assert (trainer.steps, trainer.updates, trainer.epoch) == (2, 2, 0)
     # The start served before the first job, then the weights after each update.
     published = [
         c for c in client.calls if c[0] == "save_weights_for_sampler" and c[2] == SERVE_TTL
@@ -168,7 +169,7 @@ async def test_each_epoch_is_one_pass_over_the_train_set_and_the_steps_count_thr
 ) -> None:
     home = _blueprint(tmp_path, **{"batch_size = 2": "batch_size = 2\nepochs = 2"})
     trials = Alternating()
-    opened = await _run(home, tmp_path, trials)
+    opened, started = await _run(home, tmp_path, trials)
     planned = batches(["four"], size=2, seed=0, epochs=2, root=tmp_path / "tasks")
     ran = [Path(str(c.task.path)).name for c in trials.configs]
     assert [list(dict.fromkeys(ran[at : at + 4])) for at in range(0, len(ran), 4)] == [
@@ -193,7 +194,7 @@ async def test_a_run_that_names_a_test_set_evaluates_on_the_cadence(
         tmp_path,
         **{"batch_size = 2": 'batch_size = 2\ntest = "two"\nevaluate_every = 1\nepochs = 2'},
     )
-    opened = await _run(home, tmp_path, Alternating())
+    opened, started = await _run(home, tmp_path, Alternating())
     rows = _rows(opened)
     assert ["evaluation" if row.get("evaluation") else "step" for row in rows] == [
         "step",
@@ -221,7 +222,7 @@ async def test_a_run_that_names_a_test_set_ends_with_an_evaluation(
     home = _blueprint(
         tmp_path, **{"batch_size = 2": 'batch_size = 2\ntest = "two"\ntest_group_size = 1'}
     )
-    opened = await _run(home, tmp_path, Alternating())
+    opened, started = await _run(home, tmp_path, Alternating())
     *steps, evaluation = _rows(opened)
     assert len(steps) == 2 and not any(row.get("evaluation") for row in steps)
     assert (evaluation["step"], evaluation["epoch"], evaluation["rollouts"]) == (2, 0, 2)
@@ -246,7 +247,7 @@ async def test_each_kind_reaches_its_trainer_class(
 ) -> None:
     _, service = fakes
     home = _blueprint(tmp_path, kind, **{"batch_size = 2": "batch_size = 4"})
-    opened = await _run(home, tmp_path, Alternating())
+    opened, started = await _run(home, tmp_path, Alternating())
     sent = [c for c in service.client.calls if c[0] == "forward_backward"]
     assert sent and all(c[2:] == (loss, bounds) for c in sent)
     assert [row["loss_fn"] for row in _rows(opened)] == [loss]
@@ -257,9 +258,10 @@ async def test_a_trainer_class_of_ones_own_replaces_the_kinds(
 ) -> None:
     opened = Run.open(_blueprint(tmp_path), root=tmp_path / "runs")
     opened.run_trial = Alternating()
+    started = Runner.of(opened, Trainer)
     with opened:
-        agent = await Runner.of(opened, Trainer).run()
-    assert agent.policy.client is not None and type(opened.trainer) is Trainer
+        agent = await started.run()
+    assert agent.policy.client is not None and type(started.trainer) is Trainer
     assert [row["loss_fn"] for row in _rows(opened)] == ["importance_sampling"] * 2
 
 
@@ -268,7 +270,7 @@ async def test_a_kl_anchor_is_a_sampling_client_on_the_starting_weights(
 ) -> None:
     _, service = fakes
     home = _blueprint(tmp_path, **{"batch_size = 2": "batch_size = 4", **ANCHORED})
-    opened = await _run(home, tmp_path, Alternating())
+    opened, started = await _run(home, tmp_path, Alternating())
     assert service.calls == [("lora", MODEL, 32), ("sampling", MODEL, None)]
     assert len(service.anchor.asked) == 8
     (row,) = _rows(opened)
