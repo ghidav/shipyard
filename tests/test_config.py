@@ -423,7 +423,7 @@ def test_toml_values_are_spelled_as_toml() -> None:
             "averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token "
             "budget; 16 substeps by prompt; adamw betas 0.9 / 0.95, eps 1e-08, weight decay "
             "0.1, gradient norm clipped at 1.0, no warm-up (the paper's is 20 steps); degenerate "
-            "groups dropped and refilled from the plan, up to 9 more rounds",
+            "groups dropped",
         ),
         (
             "dr-grpo",
@@ -437,8 +437,7 @@ def test_toml_values_are_spelled_as_toml() -> None:
             "# cispo: advantage = group mean, divided by spread; loss = cispo, "
             "weight truncated above 4.0, no lower bound, averaged per prompt; overlong penalty "
             "up to 0.5 over the last 20% of the token budget; 16 substeps by prompt; adamw "
-            "betas 0.9 / 0.95, eps 1e-15; degenerate groups dropped and refilled from the "
-            "plan, up to 9 more rounds",
+            "betas 0.9 / 0.95, eps 1e-15; degenerate groups dropped",
         ),
         ("gepa", None),
         ("evaluate", None),
@@ -461,7 +460,7 @@ def test_the_resolution_line_names_a_kl_anchor_when_asked(tmp_path: Path) -> Non
     text = MINIMAL.replace('kind = "dapo"', 'kind = "dapo"\nkl_coef = 0.05')
     report = resolved.report(write_blueprint(tmp_path, text))
     assert report.resolution is not None
-    assert report.resolution.endswith("up to 9 more rounds; kl 0.05 to the starting weights")
+    assert report.resolution.endswith("degenerate groups dropped; kl 0.05 to the starting weights")
 
 
 def test_the_resolution_line_says_how_far_the_length_rule_may_dock(tmp_path: Path) -> None:
@@ -472,20 +471,15 @@ def test_the_resolution_line_says_how_far_the_length_rule_may_dock(tmp_path: Pat
     assert "length_cap = inf" in report.text()
 
 
-def test_the_resolution_line_says_what_one_substep_and_no_refill_leave(tmp_path: Path) -> None:
-    text = MINIMAL.replace('kind = "dapo"', 'kind = "dapo"\nsubsteps = 1\nrefill = 1')
+def test_the_resolution_line_says_what_one_substep_leaves(tmp_path: Path) -> None:
+    text = MINIMAL.replace('kind = "dapo"', 'kind = "dapo"\nsubsteps = 1')
     report = resolved.report(write_blueprint(tmp_path / "one", text))
     assert report.resolution == (
         "# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, "
         "averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token "
         "budget; 1 substep; adamw betas 0.9 / 0.95, eps 1e-08, weight decay 0.1, gradient norm "
-        "clipped at 1.0, no warm-up (the paper's is 20 steps); degenerate groups dropped and "
-        "refilled from the plan, up to 1 more round"
+        "clipped at 1.0, no warm-up (the paper's is 20 steps); degenerate groups dropped"
     )
-    text = MINIMAL.replace('kind = "dapo"', 'kind = "dapo"\nrefill = 0')
-    report = resolved.report(write_blueprint(tmp_path / "off", text))
-    assert report.resolution is not None
-    assert report.resolution.endswith("(the paper's is 20 steps); degenerate groups dropped")
     text = MINIMAL.replace('kind = "dapo"', 'kind = "dapo"\nwarmup = 20')
     report = resolved.report(write_blueprint(tmp_path / "warm", text))
     assert (

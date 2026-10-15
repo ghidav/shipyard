@@ -121,7 +121,7 @@ def test_check_prints_the_resolution_line_for_a_gradient_recipe(tmp_path: Path) 
         "averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token "
         "budget; 16 substeps by prompt; adamw betas 0.9 / 0.95, eps 1e-08, weight decay 0.1, "
         "gradient norm clipped at 1.0, no warm-up (the paper's is 20 steps); degenerate groups "
-        "dropped and refilled from the plan, up to 9 more rounds"
+        "dropped"
     )
     assert lines.index(comment) == lines.index("ttl_hours = 168.0") + 1
     findings = [line for line in lines if line.startswith(("ok  ", "warning  ", "blocked  "))]
@@ -224,7 +224,7 @@ def test_run_on_a_fixture_ends_failed_with_the_recipes_refusal(tmp_path: Path) -
 def test_run_with_a_recipe_that_returns_ends_finished(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("shipyard.recipes.dapo.run", _finishes)
+    monkeypatch.setattr("shipyard.cli.run_recipe", _finishes)
     root, home = tmp_path / "r", _hosted_dapo(tmp_path)
     result = runner.invoke(app, ["run", str(home), "--root", str(root)])
     assert result.exit_code == 0, result.output
@@ -252,7 +252,7 @@ def test_run_stopped_by_sigterm_records_the_signal(
         os.kill(os.getpid(), signal.SIGTERM)
         await asyncio.sleep(5)
 
-    monkeypatch.setattr("shipyard.recipes.dapo.run", stopped)
+    monkeypatch.setattr("shipyard.cli.run_recipe", stopped)
     root = tmp_path / "r"
     before = signal.getsignal(signal.SIGTERM)
     result = runner.invoke(app, ["run", str(_hosted_dapo(tmp_path)), "--root", str(root)])

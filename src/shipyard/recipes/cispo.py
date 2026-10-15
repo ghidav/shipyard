@@ -8,14 +8,11 @@ and `clip_low_threshold = 0`."""
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from shipyard import gradient
 from shipyard.gradient import Preset
 from shipyard.trainer import Adam
-
-if TYPE_CHECKING:
-    from shipyard.run import Run
 
 #: 3.2 sets the betas and eps for gradients mostly below 1e-14. It states no weight decay,
 #: gradient clipping or warm-up, so the cookbook's apply (none).
@@ -38,7 +35,3 @@ def preset(recipe: Any) -> Preset:
         adam=replace(ADAM, warmup=int(recipe.warmup)),
         **gradient.shared(recipe),
     )
-
-
-async def run(run: Run) -> None:
-    await gradient.train(run, preset(run.config.recipe))
