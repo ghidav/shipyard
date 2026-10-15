@@ -54,11 +54,6 @@ class Runner:
     def from_run(cls, run: Run, trainer: type[Trainer] | None = None) -> Runner:
         """The runner for an open run: under `trainer`, else the class's own, else the kind's."""
         cfg = run.config
-        if cfg.trains and not cfg.model.served:
-            raise ValueError(
-                f"[recipe] kind = {cfg.recipe.kind!r} trains the weights this run serves, and "
-                f"[model] provider = {cfg.model.provider!r} serves them elsewhere"
-            )
         chosen = trainer or cls.trainer or trainer_for(cfg.recipe)
         return cls(
             run,

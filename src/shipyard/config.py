@@ -458,8 +458,9 @@ def findings(loaded: Blueprint) -> list[Finding]:
     found.append(Finding("ok", f"harness {rollout.harness}, sandbox {rollout.sandbox}"))
     found += [_dataset_finding(name) for name in [*loaded.datasets, *loaded.test_sets]]
     found += _data_findings(loaded)
-    if (checkpoint := _checkpoint_finding(loaded)) is not None:
-        found.append(checkpoint)
+    for finding in (_provider_finding(loaded), _checkpoint_finding(loaded)):
+        if finding is not None:
+            found.append(finding)
     if (directory := modules_dir(loaded)) is not None:
         found.append(_modules_finding(directory))
         if (template := _template_finding(loaded, directory)) is not None:
@@ -537,6 +538,17 @@ def _length_cap(recipe: Any) -> float | None:
     else:
         return None
     return cap if penalty > 0 else None
+
+
+def _provider_finding(loaded: Blueprint) -> Finding | None:
+    """`blocked` when the recipe trains weights this run does not serve."""
+    if loaded.trains and not loaded.model.served:
+        return Finding(
+            "blocked",
+            f"[recipe] kind = {loaded.recipe.kind!r} trains the weights this run serves, and "
+            f"[model] provider = {loaded.model.provider!r} serves them elsewhere",
+        )
+    return None
 
 
 def _checkpoint_finding(loaded: Blueprint) -> Finding | None:
