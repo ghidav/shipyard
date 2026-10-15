@@ -70,7 +70,7 @@ def _reflection(
 
 
 def _rollouts(*trials: Path) -> Rollouts:
-    return Rollouts(job="r-0001", trials=list(trials), plan=[])
+    return Rollouts(job="r-0001", trials=list(trials))
 
 
 def _published(trial: Path, *parts: str) -> Path:

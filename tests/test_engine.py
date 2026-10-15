@@ -13,6 +13,7 @@ import pytest
 from harbor.models.environment_type import EnvironmentType
 from harbor.models.trial.config import AgentConfig, TrialConfig
 
+from shipyard.admit import result_of
 from shipyard.config import Rollout
 from shipyard.progress import Reporter
 from shipyard.proxy.profiles import PROFILES
@@ -174,7 +175,7 @@ async def test_a_trial_that_could_not_run_keeps_its_slot(tmp_path: Path) -> None
     assert len(found) == 6
     assert [one.task.name for one in found] == ["alpha"] * 2 + ["beta"] * 2 + ["gamma"] * 2
     assert [one.dir.is_dir() for one in found] == [True, True, False, False, True, True]
-    assert [one.result is None for one in found] == [False, False, True, True, False, False]
+    assert [result_of(one.dir) is None for one in found] == [False, False, True, True, False, False]
     # The job directory holds only what Harbor's stand-in wrote.
     job_dir = tmp_path / "jobs" / "run-0000"
     assert sorted(p.name for p in job_dir.iterdir()) == sorted(

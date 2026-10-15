@@ -125,7 +125,7 @@ class TinkerClient(TrainingClient):
 async def _forward(future: Any) -> Forward:
     result = await future.result_async()
     logprobs = [_floats(output["logprobs"]) for output in result.loss_fn_outputs]
-    return Forward(logprobs, dict(result.metrics or {}))
+    return Forward(logprobs)
 
 
 async def _done(future: Any) -> None:

@@ -16,7 +16,6 @@ from shipyard.training.client import TinkerClient
 from shipyard.types import (
     SERVE_TTL,
     Agent,
-    Checkpoint,
     Connection,
     Endpoint,
     Group,
@@ -116,9 +115,8 @@ def test_a_part_missing_a_method_cannot_be_built() -> None:
 
 def test_a_built_in_harness_carries_its_profile_and_a_custom_one_the_generic() -> None:
     found = harness("pi@0.85.1")
-    assert (found.name, found.agent, found.effort) == ("pi", "pi@0.85.1", None)
+    assert (found.name, found.agent) == ("pi", "pi@0.85.1")
     assert found.profile is PROFILES["pi"]
-    assert harness("claude-code", effort="high").effort == "high"
     custom = harness("acp:x.y:Z@1")
     assert custom.name == "acp:x.y:Z@1" and custom.profile == Profile()
     assert Harness("mine", "mine@2", Profile(dialect="anthropic")).profile.dialect == "anthropic"
@@ -143,13 +141,11 @@ async def test_a_provider_endpoint_records_nothing_and_serves_nothing() -> None:
     assert "token" not in repr(Connection("m", "http://p/v1", "secret"))
 
 
-def test_a_trial_names_itself_after_its_directory_and_reads_its_result(tmp_path: Path) -> None:
+def test_a_trial_names_itself_after_its_directory(tmp_path: Path) -> None:
     trial = _trial(tmp_path, "alpha", 2)
-    assert trial.name == "alpha__2" and trial.result is None
+    assert trial.name == "alpha__2" and admit.result_of(trial.dir) is None
     write_result(trial.dir, reward=1.0)
-    assert trial.result is not None and trial.result["verifier_result"] == {
-        "rewards": {"reward": 1.0}
-    }
+    assert admit.result_of(trial.dir)["verifier_result"] == {"rewards": {"reward": 1.0}}
     assert Settings().verify is True and Settings(verify=False, env={"A": "1"}).env == {"A": "1"}
 
 
@@ -216,10 +212,5 @@ async def test_a_policy_closes_its_client_with_how_the_run_ended(
     assert endpoint.calls[-1] == "close" and service.closed == [closed]
 
 
-def test_a_checkpoint_is_the_agent_written_down_where_the_trainer_stood() -> None:
-    found = Checkpoint("step-7", "tinker://s", "tinker://w", 168.0, 7, 5, 1, "abcd", ("pi",))
-    assert (found.step, found.updates, found.epoch) == (7, 5, 1)
-    assert found.harness == ("pi",) and found.modules == "abcd"
-    final = Checkpoint("final", "tinker://s", "tinker://w", None, 9, 6, 2)
-    assert final.ttl_hours is None and final.modules is None and final.harness == ()
+def test_an_evaluation_carries_its_mean() -> None:
     assert types.Evaluation(0, 0, 4, 8, 7, 1, 0.5).mean == 0.5

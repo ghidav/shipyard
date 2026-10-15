@@ -14,7 +14,7 @@ from tests.trials import write_result
 
 
 def _rollouts(*trials: Path) -> Rollouts:
-    return Rollouts(job="j", trials=list(trials), plan=[])
+    return Rollouts(job="j", trials=list(trials))
 
 
 def test_reported_counts_trials_with_a_result_and_sums_what_their_agents_said(
@@ -50,11 +50,11 @@ def test_sampled_sums_the_records_and_counts_the_trials_with_a_result(tmp_path: 
             made(seq=3, error="sampler: ConnectError"),
         ],
     }
-    counted, noted = sampled(Rollouts(job="j", trials=[graded, gone], plan=[], records=records))
+    counted, noted = sampled(Rollouts(job="j", trials=[graded, gone], records=records))
     # The whole prompt counts as input; the cached part is capped at the prompt.
     assert counted == {"trials": 1, "input_tokens": 17, "cache_tokens": 7, "output_tokens": 6}
     assert noted == {"turned_away": 2, "bridged": 1}, "a sampler failure is not a refusal"
-    assert sampled(Rollouts(job="j", trials=[gone], plan=[], records={})) == (
+    assert sampled(Rollouts(job="j", trials=[gone], records={})) == (
         {"trials": 0, "input_tokens": 0, "cache_tokens": 0, "output_tokens": 0},
         {"turned_away": 0, "bridged": 0},
     )

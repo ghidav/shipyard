@@ -90,7 +90,7 @@ async def test_a_step_call_is_submitted_on_the_first_await_and_read_on_the_secon
         "forward_backward",
     ]
     found = await first
-    assert isinstance(found, Forward) and found.metrics == {}
+    assert isinstance(found, Forward)
     assert found.logprobs == [pytest.approx([-0.3] * 3), pytest.approx([-0.3] * 5)]
     assert await stepped is None and (await second).logprobs == [pytest.approx([-0.3] * 3)]
     assert [call[1] for call in fake.calls if call[0] == "consumed"] == ["fb", "optim", "fb"]

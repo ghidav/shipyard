@@ -40,7 +40,6 @@ class FakeForwardBackward:
     """`loss_fn_outputs[i]["logprobs"]`, a TensorData per datum, is all the trainer reads."""
 
     loss_fn_outputs: list[dict[str, Any]]
-    metrics: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
