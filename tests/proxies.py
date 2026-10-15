@@ -52,6 +52,21 @@ class FakeSampler:
         )
 
 
+@dataclass
+class Echo:
+    """A sampling client that answers with the prompt's own tokens, cut to `max_tokens`."""
+
+    path: str | None = None
+
+    async def sample_async(self, prompt: Any, num_samples: int, sampling_params: Any) -> Any:
+        tokens = list(prompt.to_ints())[: int(sampling_params.max_tokens or 0) or None]
+        return FakeResponse([FakeSequence(tokens, [0.0] * len(tokens)) for _ in range(num_samples)])
+
+    @staticmethod
+    async def make(path: str | None) -> Echo:
+        return Echo(path)
+
+
 class FakeRenderer:
     """The renderer methods the cookbook's proxy calls: a message renders to its text's
     code points and a completion decodes back the same way."""

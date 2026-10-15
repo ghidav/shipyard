@@ -18,8 +18,6 @@ from typing import Any, TextIO
 from shipyard.proxy.server import Server
 from shipyard.proxy.wire import CONTROL_TOKEN_ENV, PROXY_TOKEN_ENV, new_token
 
-#: Test-only: serve on a fake sampling client and renderer, with no Tinker and no tokenizer.
-FAKE_SAMPLER_ENV = "SHIPYARD_FAKE_SAMPLER"
 #: Bind values that mean every interface. Fine to listen on, but not an address to dial.
 WILDCARD_BINDS = frozenset({"0.0.0.0", "::", "*", ""})
 #: Server fields set by flags. `--settings` may not name them.
@@ -78,50 +76,7 @@ def server_for(
                 f"from a run. It takes {', '.join(sorted(taken))}."
             )
         named.update(settings)
-    if os.environ.get(FAKE_SAMPLER_ENV) == "1":
-        named["client_factory"], named["renderer"] = fake_parts()
     return Server(**named)
-
-
-def fake_parts() -> tuple[Callable[[str | None], Any], Any]:
-    """A sampling client that echoes the prompt's tokens as the completion, and a renderer
-    with one character per token. A scripted test can run serve with them, without Tinker."""
-    from types import SimpleNamespace
-
-    import tinker
-
-    from shipyard.proxy.cookbook import ParseTermination
-
-    class Echo:
-        def __init__(self, path: str | None) -> None:
-            self.path = path
-
-        async def sample_async(self, prompt: Any, num_samples: int, sampling_params: Any) -> Any:
-            tokens = list(prompt.to_ints())[: int(sampling_params.max_tokens or 0) or None]
-            return SimpleNamespace(
-                sequences=[
-                    SimpleNamespace(tokens=tokens, logprobs=[0.0] * len(tokens), stop_reason="stop")
-                    for _ in range(num_samples)
-                ],
-                prompt_cache_hit_tokens=0,
-            )
-
-    class Chars:
-        def get_stop_sequences(self) -> list[int]:
-            return []
-
-        def build_generation_prompt(self, messages: list[dict[str, Any]]) -> Any:
-            text = "".join(str(message.get("content") or "") for message in messages)
-            return tinker.ModelInput.from_ints([ord(character) for character in text])
-
-        def parse_response(self, response: list[int]) -> tuple[dict[str, Any], Any]:
-            text = "".join(chr(token) for token in response)
-            return {"role": "assistant", "content": text}, ParseTermination.STOP_SEQUENCE
-
-    async def make(path: str | None) -> Echo:
-        return Echo(path)
-
-    return make, Chars()
 
 
 def configure_logging(stream: TextIO = sys.stderr) -> None:

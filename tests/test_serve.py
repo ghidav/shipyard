@@ -13,7 +13,6 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -251,28 +250,41 @@ def _first_line(process: subprocess.Popen[str], seconds: float = 30.0) -> str:
     )
 
 
-def test_serve_runs_for_real_on_the_fake_sampler(tmp_path: Path) -> None:
+#: `python -c` for the process test: `serve.main` on a server whose sampler echoes and whose
+#: renderer is the tests' character renderer, so no Tinker and no tokenizer are needed.
+STUB = """\
+import sys
+from shipyard.proxy import serve
+from tests.proxies import Echo, FakeRenderer
+
+built = serve.server_for
+
+
+def with_fakes(*args, **kwargs):
+    server = built(*args, **kwargs)
+    server.client_factory, server.renderer = Echo.make, FakeRenderer()
+    return server
+
+
+serve.server_for = with_fakes
+sys.exit(serve.main(sys.argv[1:]))
+"""
+
+
+def test_serve_runs_for_real_on_a_fake_sampler(tmp_path: Path) -> None:
     """The acceptance script: start the process, speak both wires, read the records, swap
     through the control route, stop it with SIGTERM."""
     src = str(Path(shipyard.__file__).resolve().parent.parent)
+    repo = str(Path(__file__).resolve().parent.parent)
     env = {
         **os.environ,
-        "SHIPYARD_FAKE_SAMPLER": "1",
         "SHIPYARD_PROXY_TOKEN": "harness-token",
         "SHIPYARD_CONTROL_TOKEN": "control-token",
-        "PYTHONPATH": src + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        "PYTHONPATH": os.pathsep.join([src, repo, os.environ.get("PYTHONPATH", "")]),
         "PYTHONUNBUFFERED": "1",
     }
     process = subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "shipyard.proxy.serve",
-            "--model",
-            "Qwen/Qwen3-8B",
-            "--bind",
-            "127.0.0.1",
-        ],
+        [sys.executable, "-c", STUB, "--model", "Qwen/Qwen3-8B", "--bind", "127.0.0.1"],
         env=env,
         cwd=tmp_path,
         stdout=subprocess.PIPE,
@@ -336,15 +348,3 @@ def test_serve_runs_for_real_on_the_fake_sampler(tmp_path: Path) -> None:
         if process.poll() is None:
             process.kill()
             process.wait()
-
-
-async def test_the_fake_parts_echo_and_render_by_character() -> None:
-    make, renderer = serve.fake_parts()
-    prompt = renderer.build_generation_prompt([{"role": "user", "content": "ab"}])
-    assert prompt.to_ints() == [ord("a"), ord("b")]
-    echo = await make("tinker://x")
-    response = await echo.sample_async(prompt, 2, SimpleNamespace(max_tokens=1))
-    assert [s.tokens for s in response.sequences] == [[ord("a")], [ord("a")]]
-    whole = await echo.sample_async(prompt, 1, SimpleNamespace(max_tokens=None))
-    assert whole.sequences[0].tokens == [ord("a"), ord("b")]
-    assert renderer.parse_response([ord("z")])[0] == {"role": "assistant", "content": "z"}
