@@ -51,7 +51,7 @@ class Runner:
         self.position: tuple[Mapping[str, Any], int] | None = None
 
     @classmethod
-    def of(cls, run: Run, trainer: type[Trainer] | None = None) -> Runner:
+    def from_run(cls, run: Run, trainer: type[Trainer] | None = None) -> Runner:
         """The runner for an open run: under `trainer`, else the class's own, else the kind's."""
         cfg = run.config
         if cfg.trains and not cfg.model.served:
@@ -70,7 +70,7 @@ class Runner:
         )
 
     @classmethod
-    def from_run(cls, directory: Path, *, checkpoint: str = "last") -> Runner:
+    def from_checkpoint(cls, directory: Path, *, tag: str = "last") -> Runner:
         """The runner over a run reopened at one of its checkpoints, standing where it stood;
         a run opened under a runner file reopens under its copy."""
         directory = Path(directory)
@@ -78,22 +78,16 @@ class Runner:
             raise ValueError(f"no run at {directory}")
         kept = directory / record.RUNNER
         if cls is Runner and kept.is_file():
-            return runner_in(kept).from_run(directory, checkpoint=checkpoint)
+            return runner_in(kept).from_checkpoint(directory, tag=tag)
         rows = list(record.read(directory / record.CHECKPOINTS))
         if not rows:
             raise ValueError(f"{directory.name} has no checkpoint to go on from")
-        row = (
-            rows[-1]
-            if checkpoint == "last"
-            else next((r for r in rows if r["tag"] == checkpoint), None)
-        )
+        row = rows[-1] if tag == "last" else next((r for r in rows if r["tag"] == tag), None)
         if row is None:
             tags = ", ".join(r["tag"] for r in rows)
-            raise ValueError(
-                f"{directory.name} has no checkpoint tagged {checkpoint!r}; it has {tags}"
-            )
+            raise ValueError(f"{directory.name} has no checkpoint tagged {tag!r}; it has {tags}")
         run = Run.reopen(directory, resumed=row["tag"])
-        runner = cls.of(run)
+        runner = cls.from_run(run)
         consumed = runner.trainer.consumed(list(record.read(directory / record.JOBS)), row)
         runner.modules = runner.trainer.restore(row, consumed)
         runner.position = (row, consumed)

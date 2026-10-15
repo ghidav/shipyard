@@ -93,7 +93,7 @@ def fakes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[FakeProxy, F
 async def _run(home: Path, tmp_path: Path, runner: Any) -> tuple[Run, Runner]:
     opened = Run.open(home, root=tmp_path / "runs")
     opened.run_trial = runner
-    started = Runner.of(opened)
+    started = Runner.from_run(opened)
     with opened:
         await started.run()
     return opened, started
@@ -277,7 +277,7 @@ async def test_a_trainer_class_of_ones_own_replaces_the_kinds(
 ) -> None:
     opened = Run.open(_blueprint(tmp_path), root=tmp_path / "runs")
     opened.run_trial = Alternating()
-    started = Runner.of(opened, Trainer)
+    started = Runner.from_run(opened, Trainer)
     with opened:
         agent = await started.run()
     assert agent.policy.client is not None and type(started.trainer) is Trainer
@@ -326,7 +326,7 @@ async def test_a_run_whose_model_is_not_served_is_refused_before_a_session_opens
     home = _blueprint(tmp_path, **{"lora_rank = 32": 'lora_rank = 32\nprovider = "openrouter"'})
     opened = Run.open(home, root=tmp_path / "runs")
     with pytest.raises(ValueError, match="trains the weights this run serves"), opened:
-        await Runner.of(opened).run()
+        await Runner.from_run(opened).run()
     assert service.calls == [] and service.closed == []
     assert Run.read(opened.directory)["failed"] is True
 
@@ -340,7 +340,7 @@ async def test_a_step_that_fails_closes_the_session_as_errored_and_the_run_as_fa
     opened = Run.open(home, root=tmp_path / "runs")
     opened.run_trial = Alternating()
     with pytest.raises(RuntimeError, match="went away"), opened:
-        await Runner.of(opened).run()
+        await Runner.from_run(opened).run()
     assert service.closed == [("errored", "RuntimeError: the backend went away")]
     assert _rows(opened) == [] and _checkpoints(opened) == [] and proxy.closed == 1
     note = Run.read(opened.directory)
@@ -353,14 +353,14 @@ async def test_a_run_killed_mid_epoch_resumes_from_its_last_checkpoint(
     proxy, service = fakes
     opened = Run.open(_blueprint(tmp_path), root=tmp_path / "runs")
     opened.run_trial = Interrupting(after=5)  # the second batch's first trial
-    started = Runner.of(opened)
+    started = Runner.from_run(opened)
     with pytest.raises(Stopped), opened:
         await started.run()
     assert [c["tag"] for c in _checkpoints(opened)] == ["step-1"]
     assert Run.read(opened.directory)["error"] == "Stopped: SIGINT"
     assert service.closed[-1][0] == "interrupted"
 
-    resumed = Runner.from_run(opened.directory)
+    resumed = Runner.from_checkpoint(opened.directory)
     row, consumed = resumed.position
     assert (row["tag"], consumed) == ("step-1", 1), "one batch of the epoch was stepped"
     trainer = resumed.trainer
@@ -404,7 +404,7 @@ async def test_a_run_is_evaluated_at_a_checkpoint_as_one_more_row(
     proxy, service = fakes
     opened, _ = await _run(_blueprint(tmp_path), tmp_path, Alternating())
     _two(tmp_path)
-    reopened = Runner.from_run(opened.directory, checkpoint="step-1")
+    reopened = Runner.from_checkpoint(opened.directory, tag="step-1")
     reopened.opened.run_trial = Alternating()
     calls = len(service.calls)
     with reopened.opened:
@@ -421,7 +421,7 @@ async def test_a_run_is_evaluated_at_a_checkpoint_as_one_more_row(
     assert jobs[-1]["purpose"] == "evaluation"
     assert Run.read(reopened.opened.directory)["resumed"] == "step-1"
     with pytest.raises(ValueError, match="no checkpoint tagged 'step-9'"):
-        Runner.from_run(opened.directory, checkpoint="step-9")
+        Runner.from_checkpoint(opened.directory, tag="step-9")
 
 
 RUNNER_FILE = """\
@@ -466,12 +466,12 @@ async def test_a_run_under_a_runner_file_trains_under_its_trainer_and_resumes_un
     opened = Run.open(_blueprint(tmp_path), root=tmp_path / "runs", runner=file)
     assert (opened.directory / record.RUNNER).read_bytes() == file.read_bytes()
     opened.run_trial = Alternating()
-    started = runner_in(file).of(opened)
+    started = runner_in(file).from_run(opened)
     with opened:
         await started.run()
     assert type(started).__name__ == "MyRunner" and type(started.trainer).__name__ == "Marked"
     assert _rows(opened) and all(row["marked"] for row in _rows(opened))
     file.unlink()
-    resumed = Runner.from_run(opened.directory)
+    resumed = Runner.from_checkpoint(opened.directory)
     assert type(resumed).__name__ == "MyRunner" and type(resumed.trainer).__name__ == "Marked"
     assert resumed.position is not None and resumed.position[0]["tag"] == "final"

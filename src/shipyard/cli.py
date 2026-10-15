@@ -145,7 +145,9 @@ def run(
     except RunRefused as refused:
         console.print(f"[red]{escape(str(refused))}[/red]")
         raise typer.Exit(1) from None
-    work = (lambda: _smoke(opened)) if smoke else (lambda: asyncio.run(chosen.of(opened).run()))
+    work = (
+        (lambda: _smoke(opened)) if smoke else (lambda: asyncio.run(chosen.from_run(opened).run()))
+    )
     raise typer.Exit(_executed(opened, work))
 
 
@@ -177,7 +179,7 @@ def evaluate(
 def _reopened(directory: Path, *, checkpoint: str = "last") -> Runner:
     """The runner over a run reopened at a checkpoint, or exit 1 saying why not."""
     try:
-        return Runner.from_run(directory, checkpoint=checkpoint)
+        return Runner.from_checkpoint(directory, tag=checkpoint)
     except (ValueError, ConfigError) as refused:
         console.print(f"[red]{escape(str(refused))}[/red]")
         raise typer.Exit(1) from None

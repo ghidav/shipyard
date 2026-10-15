@@ -83,7 +83,7 @@ async def test_a_runner_dispatches_to_the_kinds_trainer(tmp_path: Path, monkeypa
     monkeypatch.chdir(tmp_path)
     opened = Run.open(BLUEPRINTS / "gepa", root=tmp_path / "runs")
     with pytest.raises(NoSuchDataset, match="aime-train"):
-        await Runner.of(opened).run()
+        await Runner.from_run(opened).run()
 
 
 def test_open_refuses_an_existing_directory(tmp_path: Path, monkeypatch) -> None:

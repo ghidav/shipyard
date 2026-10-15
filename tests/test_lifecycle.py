@@ -316,6 +316,6 @@ async def test_a_tunnel_that_dies_under_a_batch_stops_the_run_once_the_job_is_re
 
     run.run_trial = dying
     with pytest.raises(ProxyGone, match="exited with 1"), run:
-        await Runner.of(run).run()
+        await Runner.from_run(run).run()
     assert len(list(record.read(run.directory / record.JOBS))) == 1, "the batch is on record"
     assert not (run.directory / record.METRICS).exists(), "and not measured"
