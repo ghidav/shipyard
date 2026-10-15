@@ -21,7 +21,6 @@ class Rollouts:
     #: The trials whose harness log says their last model call failed.
     failed: set[str] | None = None
     #: The trainer's update count when this job sampled, for credit to check against.
-    updates: int | None = None
 
     def __len__(self) -> int:
         return len(self.trials)

@@ -57,7 +57,6 @@ def test_dapo_fixture_defaults() -> None:
     assert found.recipe.kind == "dapo" and found.recipe.learning_rate == 2e-5
     assert found.recipe.reference == "trainer" and found.recipe.substeps == 16
     assert found.recipe.clip_low == 0.2 and found.recipe.clip_high == 0.28
-    assert found.recipe.refill == 9
     assert found.recipe.kl_coef == 0.0 and found.recipe.modules is None
     assert found.rollout.sandbox == "docker" and found.rollout.max_tokens == 8192
     assert found.rollout.env == {}
@@ -67,24 +66,18 @@ def test_dr_grpo_and_cispo_fixtures_carry_their_own_knobs() -> None:
     found = load(BLUEPRINTS / "dr-grpo").recipe
     assert found.kind == "dr-grpo" and found.clip == 0.2
     assert found.length_penalty == 0.2 and found.length_floor == 0
-    assert (found.substeps, found.refill) == (1, 0), "Dr. GRPO: one epoch, no refill"
+    assert found.substeps == 1, "Dr. GRPO: one substep"
     found = load(BLUEPRINTS / "cispo").recipe
     assert found.kind == "cispo" and found.reference == "sampler"
     assert found.clip_high == 3.0, "ScaleRL A.17.2 and FST appendix D: a ceiling of 4.0"
-    assert (found.substeps, found.refill) == (16, 9), "MiniMax-M1 3.1"
+    assert found.substeps == 16, "MiniMax-M1 3.1"
 
 
-def test_substeps_and_refill_are_knobs_and_fst_takes_no_refill(tmp_path: Path) -> None:
-    text = MINIMAL.replace("learning_rate = 2e-5", "learning_rate = 2e-5\nsubsteps = 2\nrefill = 0")
-    found = load(write_blueprint(tmp_path / "set", text)).recipe
-    assert (found.substeps, found.refill) == (2, 0)
-    bad = MINIMAL.replace("learning_rate = 2e-5", "learning_rate = 2e-5\nrefill = -1")
-    assert _problems(tmp_path / "bad", bad) == [
-        "[recipe] refill: Input should be greater than or equal to 0"
-    ]
-    fst = (BLUEPRINTS / "fst" / "run.toml").read_text(encoding="utf-8")
-    fst = fst.replace('kind = "fst"', 'kind = "fst"\nrefill = 2')
-    assert _problems(tmp_path / "fst", fst) == ["[recipe] refill: unknown key"]
+def test_substeps_is_a_knob_and_refill_is_no_longer_one(tmp_path: Path) -> None:
+    text = MINIMAL.replace("learning_rate = 2e-5", "learning_rate = 2e-5\nsubsteps = 2")
+    assert load(write_blueprint(tmp_path / "set", text)).recipe.substeps == 2
+    gone = MINIMAL.replace("learning_rate = 2e-5", "learning_rate = 2e-5\nrefill = 0")
+    assert _problems(tmp_path / "gone", gone) == ["[recipe] refill: unknown key"]
 
 
 def test_dapo_and_cispo_dock_overlong_rollouts_as_dapo_does_and_take_its_knobs(
@@ -392,7 +385,6 @@ def test_the_resolved_config_fills_every_table_and_leads_the_recipe_with_its_kin
         "modules": None,
         "clip_low": 0.2,
         "clip_high": 0.28,
-        "refill": 9,
         "overlong_penalty": 0.5,
         "overlong_buffer": 0.2,
     }

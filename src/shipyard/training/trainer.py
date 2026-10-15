@@ -81,6 +81,31 @@ def clipped(low: float, high: float) -> dict[str, float]:
     return {"clip_low_threshold": round(1.0 - low, 6), "clip_high_threshold": round(1.0 + high, 6)}
 
 
+def optimizer(adam: Adam, paper_warmup: int = 0) -> str:
+    """The optimizer clause of the resolution line."""
+    said = f"adamw betas {adam.beta1} / {adam.beta2}, eps {adam.eps:g}"
+    if adam.weight_decay > 0:
+        said += f", weight decay {adam.weight_decay}"
+    if adam.grad_clip_norm > 0:
+        said += f", gradient norm clipped at {adam.grad_clip_norm}"
+    if adam.warmup > 0:
+        steps = "step" if adam.warmup == 1 else "steps"
+        said += f", learning rate warmed up over {adam.warmup} {steps}"
+    elif paper_warmup > 0:
+        said += f", no warm-up (the paper's is {paper_warmup} steps)"
+    return said
+
+
+def overlong_clause(recipe: Any) -> list[str]:
+    """The overlong term's clause of the resolution line; none when the term is off."""
+    if recipe.overlong_penalty <= 0:
+        return []
+    return [
+        f"overlong penalty up to {recipe.overlong_penalty} over the last "
+        f"{recipe.overlong_buffer * 100:g}% of the token budget"
+    ]
+
+
 def centred(rewards: Values[float | None], *, normalize: bool) -> list[float | None]:
     """`advantages` over the measured positions, None kept where it was."""
     found = [one for one in rewards if one is not None]
@@ -109,6 +134,33 @@ class Trainer:
     loss_fn = "importance_sampling"
     #: The optimizer; `[recipe] warmup` is set on it at the step.
     ADAM = COOKBOOK
+    #: The warm-up the recipe's paper trains with, shown beside the run's own `warmup`.
+    PAPER_WARMUP = 0
+
+    @classmethod
+    def resolution(cls, recipe: Any) -> str:
+        """The line `check` prints after the resolved config."""
+        parts = [
+            *cls.rules(recipe),
+            "1 substep" if recipe.substeps == 1 else f"{recipe.substeps} substeps by prompt",
+            optimizer(replace(cls.ADAM, warmup=recipe.warmup), cls.PAPER_WARMUP),
+            "degenerate groups dropped",
+        ]
+        if recipe.kl_coef > 0:
+            parts.append(f"kl {recipe.kl_coef} to the starting weights")
+        return f"# {recipe.kind}: " + "; ".join(parts)
+
+    @classmethod
+    def rules(cls, recipe: Any) -> list[str]:
+        """The clauses of `resolution` that name this class's rules."""
+        return [
+            "advantage = group mean, not divided by spread",
+            f"loss = {cls.loss_fn}, {cls.aggregated()}",
+        ]
+
+    @classmethod
+    def aggregated(cls) -> str:
+        return "summed over tokens"
 
     def __init__(self, run: Run, *, anchor: Any = None) -> None:
         self.run = run
@@ -434,6 +486,19 @@ class DAPOTrainer(Trainer):
     #: recipe (verl recipe/dapo, run_dapo_qwen2.5_32b.sh) sets weight decay 0.1 and clips
     #: the gradient norm at 1.0. Betas and eps are the cookbook's.
     ADAM = replace(COOKBOOK, weight_decay=0.1, grad_clip_norm=1.0)
+    PAPER_WARMUP = 20
+
+    @classmethod
+    def rules(cls, recipe: Any) -> list[str]:
+        return [
+            "advantage = group mean, divided by spread",
+            f"loss = ppo, clip {recipe.clip_low} / {recipe.clip_high}, {cls.aggregated()}",
+            *overlong_clause(recipe),
+        ]
+
+    @classmethod
+    def aggregated(cls) -> str:
+        return "averaged per prompt"
 
     async def train(self, agent: Agent, tasks: Batches) -> Agent:
         recipe = self.recipe
@@ -508,6 +573,21 @@ class DrGRPOTrainer(Trainer):
     #: 1.0, a constant learning rate. Eps is unstated, so the cookbook's applies.
     ADAM = Adam(beta1=0.9, beta2=0.95, eps=1e-8, grad_clip_norm=1.0)
 
+    @classmethod
+    def rules(cls, recipe: Any) -> list[str]:
+        found = [
+            "advantage = group mean, not divided by spread",
+            f"loss = ppo, clip {recipe.clip} / {recipe.clip}, {cls.aggregated()}",
+        ]
+        if recipe.length_penalty > 0:
+            cap = recipe.length_cap
+            capped = "uncapped" if cap == float("inf") else f"capped at {cap}"
+            found.append(
+                f"length penalty {recipe.length_penalty} over {recipe.length_floor} tokens "
+                f"among solved answers, {capped}"
+            )
+        return found
+
     def shape(self, group: Group) -> list[float | None]:
         """The rewards after the length rule."""
         recipe = self.recipe
@@ -534,6 +614,16 @@ class CISPOTrainer(DAPOTrainer):
     #: 3.2 sets the betas and eps for gradients mostly below 1e-14. It states no weight
     #: decay, gradient clipping or warm-up, so the cookbook's apply (none).
     ADAM = Adam(beta1=0.9, beta2=0.95, eps=1e-15)
+    PAPER_WARMUP = 0
+
+    @classmethod
+    def rules(cls, recipe: Any) -> list[str]:
+        high = round(1.0 + float(recipe.clip_high), 6)
+        return [
+            "advantage = group mean, divided by spread",
+            f"loss = cispo, weight truncated above {high}, no lower bound, {cls.aggregated()}",
+            *overlong_clause(recipe),
+        ]
 
     def bounds(self) -> dict[str, float] | None:
         # No lower bound: MiniMax-M1 sets epsilon_low large and tunes only epsilon_high,

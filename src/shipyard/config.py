@@ -132,9 +132,6 @@ class Rollout(_Table):
 #: Optimizer steps per batch for dapo and cispo: DAPO 4.1 ("16 gradient updates for each
 #: rollout step") and MiniMax-M1 3.1 ("16 rounds of off-policy updates per generation batch").
 PAPER_SUBSTEPS = 16
-#: Extra sampling rounds a dapo or cispo step may take to fill its batch: DAPO's released
-#: recipe stops at ten generation batches (verl recipe/dapo, `max_num_gen_batches=10`).
-PAPER_REFILL = 9
 #: cispo's ceiling as an epsilon, 4.0 on the weight: ScaleRL A.17.2 and FST appendix D.
 PAPER_CISPO_HIGH = 3.0
 #: DAPO's soft overlong punishment (Eq. 13), which MiniMax-M1 3.1 takes for CISPO: a ramp
@@ -168,7 +165,6 @@ class DapoRecipe(Gradient):
     substeps: int = Field(default=PAPER_SUBSTEPS, ge=1)
     clip_low: float = Field(default=0.2, gt=0, lt=1)
     clip_high: float = Field(default=0.28, gt=0)
-    refill: int = Field(default=PAPER_REFILL, ge=0)
     overlong_penalty: float = Field(default=PAPER_OVERLONG_PENALTY, ge=0, allow_inf_nan=False)
     overlong_buffer: float = Field(default=PAPER_OVERLONG_BUFFER, gt=0, le=1)
 
@@ -179,14 +175,12 @@ class DrGrpoRecipe(Gradient):
     length_penalty: float = Field(default=0.0, ge=0)
     length_floor: int = Field(default=0, ge=0)
     length_cap: float = Field(default=LENGTH_CAP, gt=0)
-    refill: int = Field(default=0, ge=0)
 
 
 class CispoRecipe(Gradient):
     kind: Literal["cispo"]
     substeps: int = Field(default=PAPER_SUBSTEPS, ge=1)
     clip_high: float = Field(default=PAPER_CISPO_HIGH, gt=0)
-    refill: int = Field(default=PAPER_REFILL, ge=0)
     overlong_penalty: float = Field(default=PAPER_OVERLONG_PENALTY, ge=0, allow_inf_nan=False)
     overlong_buffer: float = Field(default=PAPER_OVERLONG_BUFFER, gt=0, le=1)
 

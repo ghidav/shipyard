@@ -1,67 +1,13 @@
-"""A fake Tinker training side: a service with the factories `Trainer.create` chooses
-between and the sampling client an anchor uses, a training client that records every call
-and every result consumed, futures that answer at once, and a Preset and a Batch built by
-name."""
+"""A fake Tinker training side: a service, a recording training client, instant futures."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
 
-import tinker
 import torch
 from tinker import TensorData
 from tinker.types import GetServerCapabilitiesResponse, SupportedModel
-
-from shipyard.credit import Batch
-from shipyard.gradient import Preset
-from shipyard.trainer import COOKBOOK
-
-
-def preset(**named: Any) -> Preset:
-    """dapo's loss and clipping with every field set, any of them overridden by name. The
-    defaults are one substep, summed token losses and no refill."""
-    defaults = dict(
-        name="dapo",
-        normalize=True,
-        loss_fn="ppo",
-        loss_config={"clip_low_threshold": 0.8, "clip_high_threshold": 1.28},
-        clipping="clip 0.2 / 0.28",
-        aggregation="sum",
-        length_penalty=0.0,
-        length_floor=0,
-        adam=COOKBOOK,
-        kl_coef=0.0,
-        reference="trainer",
-        learning_rate=2e-5,
-        substeps=1,
-        refill=0,
-    )
-    return Preset(**{**defaults, **named})
-
-
-def batch(*datums: tinker.Datum, **named: Any) -> Batch:
-    """A Batch over `datums`, one credited rollout, sequence and group each, any count
-    overridden."""
-    count = len(datums)
-    defaults = dict(
-        datums=tuple(datums),
-        owners=tuple(range(count)),
-        groups=1,
-        rollouts=count,
-        graded=count,
-        masked=0,
-        degenerate=0,
-        credited=count,
-        sequences=count,
-        reward_mean=0.5,
-        reward_spread=0.5,
-        length_mean=2.0,
-        anchor_kl=None,
-        reference_tokens=0,
-        anchor_tokens=0,
-    )
-    return Batch(**{**defaults, **named})
 
 
 @dataclass

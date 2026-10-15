@@ -43,7 +43,6 @@ class Runner:
                 f"[model] provider = {cfg.model.provider!r} serves them elsewhere"
             )
         procedure = trainer(run)
-        run.trainer = procedure
         return cls(
             run,
             Generator.of(cfg),

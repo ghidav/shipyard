@@ -9,8 +9,9 @@ from typing import Any
 
 import pytest
 
-from shipyard import admit, pack, trainer, types
+from shipyard import admit, pack, types
 from shipyard.proxy.profiles import PROFILES, Profile
+from shipyard.training import trainer
 from shipyard.training.client import TinkerClient
 from shipyard.types import (
     SERVE_TTL,

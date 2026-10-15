@@ -24,8 +24,8 @@ from shipyard.config import (
 )
 from shipyard.data import batches
 from shipyard.modules import SKILL_FILE, seed
-from shipyard.recipes import resolution, run_recipe
-from shipyard.recipes.fst import ADAM, BUDGET_PASSES, fst_trainer, preset
+from shipyard.recipes import resolution, run_recipe, trainer_for
+from shipyard.recipes.fst import ADAM, BUDGET_PASSES, fst_trainer, slow_recipe
 from shipyard.recipes.gepa.reflect import COLLECTED
 from shipyard.run import Run
 from shipyard.sampling.endpoint import ProviderEndpoint
@@ -47,17 +47,17 @@ def _text(**changes: str) -> str:
     return text
 
 
-def test_the_fixture_takes_the_papers_defaults() -> None:
+def test_the_fixture_takes_the_papers_defaults(tmp_path: Path) -> None:
     recipe = load(FST).recipe
     assert (recipe.slow, recipe.kl_coef, recipe.edits) == ("cispo", 0.001, "incremental")
     assert (recipe.cycle, recipe.population, recipe.anchor) == (2, 2, None)
     assert recipe.patience is None, "gepa's: the budget alone ends a fast phase"
-    found = preset(recipe)
-    assert (found.name, found.loss_fn) == ("fst", "cispo")
-    assert found.loss_config == {"clip_low_threshold": 0.0, "clip_high_threshold": 4.0}
-    assert (found.substeps, found.aggregation, found.refill) == (1, "prompt", 0), "App. D, Eq. 4"
-    assert resolution(recipe).startswith("# fst: cycles of 2 cispo steps")
-    assert (found.overlong_penalty, found.adam) == (0.0, ADAM), "App. D; ScaleRL A.10"
+    trainer = trainer_for(recipe)(Run.open(FST, root=tmp_path))
+    assert type(trainer).__name__ == "FSTCISPOTrainer" and trainer.loss_fn == "cispo"
+    assert trainer.bounds() == {"clip_low_threshold": 0.0, "clip_high_threshold": 4.0}
+    assert (trainer.recipe.substeps, trainer.recipe.overlong_penalty) == (1, 0.0), "App. D"
+    assert trainer.weights([1, 3]) == [2.0, 2 / 3], "Eq. 4: averaged per prompt"
+    assert trainer.ADAM == ADAM, "App. D; ScaleRL A.10"
     assert (ADAM.beta1, ADAM.beta2, ADAM.eps, ADAM.weight_decay, ADAM.warmup) == (
         0.9,
         0.999,
@@ -65,8 +65,8 @@ def test_the_fixture_takes_the_papers_defaults() -> None:
         0.0,
         0,
     ), "App. D; its 10-step warm-up is the warmup key's"
-    assert found.paper_warmup == 10
     assert ADAM.grad_clip_norm == 0.0, "App. D states no gradient clipping"
+    assert resolution(recipe).startswith("# fst: cycles of 2 cispo steps")
     assert resolution(recipe).endswith(
         "no lower bound, averaged per prompt; 1 substep; adamw betas 0.9 / 0.999, eps 1e-08, "
         "no warm-up (the paper's is 10 steps); degenerate groups dropped; "
@@ -76,10 +76,11 @@ def test_the_fixture_takes_the_papers_defaults() -> None:
 
 def test_another_slow_recipe_takes_its_own_knobs(tmp_path: Path) -> None:
     text = _text(**{'kind = "fst"': 'kind = "fst"\nslow = "dapo"\nclip_high = 0.3'})
-    found = preset(load(write_blueprint(tmp_path, text)).recipe)
-    assert found.loss_fn == "ppo"
-    assert found.loss_config == {"clip_low_threshold": 0.8, "clip_high_threshold": 1.3}
-    assert (found.substeps, found.refill) == (1, 0), "fst's own step, not dapo's"
+    home = write_blueprint(tmp_path, text)
+    trainer = trainer_for(load(home).recipe)(Run.open(home, root=tmp_path / "runs"))
+    assert trainer.loss_fn == "ppo"
+    assert trainer.bounds() == {"clip_low_threshold": 0.8, "clip_high_threshold": 1.3}
+    assert trainer.recipe.substeps == 1, "fst's own step, not dapo's"
 
 
 @pytest.mark.parametrize(
@@ -87,9 +88,8 @@ def test_another_slow_recipe_takes_its_own_knobs(tmp_path: Path) -> None:
 )
 def test_slow_knobs_are_each_slow_recipes_own_fields_and_fsts(slow: str, recipe: type) -> None:
     """A knob a slow recipe gains must reach fst's list and its fields, or fst cannot set
-    it. `refill` and the overlong term stay out: a slow step trains on the batch it sampled,
-    with no overlong term."""
-    outside = {"refill", "overlong_penalty", "overlong_buffer"}
+    it. The overlong term stays out: a slow step trains on the batch it sampled."""
+    outside = {"overlong_penalty", "overlong_buffer"}
     own = set(recipe.model_fields) - set(Gradient.model_fields) - {"kind"} - outside
     assert own == set(SLOW_KNOBS[slow])
     assert own <= set(FstRecipe.model_fields) and not outside & set(FstRecipe.model_fields)
@@ -285,12 +285,20 @@ async def test_cycle_c_draws_its_minibatches_with_data_seed_plus_c(tmp_path: Pat
 def test_fst_averages_per_prompt_whatever_its_slow_loss(tmp_path: Path) -> None:
     """FST aggregates at the prompt level (Eq. 4); a dr-grpo step on its own sums."""
     text = _text(**{'kind = "fst"': 'kind = "fst"\nslow = "dr-grpo"'})
-    found = preset(load(write_blueprint(tmp_path, text)).recipe)
-    assert (found.aggregation, found.refill) == ("prompt", 0)
-    assert (found.length_cap, found.adam) == (0.5, ADAM), "dr-grpo's cap, FST's optimizer"
+    home = write_blueprint(tmp_path, text)
+    recipe = load(home).recipe
+    trainer = trainer_for(recipe)(Run.open(home, root=tmp_path / "runs"))
+    assert trainer.weights([1, 3]) == [2.0, 2 / 3] and trainer.loss_fn == "ppo"
+    assert (slow_recipe(recipe).length_cap, trainer.ADAM) == (0.5, ADAM), (
+        "dr-grpo's cap, FST's optimizer"
+    )
+    assert "summed over tokens" not in resolution(recipe) and "averaged per prompt" in resolution(
+        recipe
+    )
 
 
 def test_fsts_warmup_key_reaches_its_slow_step(tmp_path: Path) -> None:
     text = _text(**{'kind = "fst"': 'kind = "fst"\nwarmup = 10'})
-    found = preset(load(write_blueprint(tmp_path, text)).recipe)
-    assert (found.adam.warmup, found.adam.beta2, found.paper_warmup) == (10, 0.999, 10)
+    recipe = load(write_blueprint(tmp_path, text)).recipe
+    assert slow_recipe(recipe).warmup == 10 and trainer_for(recipe).ADAM.beta2 == 0.999
+    assert "learning rate warmed up over 10 steps" in resolution(recipe)

@@ -11,7 +11,7 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as installed
 from pathlib import Path
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Self
+from typing import Any, Self
 
 from shortuuid import ShortUUID
 
@@ -30,9 +30,6 @@ from shipyard.sampling.endpoint import (
 )
 from shipyard.sampling.engine import HarborEngine, TrialRunner
 from shipyard.types import Agent, Endpoint, Policy
-
-if TYPE_CHECKING:
-    from shipyard.trainer import Checkpoint
 
 logger = logging.getLogger(__name__)
 
@@ -68,9 +65,6 @@ class Run:
         )
         self._noted = False
         self._next_job = next_job(self.id, directory, self.jobs_dir)
-        #: The trainer whose weights the proxy serves, for the update count every batch
-        #: is stamped with; None for a run that trains nothing.
-        self.trainer: Any | None = None
         self._seq = 0
 
     @classmethod
@@ -176,7 +170,6 @@ class Run:
         if records is not None:
             asked, failed = read_logs(trials, records, check_turns=self.config.rollout.check_turns)
             rolled = replace(rolled, records=records, asked=asked, failed=failed)
-        rolled = replace(rolled, updates=getattr(self.trainer, "updates", None))
         tasks = len({one.task for one in trials})
         self._record_job(
             rolled, batch=batch, tasks=tasks, modules=modules, purpose=purpose, **about
@@ -196,19 +189,6 @@ class Run:
             return
         self.note(proxy={"placement": endpoint.placement, "origin": endpoint.origin})
         self._noted = True
-
-    async def checkpoint(self, trainer: Any, tag: str, *, keep: bool = False) -> Checkpoint:
-        """Save state and sampler weights under `tag` with `[checkpoints] ttl_hours`, or with
-        no TTL when `keep` (the final weights). Append both paths to `checkpoints.jsonl`; a
-        record with only the sampler path cannot be continued."""
-        ttl = None if keep else self.config.checkpoints.ttl_hours
-        saved = await trainer.save(tag, ttl_hours=ttl)
-        named = ("tag", "state_path", "sampler_path", "ttl_hours")
-        record.append(
-            self.directory / record.CHECKPOINTS, {key: getattr(saved, key) for key in named}
-        )
-        logger.info("checkpoint %s: %s", saved.tag, saved.sampler_path)
-        return saved
 
     def spent(self, party: str, **counts: int) -> None:
         """Add training counts to a party on `costs.json`. Zero counts are skipped."""

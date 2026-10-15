@@ -1,9 +1,8 @@
-"""Test the gradient path on fixed inputs."""
+"""Test the gradient path on fixed inputs, frozen under `tests/golden/`."""
 
 from __future__ import annotations
 
 import base64
-import os
 import shutil
 from collections.abc import Callable, Mapping
 from collections.abc import Sequence as Values
@@ -15,18 +14,13 @@ import pytest
 import tinker
 
 from shipyard import record, types
-from shipyard.admit import BUDGET, CONTEXT, Verdict, verdicts
-from shipyard.config import load
-from shipyard.credit import Batch, credit
-from shipyard.gradient import Preset, row
+from shipyard.admit import BUDGET, CONTEXT, Verdict
 from shipyard.modules import Candidate, seed
-from shipyard.pack import Group, Member, Sequence, group
+from shipyard.pack import Sequence
 from shipyard.proxy.wire import IMAGE_TOKEN, Picture, Record
-from shipyard.recipes import cispo, dapo, dr_grpo, fst, trainer_for
-from shipyard.recipes.fst import merged_rollouts as merged
+from shipyard.recipes import trainer_for
 from shipyard.rollout import Rollouts
 from shipyard.run import Run
-from shipyard.trainer import Trainer
 from shipyard.training.client import TinkerClient
 from shipyard.training.trainer import Trainer as Procedure
 from shipyard.types import Agent, Connection, Endpoint, Policy, Records, Trial, harness
@@ -38,8 +32,6 @@ from tests.trials import FIXTURES, write_result
 GOLDEN = Path(__file__).parent / "golden"
 BLUEPRINTS = Path(__file__).parent / "blueprints"
 VALID = Path(__file__).parent / "modules" / "valid"
-#: Set in the environment to rewrite every file from the current code.
-UPDATE = "GOLDEN_UPDATE"
 #: Two numbers agree within this. Datums hold float32, and a sum taken in another order
 #: moves the last bits; a wrong scale, sign or token moves far more.
 TOLERANCE = 1e-6
@@ -51,11 +43,17 @@ PNG = base64.b64encode(b"png-bytes").decode()
 # ------------------------------------------------------------------- the presets
 
 
-def preset_of(kind: str, **recipe: Any) -> Preset:
-    """The fixture blueprint's preset, with these `[recipe]` keys set over its own."""
-    loaded = load(BLUEPRINTS / kind).recipe.model_copy(update=recipe)
-    module = {"dapo": dapo, "dr-grpo": dr_grpo, "cispo": cispo, "fst": fst}[kind]
-    return module.preset(loaded)
+@dataclass(frozen=True)
+class Member:
+    verdict: Verdict
+    sequences: tuple[Sequence, ...]
+    sampled_tokens: int
+
+
+@dataclass(frozen=True)
+class Group:
+    task: Path
+    members: tuple[Member, ...]
 
 
 # ------------------------------------------------------------------- the fakes
@@ -137,8 +135,8 @@ def member(
     return Member(Verdict(reward, mask, ended), found, wrote)
 
 
-def grouped(*members: Member, task: str = "t", updates: int | None = 0) -> Group:
-    return Group(Path(task), tuple(members), updates)
+def grouped(*members: Member, task: str = "t") -> Group:
+    return Group(Path(task), tuple(members))
 
 
 def _varied(reward: float, *tokens: int) -> Member:
@@ -154,16 +152,9 @@ class Credited:
     kind: str
     #: `[recipe]` keys set over the fixture blueprint's.
     recipe: Mapping[str, Any] = field(default_factory=dict)
-    #: Preset fields the trainer cannot express; such a case replays on the old path alone.
-    preset_only: Mapping[str, Any] = field(default_factory=dict)
-    limit: int | None = None
     budget: int | None = None
     anchored: bool = False
     updates: int = 0
-
-    @property
-    def preset(self) -> Preset:
-        return replace(preset_of(self.kind, **self.recipe), **self.preset_only)
 
 
 @dataclass(frozen=True)
@@ -175,7 +166,8 @@ class Jobbed:
     tasks: tuple[str, ...]
     outcomes: Mapping[str, list[dict[str, Any] | None]]
     records: Mapping[str, list[list[Record]]]
-    preset: Preset | None = None
+    #: Whether the case steps on what it sampled.
+    stepped: bool = True
     budget: int | None = None
     texts: int = 1
     anchored: bool = False
@@ -317,7 +309,6 @@ def _flat() -> list[Group]:
 
 #: The credit cases by name.
 CREDITED: dict[str, Credited] = {
-    "dapo-mixed": Credited(_mixed, "dapo", limit=2),
     "dapo-mixed-unlimited": Credited(_mixed, "dapo"),
     "dapo-overlong": Credited(_overlong, "dapo", budget=100),
     "dapo-overlong-no-budget": Credited(_overlong, "dapo"),
@@ -328,14 +319,12 @@ CREDITED: dict[str, Credited] = {
     "dapo-kl": Credited(_chained, "dapo", {"kl_coef": 0.5}, anchored=True),
     "dapo-flat": Credited(_flat, "dapo"),
     "dapo-warmup": Credited(_chained, "dapo", {"warmup": 5}, updates=2),
-    "dapo-sum": Credited(_chained, "dapo", preset_only={"aggregation": "sum"}),
     "dr-grpo-lengths": Credited(_lengths, "dr-grpo"),
     "dr-grpo-partial": Credited(_partial, "dr-grpo"),
     "dr-grpo-floor-cap": Credited(
         _lengths, "dr-grpo", {"length_penalty": 0.5, "length_floor": 10, "length_cap": 0.9}
     ),
     "cispo-chained": Credited(_chained, "cispo"),
-    "cispo-mixed": Credited(_mixed, "cispo", limit=2),
     "cispo-kl": Credited(_chained, "cispo", {"kl_coef": 0.5}, anchored=True),
     "fst-chained": Credited(_chained, "fst", anchored=True),
 }
@@ -386,7 +375,6 @@ def _served() -> Jobbed:
                 _tool_loop((23,)),
             ],
         },
-        preset=preset_of("dapo"),
         budget=100,
     )
 
@@ -406,7 +394,6 @@ def _fst(share: int) -> Jobbed:
             "b": [_tool_loop((40 + n,)) for n in range(share)]
             + [_tool_loop((60 + n, 61 + n)) for n in range(share)],
         },
-        preset=preset_of("fst"),
         texts=2,
         anchored=True,
     )
@@ -425,6 +412,7 @@ def _provider() -> Jobbed:
             "beta": [{"reward": 0.0, "exception": "AgentTimeoutError", "seconds": 10.0}, None],
         },
         records={},
+        stepped=False,
     )
 
 
@@ -440,66 +428,6 @@ CASES: tuple[str, ...] = (*CREDITED, *JOBBED)
 
 
 # ------------------------------------------------------------------- running one
-
-
-async def replay(name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    if name in CREDITED:
-        return await _credited(CREDITED[name])
-    return await _jobbed(JOBBED[name], tmp_path, monkeypatch)
-
-
-async def _credited(case: Credited) -> dict[str, Any]:
-    trainer = Trainer(FakeTrainingClient(positional=True), updates=case.updates)
-    anchor = PositionalAnchor() if case.anchored else None
-    # Stamped with the trainer's count, as a batch sampled at these weights would be.
-    groups = [replace(one, updates=case.updates) for one in case.groups()]
-    batch = await credit(groups, case.preset, trainer, anchor, limit=case.limit, budget=case.budget)
-    return await _stepped(batch, case.preset, trainer, anchor)
-
-
-async def _stepped(batch: Batch, preset: Preset, trainer: Trainer, anchor: Any) -> dict[str, Any]:
-    update = None if batch.empty else await trainer.apply(batch, preset)
-    client = trainer.client
-    return {
-        "batch": _batch(batch),
-        "client": [_call(one) for one in client.calls],
-        "sent": [_sent(one) for one in client.sent],
-        "anchor": None if anchor is None else list(anchor.asked),
-        "update": None if update is None else _update(update),
-        "row": {key: value for key, value in row(0, batch, update).items() if key != "seconds"},
-        "updates": trainer.updates,
-    }
-
-
-async def _jobbed(case: Jobbed, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    home, _ = _staged(case, tmp_path, monkeypatch)
-    opened = Run.open(home, root=tmp_path / "runs")
-    opened.run_trial = ScriptedTrials(case.outcomes)
-    trainer = Trainer(FakeTrainingClient(positional=True))
-    opened.trainer = trainer
-    batch_tasks = [tmp_path / "tasks" / "golden" / task for task in case.tasks]
-    texts = _texts(tmp_path, case.texts)
-    share = case.group_size // case.texts
-    with opened:
-        parts = [
-            await opened.sample(batch_tasks, rollouts=share, index=0, modules=one) for one in texts
-        ]
-        # The proxy's budget, read while it is up, as the step reads it.
-        budget = opened.endpoint.budget
-    rolled = parts[0] if len(parts) == 1 else merged(parts, share)
-    out: dict[str, Any] = {
-        "verdicts": [_verdict(one) for one in verdicts(rolled)],
-        "jobs": [_job(one) for one in record.read(opened.directory / record.JOBS)],
-        "requests": _requests(opened.directory, rolled),
-        "costs": record.read_json(opened.directory / record.COSTS),
-    }
-    if case.preset is None:
-        return out
-    groups = group(rolled, case.group_size)
-    out["groups"] = [_group(one) for one in groups]
-    anchor = PositionalAnchor() if case.anchored else None
-    batch = await credit(groups, case.preset, trainer, anchor, budget=budget)
-    return {**out, **(await _stepped(batch, case.preset, trainer, anchor))}
 
 
 def _texts(tmp_path: Path, count: int) -> list[Candidate | None]:
@@ -622,7 +550,7 @@ async def _jobbed_by(
                 "requests": _requests_of(opened.directory, [one.trial.name for one in members]),
                 "costs": record.read_json(opened.directory / record.COSTS),
             }
-            if case.preset is None:
+            if not case.stepped:
                 return out
             out["groups"] = [_members(group) for group in found]
             return {**out, **(await _stepped_by(trainer, agent, found, client))}
@@ -665,31 +593,6 @@ def _members(one: types.Group) -> dict[str, Any]:
 
 
 # ------------------------------------------------------------------ the shape
-
-
-def _batch(batch: Batch) -> dict[str, Any]:
-    fields = (
-        "owners",
-        "groups",
-        "rollouts",
-        "graded",
-        "masked",
-        "degenerate",
-        "surplus",
-        "overlong",
-        "credited",
-        "sequences",
-        "reward_mean",
-        "reward_spread",
-        "length_mean",
-        "anchor_kl",
-        "reference_tokens",
-        "anchor_tokens",
-    )
-    return {
-        "datums": [_datum(one) for one in batch.datums],
-        **{key: _plain(getattr(batch, key)) for key in fields},
-    }
 
 
 def _datum(one: tinker.Datum) -> dict[str, Any]:
@@ -739,21 +642,6 @@ def _update(update: Any) -> dict[str, Any]:
 
 def _verdict(one: Verdict) -> dict[str, Any]:
     return {"reward": one.reward, "mask": one.mask, "ended": one.ended}
-
-
-def _group(one: Group) -> dict[str, Any]:
-    return {
-        "task": one.task.name,
-        "updates": one.updates,
-        "members": [
-            {
-                **_verdict(each.verdict),
-                "sampled_tokens": each.sampled_tokens,
-                "sequences": [_sequence(found) for found in each.sequences],
-            }
-            for each in one.members
-        ],
-    }
 
 
 def _sequence(one: Sequence) -> dict[str, Any]:
@@ -830,10 +718,6 @@ def _number(value: Any) -> bool:
     return isinstance(value, int | float) and not isinstance(value, bool)
 
 
-def updating() -> bool:
-    return bool(os.environ.get(UPDATE))
-
-
 def frozen_path(name: str) -> Path:
     return GOLDEN / f"{name}.json"
 
@@ -841,8 +725,3 @@ def frozen_path(name: str) -> Path:
 def read_frozen(name: str) -> dict[str, Any] | None:
     path = frozen_path(name)
     return record.read_json(path) if path.is_file() else None
-
-
-def write_frozen(name: str, found: Mapping[str, Any]) -> None:
-    GOLDEN.mkdir(exist_ok=True)
-    record.write_json(frozen_path(name), dict(found))
