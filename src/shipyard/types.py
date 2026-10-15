@@ -12,8 +12,8 @@ from typing import Any
 
 import tinker
 
+from shipyard.harnesses import Profile, bare_name, profile_for
 from shipyard.modules import Candidate
-from shipyard.proxy.profiles import Profile, bare_name, profile_for
 from shipyard.proxy.wire import Picture, Record
 
 __all__ = [

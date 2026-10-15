@@ -32,9 +32,9 @@ from shipyard.config import (
     modules_dir,
 )
 from shipyard.data import NoSuchDataset, home_of, search_sets, tasks
+from shipyard.harnesses import PROFILES, bare_name, profile_for
 from shipyard.modules import Inadmissible, seed
 from shipyard.proxy import tunnel
-from shipyard.proxy.profiles import PROFILES, bare_name, profile_for
 from shipyard.proxy.wire import CONTROL_TOKEN_ENV, PROXY_TOKEN_ENV
 from shipyard.sampling.endpoint import LOCAL_SANDBOXES, backend, placement
 

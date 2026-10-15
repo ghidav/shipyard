@@ -63,7 +63,6 @@ class Run:
             if config.model.served
             else ProviderEndpoint(config.model.name)
         )
-        self._noted = False
         self._next_job = next_job(self.id, directory, self.jobs_dir)
         self._seq = 0
         #: Set by `reopen`: the process note is written on entry, keeping the earlier ones.
@@ -182,14 +181,6 @@ class Run:
                 dead.rolled = rolled
                 raise
         return rolled
-
-    def noted(self) -> None:
-        """Note the proxy's placement and origin on `process.json`, once it is open."""
-        endpoint = self.endpoint
-        if self._noted or not isinstance(endpoint, ProxyEndpoint) or endpoint.proxy is None:
-            return
-        self.note(proxy={"placement": endpoint.placement, "origin": endpoint.origin})
-        self._noted = True
 
     def spent(self, party: str, **counts: int) -> None:
         """Add training counts to a party on `costs.json`. Zero counts are skipped."""

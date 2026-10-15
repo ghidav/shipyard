@@ -9,7 +9,7 @@ import pytest
 
 from shipyard import record
 from shipyard.config import Blueprint
-from shipyard.proxy.profiles import PROFILES, bare_name
+from shipyard.harnesses import PROFILES, bare_name
 from shipyard.proxy.wire import CONTROL_TOKEN_ENV, PROXY_TOKEN_ENV
 from shipyard.run import Run
 from shipyard.sampling.endpoint import (

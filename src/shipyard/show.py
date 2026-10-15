@@ -16,6 +16,8 @@ from rich.table import Table
 from shipyard import record
 
 console = Console()
+#: The columns of `runs`, with their styles.
+RUN_COLUMNS = {"id": "cyan", "kind": None, "state": None, "started": "dim", "finished": "dim"}
 
 STYLES = {"running": "cyan", "finished": "green", "failed": "red", "died": "yellow"}
 #: The process-note fields `show` prints, as `label: key`.
@@ -102,6 +104,42 @@ def _tail(path: Path) -> dict[str, Any] | None:
 
 def styled(state: str) -> str:
     return f"[{STYLES.get(state, 'white')}]{state}[/]"
+
+
+def print_runs(root: Path) -> None:
+    """Every run under the root, newest first, as a table, or a block per run when the table
+    is wider than the console."""
+    found = [
+        (directory.name, record.read_json(directory / record.PROCESS))
+        for directory in _run_dirs(root)
+    ]
+    if not found:
+        console.print("[dim](no runs)[/dim]")
+        return
+    found.sort(key=lambda pair: str(pair[1].get("started_at") or ""), reverse=True)
+    rows = [
+        {
+            "id": escape(run_id),
+            "kind": escape(str(note.get("kind") or "")),
+            "state": styled(state_of(note)),
+            "started": str(note.get("started_at") or "")[:19],
+            "finished": str(note.get("finished_at") or "")[:19],
+        }
+        for run_id, note in found
+    ]
+    table = Table(show_header=True, header_style="bold")
+    for column, style in RUN_COLUMNS.items():
+        table.add_column(column, style=style, no_wrap=column == "id")
+    for row in rows:
+        table.add_row(*row.values())
+    fitted(table, rows)
+
+
+def _run_dirs(root: Path) -> list[Path]:
+    """Every directory under the root that holds a `run.toml`."""
+    if not root.is_dir():
+        return []
+    return sorted(found for found in root.iterdir() if (found / record.CONFIG).is_file())
 
 
 def print_run(run_id: str, found: dict[str, Any], *, full: bool) -> None:

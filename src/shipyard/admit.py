@@ -9,7 +9,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from shipyard.proxy.profiles import bare_name
+from shipyard.harnesses import bare_name
 from shipyard.proxy.wire import BUDGET, CONTEXT, Record, pictured
 from shipyard.types import Trial, Verdict
 

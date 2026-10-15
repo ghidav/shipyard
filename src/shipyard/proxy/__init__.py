@@ -1,5 +1,5 @@
-"""The proxy: the model endpoint a harness talks to, backed by a Tinker sampling client,
+"""The proxy: the model server a harness talks to, backed by a Tinker sampling client,
 recording every call as token ids. `serve` is the process (`python -m shipyard.proxy.serve`),
-`endpoint` and the modules it imports are the server, `client` and `tunnel` are the run's side,
+`server` and the modules it imports are the server, `client` and `tunnel` are the run's side,
 and `wire` is what both ends share. Submodules are imported by name; `cookbook` is the only one
 that imports `tinker_cookbook`."""

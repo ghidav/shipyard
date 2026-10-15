@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from shipyard.proxy.profiles import (
+from shipyard.harnesses import (
     PROFILES,
     Profile,
     distinct_requests,

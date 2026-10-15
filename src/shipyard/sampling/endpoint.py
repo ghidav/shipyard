@@ -13,8 +13,8 @@ from urllib.parse import urlsplit
 from shipyard import record
 from shipyard.config import TINKER
 from shipyard.cost import cached
+from shipyard.harnesses import slug_of
 from shipyard.proxy.client import Proxy
-from shipyard.proxy.profiles import slug_of
 from shipyard.proxy.wire import CONTROL_TOKEN_ENV, PROXY_TOKEN_ENV, SAMPLER_FAILED
 from shipyard.types import Connection, Endpoint, Records, Trial
 
@@ -147,6 +147,7 @@ class ProxyEndpoint(Endpoint):
             )
             self.origin = self.proxy.origin
             await self.proxy.ready()
+            self._note()
             if self.proxy.control_token is not None:
                 await self.serve(weights)
             elif weights is not None:
@@ -171,7 +172,15 @@ class ProxyEndpoint(Endpoint):
         self.origin = self.proxy.origin
         self.told = weights
         served = await self.proxy.ready()
+        self._note()
         logger.info("the proxy at %s answers (%s), serving %s", self.origin, where, served)
+
+    def _note(self) -> None:
+        """Note the proxy's placement and origin on the run's process note."""
+        path = self.directory / record.PROCESS
+        note = record.read_json(path)
+        note["proxy"] = {"placement": self.placement, "origin": self.origin}
+        record.write_json(path, note)
 
     def alive(self) -> None:
         why = self.proxy.gone() if self.proxy is not None else None

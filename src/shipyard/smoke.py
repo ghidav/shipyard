@@ -14,7 +14,7 @@ from shipyard import record
 from shipyard.admit import verdicts
 from shipyard.config import Blueprint
 from shipyard.data import Generator
-from shipyard.proxy.profiles import PROFILES, bare_name, profile_for
+from shipyard.harnesses import PROFILES, bare_name, profile_for
 from shipyard.run import seeded
 from shipyard.sampling.endpoint import NothingServed, ProxyEndpoint
 from shipyard.training.trainer import Trainer

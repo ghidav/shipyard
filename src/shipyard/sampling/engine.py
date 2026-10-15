@@ -21,8 +21,8 @@ from harbor.models.trial.config import (
 )
 
 from shipyard.admit import verdict
+from shipyard.harnesses import bare_name
 from shipyard.modules import deliver, merge_fields
-from shipyard.proxy.profiles import bare_name
 from shipyard.types import Agent, Connection, Harness, RolloutEngine, Settings, Task, Trial
 
 if TYPE_CHECKING:

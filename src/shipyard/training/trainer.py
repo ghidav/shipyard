@@ -179,7 +179,6 @@ class Trainer:
         """The one place a policy is sampled: run, record, group, shape, advantage."""
         run = self.run
         attempts = run.config.data.group_size if attempts is None else attempts
-        run.noted()
         job = run.reserve_job()
         run.progress.started(
             job, trials=len(tasks) * len(agent.harness) * attempts, batch=self.steps
