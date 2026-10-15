@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import random
 import shutil
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from shipyard.config import load
-from shipyard.data import Generator, NoSuchDataset, batches, held_out, home_of, tasks
+from shipyard.data import Generator, NoSuchDataset, held_out, home_of, tasks
 from tests.trials import FIXTURES, fixture_tasks, write_blueprint
 
 
@@ -19,6 +20,14 @@ def _dataset(root: Path, name: str, *names: str) -> Path:
     for task in names:
         shutil.copytree(FIXTURES / "fixture" / "alpha", home / task)
     return home
+
+
+def batches(
+    names: list[str], *, size: int, seed: int, epochs: int, root: Path | None = None
+) -> Iterator[list[Path]]:
+    """The epochs' batches end to end, as the old plan drew them, read eagerly."""
+    made = Generator([task for name in names for task in tasks(name, root=root)], size, seed)
+    return iter([batch for epoch in range(epochs) for batch in made.batches(epoch)])
 
 
 def _names(found: list[list[Path]]) -> list[str]:

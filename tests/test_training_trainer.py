@@ -12,7 +12,7 @@ import pytest
 from harbor.models.trial.config import TrialConfig
 
 from shipyard import record
-from shipyard.data import batches
+from shipyard.data import Generator, tasks
 from shipyard.run import Run
 from shipyard.sampling.endpoint import ProviderEndpoint
 from shipyard.training.client import TinkerClient
@@ -90,17 +90,14 @@ def _agent(run: Run, service: FakeService | None) -> Agent:
 
 
 def _plan(tmp_path: Path) -> list[list[str]]:
-    planned = batches(["four"], size=2, seed=0, epochs=1, root=tmp_path / "tasks")
+    planned = Generator(tasks("four", root=tmp_path / "tasks"), 2, 0).batches(0)
     return [[task.name for task in batch] for batch in planned]
 
 
 async def _train(run: Run, trainer: Trainer, agent: Agent) -> None:
-    data = run.config.data
     with run:
         async with agent.policy:
-            await trainer.train(
-                agent, batches(run.config.datasets, size=data.batch_size, seed=data.seed, epochs=1)
-            )
+            await trainer.train(agent, Generator.of(run.config).batches(0))
 
 
 def _rows(run: Run) -> list[dict[str, Any]]:

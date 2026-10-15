@@ -10,7 +10,7 @@ import pytest
 from harbor.models.trial.config import TrialConfig
 
 from shipyard import record, session
-from shipyard.data import batches, tasks
+from shipyard.data import Generator, tasks
 from shipyard.recipes import run_recipe, trainer_for
 from shipyard.run import Run
 from shipyard.runner import Runner
@@ -189,7 +189,8 @@ async def test_each_epoch_is_one_pass_over_the_train_set_and_the_steps_count_thr
     home = _blueprint(tmp_path, **{"batch_size = 2": "batch_size = 2\nepochs = 2"})
     trials = Alternating()
     opened, started = await _run(home, tmp_path, trials)
-    planned = batches(["four"], size=2, seed=0, epochs=2, root=tmp_path / "tasks")
+    made = Generator(tasks("four", root=tmp_path / "tasks"), 2, 0)
+    planned = [*made.batches(0), *made.batches(1)]
     ran = [Path(str(c.task.path)).name for c in trials.configs]
     assert [list(dict.fromkeys(ran[at : at + 4])) for at in range(0, len(ran), 4)] == [
         [task.name for task in batch] for batch in planned
@@ -369,7 +370,7 @@ async def test_a_run_killed_mid_epoch_resumes_from_its_last_checkpoint(
     again.run_trial = trials = Alternating()
     with again:
         await resumed.run()
-    planned = list(batches(["four"], size=2, seed=0, epochs=1, root=tmp_path / "tasks"))
+    planned = list(Generator(tasks("four", root=tmp_path / "tasks"), 2, 0).batches(0))
     second = [task.name for task in planned[1]]
     assert list(dict.fromkeys(Path(str(c.task.path)).name for c in trials.configs)) == second
     rows = _rows(again)

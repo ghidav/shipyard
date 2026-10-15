@@ -40,23 +40,6 @@ def tasks(dataset: str, *, root: Path | None = None) -> list[Path]:
     )
 
 
-def batches(
-    datasets: Sequence[str],
-    *,
-    size: int,
-    seed: int,
-    epochs: int,
-    root: Path | None = None,
-) -> Iterator[list[Path]]:
-    """The datasets' tasks, in list order, shuffled once per epoch with `seed + epoch`
-    and cut into batches of `size`. The final short batch is kept so the run covers the
-    whole dataset. Returns a fresh generator per call."""
-    if size < 1:
-        raise ValueError(f"size must be at least 1; got {size}")
-    listed = [task for dataset in datasets for task in tasks(dataset, root=root)]
-    return _cut(listed, size=size, seed=seed, epochs=epochs)
-
-
 def held_out(listed: Sequence[Path], count: int, *, seed: int) -> tuple[list[Path], list[Path]]:
     """Split `listed` in two, each part in list order: the tasks to learn from, and
     `count` tasks drawn with `seed` to hold out and measure on. The same seed gives the
@@ -93,8 +76,9 @@ class Generator:
 
 
 def _cut(listed: list[Path], *, size: int, seed: int, epochs: int) -> Iterator[list[Path]]:
-    """The generator half of `batches`. It is separate so a missing dataset raises when
-    `batches` is called, not at the first batch."""
+    """One shuffle per epoch under `seed + epoch`, cut into batches; the short last one kept."""
+    if size < 1:
+        raise ValueError(f"size must be at least 1; got {size}")
     for epoch in range(epochs):
         order = list(listed)
         random.Random(seed + epoch).shuffle(order)

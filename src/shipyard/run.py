@@ -29,7 +29,7 @@ from shipyard.sampling.endpoint import (
     tinker_base_url,
 )
 from shipyard.sampling.engine import HarborEngine, TrialRunner
-from shipyard.types import Agent, Endpoint, Policy
+from shipyard.types import Endpoint
 
 logger = logging.getLogger(__name__)
 
@@ -156,27 +156,6 @@ class Run:
             raise FileExistsError(f"job {name} is taken: {self.jobs_dir / name} exists") from None
         self._next_job += 1
         return name
-
-    async def sample(
-        self,
-        batch: Sequence[Path],
-        *,
-        rollouts: int,
-        index: int,
-        modules: Candidate | None = None,
-        purpose: str = "rollout",
-    ) -> Rollouts:
-        """One Harbor job over `batch`: the verdicts on its row, then the endpoint's check."""
-        cfg, endpoint = self.config, self.endpoint
-        await endpoint.open()
-        self.noted()
-        candidate = self.carried if modules is None else modules
-        agent = Agent(Policy(endpoint), [types.harness(cfg.rollout.harness)], candidate)
-        job = self.reserve_job()
-        self.progress.started(job, trials=len(batch) * rollouts, batch=index)
-        trials = await self.engine.run(job, batch, rollouts, agent=agent)
-        self.progress.done(job)
-        return await self.recorded(job, trials, batch=index, modules=candidate, purpose=purpose)
 
     async def recorded(
         self,

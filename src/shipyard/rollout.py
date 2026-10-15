@@ -1,4 +1,4 @@
-"""A finished job as the loop still carries it, until the trainer takes groups."""
+"""A finished job as the record side carries it to the groups, the bill and admission."""
 
 from __future__ import annotations
 

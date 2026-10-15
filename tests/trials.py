@@ -14,6 +14,11 @@ from typing import Any
 
 from harbor.models.trial.config import TrialConfig
 
+from shipyard.modules import Candidate
+from shipyard.run import Run
+from shipyard.training.trainer import Trainer
+from shipyard.types import Agent, Group, Member, Policy, harness
+
 FIXTURES = Path(__file__).parent / "tasks"
 T0 = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -135,3 +140,33 @@ class FakeTrials:
                 write_result(trial_dir, **outcome)
         finally:
             self.in_flight -= 1
+
+
+async def sampled(
+    run: Run,
+    batch: list[Path],
+    *,
+    rollouts: int,
+    index: int = 0,
+    modules: Candidate | None = None,
+    purpose: str = "rollout",
+) -> list[Group]:
+    """One job through the trainer, the endpoint left open as a run leaves it."""
+    trainer = Trainer(run)
+    trainer.steps = index
+    carried = run.carried if modules is None else modules
+    agent = Agent(Policy(run.endpoint), [harness(run.config.rollout.harness)], carried)
+    await run.endpoint.open()
+    return await trainer.job(agent, batch, rollouts, purpose=purpose)
+
+
+def members_of(found: list[Group]) -> list[Member]:
+    return [one for group in found for one in group.members]
+
+
+def job_of(found: list[Group]) -> str:
+    return members_of(found)[0].trial.job
+
+
+def trials_of(found: list[Group]) -> list[Path]:
+    return [one.trial.dir for one in members_of(found)]

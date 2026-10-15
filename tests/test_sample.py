@@ -1,5 +1,5 @@
-"""`Run.sample` reserves the job name and directory before anything runs, appends a row for
-each job, and adds the job's counts to `costs.json`."""
+"""The trainer's `job` reserves the job name and directory before anything runs, appends a
+row for each job, and adds the job's counts to `costs.json`."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from shipyard import record
 from shipyard.run import Run
 from shipyard.sampling.endpoint import ProviderEndpoint
 from shipyard.types import Agent, Settings, Trial
-from tests.trials import FakeTrials, fixture_tasks
+from tests.trials import FakeTrials, fixture_tasks, job_of, sampled, trials_of
 
 EVALUATE = Path(__file__).parent / "blueprints" / "evaluate"
 
@@ -45,12 +45,12 @@ async def test_jobs_are_named_in_turn_and_reserved_by_directory_first(
         ]
 
     monkeypatch.setattr(opened.engine, "run", fake_run)
-    first = await opened.sample(_batch(tmp_path, "alpha", "beta"), rollouts=2, index=0)
-    second = await opened.sample(_batch(tmp_path, "alpha"), rollouts=1, index=1)
-    assert first.job == f"{opened.id}-0000" and second.job == f"{opened.id}-0001"
+    first = await sampled(opened, _batch(tmp_path, "alpha", "beta"), rollouts=2, index=0)
+    second = await sampled(opened, _batch(tmp_path, "alpha"), rollouts=1, index=1)
+    assert job_of(first) == f"{opened.id}-0000" and job_of(second) == f"{opened.id}-0001"
     assert [(job, reserved) for job, reserved, *_ in seen] == [
-        (first.job, True),
-        (second.job, True),
+        (job_of(first), True),
+        (job_of(second), True),
     ]
     _, _, attempts, agent = seen[0]
     assert attempts == 2 and agent.modules is None
@@ -61,12 +61,12 @@ async def test_jobs_are_named_in_turn_and_reserved_by_directory_first(
     assert engine.settings == Settings() and engine.progress is opened.progress
     assert engine.run_trial is None and opened.run_trial is None
     rows = list(record.read(opened.directory / record.JOBS))
-    assert [row["job"] for row in rows] == [first.job, second.job]
+    assert [row["job"] for row in rows] == [job_of(first), job_of(second)]
     assert [row["batch"] for row in rows] == [0, 1]
     # The counter was seeded when the run opened: a row that lands later does not move it.
     record.append(opened.directory / record.JOBS, {"job": "elsewhere"})
-    third = await opened.sample(_batch(tmp_path, "beta"), rollouts=1, index=1)
-    assert third.job == f"{opened.id}-0002" and (tmp_path / "jobs" / third.job).is_dir()
+    third = await sampled(opened, _batch(tmp_path, "beta"), rollouts=1, index=1)
+    assert job_of(third) == f"{opened.id}-0002" and (tmp_path / "jobs" / job_of(third)).is_dir()
     assert list(record.read(opened.directory / record.JOBS))[-1]["batch"] == 1
 
 
@@ -86,7 +86,7 @@ async def test_a_job_name_already_taken_on_disk_is_refused(opened: Run, tmp_path
     taken.mkdir(parents=True)
     opened.run_trial = FakeTrials()
     with pytest.raises(FileExistsError, match=f"{opened.id}-0000 is taken"):
-        await opened.sample(_batch(tmp_path, "alpha"), rollouts=1, index=0)
+        await sampled(opened, _batch(tmp_path, "alpha"), rollouts=1, index=0)
     assert not (opened.directory / record.JOBS).exists() and not any(taken.iterdir())
 
 
@@ -104,8 +104,8 @@ async def test_the_job_row_counts_verdicts_endings_tokens_and_seconds(
             "beta": {"reward": 0.0, "exception": "AgentTimeoutError", "seconds": 10.0},
         }
     )
-    rolled = await opened.sample(_batch(tmp_path, "alpha", "beta"), rollouts=2, index=0)
-    assert len(rolled) == 4
+    rolled = await sampled(opened, _batch(tmp_path, "alpha", "beta"), rollouts=2, index=0)
+    assert len(trials_of(rolled)) == 4
     [row] = list(record.read(opened.directory / record.JOBS))
     assert row == {
         "at": row["at"],
@@ -113,6 +113,7 @@ async def test_the_job_row_counts_verdicts_endings_tokens_and_seconds(
         "purpose": "rollout",
         "batch": 0,
         "tasks": 2,
+        "epoch": 0,
         "trials": 4,
         "graded": 2,
         "masked": {"timeout": 2},
@@ -144,9 +145,9 @@ async def test_empty_maps_are_left_off_and_costs_add_up_across_jobs(
     opened: Run, tmp_path: Path
 ) -> None:
     opened.run_trial = FakeTrials(outcomes={"alpha": {"reward": 0.5}, "beta": {"reward": 1.0}})
-    await opened.sample(_batch(tmp_path, "alpha", "beta"), rollouts=1, index=0)
+    await sampled(opened, _batch(tmp_path, "alpha", "beta"), rollouts=1, index=0)
     opened.run_trial = FakeTrials(breaks=("alpha",), outcomes={"beta": {"reward": 0.0}})
-    await opened.sample(_batch(tmp_path, "alpha", "beta"), rollouts=1, index=1)
+    await sampled(opened, _batch(tmp_path, "alpha", "beta"), rollouts=1, index=1)
     first, second = list(record.read(opened.directory / record.JOBS))
     assert "masked" not in first and "ended" not in first and first["graded"] == 2
     assert second["masked"] == {"env_error": 1} and "ended" not in second
@@ -177,11 +178,11 @@ async def test_jobs_dir_comes_from_the_blueprint(
     (home / "run.toml").write_text(text)
     opened = Run.open(home, root=tmp_path / "runs")
     opened.run_trial = FakeTrials()
-    rolled = await opened.sample(_batch(tmp_path, "alpha"), rollouts=1, index=0)
-    assert rolled.trials[0].parent == Path("elsewhere/jobs") / rolled.job
-    assert (tmp_path / "elsewhere" / "jobs" / rolled.job).is_dir()
+    rolled = await sampled(opened, _batch(tmp_path, "alpha"), rollouts=1, index=0)
+    assert trials_of(rolled)[0].parent == Path("elsewhere/jobs") / job_of(rolled)
+    assert (tmp_path / "elsewhere" / "jobs" / job_of(rolled)).is_dir()
     assert not (tmp_path / "jobs").exists()
     # Shipyard writes nothing inside the job directory.
-    assert sorted(p.name for p in (tmp_path / "elsewhere" / "jobs" / rolled.job).iterdir()) == [
-        rolled.trials[0].name
+    assert sorted(p.name for p in (tmp_path / "elsewhere" / "jobs" / job_of(rolled)).iterdir()) == [
+        trials_of(rolled)[0].name
     ]

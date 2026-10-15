@@ -24,7 +24,7 @@ from shipyard.sampling.endpoint import ProxyEndpoint, ProxyGone
 from shipyard.types import Trial, harness
 from tests.proxies import MODEL, FakeSampler, control, root, server
 from tests.records import FakeProxy
-from tests.trials import FakeTrials, fixture_tasks
+from tests.trials import FakeTrials, fixture_tasks, sampled
 
 ORIGIN = "https://fake-words.trycloudflare.com"
 SERVE_STUB = textwrap.dedent(
@@ -133,14 +133,14 @@ async def test_the_tunnel_is_probed_before_the_first_trial_and_its_exit_stops_th
     monkeypatch.setattr(client, "answers", through_the_tunnel)
     run = opened(stubs, "modal")
     with pytest.raises(ProxyGone, match="the proxy is no longer reachable"), run:
-        first = await run.sample(task(stubs), rollouts=1, index=0)
+        await sampled(run, task(stubs), rollouts=1, index=0)
         assert probed == [f"{ORIGIN}/healthz"], "probed once, through the tunnel"
-        assert first.records is not None and all(first.records.values())
+        assert any(record.read(run.directory / record.REQUESTS)), "records drained"
         assert isinstance(run.endpoint, ProxyEndpoint) and run.endpoint.proxy is not None
         process = run.endpoint.proxy.tunnel.process  # type: ignore[union-attr]
         process.kill()
         process.wait()
-        await run.sample(task(stubs), rollouts=1, index=1)
+        await sampled(run, task(stubs), rollouts=1, index=1)
     note = Run.read(run.directory)
     assert note["error"] == (
         f"ProxyGone: the proxy is no longer reachable: the tunnel at {ORIGIN} exited with -9"
@@ -157,13 +157,13 @@ async def test_a_local_serve_is_probed_on_loopback_and_its_exit_stops_the_next_j
 ) -> None:
     run = opened(stubs, "docker")
     with pytest.raises(ProxyGone, match="shipyard serve exited with -9"), run:
-        await run.sample(task(stubs), rollouts=1, index=0)
+        await sampled(run, task(stubs), rollouts=1, index=0)
         assert isinstance(run.endpoint, ProxyEndpoint) and run.endpoint.proxy is not None
         process = run.endpoint.proxy.process
         assert process is not None
         process.kill()
         process.wait()
-        await run.sample(task(stubs), rollouts=1, index=1)
+        await sampled(run, task(stubs), rollouts=1, index=1)
     assert Run.read(run.directory)["proxy"]["placement"] == "local"
     assert len(list(record.read(run.directory / record.JOBS))) == 1
 
@@ -177,7 +177,7 @@ async def test_a_tunnel_that_does_not_answer_refuses_the_run_before_any_trial(
     monkeypatch.setattr(client, "answers", unresolved)
     run = opened(stubs, "modal")
     with pytest.raises(Unreachable, match=f"the tunnel at {ORIGIN} does not answer"), run:
-        await run.sample(task(stubs), rollouts=1, index=0)
+        await sampled(run, task(stubs), rollouts=1, index=0)
     assert run.run_trial.configs == []  # type: ignore[union-attr]
     assert not (stubs / "jobs").exists() and not (run.directory / record.JOBS).exists()
     note = Run.read(run.directory)

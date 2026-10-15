@@ -14,7 +14,7 @@ from shipyard.config import search_sets
 from shipyard.modules import Candidate, Module, keep, seed
 from shipyard.recipes.gepa.cycle import Evolution, Log, evolve
 from shipyard.recipes.gepa.fitness import Outcome
-from shipyard.recipes.gepa.outcomes import outcomes_of
+from shipyard.recipes.gepa.outcomes import outcomes
 from shipyard.recipes.gepa.propose import Proposer, Reflection
 from shipyard.recipes.gepa.reflect import reflect
 from shipyard.training.trainer import Trainer
@@ -79,7 +79,7 @@ class Search:
             purpose="search",
             round=round,
         )
-        return outcomes_of(found)
+        return outcomes(found)
 
     async def propose(self, reflection: Reflection) -> Module | None:
         return await self.reflect(reflection)
