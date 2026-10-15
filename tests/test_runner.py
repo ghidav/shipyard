@@ -375,18 +375,6 @@ async def test_a_run_continuing_an_optimizer_state_skips_the_warm_up(
     assert [row["learning_rate"] for row in _rows(opened)] == pytest.approx([2e-5, 2e-5])
 
 
-async def test_a_run_whose_model_is_not_served_is_refused_before_a_session_opens(
-    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
-) -> None:
-    _, service = fakes
-    home = _blueprint(tmp_path, **{"lora_rank = 32": 'lora_rank = 32\nprovider = "openrouter"'})
-    opened = Run.open(home, root=tmp_path / "runs")
-    with pytest.raises(ValueError, match="trains the weights this run serves"), opened:
-        await Runner.from_run(opened).run()
-    assert service.calls == [] and service.closed == []
-    assert Run.read(opened.directory)["failed"] is True
-
-
 async def test_a_step_that_fails_closes_the_session_as_errored_and_the_run_as_failed(
     tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
 ) -> None:

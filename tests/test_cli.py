@@ -47,13 +47,13 @@ def _only_run(root: Path) -> Path:
     return directory
 
 
-def _hosted_dapo(tmp_path: Path) -> Path:
-    """The dapo fixture over the fixture dataset with a provider-served model, so `check`
-    passes and what `run` records is the loop's own refusal, before any session opens."""
+def _fixture_dapo(tmp_path: Path, *, provider: str | None = None) -> Path:
+    """The dapo fixture over the fixture dataset, its model served by `provider` when given."""
     home = tmp_path / "blueprints" / "dapo"
     home.mkdir(parents=True)
     text = (DAPO / "run.toml").read_text(encoding="utf-8")
-    text = text.replace("lora_rank = 32", 'lora_rank = 32\nprovider = "openrouter"')
+    if provider:
+        text = text.replace("lora_rank = 32", f'lora_rank = 32\nprovider = "{provider}"')
     text = text.replace('train = "aime-train"', 'train = "fixture"')
     (home / "run.toml").write_text(text, encoding="utf-8")
     return home
@@ -207,19 +207,18 @@ def test_run_refuses_a_blocked_blueprint(tmp_path: Path) -> None:
     assert not (tmp_path / "r").exists()
 
 
-def test_run_on_a_fixture_ends_failed_with_the_recipes_refusal(tmp_path: Path) -> None:
-    """A gradient recipe over a provider's model: refused by the loop before a Tinker
-    session opens, and the run records that refusal as its failure."""
+def test_check_blocks_a_training_kind_on_a_provider_model_and_run_starts_nothing(
+    tmp_path: Path,
+) -> None:
     root = tmp_path / "r"
-    result = runner.invoke(app, ["run", str(_hosted_dapo(tmp_path)), "--root", str(root)])
+    home = _fixture_dapo(tmp_path, provider="openrouter")
+    result = runner.invoke(app, ["check", str(home)])
     assert result.exit_code == 1
-    directory = _only_run(root)
-    note = Run.read(directory)
-    assert state_of(note) == "failed"
-    assert note["error"].startswith("ValueError: [recipe] kind = 'dapo' trains the weights")
-    assert "provider = 'openrouter'" in note["error"]
-    assert directory.name in result.output and "failed" in result.output
-    assert "ValueError" in result.output and "trains the weights" in result.output
+    assert "blocked  [recipe] kind = 'dapo' trains the weights this run serves" in result.output
+    assert "[model] provider = 'openrouter' serves them elsewhere" in result.output
+    result = runner.invoke(app, ["run", str(home), "--root", str(root)])
+    assert result.exit_code == 1 and "nothing was started" in result.output
+    assert not root.exists()
 
 
 def test_run_with_a_recipe_that_returns_ends_finished(
@@ -501,7 +500,7 @@ def _runner_file(path: Path, text: str = RUNNER_FILE) -> Path:
 
 
 def test_check_with_a_runner_file_names_it_and_resolves_under_its_trainer(tmp_path: Path) -> None:
-    home = _hosted_dapo(tmp_path)
+    home = _fixture_dapo(tmp_path)
     file = _runner_file(home / "run.py")
     result = runner.invoke(app, ["check", str(home / "run.toml"), str(file), "--verbose"])
     assert result.exit_code == 0, result.output

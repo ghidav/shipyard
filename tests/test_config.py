@@ -349,6 +349,20 @@ def test_check_is_blocked_for_a_broken_file(tmp_path: Path) -> None:
     assert report.blocked and report.findings == check(bad)
 
 
+def test_check_blocks_a_training_kind_on_a_provider_model(tmp_path: Path) -> None:
+    text = MINIMAL.replace(
+        'name = "Qwen/Qwen3-8B"', 'name = "Qwen/Qwen3-8B"\nprovider = "openrouter"'
+    )
+    said = (
+        "[recipe] kind = 'dapo' trains the weights this run serves, and "
+        "[model] provider = 'openrouter' serves them elsewhere"
+    )
+    assert Finding("blocked", said) in check(write_blueprint(tmp_path, text))
+    text = text.replace('kind = "dapo"\nlearning_rate = 2e-5', 'kind = "evaluate"')
+    found = check(write_blueprint(tmp_path / "evaluate", text))
+    assert not any("serves them elsewhere" in f.text for f in found)
+
+
 # ------------------------------------------------------------- the resolved config
 
 
