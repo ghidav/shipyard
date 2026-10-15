@@ -17,7 +17,6 @@ if TYPE_CHECKING:
     from shipyard.rollout import Rollouts
 
 __all__ = [
-    "Verdict",
     "endpoint_failed",
     "harness_log",
     "read_logs",

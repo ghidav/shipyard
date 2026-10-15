@@ -13,11 +13,11 @@ from typing import TYPE_CHECKING, Any
 from shipyard import record
 from shipyard.config import SLOW_KNOBS, CispoRecipe, DapoRecipe, DrGrpoRecipe
 from shipyard.credit import weights
-from shipyard.modules import keep, seed
+from shipyard.modules import Candidate, keep, seed
 from shipyard.recipes.gepa import BEST, SEED, Search
 from shipyard.recipes.gepa.reflect import reflect
 from shipyard.training.trainer import CISPOTrainer, DAPOTrainer, DrGRPOTrainer, Trainer
-from shipyard.types import Adam, Agent, Batches, Group, Modules, Policy, Update
+from shipyard.types import Adam, Agent, Batches, Group, Policy, Update
 
 if TYPE_CHECKING:
     from shipyard.run import Run
@@ -170,7 +170,7 @@ class FST(Search):
     def consumed(self, jobs: Values[Mapping[str, Any]], row: Mapping[str, Any]) -> int:
         return super().consumed(jobs, row) // self.fst.population
 
-    def restore(self, row: Mapping[str, Any], consumed: int) -> Modules | None:
+    def restore(self, row: Mapping[str, Any], consumed: int) -> Candidate | None:
         """The population of the checkpoint's cycle, and where in the cycle it stood."""
         super().restore(row, consumed)
         kept = self.run.directory / record.MODULES / f"cycle-{row['cycle']}"

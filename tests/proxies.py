@@ -10,8 +10,9 @@ from typing import Any
 
 import httpx
 import tinker
+from tinker_cookbook.renderers import ToolCall
 
-from shipyard.proxy.cookbook import ParseTermination, ToolCall
+from shipyard.proxy.cookbook import ParseTermination
 from shipyard.proxy.server import Server
 from shipyard.proxy.wire import CONTROL_PATH, RECORDS_PATH
 

@@ -7,7 +7,8 @@ from collections.abc import Sequence as Values
 from statistics import fmean, pstdev
 from typing import Any
 
-from shipyard.pack import Sequence, model_input
+from shipyard.proxy.wire import model_input
+from shipyard.types import Sequence
 
 #: Harbor's reward for a fully solved task. Only solved rollouts are compared on length.
 SOLVED = 1.0

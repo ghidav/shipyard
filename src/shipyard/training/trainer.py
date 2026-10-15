@@ -14,6 +14,7 @@ import torch
 
 from shipyard import record
 from shipyard.credit import advantages, anchor_logprobs, overlong, sampler_logprobs, shaped, weights
+from shipyard.modules import Candidate
 from shipyard.pack import datum, groups
 from shipyard.types import (
     Adam,
@@ -23,7 +24,6 @@ from shipyard.types import (
     Evaluation,
     Forward,
     Group,
-    Modules,
     Sequence,
     Task,
     TrainingClient,
@@ -478,7 +478,7 @@ class Trainer:
             and job.get("batch", -1) < row["step"]
         )
 
-    def restore(self, row: Mapping[str, Any], consumed: int) -> Modules | None:
+    def restore(self, row: Mapping[str, Any], consumed: int) -> Candidate | None:
         """Stand where the checkpoint row stood; returns the modules the agent carries."""
         self.steps, self.updates, self.epoch = row["step"], row["updates"], row["epoch"]
         return self.run.carried

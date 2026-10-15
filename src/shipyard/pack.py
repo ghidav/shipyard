@@ -18,17 +18,13 @@ from shipyard.proxy.wire import IMAGE_TOKEN, Picture, Record, model_input, pictu
 from shipyard.types import Sequence
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence as Values
-
     from shipyard.rollout import Rollouts
     from shipyard.types import Agent, Trial
 
 __all__ = [
-    "Sequence",
     "chains",
     "datum",
     "groups",
-    "model_input",
     "packable",
     "sequences",
     "shifted",

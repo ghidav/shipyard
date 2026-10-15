@@ -13,11 +13,12 @@ from typing import TYPE_CHECKING, Any
 
 from shipyard import record, session
 from shipyard.data import Generator
+from shipyard.modules import Candidate
 from shipyard.recipes import trainer_for
 from shipyard.run import Run
 from shipyard.training.client import TinkerClient
 from shipyard.training.trainer import Trainer
-from shipyard.types import SERVE_TTL, Agent, Evaluation, Modules, Policy, harness
+from shipyard.types import SERVE_TTL, Agent, Evaluation, Policy, harness
 
 if TYPE_CHECKING:
     from shipyard.config import Model
@@ -38,7 +39,7 @@ class Runner:
         *,
         epochs: int,
         evaluate_every: int = 0,
-        modules: Modules | None = None,
+        modules: Candidate | None = None,
     ) -> None:
         self.opened = run
         self.generator = generator

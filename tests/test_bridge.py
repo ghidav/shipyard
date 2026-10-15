@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 import tinker
 from PIL import Image
+from tinker_cookbook.renderers import ToolCall
 
 from shipyard.proxy.bridge import (
     Index,
@@ -22,10 +23,9 @@ from shipyard.proxy.bridge import (
     digests_of,
     tail_extends,
 )
-from shipyard.proxy.cookbook import ToolCall
 from shipyard.proxy.exchange import Exchange, exchange
-from shipyard.proxy.recorder import IMAGE_TOKEN, Recorder
-from shipyard.proxy.wire import Picture, ids_of, model_input, pictured, pictures_of
+from shipyard.proxy.recorder import Recorder
+from shipyard.proxy.wire import IMAGE_TOKEN, Picture, ids_of, model_input, pictured, pictures_of
 from tests.proxies import (
     TOOLS_ANTHROPIC,
     TOOLS_OPENAI,
