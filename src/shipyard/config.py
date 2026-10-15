@@ -23,7 +23,7 @@ from shipyard.modules import Inadmissible, seed
 from shipyard.record import CONFIG
 
 TINKER = "tinker"
-#: The recipe kinds, one module each under `shipyard.recipes`; the first three train.
+#: The recipe kinds, each but evaluate a module under `shipyard.recipes`.
 KINDS = ("dapo", "dr-grpo", "cispo", "gepa", "fst", "evaluate")
 #: The SDK's floor on a checkpoint's TTL: `TrainingClient.save_state` takes "between
 #: 1 hour (3600) and 10 years" (tinker/lib/public_interfaces/training_client.py).

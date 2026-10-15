@@ -472,7 +472,7 @@ async def test_a_run_is_evaluated_at_a_checkpoint_as_one_more_row(
 
 RUNNER_FILE = """\
 from shipyard.runner import Runner
-from shipyard.training.trainer import DAPOTrainer
+from shipyard.recipes.dapo import DAPOTrainer
 
 
 class Marked(DAPOTrainer):
