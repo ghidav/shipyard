@@ -1,6 +1,4 @@
-"""Each case in `tests/golden.py` replayed against `tests/golden/<case>.json`. A difference
-is a change in what a step consumes or the record sees; when it is meant, regenerate with
-`GOLDEN_UPDATE=1 pytest tests/test_golden.py` and review the diff."""
+"""Each case replayed against its frozen file; `GOLDEN_UPDATE=1` rewrites them."""
 
 from __future__ import annotations
 
