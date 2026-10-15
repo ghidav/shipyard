@@ -7,12 +7,13 @@ import argparse
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import signal
 import sys
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import fields
-from typing import Any
+from typing import Any, TextIO
 
 from shipyard.proxy.server import Server
 from shipyard.proxy.wire import CONTROL_TOKEN_ENV, PROXY_TOKEN_ENV, new_token
@@ -123,6 +124,19 @@ def fake_parts() -> tuple[Callable[[str | None], Any], Any]:
     return make, Chars()
 
 
+def configure_logging(stream: TextIO = sys.stderr) -> None:
+    """Shipyard's lines at INFO on `stream`, which a run keeps as `proxy.log`, unless logging
+    is configured already, as under the CLI's verb; aiohttp's access line per request stays
+    off."""
+    if logging.getLogger().handlers:
+        return
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger = logging.getLogger("shipyard")
+    logger.setLevel(logging.INFO)
+    logger.addHandler(handler)
+
+
 def banner(server: Server) -> str:
     """The first line serve prints, which a run parses: what is served, where, and
     whether control is on."""
@@ -211,6 +225,7 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     """Build the server and serve until signalled. Returns 2 when it cannot be built."""
+    configure_logging()
     args = parser().parse_args(argv)
     token, control, generated = tokens_from_env()
     try:
