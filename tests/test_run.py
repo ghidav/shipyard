@@ -11,8 +11,8 @@ import pytest
 from shipyard import record
 from shipyard.config import KINDS, ConfigError
 from shipyard.data import NoSuchDataset
+from shipyard.recipes import trainer_for
 from shipyard.run import Run, RunRefused, runs_root, version
-from shipyard.runner import Runner
 from shipyard.show import alive, state_of
 from tests.trials import BLUEPRINTS
 
@@ -96,7 +96,7 @@ async def test_a_runner_dispatches_to_the_kinds_trainer(tmp_path: Path, monkeypa
     monkeypatch.chdir(tmp_path)
     opened = Run.open(BLUEPRINTS / "gepa", root=tmp_path / "runs")
     with pytest.raises(NoSuchDataset, match="aime-train"):
-        await Runner.from_run(opened).run()
+        await trainer_for(opened.config.recipe)(opened).train()
 
 
 def test_open_refuses_an_existing_directory(tmp_path: Path, monkeypatch) -> None:

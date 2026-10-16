@@ -60,10 +60,10 @@ class Run:
         *,
         root: Path | None = None,
         smoke: bool = False,
-        runner: Path | None = None,
+        trainer: Path | None = None,
     ) -> Self:
-        """Create `<root>/<id>/`, copy `run.toml` byte for byte and the runner file as
-        `runner.py` when one is given, keep the recipe's modules under `modules/carried/`, and
+        """Create `<root>/<id>/`, copy `run.toml` byte for byte and the trainer file as
+        `trainer.py` when one is given, keep the recipe's modules under `modules/carried/`, and
         write the process note (marked `smoke` for a smoke run). Raises `RunRefused` if the
         directory exists."""
         config = load(blueprint)
@@ -75,8 +75,8 @@ class Run:
             raise RunRefused(f"{directory} already exists")
         directory.mkdir(parents=True)
         shutil.copyfile(source, directory / record.CONFIG)
-        if runner is not None:
-            shutil.copyfile(runner, directory / record.RUNNER)
+        if trainer is not None:
+            shutil.copyfile(trainer, directory / record.TRAINER)
         if carried is not None:
             keep(carried, directory / record.MODULES / CARRIED)
         record.write_json(
@@ -84,7 +84,7 @@ class Run:
             _process(
                 config,
                 str(home.resolve()),
-                runner=None if runner is None else str(Path(runner).resolve()),
+                trainer=None if trainer is None else str(Path(trainer).resolve()),
                 smoke=smoke,
             ),
         )
@@ -150,7 +150,6 @@ class Run:
             party=party or self.config.model.provider,
             counted=counted,
             tasks=len({one.task for one in job.trials}),
-            **({"epoch": job.epoch} if job.epoch is not None else {}),
             **job.about,
             **({"modules": job.modules.digest} if job.modules is not None else {}),
             graded=sum(each.reward is not None for each in job.verdicts),

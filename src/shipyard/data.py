@@ -70,15 +70,26 @@ class Generator:
 
         return cls(listed(config.datasets), data.batch_size, data.seed, listed(config.test_sets))
 
-    def batches(self, epoch: int) -> Iterator[list[Path]]:
-        """One epoch: the train tasks shuffled under `seed + epoch`, `batch_size` at a time,
-        the short last batch kept."""
+    @property
+    def per_pass(self) -> int:
+        """The batches in one pass over the train tasks, the short last one counted."""
+        return -(-len(self.train) // self.batch_size)
+
+    def batches(self, start: int = 0) -> Iterator[list[Path]]:
+        """Batches without end from the `start`-th: pass n over the train tasks shuffles them
+        under `seed + n` and cuts them `batch_size` at a time, its short last batch kept.
+        Nothing when there are no train tasks."""
         if self.batch_size < 1:
             raise ValueError(f"batch_size must be at least 1; got {self.batch_size}")
-        order = list(self.train)
-        random.Random(self.seed + epoch).shuffle(order)
-        for start in range(0, len(order), self.batch_size):
-            yield order[start : start + self.batch_size]
+        if not self.train:
+            return
+        turn, at = divmod(start, self.per_pass)
+        while True:
+            order = list(self.train)
+            random.Random(self.seed + turn).shuffle(order)
+            for begin in range(at * self.batch_size, len(order), self.batch_size):
+                yield order[begin : begin + self.batch_size]
+            turn, at = turn + 1, 0
 
 
 def _task_dirs(home: Path) -> list[Path]:

@@ -13,4 +13,5 @@ concurrency = 2
 
 [recipe]
 kind = "dapo"
+steps = 2
 learning_rate = 2e-5

@@ -62,15 +62,19 @@ class Data(_Table):
     group_size: int = Field(default=1, ge=1)
     #: Attempts per test task; `group_size` when unset.
     test_group_size: int | None = Field(default=None, ge=1)
-    epochs: int = Field(default=1, ge=1)
-    #: Evaluate after every this many epochs; 0 is at the end only.
-    evaluate_every: int = Field(default=0, ge=0)
     seed: int = 0
 
     @model_validator(mode="before")
     @classmethod
     def _dataset(cls, value: Any) -> Any:
-        """`dataset` is the older spelling of `train`."""
+        """`dataset` is the older spelling of `train`; a run is no longer counted in epochs."""
+        if isinstance(value, dict) and (
+            gone := sorted({"epochs", "evaluate_every"} & value.keys())
+        ):
+            raise ValueError(
+                f"{' and '.join(gone)}: a run is counted in steps; set [recipe] steps and "
+                "[recipe] evaluate_every"
+            )
         if isinstance(value, dict) and "dataset" in value:
             if "train" in value:
                 raise ValueError("`dataset` is the older spelling of `train`; name one of them")
@@ -136,6 +140,10 @@ class Gradient(_Table):
     no other."""
 
     learning_rate: float = Field(gt=0)
+    #: The steps the run takes; each draws its batches from the generator.
+    steps: int = Field(ge=1)
+    #: Evaluate after every this many steps; 0 is at the end only.
+    evaluate_every: int = Field(default=0, ge=0)
     substeps: int = Field(default=1, ge=1)
     #: Steps over which the learning rate rises to `learning_rate`. Off by default: the
     #: papers' warm-ups (DAPO's 20, FST's 10) are sized for runs of hundreds of steps.

@@ -33,6 +33,7 @@ line that says what the name means. Take a blueprint with this recipe table and 
 [recipe]
 kind = "dapo"
 learning_rate = 2e-5
+steps = 100
 ```
 
 Its resolved config, as `check` prints it, ends like this:
@@ -41,19 +42,21 @@ Its resolved config, as `check` prints it, ends like this:
 [recipe]
 kind = "dapo"
 learning_rate = 2e-05
+steps = 100
+evaluate_every = 0
 substeps = 16
+warmup = 0
 reference = "trainer"
 kl_coef = 0.0
 clip_low = 0.2
 clip_high = 0.28
-refill = 9
 overlong_penalty = 0.5
 overlong_buffer = 0.2
 
 [checkpoints]
 every = 1
 ttl_hours = 168.0
-# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token budget; 16 substeps by prompt; adamw betas 0.9 / 0.95, eps 1e-08, weight decay 0.1, gradient norm clipped at 1.0, no warm-up (the paper's is 20 steps); degenerate groups dropped and refilled from the plan, up to 9 more rounds
+# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token budget; 16 substeps by prompt; adamw betas 0.9 / 0.95, eps 1e-08, weight decay 0.1, gradient norm clipped at 1.0, no warm-up (the paper's is 20 steps); degenerate groups dropped
 ```
 
 Each name resolves as follows, with the section of its paper each default comes from:
@@ -66,7 +69,7 @@ Each name resolves as follows, with the section of its paper each default comes 
 | Token losses | averaged per prompt, Eq. 8 | summed, §3.2 | averaged per prompt, Eq. 4 |
 | Clipping | `clip_low = 0.2`, `clip_high = 0.28`, §4.1 | `clip = 0.2`, App. G | `clip_high = 3.0`, from ScaleRL (arXiv 2510.13786) App. A.17.2 and FST App. D |
 | `substeps` | `16`, §4.1 | `1`, not stated (App. G) | `16`, §3.1 |
-| `refill` | `9`, Alg. 1, capped as in DAPO's released recipe | `0` | `9`, §3.1, which takes DAPO's |
+| Dynamic sampling | on, Alg. 1 | off | on, §3.1, which takes DAPO's |
 | Overlong term | `overlong_penalty = 0.5`, `overlong_buffer = 0.2`, Eq. 13 and §4.1 | none, as the paper has none | as `dapo`, §3.1, which takes DAPO's |
 | Length rule | none | shipyard's own, off: `length_penalty = 0.0` | none |
 | Optimizer | AdamW, weight decay 0.1, gradient norm clipped at 1.0, DAPO's released recipe | AdamW, betas 0.9 / 0.95, gradient norm clipped at 1.0, App. G | AdamW, betas 0.9 / 0.95, eps 1e-15, §3.2 |
@@ -82,9 +85,9 @@ FST uses 4. Dr. GRPO does not state how many optimizer steps it takes per rollou
 one inner update epoch and no mini-batch size), so `dr-grpo` takes one. `check` prints these lines:
 
 ```
-# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token budget; 16 substeps by prompt; adamw betas 0.9 / 0.95, eps 1e-08, weight decay 0.1, gradient norm clipped at 1.0, no warm-up (the paper's is 20 steps); degenerate groups dropped and refilled from the plan, up to 9 more rounds
+# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token budget; 16 substeps by prompt; adamw betas 0.9 / 0.95, eps 1e-08, weight decay 0.1, gradient norm clipped at 1.0, no warm-up (the paper's is 20 steps); degenerate groups dropped
 # dr-grpo: advantage = group mean, not divided by spread; loss = ppo, clip 0.2 / 0.2, summed over tokens; 1 substep; adamw betas 0.9 / 0.95, eps 1e-08, gradient norm clipped at 1.0; degenerate groups dropped
-# cispo: advantage = group mean, divided by spread; loss = cispo, weight truncated above 4.0, no lower bound, averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token budget; 16 substeps by prompt; adamw betas 0.9 / 0.95, eps 1e-15; degenerate groups dropped and refilled from the plan, up to 9 more rounds
+# cispo: advantage = group mean, divided by spread; loss = cispo, weight truncated above 4.0, no lower bound, averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token budget; 16 substeps by prompt; adamw betas 0.9 / 0.95, eps 1e-15; degenerate groups dropped
 ```
 
 ### The overlong term (dapo and cispo)
@@ -222,12 +225,12 @@ With `kl_coef = 0.01`, the comment line gains `; kl 0.01 to the starting weights
 
 ## How a step runs
 
-Each step starts on the plan's next batch, and steps are numbered from 0 (see [Datasets](datasets.md)).
+A run takes `steps` steps, numbered from 0. Each starts on the stream's next batch (see [Datasets](datasets.md)).
 
 1. **Publish.** The current weights are saved for sampling as `sample-<step>` and kept for 12 hours.
 2. **Point.** The [proxy](proxy.md) is told to serve those weights.
 3. **Sample.** One Harbor job runs over the batch, each task `group_size` times. Every model call leaves
-   a record. With `refill`, the step samples the plan's next batches while fewer than `batch_size`
+   a record. A `dapo` or `cispo` step draws the stream's next batches while fewer than `batch_size`
    groups carry a gradient (see [Dynamic sampling](#dynamic-sampling)).
 4. **Pack.** Each rollout's records become token sequences by the token-prefix rule. A call joins the
    sequence whose last prompt plus completion begins its prompt, the longest such. If none matches, the
@@ -247,39 +250,28 @@ to `checkpoints.jsonl` with `tag`, `state_path`, `sampler_path` and `ttl_hours`.
 
 A group is degenerate when only one of its rollouts was measured, or when its measured rewards are all
 equal after `dr-grpo`'s length rule. The overlong term of `dapo` and `cispo` comes after this judgement.
-A degenerate group carries no gradient, so credit drops it before any reference pass. As a result, `group_size = 1` never trains, and never refills. If no group of a
+A degenerate group carries no gradient, so credit drops it before any reference pass. As a result, `group_size = 1` never trains. If no group of a
 step is left, the step logs `trained: false` and takes no gradient and no checkpoint. Under `dapo` and
 `cispo`, or `dr-grpo` without a length penalty, a policy that solves every task, or fails every one,
 gives flat groups and so takes no step.
 
 ### Dynamic sampling
 
-DAPO keeps sampling until its batch holds only prompts that carry a gradient (§3.2 and Alg. 1), and
-MiniMax-M1 does the same for CISPO (§3.1). `refill` is the most extra sampling rounds a step may take
-to get there:
+DAPO keeps sampling until its batch holds enough prompts that carry a gradient (§3.2 and Alg. 1), and
+MiniMax-M1 does the same for CISPO (§3.1):
 
-| Recipe | `refill` | Why |
+| Recipe | Dynamic sampling | Why |
 |---|---|---|
-| `dapo`, `cispo` | `9` | DAPO's released recipe stops at ten generation batches a step (verl `recipe/dapo`, `max_num_gen_batches = 10`): the first and nine more. |
-| `dr-grpo` | `0` | Dr. GRPO states no dynamic sampling (App. G). |
-| `fst` | not a key | FST follows ScaleRL (§2), whose zero-variance filtering drops flat groups without resampling (ScaleRL §3.2); a slow step also stays inside its cycle's lookahead. |
+| `dapo`, `cispo` | on | DAPO §3.2; MiniMax-M1 §3.1. |
+| `dr-grpo` | off | Dr. GRPO states no dynamic sampling (App. G). |
+| `fst` | off | FST follows ScaleRL (§2), whose zero-variance filtering drops flat groups without resampling (ScaleRL §3.2); a slow step also stays inside its cycle's batches. |
 
-When credit would leave fewer than `batch_size` groups with a gradient, the step samples the plan's next
-batch at the same weights, as one more Harbor job, and adds its groups. The tasks it takes are consumed,
-as DAPO consumes its dataloader. The next step starts after them, so a run that refills has fewer steps
-than batches. The step stops sampling when `batch_size` groups carry a gradient, when `refill` rounds
-are spent, or when the plan runs out, and then trains on what it has.
-
-A round can bring more groups with a gradient than the step needs. The first `batch_size` of them, in
-the order they were sampled, are trained on. The rest are **surplus** and are left out before the
-reference pass, so every step trains on the same number of prompts (DAPO §3.2). Surplus rollouts are
-graded and paid for like any other. Every round's job has its row in `jobs.jsonl`, with the step's
-number as its `batch`, and its tokens are in `costs.json`. `train_tokens` and `reference_tokens` count
-what was trained on.
-
-`refill = 0` switches dynamic sampling off. Degenerate groups are dropped and the step trains on what
-its own batch left. The row counts the extra rounds as `refills` and their rollouts as
-`refill_rollouts`, which `rollouts` includes.
+While fewer than `batch_size` of its groups carry a gradient, a `dapo` or `cispo` step draws the
+stream's next batch at the same weights, as one more Harbor job, and adds its groups. It draws at most
+one pass's worth of batches, so a run whose every group is flat cannot draw forever, and then trains on
+every group it holds that carries a gradient. The batches it draws are consumed, as DAPO consumes its
+dataloader: the next step draws after them, so the run draws more batches than it takes steps. Every
+job has its row in `jobs.jsonl` with the step's number, and its tokens are in `costs.json`.
 
 ### The pinned-weights refusal
 
@@ -302,11 +294,10 @@ never written as 0. Every row also carries `at` and `seq`.
 |---|---|
 | `step` | The step's number, from 0. |
 | `trained` | Whether a gradient was taken. |
-| `groups`, `rollouts` | Groups (tasks) and rollouts in the step, refills included. |
-| `refills`, `refill_rollouts` | Extra sampling rounds, and the rollouts they added; present when the step could refill: `refill > 0` and `group_size > 1`. |
+| `jobs` | The step's jobs: one, or more when dynamic sampling drew more batches. |
+| `groups`, `rollouts` | Groups (tasks) and rollouts in the step, every job's included. |
 | `graded`, `masked` | Rollouts with a reward, and those left out with a mask. |
 | `degenerate` | Groups dropped as degenerate. |
-| `surplus` | Groups with a gradient left out once `batch_size` were kept; present when the step could refill. |
 | `sequences`, `sequences_per_rollout` | Sequences trained on, and their mean per credited rollout. |
 | `train_tokens` | Tokens sent to `forward_backward`. |
 | `reward_mean`, `reward_spread` | The mean reward over graded rollouts, and the mean of the groups' spreads. |
@@ -339,6 +330,7 @@ population of `population` skill texts change together, in cycles:
 [recipe]
 kind = "fst"
 learning_rate = 2e-5
+steps = 60
 reflection_harness = "claude-code"
 reflection_model = "anthropic/claude-sonnet-5"
 ```
@@ -351,7 +343,7 @@ reflection_model = "anthropic/claude-sonnet-5"
 
 The defaults are the paper's: `slow = "cispo"` with the importance weight truncated above 4.0 (App. D),
 token losses averaged per prompt (Eq. 4), `substeps = 1` (App. D: `ppo_mini_batch_size` equals
-`train_batch_size`), no refill (§2, after ScaleRL §3.2), no overlong term (see
+`train_batch_size`), no dynamic sampling (§2, after ScaleRL §3.2), no overlong term (see
 [The overlong term](#the-overlong-term-dapo-and-cispo)), AdamW at betas 0.9 / 0.999 (App. D, which also warms up over 10 steps; `warmup` sets it), `kl_coef = 0.001`, `cycle = 6`, `population = 4`, `edits = "incremental"`, and a gepa
 budget of five passes over the fast phase's tasks. The fast phase scores each (task, text) pair with
 one rollout, whatever share of a group the text takes in the slow steps. App. D spends 960 metric

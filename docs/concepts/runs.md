@@ -70,9 +70,9 @@ A served run also notes `proxy` at its first job: the proxy's `placement` (`loca
 or `remote`) and the `origin` its sandboxes dialled. `shipyard show` prints it, and prints
 `tinker_base_url` as `backend`.
 
-A `jobs.jsonl` row says what one Harbor job was and what it cost. `purpose` is `rollout`,
-`refill` for a step's extra sampling round ([Recipes](recipes.md#dynamic-sampling)), or `reflection`
-for a `gepa` reflector. `served` is `tinker` when the proxy answered and
+A `jobs.jsonl` row says what one Harbor job was and what it cost. `purpose` is `training`, the
+extra batches of a step's [dynamic sampling](recipes.md#dynamic-sampling) included, `evaluation`,
+`search` for a candidate `gepa` scores, `reflection` for its reflector, or `smoke`. `served` is `tinker` when the proxy answered and
 `provider` otherwise. `masked` counts masked trials by reason ([Admission](admission.md)),
 and `ended` counts the exceptions Harbor recorded on trials, by type; each appears only when it
 has something to count. The token and sandbox counts are explained in [Costs](costs.md).
@@ -151,7 +151,7 @@ restore_optimizer = true
 ```
 
 The rest of the blueprint is as before. The new run has its own id and an empty record. Its
-batches start again from the first epoch, so change `[data] seed` for another order.
+batches start the stream again from its first, so change `[data] seed` for another order.
 
 With `restore_optimizer = true` the run skips any warm-up: the optimizer state continues the
 earlier run's, and every update uses `learning_rate`. Without it, the weights continue with a fresh

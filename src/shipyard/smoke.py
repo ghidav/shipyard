@@ -40,7 +40,7 @@ def planned(cfg: Blueprint) -> list[Path]:
     made = Generator.of(cfg)
     if not made.train:
         made = replace(made, train=made.test)
-    return next(made.batches(0))[:1]
+    return next(made.batches())[:1]
 
 
 @dataclass(frozen=True)

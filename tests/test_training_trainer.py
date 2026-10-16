@@ -1,10 +1,10 @@
-"""Test the procedure on fakes: an epoch, DAPO's accumulation, the anchor, the provider job."""
+"""Test the procedure on fakes: its steps, DAPO's accumulation, the anchor, the provider job."""
 
 from __future__ import annotations
 
 import json
 import logging
-from collections.abc import AsyncIterator
+from itertools import islice
 from pathlib import Path
 
 import pytest
@@ -19,12 +19,13 @@ from shipyard.run import Run
 from shipyard.sampling.endpoint import ProviderEndpoint, endpoint_for
 from shipyard.training.client import TinkerClient
 from shipyard.training.trainer import ROW, Trainer
-from shipyard.types import SERVE_TTL, Agent, Batches, Group, Policy, harness
+from shipyard.types import SERVE_TTL, Agent, Group, Policy, harness
 from tests.records import FakeProxy
 from tests.trainers import FakeService
 from tests.trials import (
     ANCHORED,
     INPUT_TOKENS,
+    ONE_STEP,
     SEQUENCE_TOKENS,
     START,
     Alternating,
@@ -58,17 +59,20 @@ def _agent(run: Run, service: FakeService | None, *, anchored: bool = False) -> 
 
 
 def _plan(tmp_path: Path) -> list[list[str]]:
-    planned = Generator(tasks("four", root=tmp_path / "tasks"), 2, 0).batches(0)
-    return [[task.name for task in batch] for batch in planned]
+    """The first pass over the fixture's tasks, two to a batch."""
+    made = Generator(tasks("four", root=tmp_path / "tasks"), 2, 0)
+    return [[task.name for task in batch] for batch in islice(made.batches(), made.per_pass)]
 
 
 async def _train(run: Run, trainer: Trainer, agent: Agent) -> None:
+    """The trainer's `[recipe] steps` steps under `agent`, as `train` takes them."""
     with run:
         async with agent.policy:
-            await trainer.train(agent, Generator.of(run.config).batches(0))
+            while trainer.steps < trainer.recipe.steps:
+                await trainer.advance(agent)
 
 
-async def test_an_epoch_serves_the_start_samples_steps_syncs_andcheckpoints(
+async def test_the_steps_serve_the_start_sample_step_sync_andcheckpoint(
     tmp_path: Path,
     fakes: tuple[FakeProxy, FakeService],
     harbor: Harbor,
@@ -136,9 +140,9 @@ async def test_an_epoch_serves_the_start_samples_steps_syncs_andcheckpoints(
         assert keys == [key for key in ROW if key not in ("anchor_kl", "overlong")]
     # `every = 1`: a checkpoint per update at the TTL, written down with the position.
     saved = checkpoints(run)
-    assert [(c["tag"], c["step"], c["updates"], c["epoch"]) for c in saved] == [
-        ("step-1", 1, 1, 0),
-        ("step-2", 2, 2, 0),
+    assert [(c["tag"], c["step"], c["updates"], c["drawn"]) for c in saved] == [
+        ("step-1", 1, 1, 1),
+        ("step-2", 2, 2, 2),
     ]
     for row in saved:
         assert row["state_path"] == f"tinker://fake/weights/{row['tag']}"
@@ -164,7 +168,7 @@ async def test_a_step_with_every_group_flat_logs_untrained_and_takes_no_gradient
     harbor: Harbor,
 ) -> None:
     proxy, service = fakes
-    run = Run.open(blueprint(tmp_path, **{"batch_size = 2": "batch_size = 4"}), root=tmp_path)
+    run = Run.open(blueprint(tmp_path, **ONE_STEP), root=tmp_path)
     harbor(FakeTrials())
     trainer = DAPOTrainer(run)
     await _train(run, trainer, _agent(run, service))
@@ -191,11 +195,10 @@ async def test_groups_a_sample_left_uncredited_are_refused_before_the_step(
     harbor(Alternating())
 
     class Uncredited(Trainer):
-        async def sample(self, agent: Agent, tasks: Batches) -> AsyncIterator[list[Group]]:
-            for batch in tasks:
-                yield await self.job(agent, batch)
+        async def sample(self, agent: Agent) -> list[Group]:
+            return await self.job(agent, self.draw())
 
-    with pytest.raises(ValueError, match="Uncredited.sample yielded groups it never credited"):
+    with pytest.raises(ValueError, match="Uncredited.sample returned groups it never credited"):
         await _train(run, Uncredited(run), _agent(run, service))
     assert [c[0] for c in service.client.calls] == ["save_weights_for_sampler"], "no step"
 
@@ -206,7 +209,7 @@ async def test_dapo_holds_jobs_until_a_batchs_worth_of_groups_have_spread(
     harbor: Harbor,
 ) -> None:
     _, service = fakes
-    run = Run.open(blueprint(tmp_path), root=tmp_path / "runs")
+    run = Run.open(blueprint(tmp_path, **{"steps = 2": "steps = 1"}), root=tmp_path / "runs")
     first, second = _plan(tmp_path)
     harbor(Spread({first[0], *second}))
     trainer = DAPOTrainer(run)
@@ -228,19 +231,20 @@ async def test_dapo_holds_jobs_until_a_batchs_worth_of_groups_have_spread(
     assert [c["tag"] for c in checkpoints(run)] == ["step-1"]
 
 
-async def test_the_epochs_last_step_takes_what_it_holds(
+async def test_a_dapo_step_draws_at_most_a_passs_worth_and_takes_what_it_holds(
     tmp_path: Path,
     fakes: tuple[FakeProxy, FakeService],
     harbor: Harbor,
 ) -> None:
     _, service = fakes
-    run = Run.open(blueprint(tmp_path, tasks=6), root=tmp_path / "runs")
+    home = blueprint(tmp_path, tasks=6, **{"steps = 2": "steps = 1"})
+    run = Run.open(home, root=tmp_path / "runs")
     harbor(FakeTrials())
     trainer = DAPOTrainer(run)
     await _train(run, trainer, _agent(run, service))
     (row,) = rows(run)
     assert (row["step"], row["trained"], row["groups"], row["degenerate"]) == (0, False, 6, 6)
-    assert len(row["jobs"]) == 3 and trainer.steps == 1
+    assert len(row["jobs"]) == 3 and (trainer.steps, trainer.drawn) == (1, 3)
 
 
 async def test_dr_grpo_keeps_the_base_sample_and_steps_once_per_batch(
@@ -301,9 +305,7 @@ async def test_cispo_reads_the_samplers_logprobs_and_makes_no_forward(
     harbor: Harbor,
 ) -> None:
     _, service = fakes
-    run = Run.open(
-        blueprint(tmp_path, "cispo", **{"batch_size = 2": "batch_size = 4"}), root=tmp_path
-    )
+    run = Run.open(blueprint(tmp_path, "cispo", **ONE_STEP), root=tmp_path)
     harbor(Alternating())
     await _train(run, CISPOTrainer(run), _agent(run, service))
     client = service.client
@@ -320,23 +322,13 @@ async def test_cispo_reads_the_samplers_logprobs_and_makes_no_forward(
     assert costs["train_tokens"] == 24 and "reference_tokens" not in costs
 
 
-def test_a_run_recorded_with_the_older_job_keys_still_resumes(tmp_path: Path) -> None:
-    trainer = Trainer(Run.open(blueprint(tmp_path), root=tmp_path))
-    jobs = [
-        {"purpose": "training", "epoch": 0, "step": 0},
-        {"purpose": "rollout", "epoch": 0, "batch": 1},
-        {"purpose": "evaluation", "epoch": 0, "step": 2},
-    ]
-    assert trainer.consumed(jobs, {"epoch": 0, "step": 2}) == 2
-
-
 async def test_the_kl_anchor_is_subtracted_per_token_billed_and_reported(
     tmp_path: Path,
     fakes: tuple[FakeProxy, FakeService],
     harbor: Harbor,
 ) -> None:
     _, service = fakes
-    home = blueprint(tmp_path, **{"batch_size = 2": "batch_size = 4", **ANCHORED})
+    home = blueprint(tmp_path, **ONE_STEP, **ANCHORED)
     run = Run.open(home, root=tmp_path)
     harbor(Alternating())
     trainer = DAPOTrainer(run)
@@ -414,7 +406,7 @@ async def test_a_job_on_a_provider_agent_groups_the_verdicts_and_the_step_takes_
     with run:
         async with agent.policy:
             found = trainer.credited(await trainer.job(agent, tasks, purpose="evaluation"))
-            assert await trainer.step(agent, found) is None
+            assert (await trainer.step(agent, found)).update is None
     assert [(group.task.name, group.harness.name) for group in found] == [
         ("a", "pi"),
         ("a", "claude-code"),

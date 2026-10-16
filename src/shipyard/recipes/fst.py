@@ -4,7 +4,7 @@ population of K texts co-evolve in cycles."""
 from __future__ import annotations
 
 import random
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import Mapping
 from collections.abc import Sequence as Values
 from dataclasses import replace
 from functools import partial
@@ -16,7 +16,7 @@ from shipyard.credit import weights
 from shipyard.modules import Candidate, keep, seed
 from shipyard.recipes.gepa import BEST, SEED, GEPATrainer
 from shipyard.training.trainer import Trainer
-from shipyard.types import Adam, Agent, Batches, Group, Update
+from shipyard.types import Adam, Agent, Group, Task, TrainingStep
 
 if TYPE_CHECKING:
     from shipyard.run import Run
@@ -42,7 +42,8 @@ def slow_recipe(recipe: Any) -> Any:
     if model is not DrGrpoRecipe:
         knobs["overlong_penalty"] = 0.0
     shared = {
-        name: getattr(recipe, name) for name in ("learning_rate", "substeps", "warmup", "reference")
+        name: getattr(recipe, name)
+        for name in ("learning_rate", "steps", "evaluate_every", "substeps", "warmup", "reference")
     }
     return model(kind=recipe.slow, kl_coef=recipe.kl_coef, **shared, **knobs)
 
@@ -85,96 +86,96 @@ class FSTTrainer(GEPATrainer):
         self.score_group_size = CELL_ROLLOUTS
         self.population: list[Candidate] = []
         self.cycles = 0
-        #: Batches of the cycle in progress already stepped, on a resume.
-        self.offset = 0
+        #: The batches the cycle in progress drew for its fast phase and has yet to step.
+        self.pending: list[list[Task]] = []
 
-    async def train(self, agent: Agent, tasks: Batches) -> Agent:
-        """Cycles of `cycle` batches: a fast phase over the cycle's tasks, then its slow steps."""
-        fst, data = self.fst, self.run.config.data
+    async def train(self) -> Agent:
+        """Cycles until `[recipe] steps`: a fast phase over the next `cycle` batches, then a
+        slow step on each; then `finish`."""
         kept = self.run.directory / record.MODULES
         if not self.population:
-            seeded = seed(self.run.config.home / fst.modules)
+            seeded = seed(self.run.config.home / self.fst.modules)
             keep(seeded, kept / SEED)
             self.population = [seeded]
-        agent = replace(agent, modules=self.population[0])
-        batches = list(tasks)
-        start = 0
-        while start < len(batches):
-            chunk = batches[start : start + fst.cycle - self.offset]
-            start += len(chunk)
-            cycle = self.cycles
-            if self.offset:
-                self.offset = 0
-                agent = await super(GEPATrainer, self).train(agent, iter(chunk))
-                self.cycles += 1
-                continue
-            anchor = list(dict.fromkeys(task for batch in chunk for task in batch))
-            anchor = anchor[: fst.anchor] if fst.anchor else anchor
-            # Scoring the carried-in population is added to the budget, except its first member.
-            carried = len({one.digest for one in self.population}) - 1
-            cells = len(anchor) * CELL_ROLLOUTS
-            result = await self.evolve(
-                agent,
-                anchor,
-                self.population,
-                budget=(fst.budget or BUDGET_PASSES * cells) + carried * cells,
-                minibatch=fst.minibatch,
-                patience=fst.patience,
-                rng=random.Random(data.seed + cycle),
-                log=partial(self.run.log, cycle=cycle),
-            )
-            self.population = result.top(fst.population)
-            agent = replace(agent, modules=self.population[0])
-            for rank, text in enumerate(self.population):
-                keep(text, kept / f"cycle-{cycle}" / str(rank))
-            self.run.log(
-                cycle=cycle,
-                evolution=True,
-                rounds=result.rounds,
-                spent=result.spent,
-                population=[one.digest for one in self.population],
-                frontier=len(result.fitness.frontier()),
-                pool=len(result.pool),
-            )
-            # The slow steps: the slow class's pass over the chunk, past the search's own.
-            agent = await super(GEPATrainer, self).train(agent, iter(chunk))
-            self.cycles += 1
-        keep(agent.modules, kept / BEST)
-        return agent
+        self.modules = self.population[0]
+        agent = self.agent()
+        async with agent.policy:
+            while self.steps < self.recipe.steps:
+                if not self.pending:
+                    count = min(self.fst.cycle, self.recipe.steps - self.steps)
+                    self.pending = [self.draw() for _ in range(count)]
+                    agent = await self.fast(agent)
+                await self.advance(agent)
+                if not self.pending:
+                    self.cycles += 1
+            keep(agent.modules, kept / BEST)
+            return await self.finish(agent)
 
-    async def sample(self, agent: Agent, tasks: Batches) -> AsyncIterator[list[Group]]:
-        """One job per text at its share of the group, merged into one group per task and
-        credited as one."""
+    async def fast(self, agent: Agent) -> Agent:
+        """The fast phase over the pending batches' tasks: gepa evolves the population, kept
+        under its cycle; the agent carries its head."""
+        fst, cycle = self.fst, self.cycles
+        anchor = list(dict.fromkeys(task for batch in self.pending for task in batch))
+        anchor = anchor[: fst.anchor] if fst.anchor else anchor
+        # Scoring the carried-in population is added to the budget, except its first member.
+        carried = len({one.digest for one in self.population}) - 1
+        cells = len(anchor) * CELL_ROLLOUTS
+        result = await self.evolve(
+            agent,
+            anchor,
+            self.population,
+            budget=(fst.budget or BUDGET_PASSES * cells) + carried * cells,
+            minibatch=fst.minibatch,
+            patience=fst.patience,
+            rng=random.Random(self.run.config.data.seed + cycle),
+            log=partial(self.run.log, cycle=cycle),
+        )
+        self.population = result.top(fst.population)
+        for rank, text in enumerate(self.population):
+            keep(text, self.run.directory / record.MODULES / f"cycle-{cycle}" / str(rank))
+        self.run.log(
+            cycle=cycle,
+            evolution=True,
+            rounds=result.rounds,
+            spent=result.spent,
+            population=[one.digest for one in self.population],
+            frontier=len(result.fitness.frontier()),
+            pool=len(result.pool),
+        )
+        return replace(agent, modules=self.population[0])
+
+    async def sample(self, agent: Agent) -> list[Group]:
+        """The cycle's next batch, one job per text at its share of the group, merged into one
+        group per task and credited as one."""
+        batch = self.pending.pop(0)
         share = self.run.config.data.group_size // self.fst.population
-        for batch in tasks:
-            parts = [
-                await self.job(replace(agent, modules=text), batch, share)
-                for text in self.population
-            ]
-            yield self.credited(merged(parts))
+        parts = [
+            await self.job(replace(agent, modules=text), batch, share) for text in self.population
+        ]
+        return self.credited(merged(parts))
 
     async def checkpoint(self, agent: Agent, tag: str, *, keep: bool = False, **more: Any) -> None:
-        await super().checkpoint(agent, tag, keep=keep, cycle=self.cycles, **more)
+        await super().checkpoint(
+            agent, tag, keep=keep, cycle=self.cycles, pending=len(self.pending), **more
+        )
 
-    def consumed(self, jobs: Values[Mapping[str, Any]], row: Mapping[str, Any]) -> int:
-        return super().consumed(jobs, row) // self.fst.population
-
-    def restore(self, row: Mapping[str, Any], consumed: int) -> Candidate | None:
-        """The population of the checkpoint's cycle, and where in the cycle it stood."""
-        super().restore(row, consumed)
+    def restore(self, row: Mapping[str, Any]) -> None:
+        """The population of the checkpoint's cycle, and the batches of it left to step, drawn
+        again; a finished cycle leaves none, and the next starts with its fast phase."""
+        super().restore(row)
         kept = self.run.directory / record.MODULES / f"cycle-{row['cycle']}"
-        texts = [seed(kept / str(rank)) for rank in range(self.fst.population)]
-        self.population = texts
-        self.offset = consumed % self.fst.cycle
-        self.cycles = row["cycle"] if self.offset else row["cycle"] + 1
-        return texts[0]
+        self.population = [seed(kept / str(rank)) for rank in range(self.fst.population)]
+        self.modules = self.population[0]
+        self.drawn -= row["pending"]
+        self.pending = [self.draw() for _ in range(row["pending"])]
+        self.cycles = row["cycle"] if self.pending else row["cycle"] + 1
 
     def weights(self, sizes: Values[int]) -> list[float]:
         """Each prompt weighs the same (Eq. 4), whatever the slow recipe does."""
         return weights(sizes)
 
-    def log(self, found: Values[Group], update: Update | None, **more: Any) -> None:
-        super().log(found, update, cycle=self.cycles, **more)
+    def log(self, done: TrainingStep, **more: Any) -> None:
+        super().log(done, cycle=self.cycles, **more)
 
 
 def fst_trainer(slow: type[Trainer]) -> type[Trainer]:

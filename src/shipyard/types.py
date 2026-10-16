@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Iterator, Mapping
+from collections.abc import Awaitable, Mapping
 from collections.abc import Sequence as Values
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,7 +22,6 @@ if TYPE_CHECKING:
 __all__ = [
     "Adam",
     "Agent",
-    "Batches",
     "Connection",
     "Datum",
     "Endpoint",
@@ -40,6 +39,7 @@ __all__ = [
     "Settings",
     "Task",
     "TrainingClient",
+    "TrainingStep",
     "Trial",
     "Update",
     "Verdict",
@@ -48,7 +48,6 @@ __all__ = [
 
 Task = Path
 Datum = tinker.Datum
-Batches = Iterator[list[Task]]
 #: A job's model calls by trial name.
 Records = dict[str, list[Record]]
 #: How long served sampler weights are kept: past the batch sampled from them, and a
@@ -106,6 +105,16 @@ class Update:
     sequences: int = 0
     #: Mean of mu less the anchor's logprobs over those; None without a KL term.
     anchor_kl: float | None = None
+
+
+@dataclass(frozen=True)
+class TrainingStep:
+    """What `step` did: its number, the groups it was given, and how it took a gradient;
+    None when it took none (no client, or every group flat)."""
+
+    index: int
+    groups: list[Group]
+    update: Update | None = None
 
 
 class TrainingClient(ABC):
@@ -300,7 +309,6 @@ class Job:
     name: str
     purpose: str = "training"
     step: int | None = None
-    epoch: int | None = None
     modules: Candidate | None = None
     #: What else the row says: a search's round, a reflection's component.
     about: dict[str, Any] = field(default_factory=dict)
@@ -389,7 +397,6 @@ class Group:
 @dataclass(frozen=True)
 class Evaluation:
     step: int
-    epoch: int
     tasks: int
     rollouts: int
     graded: int

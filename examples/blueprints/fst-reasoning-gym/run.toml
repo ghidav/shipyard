@@ -19,6 +19,7 @@ max_tokens = 8192
 [recipe]
 kind = "fst"
 learning_rate = 2e-5
+steps = 60
 population = 4
 cycle = 6
 reflection_harness = "claude-code"

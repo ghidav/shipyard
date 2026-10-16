@@ -80,32 +80,37 @@ counts the tasks it found:
 ok  dataset hello-world: 1 task under tasks/hello-world
 ```
 
-## Batches and epochs
+## Batches and steps
 
 A *batch* is `batch_size` tasks. Each batch is one Harbor job, and each task in it runs
 `group_size` times, so a job holds `batch_size × group_size` trials.
 
-The order is made once per epoch:
+The batches are a stream without end. Each pass over the tasks makes its order once:
 
 1. the tasks of every named dataset, in the order the datasets are listed;
-2. shuffled with the seed `seed + epoch`, the epoch counted from 0;
+2. shuffled with the seed `seed + n` for pass `n`, counted from 0;
 3. cut into batches of `batch_size`, keeping a short last batch.
 
-`epochs` repeats this. The same tasks and the same `seed` give the same batches in any
-process. Another `seed` gives another order. A blueprint with one task, `batch_size = 1`,
-`group_size = 4` and `epochs = 2` makes two batches, each a job of four trials:
+The next pass starts when one ends. The same tasks and the same `seed` give the same stream in
+any process, and a resumed run picks it up at the batch it had reached. Another `seed` gives
+another order. A run is counted in `[recipe] steps`, not passes: with one task, `batch_size = 1`
+and `group_size = 4`, `steps = 2` takes the task twice, each time a job of four trials:
 
 ```toml
 [data]
 dataset = "hello-world"
 batch_size = 1
 group_size = 4
-epochs = 2
+
+[recipe]
+kind = "dr-grpo"
+learning_rate = 2e-5
+steps = 2
 ```
 
-`evaluate` and the gradient recipes go through the batches in order. A `dapo` or `cispo` step
-short of groups that carry a gradient takes the next batches too, so its run has fewer steps than
-batches ([Dynamic sampling](recipes.md#dynamic-sampling)). `gepa` does not use
+The gradient recipes draw the stream's next batch for each step. A `dapo` or `cispo` step short of
+groups that carry a gradient draws more, so its run draws more batches than it takes steps
+([Dynamic sampling](recipes.md#dynamic-sampling)). `gepa` does not use
 them. It holds some tasks out to score the candidates it keeps, and runs each round on a minibatch
 of the rest ([gepa](gepa.md)). Of `[data]`, it reads only `dataset`, `group_size` and `seed`.
 

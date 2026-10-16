@@ -28,6 +28,7 @@ from shipyard.config import (
     DrGrpoRecipe,
     FstRecipe,
     GepaRecipe,
+    Gradient,
     Search,
     modules_dir,
 )
@@ -172,7 +173,7 @@ def environment_findings(cfg: Blueprint, environ: Mapping[str, str]) -> list[Fin
 
 
 def _data_findings(loaded: Blueprint) -> list[Finding]:
-    """The older spelling, a task in both sets, an evaluation cadence past the epochs."""
+    """The older spelling, a task in both sets, an evaluation cadence past the steps."""
     found: list[Finding] = []
     if "dataset" in loaded.raw.get("data", {}):
         key = "test" if loaded.recipe.kind == "evaluate" else "train"
@@ -191,13 +192,13 @@ def _data_findings(loaded: Blueprint) -> list[Finding]:
                     "not held out",
                 )
             )
-    data = loaded.data
-    if data.evaluate_every > data.epochs:
+    recipe = loaded.recipe
+    if isinstance(recipe, Gradient) and recipe.evaluate_every > recipe.steps:
         found.append(
             Finding(
                 "warning",
-                f"[data] evaluate_every: {data.evaluate_every} is past the {data.epochs} "
-                "epoch(s), so the run evaluates at its end only",
+                f"[recipe] evaluate_every: {recipe.evaluate_every} is past the {recipe.steps} "
+                "steps, so the run evaluates at its end only",
             )
         )
     return found

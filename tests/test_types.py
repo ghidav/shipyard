@@ -243,4 +243,4 @@ async def test_a_policy_that_cannot_enter_closes_the_client_it_opened() -> None:
 
 
 def test_an_evaluation_carries_its_mean() -> None:
-    assert types.Evaluation(0, 0, 4, 8, 7, 1, 0.5).reward_mean == 0.5
+    assert types.Evaluation(0, 4, 8, 7, 1, 0.5).reward_mean == 0.5

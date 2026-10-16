@@ -16,8 +16,8 @@ from typer.testing import CliRunner
 from shipyard import record
 from shipyard.cli import app
 from shipyard.run import Run
-from shipyard.runner import Runner
 from shipyard.show import state_of
+from shipyard.training.trainer import Trainer
 from tests.records import FakeProxy, made
 from tests.trials import BLUEPRINTS, FakeTrials, fixture_tasks
 
@@ -37,9 +37,9 @@ def isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("COLUMNS", "200")
 
 
-async def _finishes(self: Runner) -> None:
-    self.trainer.run.log(reward=1.0)
-    self.trainer.run.note(hello="world")
+async def _finishes(self: Trainer) -> None:
+    self.run.log(reward=1.0)
+    self.run.note(hello="world")
 
 
 def _only_run(root: Path) -> Path:
@@ -224,7 +224,7 @@ def test_check_blocks_a_training_kind_on_a_provider_model_and_run_starts_nothing
 def test_run_with_a_recipe_that_returns_ends_finished(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(Runner, "run", _finishes)
+    monkeypatch.setattr(Trainer, "train", _finishes)
     root, home = tmp_path / "r", EVALUATE
     result = runner.invoke(app, ["run", str(home), "--root", str(root)])
     assert result.exit_code == 0, result.output
@@ -248,11 +248,11 @@ def test_run_with_a_recipe_that_returns_ends_finished(
 def test_run_stopped_by_sigterm_records_the_signal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def stopped(self: Runner) -> None:
+    async def stopped(self: Trainer) -> None:
         os.kill(os.getpid(), signal.SIGTERM)
         await asyncio.sleep(5)
 
-    monkeypatch.setattr(Runner, "run", stopped)
+    monkeypatch.setattr(Trainer, "train", stopped)
     root = tmp_path / "r"
     before = signal.getsignal(signal.SIGTERM)
     result = runner.invoke(app, ["run", str(EVALUATE), "--root", str(root)])
@@ -273,7 +273,7 @@ def test_runs_and_show_with_nothing(tmp_path: Path) -> None:
 def test_root_flag_env_and_default_are_honored_alike(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(Runner, "run", _finishes)
+    monkeypatch.setattr(Trainer, "train", _finishes)
     flagged, env = tmp_path / "flag", tmp_path / "env"
 
     assert runner.invoke(app, ["run", str(EVALUATE), "--root", str(flagged)]).exit_code == 0
@@ -447,13 +447,13 @@ FINAL = {
     "sampler_path": "p",
     "step": 1,
     "updates": 1,
-    "epoch": 0,
+    "drawn": 1,
 }
 
 
-async def _checkpointed(self: Runner) -> None:
-    """`Runner.run` standing in: the run finishes with its `final` checkpoint and nothing else."""
-    record.append(self.trainer.run.directory / record.CHECKPOINTS, FINAL)
+async def _checkpointed(self: Trainer) -> None:
+    """`Trainer.train` standing in: the run ends with its `final` checkpoint and nothing else."""
+    record.append(self.run.directory / record.CHECKPOINTS, FINAL)
 
 
 def test_evaluate_measures_a_checkpoint_and_prints_its_row(
@@ -464,7 +464,7 @@ def test_evaluate_measures_a_checkpoint_and_prints_its_row(
     text = (EVALUATE / "run.toml").read_text(encoding="utf-8")
     text = text.replace('provider = "openrouter"', 'provider = "tinker"')
     (home / "run.toml").write_text(text, encoding="utf-8")
-    monkeypatch.setattr(Runner, "run", _checkpointed)
+    monkeypatch.setattr(Trainer, "train", _checkpointed)
     root = tmp_path / "r"
     assert runner.invoke(app, ["run", str(home), "--root", str(root)]).exit_code == 0
     directory = _only_run(root)
@@ -475,9 +475,8 @@ def test_evaluate_measures_a_checkpoint_and_prints_its_row(
     )
     result = runner.invoke(app, ["evaluate", directory.name, "--root", str(root)])
     assert result.exit_code == 0, result.output
-    assert result.output.splitlines()[-7:] == [
+    assert result.output.splitlines()[-6:] == [
         "  step         1",
-        "  epoch        0",
         "  tasks        2",
         "  rollouts     4",
         "  graded       4",
@@ -492,7 +491,7 @@ def test_evaluate_measures_a_checkpoint_and_prints_its_row(
 def test_a_refused_evaluate_leaves_a_finished_runs_note_as_it_was(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(Runner, "run", _checkpointed)
+    monkeypatch.setattr(Trainer, "train", _checkpointed)
     root = tmp_path / "r"
     assert runner.invoke(app, ["run", str(EVALUATE), "--root", str(root)]).exit_code == 0
     directory = _only_run(root)
@@ -513,8 +512,7 @@ def test_resume_and_evaluate_refuse_a_run_with_no_checkpoint(tmp_path: Path) -> 
     assert result.exit_code == 1 and "no run at" in result.output
 
 
-RUNNER_FILE = """\
-from shipyard.runner import Runner
+TRAINER_FILE = """\
 from shipyard.training.trainer import Trainer
 
 
@@ -522,61 +520,56 @@ class Marked(Trainer):
     @classmethod
     def rules(cls, recipe):
         return ["advantage = marked", *super().rules(recipe)[1:]]
-
-
-class MyRunner(Runner):
-    trainer = Marked
 """
 
 
-def _runner_file(path: Path, text: str = RUNNER_FILE) -> Path:
+def _trainer_file(path: Path, text: str = TRAINER_FILE) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     return path
 
 
-def test_check_with_a_runner_file_names_it_and_resolves_under_its_trainer(tmp_path: Path) -> None:
+def test_check_with_a_trainer_file_names_it_and_resolves_under_it(tmp_path: Path) -> None:
     home = _fixture_dapo(tmp_path)
-    file = _runner_file(home / "run.py")
+    file = _trainer_file(home / "mine.py")
     result = runner.invoke(app, ["check", str(home / "run.toml"), str(file), "--verbose"])
     assert result.exit_code == 0, result.output
     assert "# dapo: advantage = marked; loss = importance_sampling" in result.output
-    assert f"ok  runner MyRunner from {file}, trainer Marked" in result.output
-    empty = _runner_file(tmp_path / "empty" / "run.py", "x = 1\n")
+    assert f"ok  trainer Marked from {file}" in result.output
+    empty = _trainer_file(tmp_path / "empty" / "mine.py", "x = 1\n")
     result = runner.invoke(app, ["check", str(home), str(empty)])
     assert (
-        result.exit_code == 1 and f"blocked  {empty} defines 0 Runner subclasses" in result.output
+        result.exit_code == 1 and f"blocked  {empty} defines 0 Trainer subclasses" in result.output
     )
 
 
-def test_run_under_a_runner_file_keeps_a_copy_and_resumes_under_it(
+def test_run_under_a_trainer_file_keeps_a_copy_and_resumes_under_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def marks(self: Runner) -> None:
-        self.trainer.run.note(ran=type(self).__name__, under=type(self.trainer).__name__)
-        record.append(self.trainer.run.directory / record.CHECKPOINTS, FINAL)
+    async def marks(self: Trainer) -> None:
+        self.run.note(ran=type(self).__name__)
+        record.append(self.run.directory / record.CHECKPOINTS, FINAL)
 
-    monkeypatch.setattr(Runner, "run", marks)
-    root, file = tmp_path / "r", _runner_file(tmp_path / "bp" / "run.py")
+    monkeypatch.setattr(Trainer, "train", marks)
+    root, file = tmp_path / "r", _trainer_file(tmp_path / "bp" / "mine.py")
     result = runner.invoke(app, ["run", str(EVALUATE / "run.toml"), str(file), "--root", str(root)])
     assert result.exit_code == 0, result.output
     directory = _only_run(root)
     note = Run.read(directory)
-    assert note["ran"] == "MyRunner" and note["under"] == "Marked"
-    assert note["runner"] == str(file.resolve())
-    assert (directory / record.RUNNER).read_text(encoding="utf-8") == RUNNER_FILE
-    assert "runner MyRunner" not in result.output, "the ok line is check's"
+    assert note["ran"] == "Marked" and note["trainer"] == str(file.resolve())
+    assert (directory / record.TRAINER).read_text(encoding="utf-8") == TRAINER_FILE
+    assert "trainer Marked from" not in result.output, "the ok line is check's"
 
     file.unlink()
     result = runner.invoke(app, ["run", directory.name, "--resume", "--root", str(root)])
     assert result.exit_code == 0, result.output
     note = Run.read(directory)
-    assert note["ran"] == "MyRunner" and note["under"] == "Marked", "the copy, not the file"
+    assert note["ran"] == "Marked", "the copy, not the file"
     assert note["resumed"] == "final"
 
 
-def test_run_with_a_broken_runner_file_starts_nothing(tmp_path: Path) -> None:
-    broken = _runner_file(tmp_path / "bp" / "run.py", "1 / 0\n")
+def test_run_with_a_broken_trainer_file_starts_nothing(tmp_path: Path) -> None:
+    broken = _trainer_file(tmp_path / "bp" / "mine.py", "1 / 0\n")
     root = tmp_path / "none"
     result = runner.invoke(app, ["run", str(EVALUATE), str(broken), "--root", str(root)])
     assert result.exit_code == 1, result.output

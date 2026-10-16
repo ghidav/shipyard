@@ -52,8 +52,8 @@ ok  pareto: none held out; 1 task both reflected and selected on
 
 The policy can be served by a provider, as it is here, or by this run through the [proxy](proxy.md).
 `gepa` runs `group_size` rollouts of every task it scores. Of `[data]` it reads `dataset`,
-`group_size` and `seed`. It does not use `batch_size` or `epochs`, although `batch_size` must
-still be set. hello-world has one task, so `pareto = 0` scores it both as a feedback task and as a
+`group_size` and `seed`. It does not use `batch_size`, although it must still be set, and it
+takes no `steps`: one search runs until its budget is spent. hello-world has one task, so `pareto = 0` scores it both as a feedback task and as a
 Pareto task.
 
 ## The two task sets

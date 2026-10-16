@@ -22,9 +22,9 @@ from shipyard.config import (
 from shipyard.data import Generator, held_out, search_sets, tasks
 from shipyard.modules import SKILL_FILE, seed
 from shipyard.preflight import NO_REFLECTOR, Finding
+from shipyard.recipes import trainer_for
 from shipyard.recipes.gepa import BEST, SEED, GEPATrainer
 from shipyard.run import Run
-from shipyard.runner import Runner
 from tests.trials import (
     BLUEPRINTS,
     GEPA,
@@ -63,7 +63,7 @@ async def test_the_recipe_runs_end_to_end_on_fakes(
     assert opened.carried is None and opened.config.recipe.budget is None
     fakes = harbor(Fakes())
     with opened:
-        await Runner.from_run(opened).run()
+        await trainer_for(opened.config.recipe)(opened).train()
     seeded = seed(home / "modules")
     kept = opened.directory / record.MODULES
     assert seed(kept / SEED) == seeded, "the blueprint's modules, as the search started"
@@ -137,7 +137,7 @@ async def test_by_default_two_thirds_are_held_out_and_the_winner_is_scored_on_th
     opened = Run.open(home, root=tmp_path / "runs")
     fakes = harbor(Fakes())
     with opened:
-        await Runner.from_run(opened).run()
+        await trainer_for(opened.config.recipe)(opened).train()
     taught, held = feedback[0].name, pareto[0].name
     assert _names(fakes.configs) == [held, taught, "reflection", taught, held]
     assert fakes.reflected == [[f"00-tasks-fixture-{taught}.txt"]]
@@ -166,7 +166,7 @@ async def test_data_seed_draws_the_minibatches(
         opened = Run.open(home, root=tmp_path / "runs")
         fakes = harbor(Fakes())
         with opened:
-            await Runner.from_run(opened).run()
+            await trainer_for(opened.config.recipe)(opened).train()
         names = _names(fakes.configs)
         runs = [names[at - 2 : at] for at, name in enumerate(names) if name == "reflection"]
         feedback, _ = search_sets(tasks("six"), 0, seed=value)
@@ -175,33 +175,6 @@ async def test_data_seed_draws_the_minibatches(
         )
         found[value] = runs
     assert found[0] != found[7]
-
-
-async def test_a_second_pass_searches_again_from_the_first_passs_best(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    harbor: Harbor,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    text = GEPA.replace("batch_size = 1", "batch_size = 1\nepochs = 2") + "pareto = 0\n"
-    home = _blueprint(tmp_path, text)
-    opened = Run.open(home, root=tmp_path / "runs")
-    harbor(Fakes())
-    with opened:
-        agent = await Runner.from_run(opened).run()
-    seeded = seed(home / "modules")
-    kept = opened.directory / record.MODULES
-    assert seed(kept / SEED) == seeded, "kept once, by the first pass"
-    rows = [row for row in record.read(opened.directory / record.METRICS) if "evolution" in row]
-    first, second = rows
-    assert (first["epoch"], second["epoch"]) == (0, 1)
-    jobs = list(record.read(opened.directory / record.JOBS))
-    scored = [job for job in jobs if job["purpose"] == "search" and job.get("round") == 0]
-    assert [job["modules"] for job in scored] == [seeded.digest, first["best"]], (
-        "the second pass starts from the first pass's best"
-    )
-    assert agent.modules is not None
-    assert seed(kept / BEST).digest == second["best"] == agent.modules.digest
 
 
 async def test_a_quiet_reflector_leaves_the_seed_as_the_winner(
@@ -221,7 +194,7 @@ async def test_a_quiet_reflector_leaves_the_seed_as_the_winner(
 
     harbor(quiet)
     with opened:
-        agent = await Runner.from_run(opened, GEPATrainer).run()
+        agent = await GEPATrainer(opened).train()
     seeded = seed(opened.directory / record.MODULES / SEED)
     assert seed(opened.directory / record.MODULES / BEST) == seeded
     assert agent.modules == seeded, "handed back, for a caller"
@@ -257,7 +230,7 @@ async def test_a_seed_perfect_on_its_minibatches_is_never_reflected_on(
 
     harbor(solved)
     with opened:
-        await Runner.from_run(opened).run()
+        await trainer_for(opened.config.recipe)(opened).train()
     assert "reflection" not in ran and len(ran) == 3, "the seed's scoring, then two parents"
     *rounds, final = list(record.read(opened.directory / record.METRICS))
     assert [(row["skipped"], row["component"], row["child"]) for row in rounds] == [

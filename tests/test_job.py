@@ -135,7 +135,6 @@ async def test_the_job_row_counts_verdicts_endings_tokens_and_seconds(
         "purpose": "training",
         "step": 0,
         "tasks": 2,
-        "epoch": 0,
         "trials": 4,
         "graded": 2,
         "masked": {"timeout": 2},

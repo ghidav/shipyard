@@ -1,10 +1,10 @@
-"""The procedure: `train`, `job`, `step`. A recipe is a subclass overriding the rules it changes."""
+"""The run: `train`, `sample`, `job`, `step`. A recipe is a subclass overriding what it changes."""
 
 from __future__ import annotations
 
 import logging
 import time
-from collections.abc import AsyncIterator, Awaitable, Mapping
+from collections.abc import Awaitable, Iterator, Mapping
 from collections.abc import Sequence as Values
 from dataclasses import dataclass
 from statistics import fmean, pstdev
@@ -14,14 +14,14 @@ import torch
 
 from shipyard import record
 from shipyard.credit import advantages, anchor_logprobs, sampler_logprobs
-from shipyard.modules import Candidate
+from shipyard.data import Generator
 from shipyard.pack import datum, groups
-from shipyard.sampling.endpoint import NothingServed
+from shipyard.sampling.endpoint import NothingServed, endpoint_for
 from shipyard.sampling.engine import HarborEngine
+from shipyard.training.client import TinkerClient
 from shipyard.types import (
     Adam,
     Agent,
-    Batches,
     Datum,
     Evaluation,
     Forward,
@@ -31,7 +31,9 @@ from shipyard.types import (
     Sequence,
     Task,
     TrainingClient,
+    TrainingStep,
     Update,
+    harness,
 )
 
 if TYPE_CHECKING:
@@ -113,7 +115,8 @@ class Credit:
 
 
 class Trainer:
-    """The plain policy gradient."""
+    """The plain policy gradient, and the run around it: the agent opened, `[recipe] steps`
+    steps taken, the test set measured and the weights checkpointed `final`."""
 
     #: Tinker's loss, with `bounds` as its config.
     loss_fn = "importance_sampling"
@@ -153,31 +156,86 @@ class Trainer:
         self.recipe = run.config.recipe
         #: One engine, so every job in flight shares its `[rollout] concurrency`.
         self.engine = HarborEngine(run.config.rollout, progress=run.progress)
+        #: The blueprint's tasks, read when the trainer is made so a missing dataset stops it
+        #: before anything opens: the train set as a stream of batches, and the test set.
+        self.generator = Generator.of(run.config)
+        #: What the agent carries: the run's own modules, or the ones a checkpoint restores.
+        self.modules = run.carried
+        #: The checkpoint row the run reopened at; None on a fresh run.
+        self.resumed: Mapping[str, Any] | None = None
         self.steps = 0
         self.updates = 0
-        self.epoch = 0
+        #: Batches drawn from the generator.
+        self.drawn = 0
+        #: The step the test set was last measured after; None before it was.
+        self.evaluated: int | None = None
+        self._stream: Iterator[list[Task]] | None = None
 
-    async def train(self, agent: Agent, tasks: Batches) -> Agent:
-        """One epoch: a step per yield of `sample`, the weights served after each update."""
-        every = self.run.config.checkpoints.every
-        async for found in self.sample(agent, tasks):
-            if any(len(group.shaped) != len(group.members) for group in found):
-                raise ValueError(f"{type(self).__name__}.sample yielded groups it never credited")
-            update = await self.step(agent, found)
-            self.log(found, update)
-            self.steps += 1
-            if update is None:
-                continue
+    def agent(self) -> Agent:
+        """The agent the run samples: the policy over the run's endpoint, with the training
+        client when the recipe trains, standing at the checkpoint reopened at, and carrying
+        `modules`."""
+        cfg, row = self.run.config, self.resumed or {}
+        client = TinkerClient.from_run(self.run) if cfg.trains else None
+        policy = Policy(
+            endpoint_for(cfg, self.run.directory),
+            client,
+            start=row.get("sampler_path"),
+            state=row.get("state_path"),
+            anchored=cfg.trains and cfg.recipe.kl_coef > 0,
+        )
+        return Agent(policy, [harness(cfg.rollout.harness)], self.modules)
+
+    async def train(self) -> Agent:
+        """The run: open the agent, take `[recipe] steps` steps (the evaluate kind takes none),
+        then `finish`."""
+        steps = self.recipe.steps if self.run.config.trains else 0
+        agent = self.agent()
+        async with agent.policy:
+            while self.steps < steps:
+                await self.advance(agent)
+            return await self.finish(agent)
+
+    async def advance(self, agent: Agent) -> None:
+        """One step of the run: `sample`, `step`, `log`; then the new weights served, and the
+        checkpoint and the evaluation on their cadences."""
+        found = await self.sample(agent)
+        if any(len(group.shaped) != len(group.members) for group in found):
+            raise ValueError(f"{type(self).__name__}.sample returned groups it never credited")
+        done = await self.step(agent, found)
+        self.log(done)
+        self.steps += 1
+        if done.update is not None:
             self.updates += 1
             await agent.policy.sync(f"sample-{self.steps}")
+            every = self.run.config.checkpoints.every
             if every and self.updates % every == 0:
                 await self.checkpoint(agent, f"step-{self.steps}")
+        every = self.recipe.evaluate_every
+        if every and self.steps % every == 0:
+            await self.evaluate(agent, self.generator.test)
+
+    async def finish(self, agent: Agent) -> Agent:
+        """The run's end: the test set measured unless the last step just was, and the
+        weights checkpointed `final`."""
+        if self.generator.test and self.evaluated != self.steps:
+            await self.evaluate(agent, self.generator.test)
+        await self.checkpoint(agent, "final", keep=True)
         return agent
 
-    async def sample(self, agent: Agent, tasks: Batches) -> AsyncIterator[list[Group]]:
-        """How a step's groups are composed out of jobs: one job per batch."""
-        for batch in tasks:
-            yield self.credited(await self.job(agent, batch))
+    def draw(self) -> list[Task]:
+        """The generator's next batch, counted in `drawn`."""
+        if self._stream is None:
+            self._stream = self.generator.batches(self.drawn)
+        batch = next(self._stream, None)
+        if batch is None:
+            raise ValueError("there is no batch to draw: the run names no train tasks")
+        self.drawn += 1
+        return batch
+
+    async def sample(self, agent: Agent) -> list[Group]:
+        """A step's groups, credited: one job over the generator's next batch."""
+        return self.credited(await self.job(agent, self.draw()))
 
     async def job(
         self,
@@ -196,7 +254,6 @@ class Trainer:
             run,
             purpose=purpose,
             step=self.steps,
-            epoch=self.epoch,
             modules=agent.modules,
             about=about,
         )
@@ -229,7 +286,6 @@ class Trainer:
         rollouts = sum(len(group.members) for group in found)
         result = Evaluation(
             step=self.steps,
-            epoch=self.epoch,
             tasks=len({group.task for group in found}),
             rollouts=rollouts,
             graded=len(measured),
@@ -239,7 +295,18 @@ class Trainer:
             else None,
         )
         self.run.log(evaluation=True, **vars(result), **more)
+        self.evaluated = self.steps
         return result
+
+    async def measure(self, tasks: Values[Task]) -> Evaluation | None:
+        """The checkpoint the trainer stands at, evaluated on `tasks` as one more row."""
+        if self.resumed is None:
+            raise ValueError("an evaluation needs a run reopened at a checkpoint")
+        cfg = self.run.config
+        policy = Policy(endpoint_for(cfg, self.run.directory), start=self.resumed["sampler_path"])
+        agent = Agent(policy, [harness(cfg.rollout.harness)], self.modules)
+        async with agent.policy:
+            return await self.evaluate(agent, list(tasks), checkpoint=self.resumed["tag"])
 
     def credited(self, found: list[Group]) -> list[Group]:
         """`found`, each group's shaped rewards and advantages set by this class's rules."""
@@ -340,14 +407,15 @@ class Trainer:
             for scored, base in zip(mu, anchored, strict=True)
         ]
 
-    async def step(self, agent: Agent, found: Values[Group]) -> Update | None:
-        """The gradient in `substeps` parts of whole groups; None without a client or datums."""
+    async def step(self, agent: Agent, found: Values[Group]) -> TrainingStep:
+        """The gradient in `substeps` parts of whole groups; no update without a client or
+        datums."""
         # Reproduces `train_step` of tinker_cookbook/rl/train.py (Thinking Machines Lab,
         # Apache-2.0).
         recipe, run = self.recipe, self.run
         client = agent.policy.client
         if client is None:
-            return None
+            return TrainingStep(self.steps, list(found))
         began = time.monotonic()
         party = agent.policy.endpoint.party or run.config.model.provider
         credit = await self.credit(agent.policy, found)
@@ -356,7 +424,7 @@ class Trainer:
         )
         parts = [one for one in credit.datums if one]
         if not parts:
-            return None
+            return TrainingStep(self.steps, list(found))
         # The papers' mini-batches are sets of prompts, so a group is not split across parts.
         count = min(recipe.substeps, len(parts))
         pieces = [[one for group in piece for one in group] for piece in split(parts, count)]
@@ -382,7 +450,7 @@ class Trainer:
                 forward, optim = following
         run.spent(party, train_tokens=train_tokens)
         seen = observed(datums, trained)
-        return Update(
+        update = Update(
             train_tokens=train_tokens,
             substeps=count,
             learning_rate=rate,
@@ -394,6 +462,7 @@ class Trainer:
             sequences=credit.sequences,
             anchor_kl=credit.anchor_kl,
         )
+        return TrainingStep(self.steps, list(found), update)
 
     async def _submit(
         self, client: TrainingClient, part: list[Datum], rate: float
@@ -401,8 +470,9 @@ class Trainer:
         forward = await client.forward_backward(part, self.loss_fn, self.bounds())
         return forward, await client.optim_step(self.ADAM, rate)
 
-    def log(self, found: Values[Group], update: Update | None, **more: Any) -> None:
+    def log(self, done: TrainingStep, **more: Any) -> None:
         """The step's row in `ROW` order, naming its jobs, with `more` in it or after it."""
+        found, update = done.groups, done.update
         measured = [one for group in found for one in group.measured]
         rollouts = sum(len(group.members) for group in found)
         spreads = [
@@ -414,7 +484,7 @@ class Trainer:
         sequences = update.sequences if update is not None else 0
         jobs = list(dict.fromkeys(one.trial.job for group in found for one in group.members))
         row: dict[str, Any] = {
-            "step": self.steps,
+            "step": done.index,
             "trained": update is not None,
             "jobs": jobs,
             "groups": len(found),
@@ -457,7 +527,7 @@ class Trainer:
                 "ttl_hours": hours,
                 "step": self.steps,
                 "updates": self.updates,
-                "epoch": self.epoch,
+                "drawn": self.drawn,
                 "modules": agent.modules.digest if agent.modules is not None else None,
                 "harness": [one.name for one in agent.harness],
                 **more,
@@ -465,21 +535,11 @@ class Trainer:
         )
         logger.info("checkpoint %s: %s", tag, sampler)
 
-    def consumed(self, jobs: Values[Mapping[str, Any]], row: Mapping[str, Any]) -> int:
-        """The batches of the checkpoint's epoch stepped before it: its training jobs. A run
-        recorded before the keys were `step` and `training` wrote `batch` and `rollout`."""
-        return sum(
-            1
-            for job in jobs
-            if job.get("purpose") in ("training", "rollout")
-            and job.get("epoch") == row["epoch"]
-            and job.get("step", job.get("batch", -1)) < row["step"]
-        )
-
-    def restore(self, row: Mapping[str, Any], consumed: int) -> Candidate | None:
-        """Stand where the checkpoint row stood; returns the modules the agent carries."""
-        self.steps, self.updates, self.epoch = row["step"], row["updates"], row["epoch"]
-        return self.run.carried
+    def restore(self, row: Mapping[str, Any]) -> None:
+        """Stand where the checkpoint row stood: its counts, the batches it had drawn, and its
+        weights for the agent to open at."""
+        self.resumed = row
+        self.steps, self.updates, self.drawn = row["step"], row["updates"], row["drawn"]
 
 
 def split(items: list[Any], parts: int) -> list[list[Any]]:

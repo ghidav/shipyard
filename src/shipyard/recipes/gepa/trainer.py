@@ -17,7 +17,7 @@ from shipyard.recipes.gepa.fitness import Outcome
 from shipyard.recipes.gepa.outcomes import outcomes
 from shipyard.recipes.gepa.reflect import reflect
 from shipyard.training.trainer import Trainer
-from shipyard.types import Agent, Batches
+from shipyard.types import Agent
 
 if TYPE_CHECKING:
     from shipyard.run import Run
@@ -90,18 +90,20 @@ class GEPATrainer(Trainer):
         )
         return outcomes(found)
 
-    async def train(self, agent: Agent, tasks: Batches) -> Agent:
-        """One search over the pass's tasks, from the modules the agent carries; a first pass
-        starts from `[recipe] modules`, kept under `seed`."""
+    async def train(self) -> Agent:
+        """One search within the budget over the generator's tasks, then `finish`."""
+        agent = self.agent()
+        async with agent.policy:
+            return await self.finish(await self.search(agent))
+
+    async def search(self, agent: Agent) -> Agent:
+        """GEPA over the train tasks from `[recipe] modules`, kept under `seed`; the agent
+        carries the best candidate, kept under `best`."""
         recipe, data = self.recipe, self.run.config.data
         kept = self.run.directory / record.MODULES
-        start = agent.modules
-        if start is None:
-            start = seed(self.run.config.home / recipe.modules)
-            keep(start, kept / SEED)
-        feedback, pareto = search_sets(
-            (task for batch in tasks for task in batch), recipe.pareto, seed=data.seed
-        )
+        start = seed(self.run.config.home / recipe.modules)
+        keep(start, kept / SEED)
+        feedback, pareto = search_sets(self.generator.train, recipe.pareto, seed=data.seed)
         budget = recipe.budget or DEFAULT_PASSES * len({*feedback, *pareto}) * data.group_size
         result = await self.evolve(
             agent,
@@ -111,12 +113,11 @@ class GEPATrainer(Trainer):
             budget=budget,
             minibatch=recipe.minibatch,
             patience=recipe.patience,
-            rng=random.Random(data.seed + self.epoch),
+            rng=random.Random(data.seed),
         )
         keep(result.best, kept / BEST)
         self.run.log(
             evolution=True,
-            epoch=self.epoch,
             rounds=result.rounds,
             spent=result.spent,
             best=result.best.digest,

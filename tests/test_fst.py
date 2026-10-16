@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import random
 import shutil
+from itertools import islice
 from pathlib import Path
 from typing import Any
 
@@ -24,11 +25,17 @@ from shipyard.config import (
 )
 from shipyard.data import Generator, tasks
 from shipyard.modules import seed
-from shipyard.recipes import resolution, trainer_for
+from shipyard.recipes import reopened, resolution, trainer_for
 from shipyard.recipes.cispo import CISPOTrainer
-from shipyard.recipes.fst import ADAM, BUDGET_PASSES, fst_trainer, merged, slow_recipe
+from shipyard.recipes.fst import (
+    ADAM,
+    BUDGET_PASSES,
+    FSTTrainer,
+    fst_trainer,
+    merged,
+    slow_recipe,
+)
 from shipyard.run import Run
-from shipyard.runner import Runner
 from shipyard.sampling.endpoint import ProviderEndpoint
 from shipyard.types import Agent, Group, Member, Policy, Sequence, Trial, Verdict, harness
 from tests.trials import (
@@ -46,6 +53,13 @@ from tests.trials import (
 
 FST = BLUEPRINTS / "fst"
 AGENT = Agent(Policy(ProviderEndpoint("m")), [harness("pi")])
+
+
+@pytest.fixture(autouse=True)
+def _tasks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fixture's `aime-train` under the working directory, for a trainer to read."""
+    monkeypatch.chdir(tmp_path)
+    dataset(tmp_path / "tasks", "aime-train", "a", "b")
 
 
 def _text(**changes: str) -> str:
@@ -146,13 +160,13 @@ async def test_the_jobs_of_a_step_merge_into_one_group_per_task(tmp_path: Path) 
 
 
 @pytest.mark.usefixtures("fakes")
-async def test_the_slow_steps_run_the_slow_classs_own_train(tmp_path: Path, harbor: Harbor) -> None:
+async def test_the_slow_steps_are_the_slow_classs_own(tmp_path: Path, harbor: Harbor) -> None:
     passes: list[int] = []
 
     class Marked(CISPOTrainer):
-        async def train(self, agent: Agent, tasks: Any) -> Agent:
+        async def advance(self, agent: Agent) -> None:
             passes.append(self.steps)
-            return await super().train(agent, tasks)
+            await super().advance(agent)
 
     dataset(tmp_path / "tasks", "four", *"abcd")
     home = write_blueprint(
@@ -161,13 +175,11 @@ async def test_the_slow_steps_run_the_slow_classs_own_train(tmp_path: Path, harb
     shutil.copytree(VALID, home / "modules")
     opened = Run.open(home, root=tmp_path / "runs")
     harbor(Fakes())
-    started = Runner.from_run(opened, fst_trainer(Marked))
+    started = fst_trainer(Marked)(opened)
     with opened:
-        await started.run()
-    assert type(started.trainer).__name__ == "FSTMarked"
-    assert passes and passes[0] == 0 and len(passes) == started.trainer.cycles, (
-        "the slow class's train runs once per cycle, for its slow steps"
-    )
+        await started.train()
+    assert type(started).__name__ == "FSTMarked"
+    assert passes == [0, 1] and started.cycles == 1, "the slow class takes each slow step"
 
 
 @pytest.mark.usefixtures("fakes")
@@ -183,7 +195,7 @@ async def test_a_cycle_evolves_two_texts_then_splits_every_group_across_them(
     opened = Run.open(home, root=tmp_path / "runs")
     harbor(Fakes())
     with opened:
-        await Runner.from_run(opened).run()
+        await trainer_for(opened.config.recipe)(opened).train()
     rows = list(record.read(opened.directory / record.METRICS))
     (evolution,) = [row for row in rows if row.get("evolution")]
     population = evolution["population"]
@@ -220,7 +232,7 @@ async def test_the_fast_phase_scores_each_cell_with_one_rollout_on_five_passes(
     opened = Run.open(home, root=tmp_path / "runs")
     harbor(Fakes())
     with opened:
-        await Runner.from_run(opened).run()
+        await trainer_for(opened.config.recipe)(opened).train()
     rows = list(record.read(opened.directory / record.METRICS))
     (evolution,) = [row for row in rows if row.get("evolution")]
     assert 0 < evolution["spent"] <= BUDGET_PASSES * 4, "five passes over four tasks"
@@ -246,7 +258,7 @@ async def test_patience_ends_a_fast_phase_as_it_ends_gepa(tmp_path: Path, harbor
     opened = Run.open(home, root=tmp_path / "runs")
     harbor(Fakes())
     with opened:
-        await Runner.from_run(opened).run()
+        await trainer_for(opened.config.recipe)(opened).train()
     rows = list(record.read(opened.directory / record.METRICS))
     rounds = [row for row in rows if "round" in row]
     assert len(rounds) == 2 and rounds[0]["accepted"] is True
@@ -258,26 +270,26 @@ async def test_patience_ends_a_fast_phase_as_it_ends_gepa(tmp_path: Path, harbor
 async def test_cycle_c_draws_its_minibatches_with_data_seed_plus_c(
     tmp_path: Path, harbor: Harbor
 ) -> None:
-    """Two cycles over two epochs of four tasks: each fast phase's parents run on the
+    """Two cycles over two passes of four tasks: each fast phase's parents run on the
     minibatches `[data] seed + cycle` predicts over that cycle's tasks."""
     dataset(tmp_path / "tasks", "four", *"abcd")
     changes = {
         '"aime-train"': '"four"',
-        "group_size = 4": "group_size = 2\nepochs = 2\nseed = 3",
+        "group_size = 4": "group_size = 2\nseed = 3",
+        "steps = 2": "steps = 4",
     }
     home = write_blueprint(tmp_path, _text(**changes))
     shutil.copytree(VALID, home / "modules")
     opened = Run.open(home, root=tmp_path / "runs")
     trials = harbor(Fakes())
     with opened:
-        await Runner.from_run(opened).run()
+        await trainer_for(opened.config.recipe)(opened).train()
     names = [Path(str(config.task.path)).name for config in trials.configs]
     runs = [names[at - 3 : at] for at, name in enumerate(names) if name == "reflection"]
     cycles = [
         row["cycle"] for row in record.read(opened.directory / record.METRICS) if "round" in row
     ]
-    made = Generator(tasks("four"), 2, 3)
-    planned = [*made.batches(0), *made.batches(1)]
+    planned = list(islice(Generator(tasks("four"), 2, 3).batches(), 4))
     for cycle in (0, 1):
         asked = list(
             dict.fromkeys(task for batch in planned[2 * cycle : 2 * cycle + 2] for task in batch)
@@ -332,8 +344,7 @@ async def test_a_cycle_interrupted_after_a_slow_step_resumes_without_another_fas
     shutil.copytree(VALID, home / "modules")
     opened = Run.open(home, root=tmp_path / "runs")
     harbor(AlternatingFakes())
-    started = Runner.from_run(opened)
-    trainer = started.trainer
+    trainer = trainer_for(opened.config.recipe)(opened)
     checkpointed, job = trainer.checkpoint, trainer.job
     stopping = False
 
@@ -351,29 +362,29 @@ async def test_a_cycle_interrupted_after_a_slow_step_resumes_without_another_fas
     trainer.checkpoint = stop_after_the_checkpoint  # type: ignore[method-assign]
     trainer.job = stopped_job  # type: ignore[method-assign]
     with pytest.raises(Stopped), opened:
-        await started.run()
+        await trainer.train()
     (saved,) = list(record.read(opened.directory / record.CHECKPOINTS))
-    assert (saved["tag"], saved["cycle"]) == ("step-1", 0)
+    assert (saved["tag"], saved["cycle"], saved["drawn"], saved["pending"]) == ("step-1", 0, 2, 1)
     before = list(record.read(opened.directory / record.JOBS))
 
-    resumed = Runner.from_checkpoint(opened.directory)
-    assert resumed.consumed == 1 and resumed.trainer.offset == 1
-    assert resumed.trainer.cycles == 0
-    population = [one.digest for one in resumed.trainer.population]
+    resumed = reopened(opened.directory)
+    assert isinstance(resumed, FSTTrainer)
+    assert (resumed.cycles, resumed.drawn, len(resumed.pending)) == (0, 2, 1), (
+        "the cycle's second batch, drawn again"
+    )
+    population = [one.digest for one in resumed.population]
     assert len(population) == 2 and resumed.modules is not None
     assert resumed.modules.digest == population[0]
     harbor(AlternatingFakes())
-    with resumed.trainer.run:
-        await resumed.run()
-    after = list(record.read(resumed.trainer.run.directory / record.JOBS))[len(before) :]
+    with resumed.run:
+        await resumed.train()
+    after = list(record.read(resumed.run.directory / record.JOBS))[len(before) :]
     assert [job["purpose"] for job in after] == ["training", "training"], (
         "the cycle's last step only"
     )
     assert [job["modules"] for job in after] == population
-    rows = [
-        row for row in record.read(resumed.trainer.run.directory / record.METRICS) if "step" in row
-    ]
+    rows = [row for row in record.read(resumed.run.directory / record.METRICS) if "step" in row]
     assert [(row["step"], row["cycle"]) for row in rows] == [(0, 0), (1, 0)]
-    saved = list(record.read(resumed.trainer.run.directory / record.CHECKPOINTS))
+    saved = list(record.read(resumed.run.directory / record.CHECKPOINTS))
     assert [(c["tag"], c["cycle"]) for c in saved] == [("step-1", 0), ("step-2", 0), ("final", 1)]
-    assert seed(resumed.trainer.run.directory / record.MODULES / "best").digest == population[0]
+    assert seed(resumed.run.directory / record.MODULES / "best").digest == population[0]

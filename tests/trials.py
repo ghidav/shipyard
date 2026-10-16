@@ -83,6 +83,10 @@ def dataset(root: Path, name: str, *tasks: str) -> Path:
     return home
 
 
+#: The fixture's four tasks in one batch, and one step to take them all.
+ONE_STEP = {"batch_size = 2": "batch_size = 4", "steps = 2": "steps = 1"}
+
+
 def blueprint(tmp_path: Path, kind: str = "dapo", *, tasks: int = 4, **replacements: str) -> Path:
     """The recipe's fixture over `tasks` tasks named a, b, c..., two per batch, groups of two."""
     if not (tmp_path / "tasks" / "four").is_dir():

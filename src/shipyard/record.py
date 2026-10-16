@@ -16,8 +16,8 @@ METRICS = "metrics.jsonl"
 CHECKPOINTS = "checkpoints.jsonl"
 REQUESTS = "requests.jsonl"
 COSTS = "costs.json"
-#: A copy of the runner file the run was opened under, when it was.
-RUNNER = "runner.py"
+#: A copy of the trainer file the run was opened under, when it was.
+TRAINER = "trainer.py"
 #: A directory, not a file: the modules the run carried (`carried/`), and a search's
 #: `seed/` and `best/`.
 MODULES = "modules"
