@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import random
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -100,21 +100,22 @@ def _task_dirs(home: Path) -> list[Path]:
 PAPER_PARETO = (2, 3)
 
 
-def search_sets(loaded: Blueprint) -> tuple[list[Path], list[Path]]:
-    """gepa's two task lists, GEPA's D_feedback and D_pareto (Alg. 1 line 1). Minibatches are
-    drawn from the first. Every candidate the search keeps is scored on the second. A dataset
-    name is D_pareto, and the run's tasks are D_feedback. A count holds that many of the run's
-    tasks out, drawn with `[data] seed`. 0 keeps every task in both (GEPA 6). Unset holds out
-    two thirds, as in three of GEPA's four benchmarks. Raises ValueError when either list
-    would be empty."""
-    listed = [task for name in loaded.datasets for task in tasks(name)]
-    named = loaded.recipe.pareto
-    if isinstance(named, str):
-        return listed, tasks(named)
-    if named == 0:
+def search_sets(
+    found: Iterable[Path], pareto: int | str | None, *, seed: int
+) -> tuple[list[Path], list[Path]]:
+    """gepa's two task lists, GEPA's D_feedback and D_pareto (Alg. 1 line 1), out of the tasks
+    `found`, each once in path order. Minibatches are drawn from the first. Every candidate
+    the search keeps is scored on the second. `pareto` as a dataset name is D_pareto, and the
+    tasks are D_feedback. A count holds that many of them out, drawn with `seed`. 0 keeps
+    every task in both (GEPA 6). None holds out two thirds, as in three of GEPA's four
+    benchmarks. Raises ValueError when either list would be empty."""
+    listed = sorted(set(found))
+    if isinstance(pareto, str):
+        return listed, tasks(pareto)
+    if pareto == 0:
         return listed, list(listed)
     share, whole = PAPER_PARETO
-    count = len(listed) * share // whole if named is None else named
+    count = len(listed) * share // whole if pareto is None else pareto
     if count < 1:
         raise ValueError(
             "one task cannot be split; 0 selects on the task the search reflects on, and a "
@@ -122,7 +123,7 @@ def search_sets(loaded: Blueprint) -> tuple[list[Path], list[Path]]:
         )
     if count >= len(listed):
         raise ValueError(f"holding out {count} of {_tasks(len(listed))} leaves none to reflect on")
-    return held_out(listed, count, seed=loaded.data.seed)
+    return held_out(listed, count, seed=seed)
 
 
 def _tasks(count: int) -> str:
