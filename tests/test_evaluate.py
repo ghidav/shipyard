@@ -10,9 +10,8 @@ from shipyard import record
 from shipyard.admit import BUDGET
 from shipyard.run import Run
 from shipyard.runner import Runner
-from shipyard.sampling.endpoint import ProxyEndpoint
 from tests.records import FakeProxy, made
-from tests.trials import BLUEPRINTS, FakeTrials, dataset
+from tests.trials import BLUEPRINTS, FakeTrials, Harbor, dataset
 
 EVALUATE = BLUEPRINTS / "evaluate"
 #: One outcome per task of the four-task dataset: two graded, one timeout, one crash.
@@ -37,21 +36,21 @@ def _blueprint(tmp_path: Path, **replacements: str) -> Path:
     return home
 
 
-async def _run(home: Path, tmp_path: Path, trials: FakeTrials) -> Run:
+async def _run(home: Path, tmp_path: Path) -> Run:
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.engine.run_trial = trials
     with opened:
         await Runner.from_run(opened).run()
     return opened
 
 
 async def test_the_test_set_is_measured_in_one_row_over_one_job_per_batch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    harbor: Harbor,
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    opened = await _run(
-        _blueprint(tmp_path), tmp_path, FakeTrials(breaks=("d",), outcomes=OUTCOMES)
-    )
+    harbor(FakeTrials(breaks=("d",), outcomes=OUTCOMES))
+    opened = await _run(_blueprint(tmp_path), tmp_path)
     (row,) = list(record.read(opened.directory / record.METRICS))
     assert row["evaluation"] is True and (row["step"], row["epoch"]) == (0, 0)
     assert (row["tasks"], row["rollouts"], row["graded"], row["masked"]) == (4, 4, 2, 2)
@@ -75,25 +74,33 @@ async def test_the_test_set_is_measured_in_one_row_over_one_job_per_batch(
 
 
 async def test_the_test_group_size_sets_the_attempts_per_task(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    harbor: Harbor,
 ) -> None:
     monkeypatch.chdir(tmp_path)
     home = _blueprint(tmp_path, **{"group_size = 1": "group_size = 1\ntest_group_size = 2"})
-    opened = await _run(home, tmp_path, FakeTrials(outcomes=OUTCOMES))
+    harbor(FakeTrials(outcomes=OUTCOMES))
+    opened = await _run(home, tmp_path)
     (row,) = list(record.read(opened.directory / record.METRICS))
     assert (row["tasks"], row["rollouts"], row["graded"], row["masked"]) == (4, 8, 6, 2)
     assert [job["trials"] for job in record.read(opened.directory / record.JOBS)] == [4, 4]
 
 
-async def test_nothing_graded_has_no_mean(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_nothing_graded_has_no_mean(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, harbor: Harbor
+) -> None:
     monkeypatch.chdir(tmp_path)
-    opened = await _run(_blueprint(tmp_path), tmp_path, FakeTrials(breaks=("a", "b", "c", "d")))
+    harbor(FakeTrials(breaks=("a", "b", "c", "d")))
+    opened = await _run(_blueprint(tmp_path), tmp_path)
     (row,) = list(record.read(opened.directory / record.METRICS))
     assert row["reward_mean"] is None and row["graded"] == 0 and row["masked"] == 4
 
 
 async def test_a_served_model_runs_through_its_proxy_and_is_judged_by_its_records(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    harbor: Harbor,
 ) -> None:
     """`a` graded 1 with two turns, `b` cut by its budget (0, overriding the verifier), `c`
     timed out, `d` never came up (no records, no result)."""
@@ -113,15 +120,15 @@ async def test_a_served_model_runs_through_its_proxy_and_is_judged_by_its_record
     }
     home = _blueprint(tmp_path, **replacements)
     opened = Run.open(home, root=tmp_path / "runs")
-    assert opened.config.model.served and isinstance(opened.endpoint, ProxyEndpoint)
-    opened.engine.run_trial = FakeTrials(breaks=("d",), outcomes={**OUTCOMES, "b": {"reward": 1.0}})
+    assert opened.config.model.served
+    trials = harbor(FakeTrials(breaks=("d",), outcomes={**OUTCOMES, "b": {"reward": 1.0}}))
     with opened:
         await Runner.from_run(opened).run()
     assert fake.placed[0][0] == "local" and fake.placed[0][2]["host"] == "proxy.lan"
     assert len(fake.placed) == 1, "started once, by the first job"
-    assert fake.closed == 1, "stopped when the run closed"
+    assert fake.closed == 1, "stopped when the policy closed"
     assert sorted(fake.addressed) == sorted(fake.fetched) and len(fake.fetched) == 4
-    for config in opened.engine.run_trial.configs:
+    for config in trials.configs:
         assert config.agent.model_name == "openai/some-hosted-model"
         assert config.agent.env["OPENAI_BASE_URL"].endswith(f"/r/trial/{config.trial_name}/v1")
         assert config.agent.env["OPENAI_API_KEY"] == fake.token

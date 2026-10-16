@@ -22,14 +22,7 @@ from shipyard.cost import Costs, billed_by, reported, sampled, sandbox_seconds
 from shipyard.modules import Candidate, keep, seed
 from shipyard.progress import Reporter, reporter
 from shipyard.rollout import Rollouts
-from shipyard.sampling.endpoint import (
-    NothingServed,
-    ProviderEndpoint,
-    ProxyEndpoint,
-    tinker_base_url,
-)
-from shipyard.sampling.engine import HarborEngine
-from shipyard.types import Endpoint
+from shipyard.sampling.endpoint import tinker_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -56,13 +49,6 @@ class Run:
         self.costs = Costs.from_dict(record.read_json(directory / record.COSTS))
         self.jobs_dir = Path(config.rollout.jobs_dir)
         self.progress: Reporter = reporter()
-        self.engine = HarborEngine(config.rollout, progress=self.progress)
-        #: The proxy over this run's weights, or the provider the harness dials itself.
-        self.endpoint: Endpoint = (
-            ProxyEndpoint(config, directory)
-            if config.model.served
-            else ProviderEndpoint(config.model.name)
-        )
         self._next_job = next_job(self.id, directory, self.jobs_dir)
         self._seq = 0
         #: Set by `reopen`: the process note is written on entry, keeping the earlier ones.
@@ -144,21 +130,22 @@ class Run:
         self._next_job += 1
         return name
 
-    async def recorded(
+    def recorded(
         self,
         job: str,
         trials: Sequence[types.Trial],
+        records: types.Records | None,
         *,
+        party: str | None,
         step: int,
         modules: Candidate | None = None,
         purpose: str = "training",
         **about: Any,
     ) -> Rollouts:
-        """The job's record side: records drained, logs read, the row written with its modules
-        digest, graded count, masks, endings and the party billed, then the endpoint checked."""
-        endpoint = self.endpoint
+        """The job's record side: logs read against the records the endpoint served (None for
+        a provider), the row written with its modules digest, graded count, masks, endings and
+        the party billed: `party` for served records, else the one the trials name."""
         rolled = Rollouts.of(job, trials)
-        records = await endpoint.record(job, trials)
         if records is not None:
             asked, failed = read_logs(trials, records, check_turns=self.config.rollout.check_turns)
             rolled = replace(rolled, records=records, asked=asked, failed=failed)
@@ -167,7 +154,6 @@ class Run:
         served = rolled.records is not None
         if served:
             counted, noted = sampled(rolled)
-            party = self.endpoint.party
         else:
             counted, party, noted = reported(rolled), billed_by(rolled), {}
         masked = _tally(each.mask for each in judged)
@@ -187,12 +173,6 @@ class Run:
             served="tinker" if served else "provider",
             **{key: value for key, value in noted.items() if value},
         )
-        if records is not None:
-            try:
-                endpoint.check(job, records)
-            except NothingServed as dead:
-                dead.rolled = rolled
-                raise
         return rolled
 
     def spent(self, party: str, **counts: int) -> None:
@@ -253,11 +233,9 @@ class Run:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        """Stop the proxy if this run started one, then close the record, whether or not
-        the loop raised. A `KeyboardInterrupt` from a signal is recorded as
-        `stopped: <signal>`."""
+        """Close the record, whether or not the loop raised. A `KeyboardInterrupt` from a
+        signal is recorded as `stopped: <signal>`."""
         self.progress.close()
-        self.endpoint.close()
         if exc is None:
             error = None
         elif isinstance(exc, KeyboardInterrupt):

@@ -22,6 +22,7 @@ from shipyard.types import Agent, Policy, Settings
 
 if TYPE_CHECKING:
     from shipyard.run import Run
+    from shipyard.sampling.engine import HarborEngine
 
 logger = logging.getLogger(__name__)
 
@@ -47,11 +48,17 @@ CLOSING_TAGS = ("</content>", "</file>", "</document>")
 
 
 def reflect(
-    run: Run, *, harness: str, model: str | None, image: str, incremental: bool = False
+    run: Run,
+    engine: HarborEngine,
+    *,
+    harness: str,
+    model: str | None,
+    image: str,
+    incremental: bool = False,
 ) -> Proposer:
-    """A `Proposer` that runs one trial per proposal under `run`. The trial runs `harness`
-    with `model` in `image` and asks for the smallest change when `incremental`. Every
-    failure is a decline, so one failed container cannot end a search."""
+    """A `Proposer` that runs one trial per proposal on `engine`, recorded under `run`. The
+    trial runs `harness` with `model` in `image` and asks for the smallest change when
+    `incremental`. Every failure is a decline, so one failed container cannot end a search."""
     if not harness.strip():
         raise ValueError(
             "the reflector needs a harness: Harbor reads an unnamed agent as its oracle, and "
@@ -62,7 +69,7 @@ def reflect(
         home = Path(tempfile.mkdtemp(prefix="shipyard-reflection-"))
         try:
             task = task_for(reflection, home, image=image, incremental=incremental)
-            rolled = await _job(run, task, harness=harness, model=model, about=reflection)
+            rolled = await _job(run, engine, task, harness=harness, model=model, about=reflection)
             return written(rolled, reflection.module)
         except Exception:
             logger.exception("the reflection trial for %r failed", reflection.component)
@@ -74,12 +81,18 @@ def reflect(
 
 
 async def _job(
-    run: Run, task: Path, *, harness: str, model: str | None, about: Reflection
+    run: Run,
+    engine: HarborEngine,
+    task: Path,
+    *,
+    harness: str,
+    model: str | None,
+    about: Reflection,
 ) -> Rollouts:
     """A job that is no rollout: its own agent on a provider endpoint, recorded as a reflection."""
     job = run.reserve_job()
     reflector = Agent(Policy(ProviderEndpoint(model)), [types.harness(harness)])
-    trials = await run.engine.run(job, [task], 1, agent=reflector, settings=REFLECTION)
+    trials = await engine.run(job, [task], 1, agent=reflector, settings=REFLECTION)
     rolled = Rollouts.of(job, trials)
     run.record_job(
         rolled,

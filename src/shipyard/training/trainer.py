@@ -16,6 +16,8 @@ from shipyard import record
 from shipyard.credit import advantages, anchor_logprobs, sampler_logprobs
 from shipyard.modules import Candidate
 from shipyard.pack import datum, groups
+from shipyard.sampling.endpoint import NothingServed
+from shipyard.sampling.engine import HarborEngine
 from shipyard.types import (
     Adam,
     Agent,
@@ -148,6 +150,8 @@ class Trainer:
     def __init__(self, run: Run) -> None:
         self.run = run
         self.recipe = run.config.recipe
+        #: One engine, so every job in flight shares its `[rollout] concurrency`.
+        self.engine = HarborEngine(run.config.rollout, progress=run.progress)
         self.steps = 0
         self.updates = 0
         self.epoch = 0
@@ -185,23 +189,32 @@ class Trainer:
     ) -> list[Group]:
         """The one place a policy is sampled: run, record, group. The groups carry no
         advantages; `credited` sets them where a step trains on them."""
-        run = self.run
+        run, endpoint = self.run, agent.policy.endpoint
         attempts = run.config.data.group_size if attempts is None else attempts
         job = run.reserve_job()
         run.progress.started(
             job, trials=len(tasks) * len(agent.harness) * attempts, step=self.steps
         )
-        trials = await run.engine.run(job, tasks, attempts, agent=agent)
+        trials = await self.engine.run(job, tasks, attempts, agent=agent)
         run.progress.done(job)
-        rolled = await run.recorded(
+        records = await endpoint.record(job, trials)
+        rolled = run.recorded(
             job,
             trials,
+            records,
+            party=endpoint.party,
             step=self.steps,
             modules=agent.modules,
             purpose=purpose,
             epoch=self.epoch,
             **about,
         )
+        if records is not None:  # once the job is on record, stop if the endpoint is dead
+            try:
+                endpoint.check(job, records)
+            except NothingServed as dead:
+                dead.rolled = rolled
+                raise
         return groups(trials, rolled, agent)
 
     async def evaluate(self, agent: Agent, tasks: Values[Task], **more: Any) -> Evaluation | None:

@@ -20,7 +20,7 @@ from shipyard.sampling.endpoint import NothingServed, served_nothing
 from tests.proxies import MODEL
 from tests.records import FakeProxy, made
 from tests.trainers import FakeService, capable
-from tests.trials import GEPA, VALID, FakeTrials, blueprint, fixture_tasks, write_blueprint
+from tests.trials import GEPA, VALID, FakeTrials, Harbor, blueprint, fixture_tasks, write_blueprint
 
 DEAD = "no trial reached the proxy; the endpoint is dead or unreachable"
 POISONED = "every request failed at the sampler (sampler: BadRequestError)"
@@ -48,10 +48,12 @@ SERVED_EVALUATE = {
 
 
 async def test_an_evaluate_job_nothing_reached_is_recorded_and_stops_the_run(
-    tmp_path: Path, proxy: FakeProxy
+    tmp_path: Path,
+    proxy: FakeProxy,
+    harbor: Harbor,
 ) -> None:
     opened = Run.open(_four(tmp_path, "evaluate", **SERVED_EVALUATE), root=tmp_path / "runs")
-    opened.engine.run_trial = FakeTrials()
+    trials = harbor(FakeTrials())
     with pytest.raises(NothingServed, match=DEAD), opened:
         await Runner.from_run(opened).run()
     note = Run.read(opened.directory)
@@ -60,17 +62,19 @@ async def test_an_evaluate_job_nothing_reached_is_recorded_and_stops_the_run(
     [job] = list(record.read(opened.directory / record.JOBS))
     assert job["masked"] == {"env_error": 4} and job["graded"] == 0 and job["served"] == "tinker"
     assert not (opened.directory / record.METRICS).exists(), "stopped before any row"
-    assert len(opened.engine.run_trial.configs) == 4, "the next batch was never paid for"  # type: ignore[union-attr]
+    assert len(trials.configs) == 4, "the next batch was never paid for"
     assert proxy.closed == 1
 
 
 async def test_a_job_where_some_trials_reached_the_proxy_masks_the_rest_and_goes_on(
-    tmp_path: Path, proxy: FakeProxy
+    tmp_path: Path,
+    proxy: FakeProxy,
+    harbor: Harbor,
 ) -> None:
     """`a`'s two rollouts reached nothing; whichever batch it lands in, its partner did."""
     proxy.answers = {"b": [made()], "c": [made()], "d": [made()]}
     opened = Run.open(_four(tmp_path, "evaluate", **SERVED_EVALUATE), root=tmp_path / "runs")
-    opened.engine.run_trial = FakeTrials()
+    harbor(FakeTrials())
     with opened:
         await Runner.from_run(opened).run()
     assert Run.read(opened.directory)["failed"] is False
@@ -80,11 +84,13 @@ async def test_a_job_where_some_trials_reached_the_proxy_masks_the_rest_and_goes
 
 
 async def test_a_provider_served_job_with_no_result_is_masked_not_stopped(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    harbor: Harbor,
 ) -> None:
     monkeypatch.chdir(tmp_path)
     opened = Run.open(_four(tmp_path, "evaluate"), root=tmp_path / "runs")
-    opened.engine.run_trial = FakeTrials(breaks=("a", "b", "c", "d"))
+    harbor(FakeTrials(breaks=("a", "b", "c", "d")))
     with opened:
         await Runner.from_run(opened).run()
     assert Run.read(opened.directory)["failed"] is False
@@ -92,19 +98,21 @@ async def test_a_provider_served_job_with_no_result_is_masked_not_stopped(
 
 
 async def test_a_job_whose_every_request_failed_at_the_sampler_stops_the_run(
-    tmp_path: Path, proxy: FakeProxy
+    tmp_path: Path,
+    proxy: FakeProxy,
+    harbor: Harbor,
 ) -> None:
     """The proxy is reached, but expired weights poisoned its client (d2ab39b)."""
     proxy.default = [made(error="sampler: BadRequestError", seq=n) for n in (1, 2)]
     opened = Run.open(_four(tmp_path, "evaluate", **SERVED_EVALUATE), root=tmp_path / "runs")
-    opened.engine.run_trial = FakeTrials()
+    trials = harbor(FakeTrials())
     with pytest.raises(NothingServed, match=re.escape(POISONED)), opened:
         await Runner.from_run(opened).run()
     assert Run.read(opened.directory)["error"].startswith(
         f"NothingServed: job {opened.id}-0000: {POISONED}; the weights it serves are gone"
     )
     assert len(list(record.read(opened.directory / record.JOBS))) == 1
-    assert len(opened.engine.run_trial.configs) == 4, "the next batch was never paid for"  # type: ignore[union-attr]
+    assert len(trials.configs) == 4, "the next batch was never paid for"
 
 
 def test_served_nothing_is_about_records_not_rewards() -> None:
@@ -129,10 +137,13 @@ def service(monkeypatch: pytest.MonkeyPatch) -> FakeService:
 
 
 async def test_a_dapo_step_nothing_reached_stops_before_credit_and_closes_as_errored(
-    tmp_path: Path, proxy: FakeProxy, service: FakeService
+    tmp_path: Path,
+    proxy: FakeProxy,
+    service: FakeService,
+    harbor: Harbor,
 ) -> None:
     opened = Run.open(_four(tmp_path, "dapo"), root=tmp_path / "runs")
-    opened.engine.run_trial = FakeTrials()
+    harbor(FakeTrials())
     with pytest.raises(NothingServed), opened:
         await Runner.from_run(opened).run()
     assert not any(c[0] == "forward_backward" for c in service.client.calls)
@@ -143,12 +154,15 @@ async def test_a_dapo_step_nothing_reached_stops_before_credit_and_closes_as_err
 
 
 async def test_a_step_whose_groups_are_all_degenerate_is_untrained_not_dead(
-    tmp_path: Path, proxy: FakeProxy, service: FakeService
+    tmp_path: Path,
+    proxy: FakeProxy,
+    service: FakeService,
+    harbor: Harbor,
 ) -> None:
     proxy.default = None  # one record per trial: served, every reward 1
     home = _four(tmp_path, "dapo", **{"batch_size = 2": "batch_size = 4"})
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.engine.run_trial = FakeTrials()
+    harbor(FakeTrials())
     with opened:
         await Runner.from_run(opened).run()
     [row] = list(record.read(opened.directory / record.METRICS))
@@ -156,14 +170,16 @@ async def test_a_step_whose_groups_are_all_degenerate_is_untrained_not_dead(
 
 
 async def test_a_gepa_search_whose_seed_nothing_reached_stops(
-    tmp_path: Path, proxy: FakeProxy
+    tmp_path: Path,
+    proxy: FakeProxy,
+    harbor: Harbor,
 ) -> None:
     fixture_tasks(tmp_path)
     text = GEPA.replace('provider = "openrouter"', 'provider = "tinker"')
     home = write_blueprint(tmp_path, text)
     shutil.copytree(VALID, home / "modules")
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.engine.run_trial = FakeTrials()
+    harbor(FakeTrials())
     with pytest.raises(NothingServed, match=DEAD), opened:
         await Runner.from_run(opened).run()
     [job] = list(record.read(opened.directory / record.JOBS))

@@ -24,7 +24,7 @@ from shipyard.sampling.endpoint import ProxyEndpoint, ProxyGone
 from shipyard.types import Trial, harness
 from tests.proxies import MODEL, FakeSampler, control, root, server
 from tests.records import FakeProxy, served
-from tests.trials import FakeTrials, fixture_tasks, job
+from tests.trials import FakeTrials, Harbor, agent_for, fixture_tasks, job
 
 ORIGIN = "https://fake-words.trycloudflare.com"
 SERVE_STUB = textwrap.dedent(
@@ -105,13 +105,17 @@ def stubs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
+@pytest.fixture(autouse=True)
+def trials(harbor: Harbor) -> FakeTrials:
+    """Harbor's trial, faked for every test here."""
+    return harbor(FakeTrials())
+
+
 def opened(tmp_path: Path, sandbox: str) -> Run:
     home = tmp_path / "bp"
     home.mkdir(exist_ok=True)
     (home / "run.toml").write_text(SERVED.format(sandbox=sandbox), encoding="utf-8")
-    run = Run.open(home, root=tmp_path / "runs")
-    run.engine.run_trial = FakeTrials()
-    return run
+    return Run.open(home, root=tmp_path / "runs")
 
 
 def task(tmp_path: Path) -> list[Path]:
@@ -132,15 +136,19 @@ async def test_the_tunnel_is_probed_before_the_first_trial_and_its_exit_stops_th
 
     monkeypatch.setattr(client, "answers", through_the_tunnel)
     run = opened(stubs, "modal")
+    agent = agent_for(run)
+    endpoint = agent.policy.endpoint
+    assert isinstance(endpoint, ProxyEndpoint)
     with pytest.raises(ProxyGone, match="the proxy is no longer reachable"), run:
-        await job(run, task(stubs), rollouts=1, step=0)
-        assert probed == [f"{ORIGIN}/healthz"], "probed once, through the tunnel"
-        assert any(record.read(run.directory / record.REQUESTS)), "records drained"
-        assert isinstance(run.endpoint, ProxyEndpoint) and run.endpoint.proxy is not None
-        process = run.endpoint.proxy.tunnel.process  # type: ignore[union-attr]
-        process.kill()
-        process.wait()
-        await job(run, task(stubs), rollouts=1, step=1)
+        async with agent.policy:
+            await job(run, task(stubs), rollouts=1, step=0, agent=agent)
+            assert probed == [f"{ORIGIN}/healthz"], "probed once, through the tunnel"
+            assert any(record.read(run.directory / record.REQUESTS)), "records drained"
+            assert endpoint.proxy is not None
+            process = endpoint.proxy.tunnel.process  # type: ignore[union-attr]
+            process.kill()
+            process.wait()
+            await job(run, task(stubs), rollouts=1, step=1, agent=agent)
     note = Run.read(run.directory)
     assert note["error"] == (
         f"ProxyGone: the proxy is no longer reachable: the tunnel at {ORIGIN} exited with -9"
@@ -149,27 +157,31 @@ async def test_the_tunnel_is_probed_before_the_first_trial_and_its_exit_stops_th
     assert [row["job"] for row in record.read(run.directory / record.JOBS)] == [f"{run.id}-0000"]
     assert sorted(p.name for p in (stubs / "jobs").iterdir()) == [f"{run.id}-0000"]
     assert "trycloudflare" in (run.directory / "tunnel.log").read_text()
-    assert run.endpoint.proxy is None, "stopped with the run"  # type: ignore[attr-defined]
+    assert endpoint.proxy is None, "stopped with the policy"
 
 
 async def test_a_local_serve_is_probed_on_loopback_and_its_exit_stops_the_next_job(
     stubs: Path,
 ) -> None:
     run = opened(stubs, "docker")
+    agent = agent_for(run)
+    endpoint = agent.policy.endpoint
+    assert isinstance(endpoint, ProxyEndpoint)
     with pytest.raises(ProxyGone, match="shipyard serve exited with -9"), run:
-        await job(run, task(stubs), rollouts=1, step=0)
-        assert isinstance(run.endpoint, ProxyEndpoint) and run.endpoint.proxy is not None
-        process = run.endpoint.proxy.process
-        assert process is not None
-        process.kill()
-        process.wait()
-        await job(run, task(stubs), rollouts=1, step=1)
+        async with agent.policy:
+            await job(run, task(stubs), rollouts=1, step=0, agent=agent)
+            assert endpoint.proxy is not None
+            process = endpoint.proxy.process
+            assert process is not None
+            process.kill()
+            process.wait()
+            await job(run, task(stubs), rollouts=1, step=1, agent=agent)
     assert Run.read(run.directory)["proxy"]["placement"] == "local"
     assert len(list(record.read(run.directory / record.JOBS))) == 1
 
 
 async def test_a_tunnel_that_does_not_answer_refuses_the_run_before_any_trial(
-    stubs: Path, monkeypatch: pytest.MonkeyPatch
+    stubs: Path, monkeypatch: pytest.MonkeyPatch, trials: FakeTrials
 ) -> None:
     async def unresolved(url: str, **_: Any) -> dict[str, Any]:
         raise httpx.ConnectError("nodename nor servname provided")
@@ -178,7 +190,7 @@ async def test_a_tunnel_that_does_not_answer_refuses_the_run_before_any_trial(
     run = opened(stubs, "modal")
     with pytest.raises(Unreachable, match=f"the tunnel at {ORIGIN} does not answer"), run:
         await job(run, task(stubs), rollouts=1, step=0)
-    assert run.engine.run_trial.configs == []  # type: ignore[union-attr]
+    assert trials.configs == []
     assert not (stubs / "jobs").exists() and not (run.directory / record.JOBS).exists()
     note = Run.read(run.directory)
     assert note["failed"] is True and "does not answer" in note["error"]
@@ -289,7 +301,9 @@ async def test_the_tunnel_command_is_logged_once(
 
 
 async def test_a_tunnel_that_dies_under_a_batch_stops_the_run_once_the_job_is_recorded(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    harbor: Harbor,
 ) -> None:
     from shipyard.runner import Runner
 
@@ -304,7 +318,7 @@ async def test_a_tunnel_that_dies_under_a_batch_stops_the_run_once_the_job_is_re
         await trials(config)
         proxy.exited = f"the tunnel at {proxy.origin} exited with 1"
 
-    run.engine.run_trial = dying
+    harbor(dying)
     with pytest.raises(ProxyGone, match="exited with 1"), run:
         await Runner.from_run(run).run()
     assert len(list(record.read(run.directory / record.JOBS))) == 1, "the batch is on record"

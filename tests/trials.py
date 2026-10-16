@@ -11,7 +11,7 @@ import shutil
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, TypeVar
 
 from harbor.models.trial.config import TrialConfig
 
@@ -21,6 +21,7 @@ from shipyard.preflight import Finding
 from shipyard.recipes.gepa.cycle import minibatches
 from shipyard.recipes.gepa.reflect import COLLECTED
 from shipyard.run import Run
+from shipyard.sampling.endpoint import endpoint_for
 from shipyard.training.trainer import Trainer
 from shipyard.types import Agent, Group, Member, Policy, harness
 
@@ -266,6 +267,15 @@ class Interrupting:
         await self.inner(config)
 
 
+Fake = TypeVar("Fake")
+
+
+class Harbor(Protocol):
+    """The `harbor` fixture: stands a fake in for Harbor's trial and returns it."""
+
+    def __call__(self, fake: Fake, /) -> Fake: ...
+
+
 async def job(
     run: Run,
     batch: list[Path],
@@ -273,14 +283,27 @@ async def job(
     rollouts: int,
     step: int = 0,
     modules: Candidate | None = None,
+    agent: Agent | None = None,
 ) -> list[Group]:
-    """One job through the trainer, the endpoint left open as a run leaves it."""
+    """One job through the trainer under `agent`, whose policy the caller holds open; its
+    endpoint is checked still up first. Without one, an agent made for the run, its policy
+    opened for the job and closed after."""
     trainer = Trainer(run)
     trainer.steps = step
+    if agent is not None:
+        await agent.policy.endpoint.open()
+        return await trainer.job(agent, batch, rollouts)
+    agent = agent_for(run, modules)
+    async with agent.policy:
+        return await trainer.job(agent, batch, rollouts)
+
+
+def agent_for(run: Run, modules: Candidate | None = None) -> Agent:
+    """The agent a run's jobs carry: its harness over an endpoint of its own, carrying the
+    run's modules unless handed others."""
     carried = run.carried if modules is None else modules
-    agent = Agent(Policy(run.endpoint), [harness(run.config.rollout.harness)], carried)
-    await run.endpoint.open()
-    return await trainer.job(agent, batch, rollouts)
+    policy = Policy(endpoint_for(run.config, run.directory))
+    return Agent(policy, [harness(run.config.rollout.harness)], carried)
 
 
 def members_of(found: list[Group]) -> list[Member]:

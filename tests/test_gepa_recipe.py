@@ -30,6 +30,7 @@ from tests.trials import (
     GEPA,
     VALID,
     Fakes,
+    Harbor,
     check,
     dataset,
     drawn,
@@ -51,14 +52,16 @@ def _names(configs: list[TrialConfig]) -> list[str]:
 
 
 async def test_the_recipe_runs_end_to_end_on_fakes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    harbor: Harbor,
 ) -> None:
     """`pareto = 0`: both tasks are reflected on and selected on (GEPA section 6)."""
     monkeypatch.chdir(tmp_path)
     home = _blueprint(tmp_path, GEPA + "pareto = 0\n")
     opened = Run.open(home, root=tmp_path / "runs")
     assert opened.carried is None and opened.config.recipe.budget is None
-    opened.engine.run_trial = fakes = Fakes()
+    fakes = harbor(Fakes())
     with opened:
         await Runner.from_run(opened).run()
     seeded = seed(home / "modules")
@@ -120,7 +123,9 @@ async def test_the_recipe_runs_end_to_end_on_fakes(
 
 
 async def test_by_default_two_thirds_are_held_out_and_the_winner_is_scored_on_them(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    harbor: Harbor,
 ) -> None:
     """GEPA 4.1: minibatches from the training split, the rest scores candidates. The child
     wins its minibatch task, and its Pareto score is the held-out task's alone."""
@@ -130,7 +135,7 @@ async def test_by_default_two_thirds_are_held_out_and_the_winner_is_scored_on_th
     feedback, pareto = search_sets(listed, None, seed=0)
     assert (feedback, pareto) == held_out(listed, 1, seed=0)
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.engine.run_trial = fakes = Fakes()
+    fakes = harbor(Fakes())
     with opened:
         await Runner.from_run(opened).run()
     taught, held = feedback[0].name, pareto[0].name
@@ -143,7 +148,9 @@ async def test_by_default_two_thirds_are_held_out_and_the_winner_is_scored_on_th
 
 
 async def test_data_seed_draws_the_minibatches(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    harbor: Harbor,
 ) -> None:
     """Six tasks, two a minibatch: each round the parent runs on the minibatch `[data] seed`
     predicts, and another seed draws others."""
@@ -157,7 +164,7 @@ async def test_data_seed_draws_the_minibatches(
         home = write_blueprint(tmp_path / f"seed{value}", text + "pareto = 0\nbudget = 30\n")
         shutil.copytree(VALID, home / "modules")
         opened = Run.open(home, root=tmp_path / "runs")
-        opened.engine.run_trial = fakes = Fakes()
+        fakes = harbor(Fakes())
         with opened:
             await Runner.from_run(opened).run()
         names = _names(fakes.configs)
@@ -171,13 +178,15 @@ async def test_data_seed_draws_the_minibatches(
 
 
 async def test_a_second_pass_searches_again_from_the_first_passs_best(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    harbor: Harbor,
 ) -> None:
     monkeypatch.chdir(tmp_path)
     text = GEPA.replace("batch_size = 1", "batch_size = 1\nepochs = 2") + "pareto = 0\n"
     home = _blueprint(tmp_path, text)
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.engine.run_trial = Fakes()
+    harbor(Fakes())
     with opened:
         agent = await Runner.from_run(opened).run()
     seeded = seed(home / "modules")
@@ -196,7 +205,9 @@ async def test_a_second_pass_searches_again_from_the_first_passs_best(
 
 
 async def test_a_quiet_reflector_leaves_the_seed_as_the_winner(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    harbor: Harbor,
 ) -> None:
     monkeypatch.chdir(tmp_path)
     opened = Run.open(_blueprint(tmp_path), root=tmp_path / "runs")
@@ -208,7 +219,7 @@ async def test_a_quiet_reflector_leaves_the_seed_as_the_winner(
             return
         write_result(trial, reward=0.5)
 
-    opened.engine.run_trial = quiet
+    harbor(quiet)
     with opened:
         agent = await Runner.from_run(opened, GEPATrainer).run()
     seeded = seed(opened.directory / record.MODULES / SEED)
@@ -230,7 +241,9 @@ async def test_a_quiet_reflector_leaves_the_seed_as_the_winner(
 
 
 async def test_a_seed_perfect_on_its_minibatches_is_never_reflected_on(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    harbor: Harbor,
 ) -> None:
     """Every rollout scores 1.0: each round runs the parent and asks for no rewrite, and
     with the best Pareto mean never rising, `patience = 2` ends it after two rounds."""
@@ -242,7 +255,7 @@ async def test_a_seed_perfect_on_its_minibatches_is_never_reflected_on(
         ran.append(Path(str(config.task.path)).name)
         write_result(Path(config.trials_dir) / config.trial_name, reward=1.0)
 
-    opened.engine.run_trial = solved
+    harbor(solved)
     with opened:
         await Runner.from_run(opened).run()
     assert "reflection" not in ran and len(ran) == 3, "the seed's scoring, then two parents"
