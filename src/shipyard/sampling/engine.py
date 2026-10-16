@@ -23,6 +23,7 @@ from harbor.models.trial.config import (
 from shipyard.harnesses import bare_name
 from shipyard.modules import deliver
 from shipyard.sampling.admit import verdict
+from shipyard.sampling.secrets import Secrets, scrub
 from shipyard.types import Agent, Connection, Harness, RolloutEngine, Settings, Task, Trial
 
 if TYPE_CHECKING:
@@ -44,7 +45,8 @@ DELIVERED = "modules"
 
 class HarborEngine(RolloutEngine):
     """Built from `[rollout]`: the sandbox, the jobs directory, one concurrency limit, the
-    timeouts; and the harness's Harbor `env` and `kwargs` from `[agent]`."""
+    timeouts; the harness's Harbor `env` and `kwargs` from `[agent]`; and the secrets each
+    trial holds for exactly its duration."""
 
     def __init__(
         self,
@@ -52,6 +54,7 @@ class HarborEngine(RolloutEngine):
         *,
         env: Mapping[str, str] | None = None,
         kwargs: Mapping[str, Any] | None = None,
+        secrets: Secrets | None = None,
         run_trial: TrialRunner | None = None,
         progress: Reporter | None = None,
     ) -> None:
@@ -63,6 +66,7 @@ class HarborEngine(RolloutEngine):
             env=dict(env or {}),
             kwargs=dict(kwargs or {}),
         )
+        self.secrets = Secrets() if secrets is None else secrets
         self.run_trial = run_trial
         self.progress = progress
         self._limit = asyncio.Semaphore(rollout.concurrency)
@@ -76,7 +80,9 @@ class HarborEngine(RolloutEngine):
         agent: Agent,
         settings: Settings | None = None,
     ) -> list[Trial]:
-        """A trial whose runner raised keeps its slot with no result, which admission masks."""
+        """A trial whose runner raised keeps its slot with no result, which admission masks.
+        Each trial holds what it acquires from the engine's secrets from before Harbor starts it
+        until after its teardown, and leaves none of it in its directory."""
         if not tasks:
             raise ValueError(f"job {job} names no task")
         if attempts < 1:
@@ -110,8 +116,11 @@ class HarborEngine(RolloutEngine):
             trial = Trial(job, task, attempt, agent.harness[index], trials_dir / config.trial_name)
             config = connected(config, endpoint.connection(trial))
             async with self._limit:
+                held = await self.secrets.acquire(trial) if settings.secrets else {}
+                for name in held:  # Harbor fills the task's `${NAME}` from here first
+                    os.environ.setdefault(name, "")
                 try:
-                    await run_one(config)
+                    await run_one(holding(config, held))
                 except asyncio.CancelledError:
                     current = asyncio.current_task()
                     if current is None or current.cancelling():
@@ -120,6 +129,12 @@ class HarborEngine(RolloutEngine):
                     logger.warning("trial %s ended in a cancellation it did not own", trial.name)
                 except Exception:
                     logger.exception("trial %s could not run", trial.name)
+                finally:
+                    if held:
+                        try:
+                            scrub(trial.dir, held)
+                        finally:
+                            await self.secrets.release(trial, held)
             if self.progress is not None:
                 self.progress.finished(trial.dir, masked=verdict(trial.dir).mask is not None)
             return trial
@@ -193,6 +208,17 @@ def connected(config: TrialConfig, connection: Connection) -> TrialConfig:
         hosts = list(config.agent.extra_allowed_hosts or [])
         update["extra_allowed_hosts"] = hosts + [host] * (host not in hosts)
     return config.model_copy(update={"agent": config.agent.model_copy(update=update)})
+
+
+def holding(config: TrialConfig, held: Mapping[str, str]) -> TrialConfig:
+    """A copy of the trial's config whose environment and verifier hold `held`, over what the
+    task's `${NAME}` resolves to: Harbor lays a trial's env over the task's, on the sandbox
+    and on every command run in it."""
+    if not held:
+        return config
+    environment = config.environment.model_copy(update={"env": {**config.environment.env, **held}})
+    verifier = config.verifier.model_copy(update={"env": {**config.verifier.env, **held}})
+    return config.model_copy(update={"environment": environment, "verifier": verifier})
 
 
 def laid_over(under: Mapping[str, Any], over: Mapping[str, Any]) -> dict[str, Any]:

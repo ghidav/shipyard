@@ -40,6 +40,7 @@ from shipyard.modules import Inadmissible, seed
 from shipyard.proxy import tunnel
 from shipyard.proxy.wire import CONTROL_TOKEN_ENV, PROXY_TOKEN_ENV
 from shipyard.sampling.endpoint import LOCAL_SANDBOXES, backend, placement
+from shipyard.sampling.secrets import pooled
 
 #: Harbor's environments, the values `[rollout] sandbox` takes.
 SANDBOXES = tuple(kind.value for kind in EnvironmentType)
@@ -168,7 +169,7 @@ def environment_findings(cfg: Blueprint, environ: Mapping[str, str]) -> list[Fin
     """The sandbox findings, then the served-model findings. Sandbox findings are problems
     only, plus Modal's verdict on its token, because the blueprint findings state the
     sandbox facts."""
-    found = sandbox_findings(cfg, environ)
+    found = sandbox_findings(cfg, environ) + secrets_findings(cfg, environ)
     if (reflector := getattr(cfg.recipe, "reflection_harness", "").strip()) and (
         unkeyed := key_finding(reflector, cfg.recipe.reflection_model, environ)
     ) is not None:
@@ -397,6 +398,65 @@ def sandbox_findings(cfg: Blueprint, environ: Mapping[str, str]) -> list[Finding
         for carried in secrets_in(key, value)
     ]
     return found + twice_in(Path.cwd() / ".env")
+
+
+def secrets_findings(cfg: Blueprint, environ: Mapping[str, str]) -> list[Finding]:
+    """For `[rollout.secrets]`: `blocked` for a pool that holds nothing, pools of different
+    sizes, a name `[agent] env` gives every trial, or a run secret; a warning when more trials
+    may run at once than there are identities; else `ok` with the pool's size."""
+    table = cfg.rollout.secrets
+    if not table:
+        return []
+    found = [
+        Finding("blocked", f"[rollout.secrets] carries {carried}, which must never enter a sandbox")
+        for name, source in table.items()
+        for carried in secrets_in(name, f"${{{source}}}")
+    ]
+    found += [
+        Finding(
+            "blocked",
+            f"[rollout.secrets] {name} is also in [agent] env, which gives every trial the "
+            "same value",
+        )
+        for name in table
+        if name in cfg.agent.env
+    ]
+    sizes = {name: len(pooled(environ, source)) for name, source in table.items()}
+    found += [
+        Finding(
+            "blocked",
+            f"[rollout.secrets] {name}: {table[name]} is unset or empty; it holds the values, "
+            "separated by commas, one per trial in flight",
+        )
+        for name, size in sizes.items()
+        if not size
+    ]
+    if any(not size for size in sizes.values()):
+        return found
+    if len(set(sizes.values())) > 1:
+        held = ", ".join(f"{table[name]} {size}" for name, size in sizes.items())
+        return found + [
+            Finding(
+                "blocked",
+                f"[rollout.secrets]: the pools differ in size ({held}); an identity pairs "
+                "their values by position",
+            )
+        ]
+    size = next(iter(sizes.values()))
+    found.append(
+        Finding(
+            "ok", f"secrets {', '.join(table)}: {size} identities from {', '.join(table.values())}"
+        )
+    )
+    if cfg.rollout.concurrency > size:
+        found.append(
+            Finding(
+                "warning",
+                f"[rollout] concurrency = {cfg.rollout.concurrency} with {size} identities in "
+                f"[rollout.secrets]: at most {size} trials run at once",
+            )
+        )
+    return found
 
 
 def secrets_in(key: str, value: str) -> list[str]:

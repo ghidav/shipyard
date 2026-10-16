@@ -31,8 +31,8 @@ COLLECTED = ("artifacts", "logs", "artifacts")
 #: The reflector's harness installs itself into an image that carries none. Harbor's
 #: 360 s is six short of what a Node harness takes on `python:3.12-slim`.
 SETUP_TIMEOUT = 1800.0
-#: No verifier, and none of `[rollout]`'s env, kwargs or timeout.
-REFLECTION = Settings(verify=False, setup_timeout=SETUP_TIMEOUT)
+#: No verifier, none of `[rollout]`'s env, kwargs or timeout, and none of its secrets.
+REFLECTION = Settings(verify=False, setup_timeout=SETUP_TIMEOUT, secrets=False)
 #: Under the container's workdir: the component's directory, the traces, the kind's
 #: reference.
 WORKDIR = "/app"

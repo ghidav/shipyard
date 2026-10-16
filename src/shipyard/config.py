@@ -123,6 +123,9 @@ class Rollout(_Table):
     fill_context: bool = False
     check_turns: bool = False
     jobs_dir: str = "jobs"
+    #: A variable each trial's environment gets that no other trial in flight may share, by
+    #: the variable of this process holding its values: one per trial at once.
+    secrets: dict[str, str] = Field(default_factory=dict)
 
 
 #: Optimizer steps per batch for dapo and cispo: DAPO 4.1 ("16 gradient updates for each

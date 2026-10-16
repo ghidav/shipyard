@@ -283,6 +283,8 @@ class Settings:
     timeout: float | None = None
     env: Mapping[str, str] = field(default_factory=dict)
     kwargs: Mapping[str, Any] = field(default_factory=dict)
+    #: Whether each trial acquires the engine's secrets; a trial that runs no task does not.
+    secrets: bool = True
 
 
 @dataclass(frozen=True)
