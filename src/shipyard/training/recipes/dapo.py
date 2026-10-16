@@ -1,4 +1,4 @@
-"""DAPO (Yu et al., arXiv 2503.14476), with dynamic sampling as accumulation across jobs."""
+"""DAPO recipe (Yu et al., arXiv 2503.14476)."""
 
 from __future__ import annotations
 
@@ -14,7 +14,9 @@ logger = logging.getLogger(__name__)
 
 
 def clipped(low: float, high: float) -> dict[str, float]:
-    """`loss_fn_config` for a ratio clipped to `[1 - low, 1 + high]`; DAPO's are epsilons."""
+    """Return the `loss_fn_config` that clips the importance ratio to `[1 - low, 1 + high]`.
+
+    `low` and `high` are epsilons, as in DAPO; Tinker takes the bounds themselves."""
     # The route and the key names are the installed SDK's: tinker/types/
     # forward_backward_input.py:21 documents `loss_fn_config` as "Optional configuration
     # parameters for the loss function (e.g., PPO clip thresholds, DPO beta)", and
@@ -27,7 +29,7 @@ def clipped(low: float, high: float) -> dict[str, float]:
 
 
 def overlong_clause(recipe: Any) -> list[str]:
-    """The overlong term's clause of the resolution line; none when the term is off."""
+    """Return the resolution-line clause for the overlong penalty; empty when it is off."""
     if recipe.overlong_penalty <= 0:
         return []
     return [
@@ -37,12 +39,15 @@ def overlong_clause(recipe: Any) -> list[str]:
 
 
 class DAPOTrainer(Trainer):
-    """DAPO (Yu et al., arXiv 2503.14476), with dynamic sampling as accumulation across jobs."""
+    """Trainer for DAPO (Yu et al., arXiv 2503.14476).
+
+    Dynamic sampling is implemented by accumulating jobs until enough groups have nonzero
+    reward variance."""
 
     loss_fn = "ppo"
-    #: 4.1 states no betas, eps, weight decay or gradient clipping. The authors' released
-    #: recipe (verl recipe/dapo, run_dapo_qwen2.5_32b.sh) sets weight decay 0.1 and clips
-    #: the gradient norm at 1.0. Betas and eps are the cookbook's.
+    #: Section 4.1 states no betas, eps, weight decay or gradient clipping. Weight decay 0.1
+    #: and gradient-norm clipping at 1.0 come from the authors' released recipe (verl
+    #: recipe/dapo, run_dapo_qwen2.5_32b.sh). Betas and eps are the cookbook defaults.
     ADAM = Adam(beta1=0.9, beta2=0.95, eps=1e-8, weight_decay=0.1, grad_clip_norm=1.0)
     PAPER_WARMUP = 20
 
@@ -59,8 +64,8 @@ class DAPOTrainer(Trainer):
         return "averaged per prompt"
 
     async def sample(self, agent: Agent) -> list[Group]:
-        """Jobs are held until a batch's worth of groups have spread, over at most a pass's
-        worth of batches."""
+        """Run jobs until a batch's worth of groups have nonzero reward variance (DAPO's
+        dynamic sampling), drawing at most one pass over the train tasks."""
         recipe = self.recipe
         if self.steps == 0 and recipe.overlong_penalty > 0 and agent.policy.endpoint.budget is None:
             logger.warning(
@@ -78,7 +83,8 @@ class DAPOTrainer(Trainer):
         return held
 
     def advantage(self, group: Group) -> list[float | None]:
-        """The overlong term, then the rewards centred and divided by the spread."""
+        """Add the overlong penalty to the shaped rewards, then center them and divide by the
+        group's standard deviation."""
         terms = self.docked(group)
         return centred(
             [
@@ -89,7 +95,8 @@ class DAPOTrainer(Trainer):
         )
 
     def docked(self, group: Group) -> list[float | None]:
-        """The overlong term per member against the token budget; None on an unmeasured one."""
+        """Return each member's overlong penalty against the token budget, or None for an
+        unmeasured member."""
         recipe = self.recipe
         measured = group.measured
         terms = iter(
@@ -103,14 +110,16 @@ class DAPOTrainer(Trainer):
         return [next(terms) if one.measured else None for one in group.members]
 
     def weights(self, sizes: Values[int]) -> list[float]:
-        """Each prompt weighs the same (Eq. 8): the mean group size over the group's own."""
+        """Weight every prompt equally (Eq. 8): scale each group by the step's mean group size,
+        in tokens, over its own."""
         return weights(sizes)
 
     def bounds(self) -> dict[str, float] | None:
         return clipped(self.recipe.clip_low, self.recipe.clip_high)
 
     def log(self, done: TrainingStep, **more: Any) -> None:
-        """The row with `overlong`, the docked members, when the term is on and the budget known."""
+        """Log the step's row, adding `overlong` (the number of penalized members) when the
+        penalty is on and the token budget is known."""
         found = done.groups
         budget = found[0].agent.policy.endpoint.budget if found else None
         if self.recipe.overlong_penalty > 0 and budget:

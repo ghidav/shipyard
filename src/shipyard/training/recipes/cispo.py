@@ -1,4 +1,4 @@
-"""CISPO (MiniMax-M1, arXiv 2506.13585): DAPO's rules under Tinker's `cispo` loss."""
+"""CISPO recipe (MiniMax-M1, arXiv 2506.13585)."""
 
 from __future__ import annotations
 
@@ -9,11 +9,11 @@ from shipyard.types import Adam
 
 
 class CISPOTrainer(DAPOTrainer):
-    """CISPO (MiniMax-M1, arXiv 2506.13585): DAPO's rules under Tinker's `cispo` loss."""
+    """Trainer for CISPO (MiniMax-M1, arXiv 2506.13585): DAPO rules with Tinker's `cispo` loss."""
 
     loss_fn = "cispo"
-    #: 3.2 sets the betas and eps for gradients mostly below 1e-14. It states no weight
-    #: decay, gradient clipping or warm-up, so the cookbook's apply (none).
+    #: Section 3.2 sets the betas and eps for gradient magnitudes mostly below 1e-14. It states
+    #: no weight decay, gradient clipping or warm-up, so the cookbook defaults (none) apply.
     ADAM = Adam(beta1=0.9, beta2=0.95, eps=1e-15)
     PAPER_WARMUP = 0
 

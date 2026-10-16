@@ -1,7 +1,8 @@
-"""`run --smoke`: one task (the first of the first batch), one rollout, one job, through
-the whole sampling path (serving, tunnel, records, admission) with no gradient, checkpoint
-or reflection, then a report of what came back. A smoke run writes a normal run
-directory."""
+"""The smoke test behind `run --smoke`: one task, one rollout, and a report of what came back.
+
+The job goes through the whole sampling path (serving, tunnel, records, admission) with no
+gradient, checkpoint or reflection. A smoke run writes a normal run directory.
+"""
 
 from __future__ import annotations
 
@@ -23,19 +24,24 @@ if TYPE_CHECKING:
 
     from shipyard.cli.run import Run
 
-#: The `purpose` of a smoke job's row.
+#: The `purpose` recorded in a smoke job's row.
 PURPOSE = "smoke"
 LABEL = 12
 
 
 class SmokeFailed(RuntimeError):
-    """The smoke job returned nothing usable: no trial with a record on a served run, or no
-    trial with a verdict on a provider-served one."""
+    """Raised when the smoke job returned nothing usable.
+
+    On a served run, no trial has a proxy record; on a provider-served run, no trial has a
+    verdict.
+    """
 
 
 def planned(cfg: Blueprint) -> list[Path]:
-    """The task a smoke run samples: the first of the first batch, of the test set when there is
-    no train set."""
+    """Return the one task a smoke run samples: the first task of the first batch.
+
+    The batch comes from the test set when the blueprint has no train set.
+    """
     made = Generator.of(cfg)
     if not made.train:
         made = replace(made, train=made.test)
@@ -53,7 +59,7 @@ class Trial:
 
 @dataclass(frozen=True)
 class Smoked:
-    """The smoke job's result, used for the report and the exit code."""
+    """Result of the smoke job, used for the report and the exit code."""
 
     run: str
     sandbox: str
@@ -64,12 +70,12 @@ class Smoked:
     trials: list[Trial] = field(default_factory=list)
     seconds: float = 0.0
     tokens: tuple[int, int, int] = (0, 0, 0)
-    #: The stop the job raised after it was recorded. `verify` raises it again.
+    #: The `NothingServed` error the job raised after it was recorded; `verify` re-raises it.
     dead: NothingServed | None = field(default=None, compare=False)
 
     @property
     def passed(self) -> bool:
-        """True if a trial has a record on a served run, or a verdict otherwise."""
+        """Whether a trial has a proxy record on a served run, or a verdict otherwise."""
         if self.proxied:
             return any(trial.records for trial in self.trials)
         return any(trial.graded for trial in self.trials)
@@ -94,7 +100,7 @@ class Smoked:
         return made
 
     def verify(self) -> None:
-        """Raise the job's stop if it had one, else `SmokeFailed` unless the job passed."""
+        """Re-raise the job's `NothingServed` error if any, else `SmokeFailed` unless it passed."""
         if self.dead is not None:
             raise self.dead
         if not self.passed:
@@ -103,9 +109,12 @@ class Smoked:
 
 
 async def smoke(run: Run) -> Smoked:
-    """Run the smoke job through the trainer's `job`, carrying the modules the blueprint seeds,
-    recorded with `purpose = "smoke"`. A job the proxy served nothing for is still reported,
-    and its stop is kept for `verify`."""
+    """Run the smoke job through `Trainer.job` and return its report.
+
+    The agent carries the modules the blueprint seeds, and the job is recorded with
+    `purpose = "smoke"`. A job the proxy served nothing for is still reported, and its
+    `NothingServed` error is kept for `verify`.
+    """
     cfg = run.config
     endpoint = endpoint_for(cfg, run.directory)
     agent = Agent(Policy(endpoint), [harness(cfg.agent.harness)], seeded(cfg))
@@ -126,8 +135,11 @@ async def smoke(run: Run) -> Smoked:
 def report(
     run: Run, endpoint: Endpoint, trials: Sequence[Path], judged: Sequence[Verdict]
 ) -> Smoked:
-    """The smoke report: where the proxy stood, how the harness was wired, each trial's
-    records, weights and verdict off the record, and the job row's seconds and tokens."""
+    """Build the smoke report from the run's records.
+
+    The report gives the proxy's address, the harness wiring, each trial's proxy record count,
+    the weights that served it and its verdict, and the job row's sandbox seconds and tokens.
+    """
     cfg = run.config
     serving = endpoint if isinstance(endpoint, ProxyEndpoint) else None
     *_, row = record.read(run.directory / record.JOBS)
@@ -166,8 +178,10 @@ def report(
 
 
 def wiring(cfg: Blueprint) -> str:
-    """The harness's profile name with what it adds, as in `pi (model_api=openai-completions)`.
-    A table kwarg shows by name alone: `opencode (provider=shipyard, opencode_config)`."""
+    """Describe the harness profile and what it sets, as in `pi (model_api=openai-completions)`.
+
+    A table-valued kwarg shows by name alone: `opencode (provider=shipyard, opencode_config)`.
+    """
     name = bare_name(cfg.agent.harness)
     profile = profile_for(cfg.agent.harness)
     said = [

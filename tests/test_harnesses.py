@@ -1,4 +1,4 @@
-"""The per-harness profiles: which wire, which extras, and how turns are counted."""
+"""Tests for the per-harness profiles: wire format, extras, and turn counting."""
 
 from __future__ import annotations
 
@@ -69,8 +69,9 @@ def test_claude_code_turns_are_distinct_requests_not_assistant_lines() -> None:
 
 
 def test_opencode_poses_as_its_own_chat_provider_with_no_title_call() -> None:
-    """Under `openai` opencode posts to `/responses`; under its own provider, on the chat
-    package it bundles, it posts to `/chat/completions`, keyed by the env shipyard sets."""
+    """Under the `openai` provider, opencode posts to `/responses`. Under its own provider,
+    which uses the chat package opencode bundles, it posts to `/chat/completions` with the
+    key from the env that shipyard sets."""
     profile = PROFILES["opencode"]
     assert profile.provider == "shipyard" and slug_of(profile) == "shipyard"
     assert profile.dialect == "openai" and profile.env == {}
@@ -99,7 +100,8 @@ def test_opencode_turns_are_step_start_lines_whatever_the_spacing() -> None:
 
 
 def _ended(*stops: str) -> str:
-    """pi's JSON log: a message_start and message_end per assistant message, tool lines between."""
+    """Build a pi JSON log ending each assistant message with the given stop reasons. Each
+    message gets `message_start` and `message_end` lines followed by a tool result line."""
     lines = []
     for stop in stops:
         message = {"role": "assistant", "content": [], "stopReason": stop}

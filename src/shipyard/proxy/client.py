@@ -1,6 +1,8 @@
-"""The run's client of the proxy. The proxy is a `shipyard serve` subprocess on this
-machine, the same behind a Cloudflare tunnel, or one running elsewhere. A failed fetch
-raises. An empty answer means the trial made no requests."""
+"""Client the run uses to start, reach and query the proxy.
+
+The proxy is a `shipyard serve` subprocess on this machine, the same behind a Cloudflare
+tunnel, or one running elsewhere. A failed records fetch raises; an empty answer means the
+trial made no requests."""
 
 from __future__ import annotations
 
@@ -35,9 +37,9 @@ from shipyard.proxy.wire import (
 
 logger = logging.getLogger(__name__)
 
-#: The command that starts `shipyard serve`. Tests replace it with a stub.
+#: Command that starts `shipyard serve`. Tests replace it with a stub.
 SERVE: list[str] = [sys.executable, "-m", "shipyard.proxy.serve"]
-#: The first line serve prints. It names the port the kernel chose.
+#: First line `shipyard serve` prints, which names the port the kernel chose.
 BANNER = re.compile(
     r"^serving (?P<model>\S+) at http://(?P<host>[^:/]+):(?P<port>\d+) "
     r"\(control: (?P<control>on|off)\)$"
@@ -48,24 +50,27 @@ RECORDS_ATTEMPTS = 4
 RECORDS_TIMEOUT = 120.0
 CONTROL_TIMEOUT = 120.0
 PAUSES = (1.0, 2.0, 4.0)
-#: Settings passed to serve as flags. All other settings go in `--settings`.
+#: Settings passed to serve as flags. All others go in `--settings`.
 FLAGGED = ("model", "weights", "renderer", "bind", "bind_port")
 #: Seconds the proxy has to answer `/healthz` before the run is refused, and the pause
-#: between probes. A quick tunnel's name can resolve late, and a resolver that looked it up
-#: too early caches the miss for trycloudflare.com's negative TTL of 60 s, so the window
-#: outlasts that.
+#: between probes. A quick tunnel's hostname can resolve late, and a resolver that
+#: looked it up too early caches the miss for trycloudflare.com's negative TTL of 60 s,
+#: so the window is longer than that.
 PROBE_SECONDS = 120.0
 PROBE_PAUSE = 1.0
 
 
 class Unreachable(RuntimeError):
-    """The proxy does not answer at the address sandboxes will dial. Raised before any
-    sandbox opens."""
+    """The proxy does not answer at the address sandboxes will dial.
+
+    Raised before any sandbox opens."""
 
 
 def serve_command(settings: Mapping[str, Any], *, host: str) -> list[str]:
-    """The `python -m shipyard.proxy.serve` command for `settings`. `model`, `weights`,
-    `renderer`, `bind` and `bind_port` become flags. The rest go in `--settings` as JSON."""
+    """Return the `python -m shipyard.proxy.serve` command for `settings`.
+
+    `model`, `weights`, `renderer`, `bind` and `bind_port` become flags. The other settings
+    go in `--settings` as JSON."""
     made = [*SERVE, "--model", str(settings["model"])]
     made += ["--bind", str(settings.get("bind") or "0.0.0.0")]
     made += ["--port", str(int(settings.get("bind_port") or 0)), "--advertise", host]
@@ -81,9 +86,11 @@ def serve_command(settings: Mapping[str, Any], *, host: str) -> list[str]:
 
 @dataclass
 class Proxy:
-    """A proxy as the run sees it: the origin a sandbox dials, the loopback origin this
-    process dials for records and control, the harness token and, for a proxy this run
-    started, the control token and the processes to stop."""
+    """A proxy as seen from the run.
+
+    `origin` is the address a sandbox dials, `loopback` the address this process uses for
+    records and control, and `token` the harness token. For a proxy this run started, it also
+    holds the control token and the processes to stop."""
 
     origin: str
     token: str = field(repr=False)
@@ -91,7 +98,8 @@ class Proxy:
     loopback: str | None = None
     process: subprocess.Popen[str] | None = field(default=None, repr=False)
     tunnel: Tunnel | None = field(default=None, repr=False)
-    #: Tokens a trial may sample, as `/healthz` last reported. None when no budget is enforced.
+    #: Tokens a trial may sample, as last reported by `/healthz`. None when no budget is
+    #: enforced.
     budget: int | None = None
     #: Transport for the HTTP client, set by tests. None uses httpx's default.
     transport: Any = field(default=None, repr=False)
@@ -102,7 +110,7 @@ class Proxy:
 
     @property
     def host(self) -> str:
-        """The hostname a sandbox resolves for this proxy, for an allowlist."""
+        """Hostname a sandbox resolves for this proxy, for a network allowlist."""
         return urlsplit(self.origin).hostname or ""
 
     @classmethod
@@ -115,9 +123,10 @@ class Proxy:
         log: IO[str] | None = None,
         seconds: float = STARTUP_SECONDS,
     ) -> Proxy:
-        """Start `shipyard serve` as a subprocess advertising `host`. The port comes from its
-        first output line. Tokens come from the environment, or are generated here and
-        passed to it."""
+        """Start `shipyard serve` as a subprocess that advertises `host`.
+
+        The port is read from the subprocess's first output line. Tokens are taken from the
+        environment, or generated here and passed to the subprocess."""
         environ = dict(os.environ if environ is None else environ)
         token = environ.get(PROXY_TOKEN_ENV) or new_token()
         control = environ.get(CONTROL_TOKEN_ENV) or new_token()
@@ -155,7 +164,9 @@ class Proxy:
         log: IO[str] | None = None,
         tunnel_log: IO[str] | None = None,
     ) -> Proxy:
-        """`local` on loopback behind a quick tunnel. The origin is the tunnel's."""
+        """Start the proxy as `local` does, advertising loopback, behind a Cloudflare quick tunnel.
+
+        `origin` is the tunnel's address."""
         made = await cls.local(endpoint_settings, host="127.0.0.1", environ=environ, log=log)
         try:
             tunnel = await Tunnel.start(
@@ -169,7 +180,9 @@ class Proxy:
 
     @classmethod
     def remote(cls, url: str, token: str, control_token: str | None = None) -> Proxy:
-        """A proxy run elsewhere at `url`, behind `token`. `close` stops nothing."""
+        """Return a proxy running elsewhere at `url`, reached with `token`.
+
+        Its `close` stops nothing. Raise ValueError when the URL or the token is missing."""
         if not url.strip():
             raise ValueError("a remote proxy needs a URL")
         if not token:
@@ -180,9 +193,11 @@ class Proxy:
         return cls(origin=url, token=token, control_token=control_token or None)
 
     async def ready(self, seconds: float = PROBE_SECONDS) -> str:
-        """Return what the proxy serves, read from `/healthz` through its tunnel if it has
-        one, else on loopback (a remote proxy's origin). Keeps the token budget in `budget`.
-        Raises `Unreachable` with the address when nothing answers."""
+        """Wait for the proxy to answer `/healthz` and return the model it serves.
+
+        The probe goes through the tunnel if there is one, else to the loopback address (for a
+        remote proxy, its origin). The reported token budget is stored in `budget`. Raise
+        `Unreachable` with the address when nothing answers."""
         what, base = ("tunnel", self.origin) if self.tunnel else ("proxy", self.loopback)
         url = f"{base}{HEALTH_PATH}"
         try:
@@ -197,8 +212,10 @@ class Proxy:
         return str(answer.get("serving") or answer.get("model") or "")
 
     def gone(self) -> str | None:
-        """Why a proxy this run started can no longer answer (its tunnel or serve process
-        exited), or None. A proxy run elsewhere always gives None."""
+        """Return why a proxy this run started can no longer answer, or None.
+
+        That happens when its tunnel or serve process has exited. A proxy running elsewhere
+        always gives None."""
         if self.tunnel is not None and (code := self.tunnel.process.poll()) is not None:
             return f"the tunnel at {self.origin} exited with {code}"
         if self.process is not None and (code := self.process.poll()) is not None:
@@ -206,8 +223,9 @@ class Proxy:
         return None
 
     def address_for(self, trial: str) -> str:
-        """`<origin>/r/trial/<trial>/v1`. Raises ValueError for a name that is empty or
-        contains `/`."""
+        """Return the base URL for a trial's harness, `<origin>/r/trial/<trial>/v1`.
+
+        Raise ValueError for a trial name that is empty or contains `/`."""
         if not trial or "/" in trial:
             raise ValueError(
                 f"{trial!r} cannot be addressed: a trial name goes in the URL path, "
@@ -216,9 +234,10 @@ class Proxy:
         return f"{self.origin}/r/trial/{trial}/v1"
 
     async def swap(self, model_path: str | None) -> None:
-        """Point the proxy at a `tinker://` path, or at the base model for None, through the
-        control route. Raises without the control token, which the harness token cannot
-        replace."""
+        """Switch the proxy to a `tinker://` path, or to the base model for None.
+
+        The request goes through the control route. Raise RuntimeError when there is no control
+        token (the harness token cannot replace it) or when the proxy refuses."""
         if self.control_token is None:
             raise RuntimeError(
                 f"the proxy at {self.origin} opened no control route to this run: set "
@@ -237,10 +256,11 @@ class Proxy:
             )
 
     async def records(self, trial: str) -> list[Record]:
-        """Fetch and drain this trial's records from the proxy. Retries up to
-        `RECORDS_ATTEMPTS` times on a transport error or a 5xx, with `again=1` after the
-        first attempt so the proxy re-sends an answer lost in transit. A 4xx is not
-        retried. The last failure raises."""
+        """Fetch this trial's records from the proxy, which drains them.
+
+        Make up to `RECORDS_ATTEMPTS` attempts on a transport error or a 5xx response, sending
+        `again=1` after the first so the proxy re-sends an answer lost in transit. A 4xx is not
+        retried. The last failure is raised."""
         url = f"{self.loopback}{RECORDS_PATH}/{quote(trial, safe='')}"
         params = {"delta": "1"}
         for attempt in range(RECORDS_ATTEMPTS):
@@ -274,8 +294,9 @@ class Proxy:
         return {"Authorization": f"Bearer {self.token}"}
 
     def close(self) -> None:
-        """Stop the tunnel, then the serve process, if this run started them. Synchronous,
-        so it can be called outside the event loop."""
+        """Stop the tunnel, then the serve process, if this run started them.
+
+        Synchronous, so it can be called outside the event loop."""
         tunnel, self.tunnel = self.tunnel, None
         if tunnel is not None:
             tunnel.stop()
@@ -287,9 +308,11 @@ class Proxy:
 async def answers(
     url: str, *, seconds: float = PROBE_SECONDS, transport: Any = None
 ) -> dict[str, Any]:
-    """Return `url`'s JSON once it answers 200. Retries every `PROBE_PAUSE`, including
-    when the name does not resolve yet, until `seconds` have passed. Then raises the last
-    failure."""
+    """Poll `url` until it answers 200 and return its JSON object.
+
+    Retry every `PROBE_PAUSE` seconds, including while the hostname does not resolve yet, and
+    raise the last failure once `seconds` have passed. A body that is not an object returns
+    an empty dict."""
     deadline = time.monotonic() + seconds
     while True:
         remaining = deadline - time.monotonic()

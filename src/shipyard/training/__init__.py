@@ -1,5 +1,6 @@
-"""The parts that move weights: the trainer and its recipes, the credit they assign, the
-datums they pack, and the training client. A trainer file subclasses one of these."""
+"""Training: trainers and recipes, credit assignment, datum packing and the Tinker client.
+
+A user's trainer file subclasses one of the trainers exported here."""
 
 from shipyard.training.recipes.cispo import CISPOTrainer
 from shipyard.training.recipes.dapo import DAPOTrainer

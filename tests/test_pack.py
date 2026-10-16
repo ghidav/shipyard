@@ -1,5 +1,4 @@
-"""Records into sequences: the token-prefix rule, the target spans, the datum convention
-checked token for token against the cookbook's own."""
+"""Tests for packing proxy records into sequences and datums, checked against the cookbook."""
 
 from __future__ import annotations
 
@@ -23,7 +22,7 @@ from tests.records import made
 
 P1, C1, T1, C2, T2, C3 = (1, 2, 3), (10, 11), (20,), (12,), (21, 22), (13, 14)
 PNG = base64.b64encode(b"png-bytes").decode()
-#: A picture of three tokens at position 1.
+#: An image that spans three prompt tokens starting at offset 1.
 SHOT = Picture(1, 3, "png", PNG)
 
 
@@ -34,7 +33,7 @@ def _record(prompt: tuple[int, ...], completion: tuple[int, ...], seq: int, **na
 
 
 def _tool_loop() -> list[Record]:
-    """Three calls whose prompts each extend the last prompt and completion."""
+    """Return three tool-loop records, each prompt extending the previous prompt and completion."""
     first = _record(P1, C1, 1)
     second = _record((*P1, *C1, *T1), C2, 2)
     third = _record((*P1, *C1, *T1, *C2, *T2), C3, 3)
@@ -58,8 +57,9 @@ def test_a_tool_loop_packs_into_one_sequence_with_three_target_spans() -> None:
 
 
 def test_a_prompt_that_does_not_extend_opens_a_second_sequence() -> None:
-    """The fourth call re-sends the history with the thinking stripped, so its prompt
-    begins like the chain and then differs: a new sequence, every completion once."""
+    """The fourth call re-sends the history with thinking stripped, so its prompt shares a
+    prefix with the chain and then diverges. It starts a new sequence, and each completion
+    is still a target exactly once."""
     stripped = _record((*P1, 10, 99, *T1, *C2, *T2, *C3, 23), (15,), 4)
     found = sequences([*_tool_loop(), stripped])
     assert len(found) == 2
@@ -165,7 +165,7 @@ def test_a_record_without_logprobs_leaves_the_sequence_with_no_mu() -> None:
 
 
 def _cookbook(records: list[Record], advantage: float) -> list[tinker.Datum]:
-    """The same records as the cookbook packs them: one transition per record."""
+    """Pack `records` the way the cookbook does, with one transition per record."""
     transitions = [
         Transition(
             ob=tinker.ModelInput.from_ints(list(record.prompt_token_ids)),

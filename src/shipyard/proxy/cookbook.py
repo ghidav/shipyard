@@ -1,5 +1,7 @@
-"""Imports `tinker_cookbook` for the proxy. Every symbol the proxy uses is named here, so a
-cookbook rename fails at import time."""
+"""Single point of import for the parts of `tinker_cookbook` the proxy uses.
+
+Every cookbook symbol the proxy uses is named here, so a rename in the cookbook fails at
+import time."""
 
 from __future__ import annotations
 
@@ -18,14 +20,15 @@ from tinker_cookbook.renderers import ParseTermination as ParseTermination
 from tinker_cookbook.renderers import get_renderer as get_renderer
 from tinker_cookbook.tokenizer_utils import get_tokenizer
 
-#: The cookbook app's private symbols that thinking, vision and keepalive wrap: the two
-#: parsers, the SSE writer and the 400 type. A patch of any other name is refused.
+#: Private symbols of the cookbook app the proxy may read or patch: the two parsers, the
+#: SSE writer and the 400 error type. Any other name is refused.
 PATCHABLE = ("_parse_anthropic", "_parse_openai", "_serve_sse", "_BadRequest")
 
 
 def private(name: str) -> Any:
-    """The cookbook app's private symbol as it currently stands, patched or not. Raises
-    RuntimeError for a name outside `PATCHABLE` or one the installed cookbook lacks."""
+    """Return a private symbol of the cookbook app as it currently stands, patched or not.
+
+    Raise RuntimeError for a name outside `PATCHABLE` or one the installed cookbook lacks."""
     if name not in PATCHABLE or not hasattr(_app, name):
         raise RuntimeError(
             f"tinker_cookbook's capture proxy has no patchable {name!r}. shipyard patches "
@@ -35,8 +38,10 @@ def private(name: str) -> Any:
 
 
 def patch(**replacements: Any) -> None:
-    """Replace private symbols of the cookbook app in place. Thinking, vision and keepalive
-    install their wrappers through this function."""
+    """Replace private symbols of the cookbook app in place.
+
+    Every name is checked with `private` before any is replaced. The thinking, vision, turns
+    and keepalive wrappers are installed through this function."""
     for name in replacements:
         private(name)
     for name, value in replacements.items():
@@ -44,15 +49,17 @@ def patch(**replacements: Any) -> None:
 
 
 def tagged(wrapper: Any, inner: Any, tag: str) -> Any:
-    """Mark `wrapper` with `tag` and with the symbol it wraps (`__wrapped__`), and return
-    it. A later install finds the mark even when other wraps sit over it."""
+    """Mark `wrapper` with `tag` and with the symbol it wraps (`__wrapped__`), and return it.
+
+    `wrapped_by` finds the mark even when other wrappers sit over it."""
     wrapper.shipyard_wrap, wrapper.__wrapped__ = tag, inner
     return wrapper
 
 
 def wrapped_by(name: str, tag: str) -> bool:
-    """Whether a wrap tagged `tag` is already on the private symbol, possibly under later
-    wraps. Each module installs once per process, in any order."""
+    """Return whether a wrapper tagged `tag` is on the private symbol, possibly under others.
+
+    This lets each module install its wrapper once per process, in any order."""
     found = private(name)
     while found is not None:
         if getattr(found, "shipyard_wrap", None) == tag:
@@ -62,16 +69,18 @@ def wrapped_by(name: str, tag: str) -> bool:
 
 
 def refused(message: str) -> Exception:
-    """The cookbook's 400 with `message`. Unlike `too_long`, it does not use Tinker's error
-    type, so a budget refusal is not mistaken for a context overflow, which a harness
-    compacts on."""
+    """Return the cookbook's 400 error with `message`.
+
+    Unlike `too_long`, this does not use Tinker's error type, so a budget refusal is not
+    mistaken for a context overflow, which a harness responds to by compacting."""
     return private("_BadRequest")(message)
 
 
 def too_long(message: str) -> Exception:
-    """A refusal in Tinker's error type for a prompt that does not fit. The cookbook
-    classifies it by message and answers with the "prompt is too long" 400 that a harness
-    compacts on."""
+    """Return a Tinker `BadRequestError` refusing a prompt that does not fit the context.
+
+    The cookbook classifies it by its message and answers with the "prompt is too long" 400,
+    which a harness responds to by compacting."""
     return tinker.BadRequestError(
         message,
         response=httpx.Response(400, request=httpx.Request("POST", "http://shipyard.invalid")),
@@ -79,15 +88,16 @@ def too_long(message: str) -> Exception:
     )
 
 
-#: Inkling's renderer takes its thinking effort when it builds each prompt, so its levels are
-#: named here, as the cookbook names Qwen3.8's: `tml_v0_effort_0.7` is `tml_v0` at 0.7.
-#: Plain `tml_v0` builds at the renderer's own default.
+#: Renderer names that fix a thinking effort. Inkling's renderer takes the effort when it
+#: builds each prompt, so the levels are named here, as the cookbook names Qwen3.8's:
+#: `tml_v0_effort_0.7` is `tml_v0` at 0.7. Plain `tml_v0` uses the renderer's default.
 EFFORT_RENDERER = re.compile(r"^(tml_v0)_effort_(\d*\.?\d+)$")
 
 
 class AtEffort:
-    """A renderer that builds every prompt at one thinking effort. Everything else is the
-    inner renderer's."""
+    """Renderer wrapper that builds every prompt at a fixed thinking effort.
+
+    All other attributes are delegated to the inner renderer."""
 
     def __init__(self, inner: Any, effort: float) -> None:
         self._inner = inner
@@ -102,9 +112,10 @@ class AtEffort:
 
 
 def renderer_for(base_model: str, name: str | None = None) -> Any:
-    """The cookbook renderer for the model, or the renderer named `name`, built on the
-    model's tokenizer and image processor. `tml_v0_effort_<e>` is `tml_v0` at effort `e`.
-    Fetches the tokenizer over the network."""
+    """Build the cookbook renderer `name`, or the model's recommended one, for `base_model`.
+
+    The renderer uses the model's tokenizer, fetched over the network, and its image
+    processor. `tml_v0_effort_<e>` builds `tml_v0` at effort `e`, which must be in [0, 1)."""
     chosen = name or get_recommended_renderer_name(base_model)
     effort = None
     if matched := EFFORT_RENDERER.match(chosen):
@@ -127,8 +138,9 @@ def renderer_for(base_model: str, name: str | None = None) -> Any:
 
 
 def image_processor_for(base_model: str) -> Any:
-    """The model's image processor, or None for a text-only model or one whose processor
-    cannot be built here. A renderer without a processor refuses images."""
+    """Return the model's image processor, or None for a text-only model or a failed build.
+
+    A renderer without an image processor refuses images."""
     try:
         attributes = get_model_attributes(base_model)
     except Exception:  # noqa: BLE001 - a model the cookbook does not know may still be VL
@@ -142,7 +154,8 @@ def image_processor_for(base_model: str) -> Any:
 
 
 def scope_value(key: str) -> str | None:
-    """A value from the capture scope that the cookbook's handler samples under, or None.
+    """Return `key` from the capture scope the cookbook's handler samples under, or None.
+
     The scope holds the trial (from the `/r/...` address) and the model the harness asked
     for."""
     value = dict(current_scope()).get(key)

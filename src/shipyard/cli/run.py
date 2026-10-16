@@ -1,6 +1,8 @@
-"""A run: what `shipyard run` wraps around a trainer. A directory holding the blueprint it
-consumed, opened, reopened and closed; what happens in it is the trainer's to write. Also the
-trainer a run goes under, and a run reopened at a checkpoint with its trainer."""
+"""Run directories: opening, reopening and closing a run, and choosing its trainer.
+
+A run directory holds a copy of its blueprint (and trainer file, if one was given) and a process
+note; the trainer writes everything else in it.
+"""
 
 from __future__ import annotations
 
@@ -22,17 +24,20 @@ from shipyard.training.trainer import Trainer
 
 
 class RunRefused(RuntimeError):
-    """A run that could not be opened; nothing was written."""
+    """Raised when a run cannot be opened. Nothing has been written."""
 
 
 class Run:
-    """An open run: its directory, the blueprint it consumed, and how it opened and closed."""
+    """An open run directory, used as a context manager around the work done in it.
+
+    Entering a reopened run writes a new process note; exiting records how the run ended.
+    """
 
     def __init__(self, directory: Path, config: Blueprint) -> None:
         self.directory = directory
         self.id = directory.name
         self.config = config
-        #: Set by `reopen`: the process note is written on entry, keeping the earlier ones.
+        #: Set by `reopen`. On entry, a new process note is written and the earlier ones kept.
         self._reopened = False
         self._resumed: str | None = None
 
@@ -45,9 +50,12 @@ class Run:
         smoke: bool = False,
         trainer: Path | None = None,
     ) -> Self:
-        """Create `<root>/<id>/`, copy `run.toml` byte for byte and the trainer file as
-        `trainer.py` when one is given, and write the process note (marked `smoke` for a smoke
-        run). Raises `RunRefused` if the directory exists."""
+        """Create the run directory `<root>/<id>/` for a blueprint.
+
+        Copies `run.toml` byte for byte, copies the trainer file as `trainer.py` when one is
+        given, and writes the process note, marked `smoke` for a smoke run. Raises `RunRefused`
+        if the directory already exists.
+        """
         config = load(blueprint)
         source = config_file(blueprint)
         home = source.parent
@@ -71,8 +79,11 @@ class Run:
 
     @classmethod
     def reopen(cls, directory: Path, *, resumed: str | None = None) -> Self:
-        """The run as it stands, to go on; its process note is written on entry, so a refusal
-        before the work leaves the earlier one as it was."""
+        """Reopen an existing run to continue it.
+
+        The new process note is written only on entering the run, so a refusal before the work
+        starts leaves the previous note unchanged.
+        """
         directory = Path(directory)
         run = cls(directory, load(directory))
         run._reopened, run._resumed = True, resumed
@@ -80,11 +91,11 @@ class Run:
 
     @staticmethod
     def read(directory: Path) -> dict[str, Any]:
-        """The process note of a run directory, open or closed; `{}` when it has none."""
+        """Return the process note of a run directory, open or closed, or `{}` if it has none."""
         return record.read_json(Path(directory) / record.PROCESS)
 
     def note(self, **about: Any) -> None:
-        """Merge facts about this invocation into `process.json`."""
+        """Merge the given fields about this invocation into `process.json`."""
         current = record.read_json(self.directory / record.PROCESS)
         current.update(about)
         record.write_json(self.directory / record.PROCESS, current)
@@ -105,8 +116,10 @@ class Run:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        """Note how the run ended, whether or not the work raised. A `KeyboardInterrupt` from
-        a signal is noted as `stopped: <signal>`."""
+        """Record in the process note how the run ended, whether or not the work raised.
+
+        A `KeyboardInterrupt` is recorded as `stopped: <signal name>`, with `SIGINT` for Ctrl-C.
+        """
         if exc is None:
             error = None
         elif isinstance(exc, KeyboardInterrupt):
@@ -117,15 +130,21 @@ class Run:
 
 
 def trainer_of(run: Run) -> type[Trainer]:
-    """The trainer class a run goes under: the one its kept trainer file defines, else its
-    kind's."""
+    """Return the trainer class for a run.
+
+    This is the class defined in the run's copy of the trainer file, else the default trainer
+    for its recipe kind.
+    """
     kept = run.directory / record.TRAINER
     return trainer_in(kept) if kept.is_file() else trainer_for(run.config.recipe)
 
 
 def reopened(directory: Path, *, tag: str = "last") -> tuple[Run, Trainer]:
-    """A run reopened at one of its checkpoints, and its trainer standing where it stood,
-    under `trainer_of` the run."""
+    """Reopen a run at a checkpoint and return it with its trainer restored to that checkpoint.
+
+    `tag` names the checkpoint; "last" means the most recent one. Raises `ValueError` if there
+    is no run at `directory` or no matching checkpoint.
+    """
     directory = Path(directory)
     if not (directory / record.CONFIG).is_file():
         raise ValueError(f"no run at {directory}")
@@ -143,7 +162,7 @@ def reopened(directory: Path, *, tag: str = "last") -> tuple[Run, Trainer]:
 
 
 def _process(config: Blueprint, blueprint: str | None, **extra: Any) -> dict[str, Any]:
-    """A process note: this invocation, the blueprint and the kind, then `extra` where set."""
+    """Build the process note for this invocation, adding the entries of `extra` that are set."""
     return {
         "pid": os.getpid(),
         "started_at": record.now(),
@@ -156,7 +175,7 @@ def _process(config: Blueprint, blueprint: str | None, **extra: Any) -> dict[str
 
 
 def runs_root(flag: Path | None = None) -> Path:
-    """Where runs live: `--root`, else `SHIPYARD_RUNS`, else `./runs`. Every command uses it."""
+    """Return the directory runs live in: `--root`, else `SHIPYARD_RUNS`, else `./runs`."""
     if flag is not None:
         return Path(flag)
     named = os.environ.get("SHIPYARD_RUNS")
@@ -164,7 +183,7 @@ def runs_root(flag: Path | None = None) -> Path:
 
 
 def version() -> str:
-    """The installed distribution's version, or "source" from a tree never installed."""
+    """Return the installed shipyard version, or "source" when running from an uninstalled tree."""
     try:
         return installed("shipyard")
     except PackageNotFoundError:  # pragma: no cover - only outside an install
@@ -172,6 +191,6 @@ def version() -> str:
 
 
 def _run_id(name: str) -> str:
-    """`<name>__<7>`, named as Harbor names a trial. Each run gets a new id."""
+    """Return a new run id, `<name>__<7 random chars>`, following Harbor's trial naming."""
     stem = name[:32].rstrip("_-") or "run"
     return f"{stem}__{ShortUUID().random(length=7)}"

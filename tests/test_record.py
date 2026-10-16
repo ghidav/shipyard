@@ -1,4 +1,4 @@
-"""The record's writers: stamped, flushed, tolerant of a cut last line, atomic."""
+"""Tests for the run record's JSONL and JSON readers and writers."""
 
 from __future__ import annotations
 

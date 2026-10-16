@@ -1,4 +1,4 @@
-"""The run: `train`, `sample`, `job`, `step`. A recipe is a subclass overriding what it changes."""
+"""The `Trainer` base class: the run loop, and the methods a recipe overrides to change it."""
 
 from __future__ import annotations
 
@@ -49,10 +49,10 @@ from shipyard.types import (
 logger = logging.getLogger(__name__)
 
 SECONDS_PER_HOUR = 3600
-#: Under `<directory>/modules/`: the candidate a trainer carries, as `seed` reads it back.
+#: Subdirectory of `<directory>/modules/` where the carried modules are kept for `seed` to read.
 CARRIED = "carried"
 
-#: The step's row keys, in this order. A measure with nothing behind it is left out.
+#: Keys of a training step's log row, in order. A key with no value is left out.
 ROW = (
     "step",
     "trained",
@@ -81,14 +81,14 @@ ROW = (
 
 
 def warmed(learning_rate: float, warmup: int, done: int) -> float:
-    """The rate after `done` updates, rising linearly to `learning_rate` over `warmup`."""
+    """Return the learning rate after `done` updates, warmed up linearly over `warmup` updates."""
     if done >= warmup:
         return learning_rate
     return learning_rate * (done + 1) / warmup
 
 
 def optimizer(adam: Adam, warmup: int, paper_warmup: int = 0) -> str:
-    """The optimizer clause of the resolution line."""
+    """Describe the optimizer settings for the `resolution` line."""
     said = f"adamw betas {adam.beta1} / {adam.beta2}, eps {adam.eps:g}"
     if adam.weight_decay > 0:
         said += f", weight decay {adam.weight_decay}"
@@ -103,7 +103,7 @@ def optimizer(adam: Adam, warmup: int, paper_warmup: int = 0) -> str:
 
 
 def centred(rewards: Values[float | None], *, normalize: bool) -> list[float | None]:
-    """`advantages` over the measured positions, None kept where it was."""
+    """Apply `advantages` to the measured rewards, leaving None entries in place."""
     found = [one for one in rewards if one is not None]
     scored = iter(advantages(found, normalize=normalize) if found else [])
     return [next(scored) if one is not None else None for one in rewards]
@@ -111,7 +111,11 @@ def centred(rewards: Values[float | None], *, normalize: bool) -> list[float | N
 
 @dataclass(frozen=True)
 class Credit:
-    """What a step trains on: the datums by group, empty where skipped, and the passes' cost."""
+    """The datums a step trains on, by group, and the tokens spent computing them.
+
+    A skipped group has an empty list. `reference_tokens` and `anchor_tokens` count the
+    reference and anchor logprob passes; `anchor_kl` is the mean gap to the anchor, or None
+    without a KL term."""
 
     datums: list[list[Datum]]
     reference_tokens: int
@@ -124,20 +128,22 @@ class Credit:
 
 
 class Trainer:
-    """The plain policy gradient, and the run around it: the agent opened, `[recipe] steps`
-    steps taken, the test set measured and the weights checkpointed `final`."""
+    """Base trainer: a plain policy gradient and the run loop around it.
 
-    #: Tinker's loss, with `bounds` as its config.
+    `train` opens the agent, takes `[recipe] steps` steps, evaluates on the test set and saves
+    a `final` checkpoint. Recipes subclass it and override the methods they change."""
+
+    #: Tinker loss function; `bounds` supplies its config.
     loss_fn = "importance_sampling"
-    #: Adam as the cookbook's `train_step` sets it (no weight decay or gradient clipping),
-    #: for whatever a paper leaves unstated. The SDK's `eps` default is 1e-12.
+    #: Adam settings from the cookbook's `train_step` (no weight decay or gradient clipping),
+    #: used where a paper does not state them. The SDK's default `eps` is 1e-12.
     ADAM = Adam(beta1=0.9, beta2=0.95, eps=1e-8)
-    #: The warm-up the recipe's paper trains with, shown beside the run's own `warmup`.
+    #: Warm-up steps used in the recipe's paper, shown next to the run's own `warmup`.
     PAPER_WARMUP = 0
 
     @classmethod
     def resolution(cls, recipe: Any) -> str:
-        """The line `check` prints after the resolved config."""
+        """Return the summary line `check` prints after the resolved config."""
         parts = [
             *cls.rules(recipe),
             "1 substep" if recipe.substeps == 1 else f"{recipe.substeps} substeps by prompt",
@@ -150,7 +156,9 @@ class Trainer:
 
     @classmethod
     def rules(cls, recipe: Any) -> list[str]:
-        """The clauses of `resolution` that name this class's rules."""
+        """Return the clauses of `resolution` that describe the advantage and the loss.
+
+        A recipe overrides this to describe its own rules."""
         return [
             "advantage = group mean, not divided by spread",
             f"loss = {cls.loss_fn}, {cls.aggregated()}",
@@ -158,27 +166,29 @@ class Trainer:
 
     @classmethod
     def aggregated(cls) -> str:
+        """Describe how the loss is aggregated over tokens, for `rules`.
+
+        A recipe that aggregates differently overrides this."""
         return "summed over tokens"
 
     def __init__(self, config: Blueprint, directory: Path) -> None:
         self.config = config
-        #: Where the trainer writes: its rows, its checkpoints, its modules, the proxy's
-        #: records. A trainer goes on from what an earlier one wrote there.
+        #: Run directory for log rows, checkpoints, modules and proxy records. A trainer on an
+        #: existing directory continues from what an earlier one wrote there.
         self.directory = Path(directory)
-        #: What its jobs, its wandb run and its Tinker session are named after.
+        #: Run name, used for job names, the wandb run and the Tinker session.
         self.name = self.directory.name
         self.recipe = config.recipe
         # The blueprint's inputs are read first, so a missing dataset or a broken seed stops
         # the trainer before anything opens.
-        #: The train set as a stream of batches, and the test set.
+        #: Source of training batches and of the test set.
         self.generator = Generator.of(config)
-        #: What the agent carries: the directory's own modules, or the ones a checkpoint
-        #: restores.
+        #: Modules the agent carries: the run directory's own, or those a checkpoint restores.
         self.modules = carried(config, self.directory)
         self.directory.mkdir(parents=True, exist_ok=True)
-        #: The jobs' bars on a terminal.
+        #: Terminal progress bars for running jobs.
         self.progress = reporter()
-        #: One engine, so every job in flight shares its `[rollout] concurrency`.
+        #: A single engine, so all jobs in flight share one `[rollout] concurrency` limit.
         self.engine = HarborEngine(
             config.rollout,
             env=config.agent.env,
@@ -186,33 +196,36 @@ class Trainer:
             secrets=self.secrets(),
             progress=self.progress,
         )
-        #: Where every row goes.
         self.logs = Loggers(self.loggers())
-        #: What has been spent, going on from what was spent before a resume.
+        #: Accumulated costs, including those spent before a resume.
         self.costs = Costs.from_dict(record.read_json(self.directory / record.COSTS))
         self._next_job = next_job(self.name, self.directory, Path(config.rollout.jobs_dir))
-        #: The checkpoint row the run reopened at; None on a fresh run.
+        #: Checkpoint row the run resumed from; None on a fresh run.
         self.resumed: Mapping[str, Any] | None = None
         self.steps = 0
         self.updates = 0
-        #: Batches drawn from the generator.
+        #: Number of batches drawn from the generator.
         self.drawn = 0
-        #: The step the test set was last measured after; None before it was.
+        #: Step after which the test set was last evaluated; None if it has not been.
         self.evaluated: int | None = None
         self._stream: Iterator[list[Task]] | None = None
 
     def loggers(self) -> list[Logger]:
-        """Where this trainer writes: its directory, and wandb when `[logging.wandb]` names a
-        project. A subclass adds its own."""
+        """Return the loggers that receive every row.
+
+        The base writes to the run directory, and to wandb when `[logging.wandb]` names a
+        project. A subclass may override this to add its own."""
         found: list[Logger] = [Folder(self.directory)]
         if self.config.logging.wandb is not None:
             found.append(Wandb(self.config, self.directory))
         return found
 
     def secrets(self) -> Secrets:
-        """What each trial acquires for its environment and releases after its teardown: the
-        pools `[rollout.secrets]` names, else nothing. Called once, as the trainer is made; a
-        subclass returns its own."""
+        """Return the secrets each trial acquires before it starts and releases after teardown.
+
+        The default is a `Pool` of the identities `[rollout.secrets]` names, or no secrets.
+        Called once, when the trainer is created. A subclass may override this to return its
+        own `Secrets`."""
         table = self.config.rollout.secrets
         return Pool.of(table) if table else Secrets()
 
@@ -225,12 +238,14 @@ class Trainer:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        """Close what the trainer opened, however it ended: its bars, then its loggers."""
+        """Close the progress bars, then the loggers, whether or not the run failed."""
         self.progress.close()
         self.logs.close(exc)
 
     def reserve_name(self) -> str:
-        """The next job name, `<name>-NNNN`, with its directory created; raises if it exists."""
+        """Reserve and return the next job name, `<name>-NNNN`, by creating its directory.
+
+        Raise `FileExistsError` if the directory already exists."""
         jobs_dir = Path(self.config.rollout.jobs_dir)
         name = f"{self.name}-{self._next_job:04d}"
         try:
@@ -241,9 +256,10 @@ class Trainer:
         return name
 
     def agent(self) -> Agent:
-        """The agent the trainer samples: the policy over its endpoint, with the training
-        client when the recipe trains, standing at the checkpoint reopened at, and carrying
-        `modules`."""
+        """Build the agent to sample, carrying `modules`.
+
+        Its policy runs over the run's endpoint, with a training client when the recipe
+        trains, and starts from the resumed checkpoint if there is one."""
         cfg, row = self.config, self.resumed or {}
         client = TinkerClient.of(cfg, name=self.name) if cfg.trains else None
         policy = Policy(
@@ -256,8 +272,10 @@ class Trainer:
         return Agent(policy, [harness(cfg.agent.harness)], self.modules)
 
     async def train(self) -> Agent:
-        """The run: open the agent, take `[recipe] steps` steps (the evaluate kind takes none),
-        then `finish`."""
+        """Run training: open the agent, take `[recipe] steps` steps, then `finish`.
+
+        A recipe that does not train (the evaluate kind) takes no steps. A subclass may
+        override this to run a different loop around `advance` and `finish`."""
         steps = self.recipe.steps if self.config.trains else 0
         agent = self.agent()
         async with agent.policy:
@@ -266,8 +284,12 @@ class Trainer:
             return await self.finish(agent)
 
     async def advance(self, agent: Agent) -> None:
-        """One step of the run: `sample`, `step`, `log`; then the new weights served, and the
-        checkpoint and the evaluation on their cadences."""
+        """Take one step of the run: `sample`, `step` and `log`.
+
+        After an update, serve the new weights, and save a checkpoint every
+        `[checkpoints] every` updates. Evaluate on the test set every `[recipe] evaluate_every`
+        steps. Raise `ValueError` if `sample` returns groups that did not pass through
+        `credited`."""
         found = await self.sample(agent)
         if any(len(group.shaped) != len(group.members) for group in found):
             raise ValueError(f"{type(self).__name__}.sample returned groups it never credited")
@@ -285,15 +307,16 @@ class Trainer:
             await self.evaluate(agent, self.generator.test)
 
     async def finish(self, agent: Agent) -> Agent:
-        """The run's end: the test set measured unless the last step just was, and the
-        weights checkpointed `final`."""
+        """Evaluate the test set unless the last step just did, then save the `final` checkpoint."""
         if self.generator.test and self.evaluated != self.steps:
             await self.evaluate(agent, self.generator.test)
         await self.checkpoint(agent, "final", keep=True)
         return agent
 
     def draw(self) -> list[Task]:
-        """The generator's next batch, counted in `drawn`."""
+        """Return the generator's next batch of tasks and count it in `drawn`.
+
+        Raise `ValueError` if the run has no train tasks."""
         if self._stream is None:
             self._stream = self.generator.batches(self.drawn)
         batch = next(self._stream, None)
@@ -303,7 +326,11 @@ class Trainer:
         return batch
 
     async def sample(self, agent: Agent) -> list[Group]:
-        """A step's groups, credited: one job over the generator's next batch."""
+        """Return one step's credited groups, from one job over the next batch.
+
+        A subclass may override this to sample differently, for example to keep sampling
+        until enough groups carry signal. The groups it returns must have passed through
+        `credited`."""
         return self.credited(await self.job(agent, self.draw()))
 
     async def job(
@@ -315,8 +342,12 @@ class Trainer:
         purpose: str = "training",
         **about: Any,
     ) -> list[Group]:
-        """The one place a policy is sampled: run, judge, record, group. The groups carry no
-        advantages; `credited` sets them where a step trains on them."""
+        """Sample the policy on `tasks` as one job and return its groups.
+
+        This is the only place a policy is sampled: it runs the trials, takes the proxy's
+        records, judges the trials, writes the job's row and groups the trials. `attempts`
+        defaults to `[data] group_size`. The groups carry no advantages; `credited` sets them.
+        Raise `NothingServed` if the endpoint served the job nothing."""
         cfg, endpoint = self.config, agent.policy.endpoint
         attempts = cfg.data.group_size if attempts is None else attempts
         job = Job(
@@ -351,9 +382,12 @@ class Trainer:
         return groups(job, agent)
 
     def record_job(self, job: Job, *, party: str, **facts: Any) -> None:
-        """The job's row with `facts`, and its bill: a served job's tokens counted off its
-        records under `party`; else the tokens its harness reported, under the provider its
-        trials name or else `party`. A job's sandbox seconds go to its sandbox."""
+        """Write the job's row, including `facts`, and add the job's costs.
+
+        A served job's tokens are counted from the proxy's records and billed to `party`.
+        Otherwise the tokens are those the harness reported, billed to the provider the trials
+        name, or else to `party`. Sandbox seconds are billed to the sandbox. A subclass that
+        runs its own jobs calls this to record them."""
         served = job.records is not None
         if served:
             counted, noted = sampled(job)
@@ -386,14 +420,17 @@ class Trainer:
         self.logs.costs(self.costs)
 
     def spent(self, party: str, **counts: int) -> None:
-        """Training counts added to a party; zero counts are skipped."""
+        """Add training token counts to `party`'s costs, skipping zero counts."""
         counted = {key: int(value) for key, value in counts.items() if value}
         if counted:
             self.costs.add_party(party, **counted)
             self.logs.costs(self.costs)
 
     async def evaluate(self, agent: Agent, tasks: Values[Task], **more: Any) -> Evaluation | None:
-        """One job per batch of `tasks` at `[data] test_group_size`, then one row with the mean."""
+        """Evaluate the agent on `tasks` and log one `eval` row with the mean reward.
+
+        The tasks run in jobs of `[data] batch_size` tasks, each with `[data] test_group_size`
+        attempts (`group_size` when unset). Return None when `tasks` is empty."""
         if not tasks:
             return None
         data = self.config.data
@@ -419,7 +456,9 @@ class Trainer:
         return result
 
     async def measure(self, tasks: Values[Task]) -> Evaluation | None:
-        """The checkpoint the trainer stands at, evaluated on `tasks` as one more row."""
+        """Evaluate the resumed checkpoint on `tasks` and log the result as an `eval` row.
+
+        Raise `ValueError` if the run was not resumed from a checkpoint."""
         if self.resumed is None:
             raise ValueError("an evaluation needs a run reopened at a checkpoint")
         cfg = self.config
@@ -429,30 +468,48 @@ class Trainer:
             return await self.evaluate(agent, list(tasks), checkpoint=self.resumed["tag"])
 
     def credited(self, found: list[Group]) -> list[Group]:
-        """`found`, each group's shaped rewards and advantages set by this class's rules."""
+        """Set each group's shaped rewards and advantages, and return the groups.
+
+        The values come from `shape` and `advantage`; override those to change how credit is
+        assigned."""
         for group in found:
             group.shaped = self.shape(group)
             group.advantages = self.advantage(group)
         return found
 
     def shape(self, group: Group) -> list[float | None]:
-        """The rewards as the verifier scored them; None on an unmeasured member."""
+        """Return each member's shaped reward, or None for an unmeasured member.
+
+        The base returns the verifier's reward unchanged. A recipe overrides this to shape
+        rewards, for example with a length penalty."""
         return [float(one.verdict.reward) if one.measured else None for one in group.members]
 
     def advantage(self, group: Group) -> list[float | None]:
-        """The shaped rewards less the group's mean; None on an unmeasured member."""
+        """Return each member's advantage, or None for an unmeasured member.
+
+        The base subtracts the group's mean shaped reward. A recipe overrides this to
+        normalize or otherwise change the advantage."""
         return centred(group.shaped, normalize=False)
 
     def weights(self, sizes: Values[int]) -> list[float]:
-        """Each credited group's factor on its tokens' advantages; the base leaves Tinker's sum."""
+        """Return each credited group's factor on its tokens' advantages.
+
+        `sizes` holds each group's target-token count. The base returns 1.0 for every group,
+        which keeps Tinker's sum over tokens. A recipe overrides this to change how token
+        losses are weighted across groups."""
         return [1.0] * len(sizes)
 
     def bounds(self) -> dict[str, float] | None:
-        """`loss_fn_config` for the step; the base loss takes none."""
+        """Return the `loss_fn_config` sent to Tinker with `loss_fn`.
+
+        The base loss takes none. A recipe overrides this to set its clipping bounds."""
         return None
 
     async def credit(self, policy: Policy, found: Values[Group]) -> Credit:
-        """The datums by group, none for a flat one; the anchor gap times `kl_coef` subtracted."""
+        """Build the datums for each group, none for a group with no reward variance.
+
+        Each token's advantage, less `kl_coef` times its gap to the anchor's logprobs when
+        there is a KL term, is scaled by the group's factor from `weights`."""
         recipe = self.recipe
         kept: list[list[tuple[Any, float]]] = []
         for group in found:
@@ -507,7 +564,10 @@ class Trainer:
         return Credit(datums, reference_tokens, anchor_tokens, gap_mean)
 
     async def mu(self, client: TrainingClient, sequences: Values[Sequence]) -> list[list[float]]:
-        """The sampler's logprobs at every target, from the records or the training client."""
+        """Return mu, the sampling logprobs at every target.
+
+        They are read from the proxy's records when `[recipe] reference = "sampler"`, and
+        otherwise recomputed by the training client."""
         if self.recipe.reference == "sampler":
             return [sampler_logprobs(one) for one in sequences]
         return await client.compute_logprobs(sequences)
@@ -515,7 +575,9 @@ class Trainer:
     async def gaps(
         self, sequences: Values[Sequence], mu: Values[Values[float]], anchor: Any
     ) -> list[list[float]] | None:
-        """mu less the anchor's logprobs at every target; None without a KL term."""
+        """Return mu minus the anchor's logprobs at every target, or None without a KL term.
+
+        Raise `ValueError` if `kl_coef` is set but there is no anchor."""
         kl_coef = self.recipe.kl_coef
         if kl_coef <= 0:
             return None
@@ -528,7 +590,10 @@ class Trainer:
         ]
 
     async def step(self, agent: Agent, found: Values[Group]) -> TrainingStep:
-        """The gradient in `substeps` parts of whole groups; no update without a client or
+        """Take one training step on the credited groups.
+
+        The datums are split into `substeps` parts of whole groups, each one forward-backward
+        pass and one optimizer step. No update is taken without a training client or without
         datums."""
         # Reproduces `train_step` of tinker_cookbook/rl/train.py (Thinking Machines Lab,
         # Apache-2.0).
@@ -590,7 +655,9 @@ class Trainer:
         return forward, await client.optim_step(self.ADAM, rate)
 
     def log(self, done: TrainingStep, **more: Any) -> None:
-        """The step's row in `ROW` order, naming its jobs, with `more` in it or after it."""
+        """Log the step's `train` row, with keys in `ROW` order followed by the rest of `more`.
+
+        A subclass may override this to add its own fields through `more`."""
         found, update = done.groups, done.update
         measured = [one for group in found for one in group.measured]
         rollouts = sum(len(group.members) for group in found)
@@ -629,7 +696,12 @@ class Trainer:
         self.logs.log("train", **kept, **rest)
 
     async def checkpoint(self, agent: Agent, tag: str, *, keep: bool = False, **more: Any) -> None:
-        """Save state and sampler weights under `tag`, and the agent written down to the record."""
+        """Save the training state and sampler weights under `tag`, and log a checkpoint row.
+
+        The row records both paths, the step counters, and the agent's modules and harness.
+        With `keep`, the checkpoint never expires; otherwise it expires after
+        `[checkpoints] ttl_hours`. Do nothing without a training client. A subclass may
+        override this to add fields to the row through `more`."""
         client = agent.policy.client
         if client is None:
             return
@@ -654,16 +726,20 @@ class Trainer:
         logger.info("checkpoint %s: %s", tag, sampler)
 
     def restore(self, row: Mapping[str, Any]) -> None:
-        """Stand where the checkpoint row stood: its counts, the batches it had drawn, and its
-        weights for the agent to open at."""
+        """Restore the step counters, the batches drawn and the weights from a checkpoint row.
+
+        The weights are used when `agent` next builds the policy. A subclass that adds fields
+        in `checkpoint` overrides this to restore them."""
         self.resumed = row
         self.steps, self.updates, self.drawn = row["step"], row["updates"], row["drawn"]
 
 
 def carried(config: Blueprint, directory: Path) -> Candidate | None:
-    """The candidate every job carries: the copy kept in `directory`, else the one `[agent]
-    modules` seeds, kept there so a resume carries the same text. None when the key is unset
-    or the recipe (gepa, fst) searches over its own."""
+    """Return the modules every job carries.
+
+    These are the copy kept in `directory`, else the ones `[agent] modules` seeds, which are
+    then saved there so a resume carries the same text. Return None when the key is unset or
+    the recipe (gepa, fst) searches over its own."""
     if isinstance(config.recipe, Search):
         return None
     kept = directory / record.MODULES / CARRIED
@@ -676,13 +752,13 @@ def carried(config: Blueprint, directory: Path) -> Candidate | None:
 
 
 def seeded(config: Blueprint) -> Candidate | None:
-    """The candidate `[agent] modules` seeds, for any recipe. None when it is unset."""
+    """Return the modules `[agent] modules` seeds, for any recipe, or None when it is unset."""
     named = modules_dir(config)
     return None if named is None else seed(named)
 
 
 def next_job(name: str, directory: Path, jobs_dir: Path) -> int:
-    """One past the highest job number on the record or on disk; 0 for a new directory."""
+    """Return the next job number: one past the highest in the job log or on disk, else 0."""
     named = [row.get("job") for row in record.read(directory / record.JOBS)]
     if jobs_dir.is_dir():
         named += [one.name for one in jobs_dir.iterdir()]
@@ -696,14 +772,18 @@ def next_job(name: str, directory: Path, jobs_dir: Path) -> int:
 
 
 def split(items: list[Any], parts: int) -> list[list[Any]]:
-    """`parts` slices, sizes within one of each other, cut as the cookbook's `split_list`."""
+    """Split `items` into `parts` slices whose sizes differ by at most one.
+
+    The slices are cut as the cookbook's `split_list` cuts them."""
     step = len(items) / parts
     edges = [int(index * step) for index in range(parts)] + [len(items)]
     return [items[start:end] for start, end in zip(edges[:-1], edges[1:], strict=True)]
 
 
 def observed(datums: Values[Any], trained: Values[Any]) -> dict[str, float]:
-    """kl_v1, kl_v2 and entropy over the acted tokens, as the cookbook's; {} when unreadable."""
+    """Return kl_v1, kl_v2 and entropy over the target tokens, computed as the cookbook does.
+
+    Return {} if the logprobs cannot be read."""
     if len(trained) != len(datums):
         return {}
     try:

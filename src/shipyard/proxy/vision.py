@@ -1,6 +1,7 @@
-"""Images and documents on the wire, carried to the model as image parts. The cookbook's
-parsers take text only, so each image is lifted out as a sentinel before they run and put
-back as an image part afterwards. A PDF becomes one image per page."""
+"""Images and documents in requests, passed to the model as image parts.
+
+The cookbook's parsers accept text only, so each image is replaced with a sentinel before
+they run and restored as an image part afterwards. A PDF becomes one image per page."""
 
 from __future__ import annotations
 
@@ -14,13 +15,13 @@ from typing import Any
 
 from shipyard.proxy import cookbook
 
-#: A page of a document becomes one image. A longer document is cut, and a text part
-#: says how many pages are shown.
+#: Most pages of a document passed to the model, one image each. A longer document is
+#: cut, and a text part says how many pages are shown.
 MAX_PAGES = 16
-#: Images are scaled down so their longest side is at most this. A vision renderer
-#: charges by area.
+#: Longest side of an image, in pixels. Larger images are scaled down, because a vision
+#: renderer charges by area.
 MAX_SIDE = 1536
-#: The scale a PDF page is rasterised at. 2 is about 144 dpi, enough for small type.
+#: Scale at which PDF pages are rasterised. 2 is about 144 dpi, enough for small type.
 PAGE_SCALE = 2.0
 
 TAG = "vision"
@@ -33,7 +34,7 @@ _DATA_URI = re.compile(r"^data:([^;,]+)(;base64)?,(.*)$", re.DOTALL)
 
 
 class Bank:
-    """The images lifted out of one request, in order. A sentinel replaces each in the body."""
+    """Images lifted out of one request, in order. A sentinel replaces each one in the body."""
 
     def __init__(self) -> None:
         self.images: list[Any] = []
@@ -44,8 +45,9 @@ class Bank:
 
 
 def install() -> None:
-    """Wrap the cookbook's two parsers, once per process. A second install finds this
-    module's tag, even under thinking's wrap, and does nothing."""
+    """Wrap the cookbook's two parsers, once per process.
+
+    A second call finds this module's tag, even under the thinking wrapper, and does nothing."""
     if cookbook.wrapped_by("_parse_openai", TAG):
         return
     anthropic, openai = cookbook.private("_parse_anthropic"), cookbook.private("_parse_openai")
@@ -68,7 +70,7 @@ def install() -> None:
 
 
 def lift_anthropic(body: dict[str, Any], bank: Bank) -> dict[str, Any]:
-    """The body with every image and document block replaced by a sentinel text block."""
+    """Return the body with every image and document block replaced by a sentinel text block."""
     out = dict(body)
     if "system" in out:
         out["system"] = _lift(out["system"], bank, wire="anthropic")
@@ -167,7 +169,7 @@ def _openai_file(block: dict[str, Any], bank: Bank) -> list[str]:
 
 
 def _placed(images: Sequence[Any], bank: Bank) -> list[str]:
-    """One sentinel per page, and a note when the document was cut."""
+    """Return one sentinel per page, plus a note when the document was cut to `MAX_PAGES`."""
     placed = [bank.add(image) for image in images[:MAX_PAGES]]
     if len(images) > MAX_PAGES:
         placed.append(f"\n[document cut: {MAX_PAGES} of {len(images)} pages shown]\n")
@@ -199,7 +201,7 @@ def decode_image(data: Any, media: str) -> Any:
 
 
 def fit(image: Any) -> Any:
-    """RGB, no larger than `MAX_SIDE` on its longest side."""
+    """Convert the image to RGB and shrink it so its longest side is at most `MAX_SIDE`."""
     if image.mode != "RGB":
         image = image.convert("RGB")
     if max(image.size) > MAX_SIDE:
@@ -209,7 +211,7 @@ def fit(image: Any) -> Any:
 
 
 def pages(pdf: bytes) -> list[Any]:
-    """Every page of a PDF as an image, in order. The caller caps the count."""
+    """Render every page of a PDF as an image, in order. The caller caps the count."""
     import pypdfium2
 
     try:
@@ -229,8 +231,9 @@ def pages(pdf: bytes) -> list[Any]:
 
 
 def restore(parsed: Any, bank: Bank) -> Any:
-    """Split every sentinel-bearing message of the parsed chat back into parts. Content may
-    be text or parts that another wrap already split."""
+    """Replace the sentinels in the parsed chat with image parts, in place.
+
+    Message content may be a string or a list of parts that another wrapper already split."""
     if not bank.images:
         return parsed
     for message in parsed.messages:
@@ -278,12 +281,12 @@ def has_images(messages: Sequence[Any]) -> bool:
 
 
 def takes_images(renderer: Any) -> bool:
-    """Whether the renderer was built with an image processor."""
+    """Return whether the renderer was built with an image processor."""
     return bool(getattr(renderer, "_has_image_processor", False))
 
 
 def image_key(part: dict[str, Any]) -> str:
-    """A digest of an image's pixels, or of the string the image was given as."""
+    """Return a digest of an image's pixels, or of the string the image was given as."""
     image = part.get("image")
     if isinstance(image, str):
         return hashlib.sha256(image.encode("utf-8")).hexdigest()[:16]

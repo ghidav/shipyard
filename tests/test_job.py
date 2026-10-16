@@ -1,5 +1,4 @@
-"""The trainer's `job` reserves the job name and directory before anything runs, appends a
-row for each job, and adds the job's counts to `costs.json`."""
+"""Tests for `Trainer.job`: job naming, job rows, and cost accounting."""
 
 from __future__ import annotations
 
@@ -32,7 +31,7 @@ EVALUATE = BLUEPRINTS / "evaluate"
 
 @pytest.fixture
 def opened(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Run:
-    """An open evaluate run in a working directory holding the fixture tasks."""
+    """Open an evaluate run from a working directory holding the fixture tasks."""
     fixture_tasks(tmp_path)
     monkeypatch.chdir(tmp_path)
     return Run.open(EVALUATE, root=tmp_path / "runs")

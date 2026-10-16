@@ -1,4 +1,4 @@
-"""The vocabulary of a run. Nothing here does work."""
+"""Shared types of a run: the model, the agent, the rollout engine, groups and evaluations."""
 
 from __future__ import annotations
 
@@ -45,10 +45,10 @@ __all__ = [
 
 Task = Path
 Datum = tinker.Datum
-#: A job's model calls by trial name.
+#: A job's recorded model calls, keyed by trial name.
 Records = dict[str, list[Record]]
-#: How long served sampler weights are kept: past the batch sampled from them, and a
-#: crashed run's leftovers expire on their own.
+#: TTL in seconds of served sampler weights: long enough to outlast the batch sampled from
+#: them, and short enough that a crashed run's leftovers expire on their own.
 SERVE_TTL = 12 * 3600
 
 
@@ -57,10 +57,11 @@ SERVE_TTL = 12 * 3600
 
 @dataclass(frozen=True)
 class Sequence:
-    """One chain: the last record's prompt and completion, which hold every earlier one."""
+    """One chain of model calls as a single token sequence: the last record's prompt and
+    completion, which contain every earlier call."""
 
     tokens: tuple[int, ...]
-    #: Where each completion sits, in chain order.
+    #: (start, end) positions of each completion, in chain order.
     spans: tuple[tuple[int, int], ...]
     #: The sampler's logprobs at the targets; None when a record carried none.
     mu: tuple[float, ...] | None
@@ -68,12 +69,13 @@ class Sequence:
 
     @property
     def targets(self) -> tuple[int, ...]:
+        """Positions of every completion token, in chain order."""
         return tuple(at for start, end in self.spans for at in range(start, end))
 
 
 @dataclass(frozen=True)
 class Forward:
-    """What `forward_backward` returns: each datum's logprobs at every input position."""
+    """Result of `forward_backward`: each datum's logprobs at every input position."""
 
     logprobs: list[list[float]]
 
@@ -84,12 +86,14 @@ class Adam:
     beta2: float
     eps: float
     weight_decay: float = 0.0
-    #: Tinker's `grad_clip_norm`; 0 is none.
+    #: Tinker's `grad_clip_norm`; 0 disables clipping.
     grad_clip_norm: float = 0.0
 
 
 @dataclass(frozen=True)
 class Update:
+    """Statistics of the gradient update one training step took."""
+
     train_tokens: int
     substeps: int
     learning_rate: float
@@ -98,16 +102,16 @@ class Update:
     kl_v2: float | None
     entropy: float | None
     seconds: float
-    #: Sequences the step trained on.
+    #: Number of sequences the step trained on.
     sequences: int = 0
-    #: Mean of mu less the anchor's logprobs over those; None without a KL term.
+    #: Mean of mu minus the anchor's logprobs over those sequences; None without a KL term.
     anchor_kl: float | None = None
 
 
 @dataclass(frozen=True)
 class TrainingStep:
-    """What `step` did: its number, the groups it was given, and how it took a gradient;
-    None when it took none (no client, or every group flat)."""
+    """Result of one training step. `update` is None when no gradient was taken: there was
+    no training client, or no group had any reward variance."""
 
     index: int
     groups: list[Group]
@@ -115,15 +119,16 @@ class TrainingStep:
 
 
 class TrainingClient(ABC):
-    """Tinker's training client; a step call submits on await and returns the result's awaitable."""
+    """Interface to Tinker's training client. `forward_backward` and `optim_step` submit the
+    request when awaited and return an awaitable of its result."""
 
     @abstractmethod
     async def open(self) -> None:
-        """Start the session; a policy opens its client on entry."""
+        """Start the training session. `Policy` calls this on entry."""
 
     @abstractmethod
     async def anchor(self) -> Any:
-        """A sampling client on the weights as opened, for the KL term."""
+        """Return a sampling client on the weights as first opened, for the KL term."""
 
     @abstractmethod
     async def forward_backward(
@@ -135,7 +140,8 @@ class TrainingClient(ABC):
 
     @abstractmethod
     async def compute_logprobs(self, sequences: Values[Sequence]) -> list[list[float]]:
-        """mu at every target of every sequence, from one batched forward."""
+        """Return the trainer's logprobs (mu) at every target of every sequence, from one
+        batched forward pass."""
 
     @abstractmethod
     async def save_weights_for_sampler(self, name: str, *, ttl_seconds: int | None) -> str: ...
@@ -152,23 +158,24 @@ class TrainingClient(ABC):
 
 @dataclass(frozen=True)
 class Connection:
-    """What a trial's harness dials; a provider's is the model name alone."""
+    """How a trial's harness reaches the model. For a provider, only `model` is set."""
 
     model: str | None
     address: str | None = None
     token: str | None = field(default=None, repr=False)
     env: dict[str, str] = field(default_factory=dict)
     kwargs: dict[str, Any] = field(default_factory=dict)
-    #: The proxy's host, for a task on an allowlist.
+    #: The proxy's host name, added to the allowed hosts of a task in Harbor's allowlist
+    #: network mode.
     host: str | None = None
 
 
 class Endpoint(ABC):
-    """The model as the endpoint a harness dials: served by this run, or by a provider."""
+    """The model endpoint a harness calls, served either by this run or by a provider."""
 
-    #: Sampled tokens one rollout may spend; None for a provider.
+    #: Most tokens one rollout may sample; None for a provider.
     budget: int | None = None
-    #: The party sampling is billed to; None for a provider, whose trials name it.
+    #: The party sampling is billed to; None for a provider, whose trials report it.
     party: str | None = None
 
     @abstractmethod
@@ -182,30 +189,34 @@ class Endpoint(ABC):
 
     @abstractmethod
     async def serve(self, path: str | None) -> None:
-        """Point at sampler weights, None for the base model."""
+        """Serve the sampler weights at `path`, or the base model when `path` is None."""
 
     @abstractmethod
     async def record(self, job: str, trials: Values[Trial]) -> Records | None:
-        """The job's model calls by trial name; None for a provider."""
+        """Return the job's model calls by trial name, or None for a provider."""
 
     def check(self, job: str, records: Records) -> None:
-        """Raise if the run cannot go on after this job, once its row is written."""
+        """Raise if the run cannot continue after this job. Called after the job's row is
+        written."""
         return None
 
 
 @dataclass
 class Policy:
-    """The model behind an agent; entering opens the client and serves the start, leaving
-    closes endpoint and client."""
+    """The model behind an agent: an endpoint and, for a served model, a training client.
+
+    Entering opens the client and the endpoint and serves the starting weights; exiting
+    closes both."""
 
     endpoint: Endpoint
-    #: None for a provider.
+    #: Training client; None for a provider.
     client: TrainingClient | None = None
-    #: A sampler path to serve first: a checkpoint's, on a resumed run.
+    #: Sampler path to serve first, such as a checkpoint's on a resumed run.
     start: str | None = None
-    #: A state path to load once the client is open: a checkpoint's, on a resumed run.
+    #: State path to load once the client is open, such as a checkpoint's on a resumed run.
     state: str | None = None
-    #: Whether to take the KL anchor from the weights as opened, before any state loads.
+    #: Whether to take the KL anchor from the weights as first opened, before any state
+    #: is loaded.
     anchored: bool = False
     anchor: Any = field(default=None, init=False)
 
@@ -240,7 +251,8 @@ class Policy:
         await self.client.close(status, f"{type(failed).__name__}: {failed}")
 
     async def sync(self, tag: str) -> str:
-        """Publish the client's weights as `tag` and serve them."""
+        """Save the client's weights for sampling as `tag`, serve them, and return their
+        path."""
         if self.client is None:
             raise RuntimeError("a provider's policy has no weights to sync")
         path = await self.client.save_weights_for_sampler(tag, ttl_seconds=SERVE_TTL)
@@ -254,13 +266,13 @@ class Policy:
 @dataclass(frozen=True)
 class Harness:
     name: str
-    #: Harbor's installed agent: a name with its version, or an import path.
+    #: The Harbor agent to install: a name with an optional version, or an import path.
     agent: str
     profile: Profile = field(default_factory=Profile)
 
 
 def harness(named: str) -> Harness:
-    """A built-in harness by the name `[agent] harness` takes."""
+    """Return the harness for a name as `[agent] harness` gives it."""
     return Harness(bare_name(named).strip(), named, profile_for(named))
 
 
@@ -276,14 +288,16 @@ class Agent:
 
 @dataclass(frozen=True)
 class Settings:
-    """What one `engine.run` call runs under; the engine's own stand when a call brings none."""
+    """Settings for one `engine.run` call. A call without them uses the engine's own,
+    built from `[rollout]` and `[agent]`."""
 
     verify: bool = True
     setup_timeout: float | None = None
     timeout: float | None = None
     env: Mapping[str, str] = field(default_factory=dict)
     kwargs: Mapping[str, Any] = field(default_factory=dict)
-    #: Whether each trial acquires the engine's secrets; a trial that runs no task does not.
+    #: Whether each trial acquires one of the engine's secrets. Off for a trial that runs no
+    #: task.
     secrets: bool = True
 
 
@@ -302,26 +316,28 @@ class Trial:
 
 @dataclass
 class Job:
-    """One sampling of a policy: named with its facts, filled by the engine and the endpoint,
-    judged, then written down by the trainer."""
+    """One sampling of a policy over a set of tasks.
+
+    It is created with its name and metadata, filled in by the engine and the endpoint,
+    judged by admission, then logged by the trainer."""
 
     name: str
     purpose: str = "training"
     step: int | None = None
     modules: Candidate | None = None
-    #: What else the row says: a search's round, a reflection's component.
+    #: Extra fields for the job's row, such as a search's round or a reflection's component.
     about: dict[str, Any] = field(default_factory=dict)
     trials: list[Trial] = field(default_factory=list)
     records: Records | None = None
     verdicts: list[Verdict] = field(default_factory=list)
-    #: By trial name, off the harness logs: the turns asked, and the trials whose last
-    #: model call failed.
+    #: Read from the harness logs, by trial name: the model calls each trial asked for, and
+    #: the trials whose last model call failed.
     asked: dict[str, int] | None = None
     failed: set[str] | None = None
 
 
 class RolloutEngine(ABC):
-    """Harbor. It takes no model; the agent carries the connection."""
+    """Runs trials through Harbor. It holds no model; the agent carries the connection."""
 
     @abstractmethod
     async def run(
@@ -333,7 +349,8 @@ class RolloutEngine(ABC):
         agent: Agent,
         settings: Settings | None = None,
     ) -> list[Trial]:
-        """Each task under each harness, `attempts` times, in plan order: task, harness, attempt."""
+        """Run each task under each harness `attempts` times, and return the trials in plan
+        order: by task, then harness, then attempt."""
 
 
 # ------------------------------------------------------------------ the group
@@ -341,7 +358,8 @@ class RolloutEngine(ABC):
 
 @dataclass(frozen=True)
 class Verdict:
-    """A reward or a mask, never both; how Harbor said it ended; the verifier's numbers."""
+    """Outcome of one trial: a reward or a mask reason (never both), how Harbor reported it
+    ended, and the verifier's individual rewards."""
 
     reward: float | None
     mask: str | None
@@ -370,7 +388,8 @@ class Group:
     agent: Agent
     harness: Harness
     members: list[Member]
-    #: Indexed like `members`, None on an unmeasured one; the trainer's rules fill them.
+    #: Shaped rewards and advantages, indexed like `members` and None for an unmeasured
+    #: member. The trainer fills them in.
     shaped: list[float | None] = field(default_factory=list)
     advantages: list[float | None] = field(default_factory=list)
 
@@ -380,7 +399,8 @@ class Group:
 
     @property
     def reward_variance(self) -> float:
-        """Over the measured members' shaped rewards; 0.0 with fewer than two."""
+        """Population variance of the measured members' shaped rewards; 0.0 with fewer
+        than two."""
         found = [one for one in self.shaped if one is not None]
         return pvariance(found) if len(found) >= 2 else 0.0
 
@@ -395,5 +415,5 @@ class Evaluation:
     rollouts: int
     graded: int
     masked: int
-    #: Over the graded rollouts; None when nothing was graded.
+    #: Mean reward over the graded rollouts; None when none were graded.
     reward_mean: float | None

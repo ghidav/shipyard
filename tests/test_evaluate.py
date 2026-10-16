@@ -1,4 +1,4 @@
-"""Test the evaluate kind through the runner: one row for the test set, one job per batch."""
+"""Tests for running the `evaluate` recipe: one metrics row per test set, one job per batch."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from tests.records import FakeProxy, made
 from tests.trials import BLUEPRINTS, FakeTrials, Harbor, dataset
 
 EVALUATE = BLUEPRINTS / "evaluate"
-#: One outcome per task of the four-task dataset: two graded, one timeout, one crash.
+#: Outcomes for tasks `a`, `b`, and `c`: two graded and one timeout. Each test decides `d`.
 OUTCOMES = {
     "a": {"reward": 1.0},
     "b": {"reward": 0.0},
@@ -23,7 +23,7 @@ OUTCOMES = {
 
 
 def _blueprint(tmp_path: Path, **replacements: str) -> Path:
-    """The evaluate fixture over a four-task test set, two tasks per batch, one rollout each."""
+    """Write the evaluate fixture over a four-task test set, two tasks a batch, one rollout each."""
     dataset(tmp_path / "tasks", "four", *"abcd")
     text = (EVALUATE / "run.toml").read_text(encoding="utf-8")
     text = text.replace('"fixture"', '"four"').replace("batch_size = 1", "batch_size = 2")
@@ -102,8 +102,8 @@ async def test_a_served_model_runs_through_its_proxy_and_is_judged_by_its_record
     monkeypatch: pytest.MonkeyPatch,
     harbor: Harbor,
 ) -> None:
-    """`a` graded 1 with two turns, `b` cut by its budget (0, overriding the verifier), `c`
-    timed out, `d` never came up (no records, no result)."""
+    """Task `a` is graded 1 over two turns, `b` is cut by its token budget (0, overriding the
+    verifier), `c` times out, and `d` never starts (no records and no result)."""
     monkeypatch.chdir(tmp_path)
     fake = FakeProxy(
         answers={

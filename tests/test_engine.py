@@ -1,4 +1,4 @@
-"""Test the engine: what reaches Harbor, a failed trial's slot, one concurrency limit per run."""
+"""Tests for the Harbor rollout engine."""
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ def _batch(tmp_path: Path, *names: str) -> list[Path]:
 
 
 def _engine(tmp_path: Path, harbor: Any, **rollout: Any) -> HarborEngine:
-    """An engine over `[rollout]`; `env` and `kwargs` are the harness's, from `[agent]`."""
+    """Build an engine from `[rollout]` fields; `env` and `kwargs` are the harness's settings."""
     env, kwargs = rollout.pop("env", None), rollout.pop("kwargs", None)
     table = {"sandbox": "docker", "concurrency": 4, "jobs_dir": str(tmp_path / "jobs")}
     return HarborEngine(Rollout(**{**table, **rollout}), env=env, kwargs=kwargs, run_trial=harbor)
@@ -317,7 +317,7 @@ async def test_every_trial_is_pointed_at_the_address_that_names_it(tmp_path: Pat
 def _dialled(
     tmp_path: Path, proxy: FakeProxy, config: TrialConfig, deployed: str, **rollout: object
 ) -> Connection:
-    """What a served trial of `config` under `deployed` dials."""
+    """Return the connection a served trial of `config` under harness `deployed` dials."""
     trial = Trial(
         "j",
         Path(config.task.path),
@@ -349,7 +349,7 @@ def test_claude_code_is_handed_the_anthropic_wire_without_the_v1(tmp_path: Path)
 def test_opencode_gets_its_providers_env_and_keeps_a_blueprints_own_config(
     tmp_path: Path,
 ) -> None:
-    """The trial gets the env that the profile's opencode config names. A blueprint's own
+    """The trial receives the env that the profile's opencode config names. A blueprint's own
     `opencode_config` keeps its keys, and the profile's keys win where both set one."""
     proxy = FakeProxy(origin="http://host.docker.internal:8000", token="k")
     mine = {

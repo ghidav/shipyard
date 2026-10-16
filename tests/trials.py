@@ -1,6 +1,5 @@
-"""Trials and blueprints without Harbor: `result.json` files in the shape `TrialResult`
-dumps, runners that stand in for `Trial.create` + `run` and write them, fixture datasets and
-`run.toml` writers, one job through the trainer, and a run's rows read back."""
+"""Test helpers that replace Harbor: `result.json` writers, fake trial runners, fixture
+datasets and blueprints, a trainer job runner, and readers for a run's records."""
 
 from __future__ import annotations
 
@@ -30,14 +29,15 @@ FIXTURES = Path(__file__).parent / "tasks"
 BLUEPRINTS = Path(__file__).parent / "blueprints"
 VALID = Path(__file__).parent / "modules" / "valid"
 T0 = datetime(2026, 1, 1, tzinfo=UTC)
-#: The fake proxy's one record per trial: prompt "go" + completion "ok" is four tokens,
-#: of which the model reads three.
+#: Token counts of the fake proxy's single record per trial: prompt "go" plus completion "ok"
+#: is four tokens, three of which are model input.
 SEQUENCE_TOKENS = 4
 INPUT_TOKENS = 3
 START = "tinker://fake/sampler_weights/start"
-#: A blueprint replacement that gives the recipe a KL term.
+#: Blueprint replacement that adds a KL term to the recipe.
 ANCHORED = {"learning_rate = 2e-5": "learning_rate = 2e-5\nkl_coef = 0.1"}
-#: A gepa search over the fixture dataset on a hosted model, Claude Code reflecting.
+#: Blueprint for a GEPA search over the fixture dataset on a hosted model, with Claude Code as
+#: the reflection harness.
 GEPA = """
 [agent]
 model = "some-hosted-model"
@@ -59,18 +59,18 @@ patience = 2
 
 
 def fixture_tasks(tmp_path: Path) -> Path:
-    """The fixture datasets copied to `<tmp>/tasks`."""
+    """Copy the fixture datasets to `<tmp>/tasks`."""
     return shutil.copytree(FIXTURES, tmp_path / "tasks")
 
 
 def check(blueprint: Path) -> list[Finding]:
-    """The findings `shipyard check` prints for the blueprint."""
+    """Return the findings `shipyard check` reports for the blueprint."""
     return resolved.report(blueprint).findings
 
 
 def write_blueprint(tmp_path: Path, text: str) -> Path:
-    """Writes `text` to `<tmp>/bp/run.toml` and returns the blueprint directory, the form
-    `load` and `check` take."""
+    """Write `text` to `<tmp>/bp/run.toml` and return the blueprint directory, which is the
+    form `load` and `check` take."""
     home = tmp_path / "bp"
     home.mkdir(parents=True)
     (home / "run.toml").write_text(text, encoding="utf-8")
@@ -78,19 +78,20 @@ def write_blueprint(tmp_path: Path, text: str) -> Path:
 
 
 def dataset(root: Path, name: str, *tasks: str) -> Path:
-    """A dataset of copies of the fixture `alpha` task, under the names given."""
+    """Create a dataset of copies of the fixture `alpha` task under the given names."""
     home = root / name
     for task in tasks:
         shutil.copytree(FIXTURES / "fixture" / "alpha", home / task)
     return home
 
 
-#: The fixture's four tasks in one batch, and one step to take them all.
+#: Blueprint replacements that put all four fixture tasks in one batch and run one step.
 ONE_STEP = {"batch_size = 2": "batch_size = 4", "steps = 2": "steps = 1"}
 
 
 def blueprint(tmp_path: Path, kind: str = "dapo", *, tasks: int = 4, **replacements: str) -> Path:
-    """The recipe's fixture over `tasks` tasks named a, b, c..., two per batch, groups of two."""
+    """Write the recipe's fixture blueprint over `tasks` tasks named a, b, c, and so on, with
+    two tasks per batch and groups of two."""
     if not (tmp_path / "tasks" / "four").is_dir():
         dataset(tmp_path / "tasks", "four", *"abcdefgh"[:tasks])
     text = (BLUEPRINTS / kind / "run.toml").read_text(encoding="utf-8")
@@ -115,7 +116,8 @@ def write_result(
     seconds: float | None = None,
     raw: str | None = None,
 ) -> Path:
-    """A trial directory holding a `result.json` built from the parts given."""
+    """Create `trial_dir` with a `result.json` in the shape Harbor's `TrialResult` dumps,
+    built from the given parts."""
     trial_dir.mkdir(parents=True, exist_ok=True)
     path = trial_dir / "result.json"
     if raw is not None:
@@ -170,9 +172,9 @@ def _phase(start: datetime, seconds: float) -> dict[str, str]:
 
 
 class FakeTrials:
-    """Stands in for Harbor's `Trial.create` + `run`. Records every config and the peak
-    concurrency, and writes each trial's directory and result as `outcomes` says by task
-    name. A task in `breaks` raises instead. An outcome of None leaves the directory empty."""
+    """Fake for Harbor's `Trial.create` and `run`. It records every config and the peak
+    concurrency, and writes each trial's result from `outcomes` by task name. A task in
+    `breaks` raises instead, and an outcome of None leaves the trial directory empty."""
 
     def __init__(
         self,
@@ -209,9 +211,9 @@ class FakeTrials:
 
 
 class Fakes:
-    """Harbor's trial replaced for both kinds of job a search runs: a policy trial scores 1
-    when the skill it was handed names its task, and a reflection trial publishes a skill
-    naming the task its first trace is about."""
+    """Fake Harbor trial runner for both kinds of job a GEPA search runs. A policy trial
+    scores 1 when its skill names its task, and a reflection trial publishes a skill naming
+    the task of its first trace."""
 
     def __init__(self) -> None:
         self.configs: list[TrialConfig] = []
@@ -241,7 +243,8 @@ class Fakes:
 
 
 class Alternating:
-    """Rewards 1, 0, 1, 0 per task in call order, so every group of two has spread."""
+    """Fake trial runner that rewards each task 1, 0, 1, 0 in call order, so every group of
+    two has one success and one failure."""
 
     def __init__(self) -> None:
         self.configs: list[TrialConfig] = []
@@ -259,7 +262,8 @@ class Stopped(BaseException):
 
 
 class Interrupting:
-    """Alternating rewards, and the `after`-th trial stops the run as a signal would."""
+    """Fake trial runner with alternating rewards whose `after`-th trial raises `Stopped`,
+    as a signal would."""
 
     def __init__(self, after: int) -> None:
         self.inner = Alternating()
@@ -277,7 +281,7 @@ Fake = TypeVar("Fake")
 
 
 class Harbor(Protocol):
-    """The `harbor` fixture: stands a fake in for Harbor's trial and returns it."""
+    """Type of the `harbor` fixture, which installs a fake trial runner and returns it."""
 
     def __call__(self, fake: Fake, /) -> Fake: ...
 
@@ -291,9 +295,9 @@ async def job(
     modules: Candidate | None = None,
     agent: Agent | None = None,
 ) -> list[Group]:
-    """One job through the trainer under `agent`, whose policy the caller holds open; its
-    endpoint is checked still up first. Without one, an agent made for the run, its policy
-    opened for the job and closed after."""
+    """Run one trainer job and return its groups. If `agent` is given, the caller holds its
+    policy open and its endpoint is reopened first to check that it is still up; otherwise an
+    agent is built for the run and its policy is opened only for the job."""
     trainer = Trainer(run.config, run.directory)
     trainer.steps = step
     if agent is not None:
@@ -305,8 +309,8 @@ async def job(
 
 
 def agent_for(run: Run, modules: Candidate | None = None) -> Agent:
-    """The agent a run's jobs carry: its harness over an endpoint of its own, carrying the
-    run's modules unless handed others."""
+    """Build the agent a run's jobs use: the run's harness over its own endpoint, carrying
+    the run's modules unless `modules` is given."""
     held = carried(run.config, run.directory) if modules is None else modules
     policy = Policy(endpoint_for(run.config, run.directory))
     return Agent(policy, [harness(run.config.agent.harness)], held)
@@ -325,7 +329,7 @@ def trials_of(found: list[Group]) -> list[Path]:
 
 
 def trial(directory: Path, *, job: str = "j", task: Path | None = None) -> Trial:
-    """A trial over a directory, for the readers that need no more than its name and dir."""
+    """Build a `Trial` over `directory` for readers that need only its name and path."""
     return Trial(job, Path(directory.name) if task is None else task, 0, harness("pi"), directory)
 
 
@@ -338,9 +342,9 @@ def checkpoints(run: Run) -> list[dict[str, Any]]:
 
 
 def drawn(feedback: Sequence[Path], size: int, rng: random.Random, rounds: int) -> list[list[str]]:
-    """By task name, the minibatches of a search's first `rounds` rounds: what
-    `minibatches(feedback, size, rng)` yields, each round's parent drawn from the same `rng`
-    just before its minibatch, as `evolve` draws them."""
+    """Return the task names in the minibatches of a search's first `rounds` rounds. These
+    are what `minibatches(feedback, size, rng)` yields when each round's parent is drawn from
+    the same `rng` just before its minibatch, as `evolve` does."""
     sampled = minibatches(feedback, size, rng)
     found = []
     for _ in range(rounds):

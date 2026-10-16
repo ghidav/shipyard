@@ -1,8 +1,4 @@
-"""The search on a fake scorer and a fake proposer: four tasks and one rule. A text scores
-1.0 on a task whose name it mentions and `BASELINE` on one it does not, so each reward in a
-case follows from the case. Minibatches are drawn at random, so a case that needs a child to
-win its minibatch uses `Echo`, whose child names the minibatch it was shown. A text that
-names every task of a minibatch is perfect there, and its round is skipped."""
+"""Tests for the GEPA search loop, run with a fake scorer and fake proposers."""
 
 from __future__ import annotations
 
@@ -49,8 +45,9 @@ def seed(text: str = "", *names: str) -> Candidate:
 
 @dataclass
 class World:
-    """A scorer: 1.0 on a task the candidate's text names, `BASELINE` otherwise. It records
-    what it was asked, in which round, and one call per job. The feedback names the round."""
+    """Fake scorer that gives 1.0 on tasks the candidate's text names and `BASELINE` on the
+    rest. It records every task asked, its round, and one entry per job, and its feedback
+    names the round."""
 
     asked: list[tuple[str, str]] = field(default_factory=list)
     rounds: list[int] = field(default_factory=list)
@@ -73,8 +70,8 @@ class World:
 
 @dataclass
 class Table:
-    """A scorer reading each task's reward off a table, for any candidate. None is a task
-    with no measured rollout."""
+    """Fake scorer that reads each task's reward from a table, for any candidate. A reward of
+    None stands for a task with no measured rollout."""
 
     rewards: dict[str, float | None]
 
@@ -86,7 +83,7 @@ class Table:
 
 @dataclass
 class Scripted:
-    """A proposer reading from a list: each round the next text, then it declines."""
+    """Fake proposer that returns the next text from `replies` each round, then declines."""
 
     replies: list[str | None]
     seen: list[Reflection] = field(default_factory=list)
@@ -101,7 +98,7 @@ class Scripted:
 
 @dataclass
 class Fresh:
-    """A proposer that always answers with something new and useless."""
+    """Fake proposer that always returns a new text that names no task."""
 
     seen: list[Reflection] = field(default_factory=list)
 
@@ -112,8 +109,8 @@ class Fresh:
 
 @dataclass
 class Echo:
-    """A proposer whose child names the tasks it was shown, after the parent's text, so it
-    wins any minibatch its parent did not already solve."""
+    """Fake proposer whose child appends the names of the tasks it was shown to the parent's
+    text, so the child wins any minibatch its parent had not already solved."""
 
     seen: list[Reflection] = field(default_factory=list)
 
@@ -222,8 +219,9 @@ async def test_a_child_that_did_not_beat_its_parent_costs_two_minibatches() -> N
 
 
 async def test_patience_counts_rounds_in_which_the_best_pareto_mean_did_not_rise() -> None:
-    """GEPA's NoImprovementStopper (gepa 0.1.4, utils/stop_condition.py): every round
-    counts, skipped ones too, and only a higher best Pareto mean in the pool clears it."""
+    """Mirrors GEPA's `NoImprovementStopper` (gepa 0.1.4, `utils/stop_condition.py`): every
+    round counts, including skipped ones, and only a rise in the pool's best Pareto mean
+    resets the count."""
     log = Logged()
     declined = await run(seed(), TASKS, write=Scripted([None]), score=World(), patience=2, log=log)
     assert declined.rounds == 2 and declined.spent == 4 + 2 + 2, (
@@ -248,8 +246,8 @@ async def test_patience_counts_rounds_in_which_the_best_pareto_mean_did_not_rise
 
 
 async def test_with_no_patience_the_budget_alone_ends_the_search() -> None:
-    """Patience is unset by default, as in GEPA's code. Every round spends its parent's
-    rollouts, so the budget ends even a search whose reflector never answers."""
+    """Patience is unset by default, as in GEPA. Every round spends its parent's rollouts, so
+    the budget ends the search even when the reflector never answers."""
     result = await run(seed(), TASKS, write=Scripted([]), score=World(), patience=None, budget=20)
     assert result.rounds == 8 and result.spent == 20, "4 for the seed, then 2 a round"
     with pytest.raises(ValueError, match="rollouts must be at least 1"):
@@ -257,9 +255,9 @@ async def test_with_no_patience_the_budget_alone_ends_the_search() -> None:
 
 
 async def test_a_round_whose_parent_is_perfect_on_its_minibatch_asks_for_no_rewrite() -> None:
-    """GEPA's code skips it by default (gepa 0.1.4, api.py: skip_perfect_score = True,
-    perfect_score = 1.0): no child can beat a parent at 1.0 on every task. The parent's
-    run is still spent."""
+    """GEPA skips such rounds by default (gepa 0.1.4, `api.py`: `skip_perfect_score = True`,
+    `perfect_score = 1.0`), since no child can beat a parent scoring 1.0 on every task. The
+    parent's rollouts are still spent."""
     world, log, writes = World(), Logged(), Scripted(["anything"])
     solved = seed("t1 t2 t3 t4")
     result = await run(solved, TASKS, write=writes, score=world, log=log, patience=None, budget=10)
@@ -283,8 +281,8 @@ async def test_a_round_whose_parent_is_perfect_on_its_minibatch_asks_for_no_rewr
 
 
 def test_a_minibatch_is_perfect_when_every_task_is_not_when_the_mean_is() -> None:
-    """Task by task, as GEPA's code compares each example's score. A task's score is the
-    mean over its measured rollouts."""
+    """Perfection is checked task by task, as GEPA compares each example's score. A task's
+    score is the mean over its measured rollouts."""
     one, two = (str(task) for task in TASKS[:2])
     assert perfect(TASKS[:2], [Outcome(one, 1.0), Outcome(two, 1.0)])
     assert not perfect(TASKS[:2], [Outcome(one, 1.5), Outcome(two, 0.5)]), "a mean of 1.0"
@@ -294,9 +292,9 @@ def test_a_minibatch_is_perfect_when_every_task_is_not_when_the_mean_is() -> Non
 
 
 async def test_a_skipped_round_takes_no_components_turn() -> None:
-    """GEPA's code consults its round-robin selector only past the skip: a text that names
-    t1..t3 is perfect on three minibatches of one in every four, and each component is
-    offered in turn on the fourth."""
+    """GEPA consults its round-robin component selector only after the skip check. A text
+    that names t1 to t3 is perfect on three of every four single-task minibatches, and each
+    component is offered in turn on the fourth."""
     writes, log = Scripted([]), Logged()
     perfect_on_three = seed("t1 t2 t3", "a", "b", "c")
     budget = 4 + 12
@@ -339,7 +337,7 @@ async def test_every_component_is_rotated_and_each_round_draws_its_own_minibatch
 
 
 async def test_the_parent_runs_afresh_every_round_and_its_traces_are_that_rounds() -> None:
-    """GEPA Alg. 1 lines 10 and 13: the parent is run on the minibatch each round, the
+    """GEPA Algorithm 1, lines 10 and 13: the parent runs on the minibatch every round, the
     reflector reads those traces, and both means come from the same round."""
     world, log, writes = World(), Logged(), Fresh()
     result = await run(seed(), TASKS, write=writes, score=world, log=log, budget=4 + 4 * 3)
@@ -353,8 +351,8 @@ async def test_the_parent_runs_afresh_every_round_and_its_traces_are_that_rounds
 
 
 async def test_the_pareto_tasks_score_what_is_kept_and_the_feedback_tasks_teach() -> None:
-    """GEPA Alg. 1: minibatches come from D_feedback; the seed and every accepted child are
-    scored on D_pareto, which alone holds the frontier and picks the winner."""
+    """GEPA Algorithm 1: minibatches come from D_feedback, while the seed and every accepted
+    child are scored on D_pareto, which alone determines the frontier and the winner."""
     world, writes = World(), Echo()
     result = await run(seed(), TASKS, pareto=HELD, write=writes, score=world, budget=40)
     held = tuple(task.name for task in HELD)
@@ -373,8 +371,8 @@ async def test_the_pareto_tasks_score_what_is_kept_and_the_feedback_tasks_teach(
 
 
 async def test_minibatches_are_sampled_in_seeded_passes_without_repeats() -> None:
-    """GEPA Alg. 1 line 9 samples each minibatch from D_feedback; each pass is a fresh
-    shuffle drawn with the seed, so a sorted dataset does not fix the order."""
+    """GEPA Algorithm 1, line 9, samples each minibatch from D_feedback. Each pass is a fresh
+    shuffle drawn from the seed, so a sorted dataset does not fix the order."""
     five = tuple(Path(f"t{at}") for at in range(5))
     drawn = minibatches(five, 2, random.Random(7))
     passes = [[next(drawn) for _ in range(3)] for _ in range(4)]
@@ -392,8 +390,6 @@ async def test_minibatches_are_sampled_in_seeded_passes_without_repeats() -> Non
 
 
 async def test_the_rng_draws_the_minibatches() -> None:
-    """Each round's minibatch is the next one `minibatches` yields from `rng`: the same seed
-    draws the same sequence, and another seed another one."""
     found = {}
     for at in (1, 2):
         world = World()
@@ -430,8 +426,8 @@ async def test_a_dominated_candidate_is_not_a_parent_and_the_best_has_the_top_me
 
 
 def test_a_thinly_measured_row_does_not_outrank_a_complete_one() -> None:
-    """`lucky` holds one cell at 1.0 and no others. It is on the frontier by that column and
-    has the higher mean, but coverage comes first."""
+    """`lucky` has one cell at 1.0 and no others. It is on the frontier by that column and
+    has the higher mean, but coverage is compared first."""
     broad, lucky = seed("broad"), seed("lucky")
     pool = {member.digest: member for member in (broad, lucky)}
     seen = {
@@ -448,9 +444,9 @@ def test_a_thinly_measured_row_does_not_outrank_a_complete_one() -> None:
 
 
 async def test_a_child_whose_full_evaluation_died_is_not_the_winner() -> None:
-    """The live path to that row. The child wins its minibatch, and the trials over the
-    Pareto tasks produce nothing past the two it names. It stays in the pool and on the
-    frontier, and loses."""
+    """Reaches the thinly measured case through the search itself. The child wins its
+    minibatch, but its Pareto evaluation scores only the two tasks it names; it stays in the
+    pool and on the frontier, and loses."""
 
     class Dying:
         async def __call__(
@@ -514,8 +510,8 @@ async def test_a_scorer_that_returns_nothing_still_spends() -> None:
 
 
 def test_the_winner_is_the_best_aggregate_of_the_pool_and_top_k_takes_the_frontier() -> None:
-    """GEPA picks the best aggregate over every candidate, so a balanced 0.6 beats two
-    specialists that each lead half the tasks; fst's top K stays the frontier's."""
+    """GEPA picks the best aggregate over all candidates, so a balanced 0.6 beats two
+    specialists that each lead half the tasks. fst's top K still comes from the frontier."""
     left, right, even = seed("left"), seed("right"), seed("even")
     pool = {member.digest: member for member in (left, right, even)}
     cells = [(left, (1, 1, 0, 0)), (right, (0, 0, 1, 1)), (even, (0.6, 0.6, 0.6, 0.6))]

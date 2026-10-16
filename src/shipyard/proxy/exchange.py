@@ -1,5 +1,7 @@
 """Per-request state shared by the middleware, the renderer wrapper and the recorder.
-Each reads or writes its part in the task the handler runs in."""
+
+The state is held in a context variable, so each of them reads and writes it in the task
+the handler runs in."""
 
 from __future__ import annotations
 
@@ -9,30 +11,30 @@ from typing import Any
 
 from aiohttp import web
 
-#: The SDK's retry counter, on both the OpenAI and the Anthropic clients.
+#: Retry count header sent by both the OpenAI and the Anthropic SDKs.
 RETRY_HEADER = "x-stainless-retry-count"
 
 
 @dataclass
 class Exchange:
-    """The request state the three callers share: the trial from the address, the SDK's
-    headers, and what the wrapper bridged."""
+    """State of one request: the trial, the SDK headers, and what the renderer wrapper bridged."""
 
     trial: str = ""
-    #: `anthropic` for a request on `/messages`, `openai` otherwise. It sets the form of
-    #: generated ids.
+    #: `anthropic` for a request on `/messages`, otherwise `openai`. Determines the form
+    #: of generated tool call ids.
     wire: str = "openai"
     retry: int = 0
     idempotency_key: str | None = None
     request_id: str | None = None
-    #: Whether the prompt was built by the bridge, the digests of its messages, and the
-    #: fresh render behind a bridged prompt (what a later head must equal to extend it).
+    #: Whether the bridge built the prompt, the digests of the prompt's messages, and for a
+    #: bridged prompt the fresh render that a later prompt must match to extend it.
     bridged: bool = False
     prompt_digests: tuple[str, ...] = ()
     rendered: tuple[int, ...] | None = None
-    #: The record this request produced; None for a refused or replayed one.
+    #: Sequence number of the record this request produced; None if the request was
+    #: refused, failed or replayed.
     seq: int | None = None
-    #: The reply's thinking, returned on the wire in the wire's own form.
+    #: Thinking of the reply, returned to the client in the wire's own format.
     thinking: str = ""
 
 
@@ -40,14 +42,16 @@ exchange: ContextVar[Exchange | None] = ContextVar("shipyard_exchange", default=
 
 
 def trial_in(address: str) -> str:
-    """The trial named in a `/r/key/value/...` address, read as the cookbook reads it."""
+    """Return the trial named in a `/r/key/value/...` address, parsed as the cookbook does."""
     parts = [part for part in address.strip("/").split("/") if part]
     return str(dict(zip(parts[0::2], parts[1::2], strict=False)).get("trial") or "")
 
 
 def middleware() -> Any:
-    """Open an `Exchange` per request from its headers and its `/r/trial/<name>/...`
-    address. Reset it afterwards so it does not leak into a task the loop reuses."""
+    """Return middleware that sets an `Exchange` for each request.
+
+    The exchange is built from the request's headers and its `/r/trial/<name>/...` address,
+    and reset afterwards so it does not leak into a task the event loop reuses."""
 
     @web.middleware
     async def opened(request: Any, handler: Any) -> Any:
@@ -68,7 +72,6 @@ def middleware() -> Any:
 
 
 def _count(header: str | None) -> int:
-    """The retry header as a count; absent or not a number is 0."""
     try:
         return int(header) if header else 0
     except ValueError:

@@ -1,7 +1,7 @@
-"""Records into token sequences. A harness's calls form chains by the token-prefix rule,
-and each chain becomes one sequence with the completions as target spans. This module also
-holds the datum convention the trainer reads and the groups a batch's rollouts fall into.
-It builds no graph."""
+"""Packing of proxy records into token sequences, Tinker datums and groups.
+
+A harness's calls are linked into chains by the token-prefix rule alone, and each chain
+becomes one sequence whose completions are its target spans."""
 
 from __future__ import annotations
 
@@ -30,15 +30,19 @@ __all__ = [
 
 
 def packable(record: Record) -> bool:
-    """A refused or failed call has no completion. An image's stand-in tokens pack only
-    with the picture behind them; a record that kept none is masked by admission anyway."""
+    """Return whether a record can be packed into a sequence.
+
+    A refused or failed call has no completion. A record with image placeholder tokens packs
+    only if it kept the image; one that did not is masked by admission anyway."""
     return record.error is None and pictured(record)
 
 
 def chains(records: Values[Record]) -> list[list[Record]]:
-    """The token-prefix rule. A record joins the open chain whose last record's prompt plus
-    completion is a prefix of its prompt, the longest such, and otherwise opens a chain.
-    Only the order within one rollout moves; a call continues one that had finished."""
+    """Link one rollout's packable records into chains by the token-prefix rule.
+
+    A record joins the chain whose last record's prompt plus completion is a prefix of its
+    prompt, choosing the longest such chain; otherwise it starts a new chain. Records are
+    taken in order, since a call can only continue one that had already finished."""
     found: list[list[Record]] = []
     for record in records:
         if not packable(record):
@@ -65,7 +69,9 @@ def chains(records: Values[Record]) -> list[list[Record]]:
 
 
 def sequences(records: Values[Record]) -> list[Sequence]:
-    """One Sequence per chain. A chain in which the policy wrote nothing is left out."""
+    """Return one `Sequence` per chain, skipping chains in which the policy generated nothing.
+
+    `mu` is None unless every record carries a logprob for each completion token."""
     out: list[Sequence] = []
     for chain in chains(records):
         last = chain[-1]
@@ -84,7 +90,6 @@ def sequences(records: Values[Record]) -> list[Sequence]:
 
 
 def _span(record: Record) -> tuple[int, int]:
-    """Where the record's completion sits in a chain it closes: after its own prompt."""
     head = len(record.prompt_token_ids)
     return head, head + len(record.completion_token_ids)
 
@@ -92,10 +97,12 @@ def _span(record: Record) -> tuple[int, int]:
 def shifted(
     tokens: Values[int], images: Values[Picture] = ()
 ) -> tuple[tinker.ModelInput, TensorData]:
-    """The cookbook's shift by one, defined here. The model reads `tokens[:-1]` and predicts
-    `tokens[1:]`, so position `j` of what it scores is about `tokens[j + 1]`, and a target
-    at `p` sits at `p - 1`. An image's positions are never targets: the cookbook writes 0
-    there, and so does this."""
+    """Shift a sequence by one into the model input and target tokens, as the cookbook does.
+
+    The model reads `tokens[:-1]` and predicts `tokens[1:]`, so output position `j` scores
+    `tokens[j + 1]`, and a target at `p` sits at `p - 1`. Image positions are never targets:
+    like the cookbook, their target token is 0. Raise `ValueError` for fewer than two tokens
+    or a sequence that ends on an image."""
     if len(tokens) < 2:
         raise ValueError("a sequence needs two tokens for the model to read one and predict one")
     if tokens[-1] == IMAGE_TOKEN:
@@ -110,9 +117,11 @@ def shifted(
 def datum(
     sequence: Sequence, *, logprobs: Values[float], advantages: Values[float]
 ) -> tinker.Datum:
-    """The datum as the cookbook's `trajectory_to_data` builds it (tinker-cookbook,
-    rl/data_processing.py, Apache-2.0, reproduced here): the `shifted` tokens, with mask,
-    logprobs and advantages at each target's index - 1 and zeros elsewhere."""
+    """Build a Tinker datum from a sequence, as the cookbook's `trajectory_to_data` does.
+
+    Reproduced here from tinker-cookbook, rl/data_processing.py (Apache-2.0). The input and
+    targets are the `shifted` tokens. `mask`, `logprobs` and `advantages` are set at each
+    target's index - 1 and are zero elsewhere."""
     read, target_tokens = shifted(sequence.tokens, sequence.images)
     positions = sequence.targets
     if len(logprobs) != len(positions) or len(advantages) != len(positions):
@@ -140,7 +149,9 @@ def datum(
 
 
 def groups(job: Job, agent: Agent) -> list[types.Group]:
-    """One group per task and harness in plan order, each trial a member with its verdict."""
+    """Group a judged job's trials by task and harness, in plan order.
+
+    Each trial becomes a member with its verdict and, unless it is masked, its sequences."""
     records = job.records or {}
     out: list[types.Group] = []
     for trial, verdict in zip(job.trials, job.verdicts, strict=True):

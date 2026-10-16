@@ -1,6 +1,4 @@
-"""The server over the wire: addresses, the token gate, both dialects, swapping, the
-run's pins over the harness's, the control route, the context length, and the Tinker
-session closed on the way out."""
+"""Tests for the proxy server over HTTP: auth, both wires, weight swaps, and sampling parameters."""
 
 from __future__ import annotations
 
@@ -31,7 +29,7 @@ def test_each_endpoint_has_its_own_token_and_an_empty_one_is_replaced() -> None:
 
 
 def test_neither_token_is_in_the_endpoints_repr() -> None:
-    """As on the run's Proxy: a traceback's locals or a log line must not carry them."""
+    """As with the run's `Proxy`, tokens must not leak into a traceback's locals or a log."""
     made = server(token="harness-secret", control_token="control-secret")
     shown = repr(made)
     assert "harness-secret" not in shown and "control-secret" not in shown
@@ -149,7 +147,8 @@ async def test_a_bare_name_is_not_a_path() -> None:
 
 
 async def test_a_record_is_stamped_with_the_weights_that_answered_it() -> None:
-    """Read before the await: a swap mid-flight must not re-stamp the record."""
+    """The served path is read before the sample is awaited, so a swap mid-flight does not
+    change the record's stamp."""
 
     class Swapping:
         def __init__(self) -> None:
@@ -292,7 +291,7 @@ async def test_the_context_length_is_read_off_the_capabilities_or_is_none(
 
 
 class Service:
-    """The proxy's Tinker service as `stop` uses it: `close` noted, or raising."""
+    """Fake Tinker service that records each `close` status and can raise on close."""
 
     def __init__(self, fails: bool = False) -> None:
         self.closed: list[str] = []
@@ -308,8 +307,8 @@ class Service:
 
 
 async def test_the_proxy_closes_its_tinker_session_once_on_the_way_out() -> None:
-    """`success` even when the caller failed: the proxy's own shutdown was clean, and the
-    run closes its own session with the reason."""
+    """The status is `success` even when the caller failed, because the proxy's own
+    shutdown was clean. The run closes its own session with the failure reason."""
     service = Service()
     with pytest.raises(KeyError):
         async with server(_service=service, max_context=4096) as started:

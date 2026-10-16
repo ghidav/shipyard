@@ -1,4 +1,4 @@
-"""Post-training on Harbor jobs: a blueprint loaded, and a trainer over it."""
+"""Post-training on Harbor jobs: load a blueprint with `load` and run a `Trainer` over it."""
 
 from shipyard.config import Blueprint, load
 from shipyard.training.trainer import Trainer

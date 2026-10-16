@@ -1,8 +1,9 @@
-"""Modules: the text a rollout carries into its container. A modules directory has one
-layout, `PROMPT.md` and `skills/<name>/SKILL.md`, which `seed` reads and `keep` writes back.
-Each module is delivered the way Harbor takes it. This version has two kinds, prompts and
-skills. A tool or harness kind would implement the `Kind` protocol and claim its reserved
-directory."""
+"""Modules: the text a rollout carries into its container, such as a prompt and skills.
+
+A modules directory has one layout, `PROMPT.md` and `skills/<name>/SKILL.md`, which `seed`
+reads and `keep` writes. Each kind of module is delivered through the Harbor mechanism made
+for it. This version supports two kinds, prompts and skills; a tool or harness kind would
+implement the `Kind` protocol and claim its reserved directory."""
 
 from __future__ import annotations
 
@@ -14,23 +15,23 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
 
-#: The prompt, at the top of the modules directory, and the name of its component.
+#: The prompt file at the top of a modules directory, and its component name.
 PROMPT_FILE = "PROMPT.md"
 PROMPT = "prompt"
-#: Where the skills live, one directory each, named after the skill.
+#: Directory holding the skills, one subdirectory per skill, named after it.
 SKILLS_DIR = "skills"
-#: Marks a skill's directory.
+#: Marker file of a skill's directory.
 SKILL_FILE = "SKILL.md"
-#: The layout, as refusals state it.
+#: The expected layout, as error messages state it.
 LAYOUT = f"{PROMPT_FILE} and {SKILLS_DIR}/<name>/{SKILL_FILE}"
-#: The template a prompt is delivered as, under the job's modules directory.
+#: Path of the template a prompt is delivered as, relative to the job's modules directory.
 PROMPT_TEMPLATE = "prompt/template.j2"
-#: The end of a Jinja raw block, which a prompt's text may not contain.
+#: Matches the end of a Jinja raw block, which a prompt's text may not contain.
 END_RAW = re.compile(r"{%-?\s*endraw\s*-?%}")
-#: Top-level directories kept for kinds this version does not deliver, so `seed` can
+#: Top-level directories reserved for kinds this version does not deliver, so `seed` can
 #: report them as unsupported.
 RESERVED = {"tools": "tool", "harness": "harness"}
-#: Files a module directory may hold that nobody wrote. `read` skips them.
+#: Generated files a module directory may contain, which `read` skips.
 INCIDENTAL = ("__pycache__", ".DS_Store")
 
 
@@ -50,7 +51,8 @@ class Unsupported(Inadmissible):
 
 @dataclass(frozen=True)
 class Module:
-    """One component: its name, its kind, and every file of its directory by relative path."""
+    """One component: its name, its kind, and the text of every file in its directory, keyed
+    by relative path."""
 
     name: str
     kind: str
@@ -58,18 +60,19 @@ class Module:
 
     @property
     def text(self) -> str:
-        """The marker file's content."""
+        """Content of the module's marker file."""
         return self.files[KINDS[self.kind].marker]
 
     @property
     def digest(self) -> str:
-        """sha256[:16] over every (path, content) in path order. Changing any file changes it."""
+        """First 16 hex digits of a SHA-256 over every (path, content) pair, in path order."""
         return _digest(sorted(self.files.items()))
 
 
 @dataclass(frozen=True)
 class Candidate:
-    """What one rollout carries: components by name, with one digest over all of them."""
+    """The modules one rollout carries, keyed by component name, with one digest over all
+    of them."""
 
     components: Mapping[str, Module]
 
@@ -80,8 +83,9 @@ class Candidate:
         )
 
     def with_component(self, name: str, module: Module) -> Candidate:
-        """A new candidate with that component replaced or added. The module is renamed to
-        `name`, because a kind delivers modules by their name."""
+        """Return a copy with component `name` added or replaced by `module`.
+
+        The module is renamed to `name`, because a kind delivers modules by name."""
         return Candidate({**self.components, name: replace(module, name=name)})
 
     def __len__(self) -> int:
@@ -89,12 +93,13 @@ class Candidate:
 
 
 class Kind(Protocol):
-    """What a kind of module defines: its marker, where a module of it lives in the layout,
-    whether the marker is all of it, which modules are admissible, how a set of them reaches
-    the container, and what a reflector is told about the kind."""
+    """A kind of module. It defines its marker file, where its modules live in the layout,
+    whether the marker is the whole module, which modules are admissible, how its modules
+    reach the container, and what a reflector is told about the kind."""
 
     marker: str
-    #: The marker is the whole module: nothing beside it is read, kept or delivered.
+    #: Whether the marker is the whole module, so nothing beside it is read, kept or
+    #: delivered.
     alone: bool
 
     # The module's directory under the modules directory, "" for the top.
@@ -112,8 +117,8 @@ class Kind(Protocol):
 
 
 class Skill:
-    """A document the harness reads before it starts work: `SKILL.md` with frontmatter,
-    plus any files beside it."""
+    """A skill: a `SKILL.md` document with frontmatter, plus any files beside it, which the
+    harness reads before it starts work."""
 
     marker = SKILL_FILE
     alone = False
@@ -122,7 +127,9 @@ class Skill:
         return f"{SKILLS_DIR}/{name}"
 
     def check(self, module: Module) -> str | None:
-        """Require frontmatter with `name` and `description`. Harbor does not check it, and
+        """Return why the skill cannot be delivered, or None.
+
+        Requires frontmatter with `name` and `description`: Harbor does not check it, and
         the harness needs it to surface the skill."""
         text = module.text.strip()
         if not text:
@@ -150,7 +157,7 @@ class Skill:
         return None
 
     def deliver(self, modules: Sequence[Module], into: Path) -> dict[str, Any]:
-        """Write each module's files under `<into>/skills/<name>/` and return that root as
+        """Write each module's files under `<into>/skills/<name>/`, and return that root as
         the only entry of the agent config's `skills`."""
         # `AgentConfig.skills` takes a root of skill directories, each uploaded into the
         # container before the agent's setup. The root is absolute because Harbor reads a
@@ -161,12 +168,14 @@ class Skill:
         return {"skills": [str(root)]}
 
     def reference(self) -> str | None:
-        """None: a skill has no contract beyond its document."""
+        """Return None: a skill needs no explanation beyond its own document."""
         return None
 
 
 class Prompt:
-    """Text placed before the task's instruction in the harness's first message: `PROMPT.md`.
+    """A prompt: the text of `PROMPT.md`, placed before the task's instruction in the
+    harness's first message.
+
     Harbor's `prompt_template_path` delivers it, so it reaches any harness Harbor installs,
     whether or not that harness reads skills."""
 
@@ -177,8 +186,10 @@ class Prompt:
         return ""
 
     def check(self, module: Module) -> str | None:
-        """Require one file of text with no Jinja raw-block end, since the text is delivered
-        inside one and nothing else is."""
+        """Return why the prompt cannot be delivered, or None.
+
+        A prompt must be `PROMPT.md` alone, since nothing else is delivered, with non-empty
+        text that does not end a Jinja raw block, since it is delivered inside one."""
         if set(module.files) != {PROMPT_FILE}:
             return f"a prompt is its {PROMPT_FILE} alone, and nothing beside it is delivered"
         if not module.text.strip():
@@ -188,8 +199,9 @@ class Prompt:
         return None
 
     def deliver(self, modules: Sequence[Module], into: Path) -> dict[str, Any]:
-        """Write the template Harbor renders each task's instruction through: the text kept
-        raw, then the instruction. Return it as the agent's `prompt_template_path`."""
+        """Write the Jinja template Harbor renders each task's instruction through: the
+        prompt text in a raw block, then the instruction. Return its path as the agent's
+        `prompt_template_path`. Raises `Inadmissible` for more than one prompt."""
         if len(modules) > 1:
             names = ", ".join(sorted(module.name for module in modules))
             raise Inadmissible(f"a candidate carries one prompt, and this one has {names}")
@@ -208,19 +220,21 @@ class Prompt:
 
 
 def preamble(module: Module) -> str:
-    """What a prompt puts before the instruction: its text, then a blank line."""
+    """Return the text a prompt puts before the instruction: its text, then a blank line."""
     return module.text.strip() + "\n\n"
 
 
-#: The kinds this version delivers, by name. A new kind is a class plus a row here.
+#: Module kinds this version delivers, by name. A new kind is a class plus an entry here.
 KINDS: dict[str, Kind] = {"skill": Skill(), "prompt": Prompt()}
 
 
 def seed(directory: Path) -> Candidate:
-    """The candidate a modules directory holds, each module checked: `PROMPT.md` is the
-    component `prompt`, and each `skills/<name>/` holding `SKILL.md` is the component `<name>`.
-    Anything else at the top, a reserved directory, a skill without its marker, an empty
-    directory or a failed check raises `Inadmissible` naming the entry and the reason."""
+    """Read the candidate a modules directory holds, checking each module.
+
+    `PROMPT.md` becomes the component `prompt`, and each `skills/<name>/` holding `SKILL.md`
+    becomes the component `<name>`. Raises `Inadmissible`, naming the entry and the reason,
+    for anything else at the top level, a reserved directory, a skill without its marker,
+    an empty directory, or a module that fails its kind's check."""
     directory = Path(directory)
     if not directory.is_dir():
         raise Inadmissible(f"no modules at {directory}: a directory holding {LAYOUT}")
@@ -252,7 +266,6 @@ def seed(directory: Path) -> Candidate:
 
 
 def _entries(directory: Path) -> list[Path]:
-    """The directory's entries in name order, without dot-files or incidental files."""
     return [
         entry
         for entry in sorted(directory.iterdir())
@@ -261,7 +274,6 @@ def _entries(directory: Path) -> list[Path]:
 
 
 def _text(file: Path) -> str:
-    """A module file's text. Raises `Inadmissible` for a file that is not UTF-8."""
     try:
         return file.read_text(encoding="utf-8")
     except UnicodeDecodeError as refused:
@@ -271,7 +283,6 @@ def _text(file: Path) -> str:
 
 
 def _checked(module: Module) -> Module:
-    """The module, or `Inadmissible` naming it and why its kind refuses it."""
     refused = KINDS[module.kind].check(module)
     if refused:
         raise Inadmissible(f"{module.name!r} cannot be delivered as a {module.kind}: {refused}")
@@ -279,8 +290,8 @@ def _checked(module: Module) -> Module:
 
 
 def keep(candidate: Candidate, into: Path) -> None:
-    """Write the candidate in the layout `seed` reads, so that a winner can serve as a seed.
-    A kind whose marker stands alone keeps only its marker."""
+    """Write the candidate in the layout `seed` reads, so that a winner can seed a later
+    search. For a kind whose marker is the whole module, only the marker is written."""
     for module in candidate.components.values():
         kind = KINDS[module.kind]
         files = {kind.marker: module.text} if kind.alone else module.files
@@ -288,8 +299,9 @@ def keep(candidate: Candidate, into: Path) -> None:
 
 
 def deliver(candidate: Candidate, into: Path) -> dict[str, Any]:
-    """Write every module where Harbor finds it and return the merged agent-config fields.
-    Each kind's handler is called once with its modules. `into` is emptied first, so a
+    """Write every module where Harbor finds it, and return the merged agent-config fields.
+
+    Each kind's handler is called once with all its modules. `into` is emptied first, so a
     container receives the files of one candidate only."""
     into = Path(into)
     if into.exists():
@@ -303,9 +315,10 @@ def deliver(candidate: Candidate, into: Path) -> dict[str, Any]:
 
 
 def read(home: Path) -> dict[str, str]:
-    """Every file a module directory holds, keyed by its path relative to it. Incidental
-    files and dot-files are skipped at every depth. A file that is not UTF-8 text raises
-    `Inadmissible`."""
+    """Read every file in a module directory, keyed by relative path.
+
+    Incidental files and dot-files are skipped at every depth. Raises `Inadmissible` for a
+    file that is not UTF-8 text."""
     files: dict[str, str] = {}
     for found in sorted(Path(home).rglob("*")):
         relative = found.relative_to(home)
@@ -324,8 +337,10 @@ def read(home: Path) -> dict[str, str]:
 
 
 def write(files: Mapping[str, str], *, into: Path) -> None:
-    """Write a module's files under `into`. A path that would leave it raises
-    `Inadmissible`, because these names come from a reflector's filesystem."""
+    """Write a module's files under `into`.
+
+    Raises `Inadmissible` for a path that would escape `into`, because these paths come
+    from a reflector's filesystem."""
     into = Path(into)
     into.mkdir(parents=True, exist_ok=True)
     root = into.resolve()
@@ -338,8 +353,8 @@ def write(files: Mapping[str, str], *, into: Path) -> None:
 
 
 def _digest(parts: Iterable[tuple[str, ...]]) -> str:
-    """sha256[:16] over the strings in order, each followed by a NUL byte, so no two layouts
-    collide."""
+    """Return the first 16 hex digits of a SHA-256 over the strings in order. Each string is
+    followed by a NUL byte, so that no two layouts collide."""
     hasher = hashlib.sha256()
     for part in parts:
         for piece in part:

@@ -1,4 +1,4 @@
-"""The recipes: a trainer class per `[recipe] kind`, and the one a trainer file defines."""
+"""Trainer classes for each `[recipe] kind`, and loading a custom trainer from a file."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from shipyard.training.trainer import Trainer
 
 __all__ = ["TRAINERS", "resolution", "trainer_for", "trainer_in"]
 
-#: The trainer class of each `[recipe] kind`.
+#: Trainer class for each `[recipe] kind` except fst, which `trainer_for` builds.
 TRAINERS: dict[str, type[Trainer]] = {
     "dapo": DAPOTrainer,
     "dr-grpo": DrGRPOTrainer,
@@ -29,14 +29,19 @@ TRAINERS: dict[str, type[Trainer]] = {
 
 
 def trainer_for(recipe: Any) -> type[Trainer]:
-    """The trainer class of the recipe: its kind's, or for fst the mix over its slow kind."""
+    """Return the trainer class for `recipe`.
+
+    For fst, this is `FSTTrainer` mixed with the trainer class of `recipe.slow`."""
     if recipe.kind == "fst":
         return fst_trainer(TRAINERS[recipe.slow])
     return TRAINERS[recipe.kind]
 
 
 def trainer_in(path: Path) -> type[Trainer]:
-    """The one `Trainer` subclass the Python file defines; a path is loaded once."""
+    """Return the single `Trainer` subclass defined in a Python file.
+
+    Each resolved path is imported once and cached in `sys.modules`. Raise `ValueError` if the
+    file cannot be loaded as Python or does not define exactly one subclass."""
     path = Path(path).resolve()
     name = f"shipyard_trainer_{sha256(str(path).encode()).hexdigest()[:12]}"
     module = sys.modules.get(name)
@@ -64,8 +69,9 @@ def trainer_in(path: Path) -> type[Trainer]:
 
 
 def resolution(recipe: Any, trainer: type[Trainer] | None = None) -> str | None:
-    """The line `check` prints for a recipe that trains, under `trainer` or the kind's class;
-    None for the others."""
+    """Return the summary line `check` prints for a recipe, using `trainer` or the kind's class.
+
+    Return None when the recipe does not train."""
     if not isinstance(recipe, Gradient):
         return None
     return (trainer or trainer_for(recipe)).resolution(recipe)

@@ -1,5 +1,4 @@
-"""Test the run a trainer takes on fakes: a dapo run, steps past a pass, the evaluation
-cadence, the anchor, each kind's class, the resume, and the trainer file."""
+"""Tests for trainer runs on fakes: steps, evaluation, the KL anchor, resume, and trainer files."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Test the training client over a fake SDK client."""
+"""Tests for the training client, using a fake Tinker SDK client."""
 
 from __future__ import annotations
 

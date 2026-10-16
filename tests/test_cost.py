@@ -1,4 +1,4 @@
-"""Counts per party and per sandbox, read off the trials, and never summed into a total."""
+"""Tests for per-party and per-sandbox cost counts, which are never summed into a total."""
 
 from __future__ import annotations
 

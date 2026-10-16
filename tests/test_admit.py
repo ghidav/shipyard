@@ -1,5 +1,4 @@
-"""Every verdict branch, read from `result.json` files in Harbor's shape. Every `ApiError`
-Harbor defines is classed as the endpoint's or the policy's."""
+"""Tests for admission verdicts read from Harbor `result.json` files."""
 
 from __future__ import annotations
 
@@ -31,8 +30,8 @@ from shipyard.types import Job, Trial, harness
 from tests.records import made
 from tests.trials import trial, write_result
 
-#: Harbor's `ApiError` subclasses that are the policy's own doing, and keep the
-#: verifier's number. Kept here so a new Harbor class must be put in one list or the other.
+#: Harbor `ApiError` subclasses caused by the policy itself, which keep the verifier's reward.
+#: Listed here so that every new Harbor class must be classified one way or the other.
 POLICY_OWN = frozenset(
     {"OutputTokenExceededError", "ContextWindowExceededError", "AgentSafetyRefusalError"}
 )
@@ -88,8 +87,8 @@ def test_an_api_error_the_policy_caused_keeps_the_verifiers_number(
 
 
 def test_every_api_error_harbor_defines_is_decided_one_way_or_the_other() -> None:
-    """A new `ApiError` subclass in Harbor fails this until someone decides whose fault
-    it is. Left undecided, the suffix rule would mask a policy failure."""
+    """Fails when Harbor adds an `ApiError` subclass not yet classified as an endpoint or a
+    policy failure. Left unclassified, the suffix rule would mask a policy failure."""
     from harbor.agents.installed import base
 
     defined = {

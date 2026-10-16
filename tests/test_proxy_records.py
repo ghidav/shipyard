@@ -1,5 +1,4 @@
-"""The route a run reads records from (plain, delta, again), the wire codec, and the
-recorder's refusals and failures. Each refusal or failure leaves an error record."""
+"""Tests for proxy records: the fetch route, the wire codec, and the recorder's refusals."""
 
 from __future__ import annotations
 
@@ -36,7 +35,7 @@ EMPTY = {"records": []}
 
 
 def refused(recorder: Recorder, trial: str) -> list[str]:
-    """The proxy's refusals on the trial's record, in order."""
+    """Return the budget and context refusals recorded for `trial`, in order."""
     return [r.error for r in recorder.records_for(trial) if r.error in (BUDGET, CONTEXT)]
 
 
@@ -119,7 +118,7 @@ def test_a_record_off_the_wire_with_no_ids_is_refused_and_annotations_may_be_mis
 
 
 def test_every_annotation_survives_the_wire() -> None:
-    """Compares every dataclass field, so a newly added field cannot be dropped."""
+    """Compares every `Record` field, so the codec cannot silently drop a newly added one."""
     record = Record(
         seq=7,
         at=1234.5,
@@ -179,7 +178,7 @@ async def test_the_kept_answer_is_let_go_after_its_time(monkeypatch: pytest.Monk
 
 
 class Unasked:
-    """A sampling client that must never be reached."""
+    """Fake sampling client that records the parameters it gets and fails if called."""
 
     def __init__(self) -> None:
         self.asked = 0
@@ -284,8 +283,8 @@ async def test_a_failed_sample_leaves_a_record_and_re_raises() -> None:
 
 
 async def test_a_reply_that_lands_after_its_trial_was_taken_is_dropped() -> None:
-    """A call cut off mid-flight by Harbor's timeout can answer after the run drained its
-    trial. The harness still gets the reply and the proxy keeps no record of it."""
+    """A call cut off mid-flight by Harbor's timeout can return after the run has taken the
+    trial's records. The harness still gets the reply, but the proxy keeps no record of it."""
 
     class Held(FakeSampler):
         def __init__(self) -> None:

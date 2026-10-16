@@ -1,5 +1,4 @@
-"""`shipyard serve`: what it binds, advertises and prints, how it stops, and the whole
-process end to end on the fake sampler, with no Tinker and no tokenizer."""
+"""Tests for `shipyard serve`, including an end-to-end run of the process on a fake sampler."""
 
 from __future__ import annotations
 
@@ -31,8 +30,8 @@ runner = CliRunner()
 
 @dataclass
 class FakeEndpoint:
-    """Stands in for `Server` with the attributes serve uses. `called` records start and
-    stop in order."""
+    """Fake `Server` with only the attributes `serve` uses. `called` records start and stop
+    calls in order."""
 
     base_model: str = "Qwen/Qwen3-8B"
     model_path: str | None = None
@@ -250,8 +249,8 @@ def _first_line(process: subprocess.Popen[str], seconds: float = 30.0) -> str:
     )
 
 
-#: `python -c` for the process test: `serve.main` on a server whose sampler echoes and whose
-#: renderer is the tests' character renderer, so no Tinker and no tokenizer are needed.
+#: Script for `python -c` in the process test. It runs `serve.main` with an echoing sampler
+#: and the tests' character renderer, so neither Tinker nor a tokenizer is needed.
 STUB = """\
 import sys
 from shipyard.proxy import serve
@@ -272,8 +271,8 @@ sys.exit(serve.main(sys.argv[1:]))
 
 
 def test_serve_runs_for_real_on_a_fake_sampler(tmp_path: Path) -> None:
-    """The acceptance script: start the process, speak both wires, read the records, swap
-    through the control route, stop it with SIGTERM."""
+    """Mirrors the acceptance script: start the process, call both wires, read the records,
+    swap weights through the control route, and stop it with SIGTERM."""
     src = str(Path(shipyard.__file__).resolve().parent.parent)
     repo = str(Path(__file__).resolve().parent.parent)
     env = {

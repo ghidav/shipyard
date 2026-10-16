@@ -1,6 +1,7 @@
-"""What a trial's environment holds that no other trial in flight may share: a credential
-that is an identity, held by one trial for exactly its duration and scrubbed from what the
-trial leaves behind."""
+"""Per-trial secrets that no two concurrent trials may share.
+
+Each secret is a credential that acts as an identity. One trial holds it for exactly its
+duration, and its value is scrubbed from the files the trial leaves behind."""
 
 from __future__ import annotations
 
@@ -14,43 +15,54 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from shipyard.types import Trial
 
-#: How a pool's variable separates its values: commas, whitespace, or both.
+#: Separator between the values in a pool's environment variable: commas, whitespace, or both.
 SEPARATORS = re.compile(r"[\s,]+")
-#: Bytes of a file read to tell text from binary before it is scrubbed.
+#: Bytes read from a file to tell text from binary before scrubbing it.
 SAMPLE = 8192
 
 
 class Secrets:
-    """What each trial acquires before Harbor starts it and releases after its teardown. This
-    base gives nothing; `Pool` leases what `[rollout.secrets]` names, and a trainer's
-    `secrets` may return any subclass."""
+    """Secrets each trial acquires before Harbor starts it and releases after its teardown.
+
+    The base class provides none. `Pool` leases the identities `[rollout.secrets]` names, and
+    a trainer's `secrets` method may return any subclass."""
 
     async def acquire(self, trial: Trial) -> Mapping[str, str]:
-        """The variables `trial` holds, by name, for exactly its duration. Waits while there
-        are none to give."""
+        """Return the environment variables, by name, that `trial` holds for its duration.
+
+        A subclass overrides this to hand out its secrets, waiting while none is free. The
+        base returns none."""
         return {}
 
     async def release(self, trial: Trial, held: Mapping[str, str]) -> None:
-        """`trial` is over, however it ended: what it held is free again."""
+        """Release `held`, the secrets `trial` acquired, once the trial ends for any reason.
+
+        A subclass overrides this to make them available to the next trial. The base does
+        nothing."""
 
 
 class Pool(Secrets):
-    """Identities by position: the i-th value of every name the pool holds. A trial waits for
-    a free one, so no more trials run at once than there are identities."""
+    """A fixed set of identities, each leased to one trial at a time.
+
+    Identity `i` is the `i`-th value of every name in the pool. A trial waits for a free
+    identity, so no more trials run at once than there are identities."""
 
     def __init__(self, identities: Sequence[Mapping[str, str]]) -> None:
         if not identities:
             raise ValueError("a pool needs at least one identity")
         self.identities = [dict(one) for one in identities]
-        #: By trial directory, the identity it holds.
+        #: Index of the identity each trial holds, keyed by trial directory.
         self._held: dict[Path, int] = {}
         self._free: asyncio.Queue[int] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
 
     @classmethod
     def of(cls, table: Mapping[str, str], environ: Mapping[str, str] | None = None) -> Pool:
-        """The pool `[rollout.secrets]` names: for each name, the values the variable it
-        names holds. Raises if one holds none, or two hold different counts."""
+        """Build the pool that `[rollout.secrets]` names.
+
+        `table` maps each secret name to the environment variable that holds its values.
+        Raise `ValueError` if a variable is unset or empty, or if the variables hold different
+        numbers of values."""
         environ = os.environ if environ is None else environ
         values = {name: pooled(environ, source) for name, source in table.items()}
         if empty := [table[name] for name, found in values.items() if not found]:
@@ -70,8 +82,10 @@ class Pool(Secrets):
         self._queue().put_nowait(self._held.pop(trial.dir))
 
     def _queue(self) -> asyncio.Queue[int]:
-        """The free identities, on the running loop: a queue is bound to the loop it first
-        waits on, and a trainer may run on more than one, one after another."""
+        """Return the queue of free identities for the running event loop.
+
+        A queue is bound to the loop it first waits on, and a trainer may run on several loops
+        in turn, so the queue is rebuilt when the loop changes."""
         loop = asyncio.get_running_loop()
         if self._free is None or self._loop is not loop:
             self._loop, self._free = loop, asyncio.Queue()
@@ -83,19 +97,22 @@ class Pool(Secrets):
 
 
 def pooled(environ: Mapping[str, str], source: str) -> list[str]:
-    """The values the variable `source` holds, separated by commas or whitespace."""
+    """Return the values in the environment variable `source`, split on commas or whitespace."""
     return [one for one in SEPARATORS.split(environ.get(source, "").strip()) if one]
 
 
 def redacted(value: str) -> str:
-    """`value` as Harbor redacts a sensitive one when it saves a trial's config
-    (`redact_sensitive_value`, harbor/utils/env.py)."""
+    """Return `value` redacted as Harbor redacts sensitive values in a saved trial config.
+
+    This mirrors `redact_sensitive_value` in harbor/utils/env.py."""
     return "****" if len(value) <= 8 else value[:4] + "****" + value[-3:]
 
 
 def scrub(directory: Path, held: Mapping[str, str]) -> None:
-    """Replace every value `held`, and the form Harbor redacts it to, with `${NAME}` in each
-    text file under `directory`. A form as short as Harbor's bare `****` is left alone."""
+    """Replace each value in `held` with `${NAME}` in every text file under `directory`.
+
+    Harbor's redacted form of each value is replaced too, unless it is only Harbor's bare
+    `****` (for values of 8 characters or fewer)."""
     swaps = [(value, f"${{{name}}}") for name, value in held.items() if value]
     swaps += [(redacted(value), f"${{{name}}}") for name, value in held.items() if len(value) > 8]
     if not swaps or not directory.is_dir():

@@ -1,7 +1,4 @@
-"""Claude Code puts system-role messages inside the message list. The tests wrap the
-cookbook's real parsers as the server does and check that those messages are user turns
-in place, one system prompt stays on each wire, and a call that ends with a new block
-extends the previous prompt instead of starting over."""
+"""Tests for rewriting in-list system messages, which Claude Code sends, as user turns."""
 
 from __future__ import annotations
 
@@ -16,7 +13,7 @@ from tests.proxies import BridgeRenderer, FakeSampler, ask, ask_anthropic, chars
 
 @pytest.fixture
 def parsers():
-    """The cookbook's parsers wrapped for the test and restored afterwards."""
+    """Install the wrapped cookbook parsers for the test and restore the originals after."""
     saved = {name: cookbook.private(name) for name in cookbook.PATCHABLE}
     turns.install()
     yield cookbook.private("_parse_anthropic"), cookbook.private("_parse_openai")
@@ -24,8 +21,8 @@ def parsers():
 
 
 def _claude_code_body() -> dict[str, Any]:
-    """The wire shape: a system prompt, then agent text and a per-call block as system-role
-    messages inside the list."""
+    """Anthropic body shaped like Claude Code's: a system prompt, then agent text and a
+    per-call block as system-role messages inside the list."""
     return {
         "model": "m",
         "max_tokens": 8,
@@ -61,7 +58,7 @@ OPENAI_TOOLS = [
 
 
 def _openai_body() -> dict[str, Any]:
-    """The same conversation on the OpenAI wire: two system messages open the list."""
+    """The same conversation as an OpenAI body, where two system messages open the list."""
     return {
         "model": "m",
         "tools": OPENAI_TOOLS,
@@ -90,8 +87,9 @@ def test_in_list_system_messages_are_user_turns_in_place(parsers) -> None:
 
 
 def test_on_the_openai_wire_the_opening_system_messages_stay(parsers) -> None:
-    """The cookbook refused this body before: with tools, a system message after the
-    conversation started is a 400. The opening ones are the system prompt as before."""
+    """The unwrapped cookbook parser rejects this body with a 400, because with tools a
+    system message after the conversation starts is an error. The opening system messages
+    still form the system prompt."""
     _, openai = parsers
     parsed = openai(_openai_body())
     assert parsed.system_text == "Be brief.\n\n# Environment\nA sandbox."
@@ -131,8 +129,8 @@ def test_install_wraps_both_parsers_once(parsers) -> None:
 
 async def test_a_call_that_ends_with_a_new_block_extends_the_previous_prompt() -> None:
     """The second call appends a tool result and a new system-role block, as Claude Code
-    does after a file changed on disk. The block is the tail's closing user turn, so the
-    prompt is the record's prompt and sampled tokens plus the tail."""
+    does after a file changes on disk. The block becomes the closing user turn of the tail,
+    so the new prompt is the previous prompt and sampled tokens plus that tail."""
     sampler = FakeSampler(["CALL ls {}", "two files"])
     tools = [{"name": "ls", "description": "List", "input_schema": {"type": "object"}}]
     body = {"system": "Be brief.", "tools": tools}
@@ -167,9 +165,9 @@ async def test_a_call_that_ends_with_a_new_block_extends_the_previous_prompt() -
 
 
 async def test_the_same_on_the_openai_wire() -> None:
-    """A harness on the OpenAI wire that appends a system message after a tool result
-    gets the same answer: the message is the tail's closing user turn and the call
-    bridges, where the cookbook refused it before."""
+    """A harness on the OpenAI wire that appends a system message after a tool result gets
+    the same treatment: the message becomes the closing user turn of the tail and the call
+    bridges, where the unwrapped cookbook parser would reject it."""
     sampler = FakeSampler(["CALL ls {}", "two files"])
     note = "Note: a.txt changed on disk."
     async with server(sampler, renderer=BridgeRenderer()) as started:

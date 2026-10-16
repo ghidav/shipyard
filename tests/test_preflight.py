@@ -1,5 +1,4 @@
-"""`check`'s findings beyond the schema: the facts, the datasets under `tasks/`, the
-harness and sandbox, and where the proxy stands (here, behind a tunnel, or elsewhere)."""
+"""Tests for `check` findings beyond the schema: datasets, harness, sandbox, and proxy placement."""
 
 from __future__ import annotations
 
@@ -12,7 +11,7 @@ from shipyard.cli.preflight import Finding
 from shipyard.proxy import tunnel
 from tests.trials import BLUEPRINTS, check, fixture_tasks, write_blueprint
 
-#: An evaluate blueprint `check` passes from a working directory holding the fixtures.
+#: Provider-hosted evaluate blueprint that passes `check` from a directory with the fixtures.
 HOSTED = """
 [agent]
 model = "m"
@@ -30,7 +29,7 @@ kind = "evaluate"
 
 # ------------------------------------------------------------------ the findings
 
-#: The probe's finding without a key, the one every offline check ends on.
+#: The model probe's warning without an API key; every offline `check` ends with it.
 UNASKED = "could not ask tinker whether it serves Qwen/Qwen3-8B: TINKER_API_KEY is unset"
 
 
@@ -54,8 +53,8 @@ def test_check_is_only_ok_for_the_evaluate_fixture_over_its_dataset(
 def test_check_names_the_facts_then_says_where_the_proxy_stands(
     kind: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The tinker-served fixtures state their facts, miss their datasets here, and are
-    served on this machine for their docker sandbox; the probe cannot ask without a key."""
+    """The Tinker-served fixtures have no datasets in this directory and use a docker
+    sandbox, so the proxy runs on this machine. Without an API key the probe only warns."""
     monkeypatch.chdir(tmp_path)
     findings = check(BLUEPRINTS / kind)
     texts = [f.text for f in findings]
@@ -112,8 +111,8 @@ SERVED = HOSTED.replace('provider = "openrouter"', 'provider = "tinker"').replac
 
 
 def _served(tmp_path: Path, **rollout: object) -> list[Finding]:
-    """The served evaluate blueprint over the fixture dataset, with `[rollout]` keys added; a
-    `harness` replaces `[agent]`'s."""
+    """Run `check` on the Tinker-served evaluate blueprint with extra `[rollout]` keys. A
+    `harness` keyword replaces the `[agent]` harness instead."""
     base = SERVED
     if "harness" in rollout:
         base = base.replace('harness = "pi@0.85.1"', f"harness = {rollout.pop('harness')!r}")
@@ -212,9 +211,10 @@ def test_check_warns_of_long_replies_over_a_tunnel_and_of_an_unprofiled_harness(
 def test_compaction_switched_off_by_hand_without_fill_context_is_warned_about(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The profile's own keys at the profile's own values: `fill_context` sets them and lets
-    an overflowing call fill what is left, instead of the 400 that a harness that compacts
-    expects. A key set to any other value leaves compaction on and gets no warning."""
+    """Only a harness profile's compaction key set to the profile's value warns. The
+    warning points to `fill_context`, which sets the same keys and gives an overflowing
+    call the remaining context instead of the 400 a compacting harness expects. A key set
+    to any other value leaves compaction on."""
     fixture_tasks(tmp_path)
     monkeypatch.chdir(tmp_path)
     env = 'env = { DISABLE_COMPACT = "1", OTHER = "x" }'

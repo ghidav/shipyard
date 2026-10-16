@@ -1,6 +1,4 @@
-"""The gepa recipe end to end on fakes: the seed kept, every job on the record, a row
-per round and a final row, the winner under `modules/best/` as a seed; and what the
-blueprint may say, as `load` and `check` read it."""
+"""Tests for the GEPA recipe, run end to end on fake trials, and its blueprint options."""
 
 from __future__ import annotations
 
@@ -56,7 +54,8 @@ async def test_the_recipe_runs_end_to_end_on_fakes(
     monkeypatch: pytest.MonkeyPatch,
     harbor: Harbor,
 ) -> None:
-    """`pareto = 0`: both tasks are reflected on and selected on (GEPA section 6)."""
+    """With `pareto = 0`, both tasks are used for reflection and for selection (GEPA
+    section 6)."""
     monkeypatch.chdir(tmp_path)
     home = _blueprint(tmp_path, GEPA + "pareto = 0\n")
     opened = Run.open(home, root=tmp_path / "runs")
@@ -127,8 +126,9 @@ async def test_by_default_two_thirds_are_held_out_and_the_winner_is_scored_on_th
     monkeypatch: pytest.MonkeyPatch,
     harbor: Harbor,
 ) -> None:
-    """GEPA 4.1: minibatches from the training split, the rest scores candidates. The child
-    wins its minibatch task, and its Pareto score is the held-out task's alone."""
+    """GEPA section 4.1: minibatches come from the training split and the remaining tasks
+    score candidates. The child wins its minibatch task, and its Pareto score comes from the
+    held-out task alone."""
     monkeypatch.chdir(tmp_path)
     home = _blueprint(tmp_path)
     listed = [Path("tasks/fixture") / n for n in ("alpha", "beta")]
@@ -152,8 +152,6 @@ async def test_data_seed_draws_the_minibatches(
     monkeypatch: pytest.MonkeyPatch,
     harbor: Harbor,
 ) -> None:
-    """Six tasks, two a minibatch: each round the parent runs on the minibatch `[data] seed`
-    predicts, and another seed draws others."""
     monkeypatch.chdir(tmp_path)
     fixture_tasks(tmp_path)
     dataset(tmp_path / "tasks", "six", "t1", "t2", "t3", "t4", "t5", "t6")
@@ -218,8 +216,8 @@ async def test_a_seed_perfect_on_its_minibatches_is_never_reflected_on(
     monkeypatch: pytest.MonkeyPatch,
     harbor: Harbor,
 ) -> None:
-    """Every rollout scores 1.0: each round runs the parent and asks for no rewrite, and
-    with the best Pareto mean never rising, `patience = 2` ends it after two rounds."""
+    """Every rollout scores 1.0, so each round runs the parent and asks for no rewrite. The
+    best Pareto mean never rises, so `patience = 2` ends the search after two rounds."""
     monkeypatch.chdir(tmp_path)
     opened = Run.open(_blueprint(tmp_path), root=tmp_path / "runs")
     ran: list[str] = []

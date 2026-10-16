@@ -1,4 +1,4 @@
-"""Test the procedure on fakes: its steps, DAPO's accumulation, the anchor, the provider job."""
+"""Tests for trainer steps across recipes, the KL anchor, and jobs on a provider agent."""
 
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ from tests.trials import (
 
 
 class Spread:
-    """A task in `spread` scores 1, 0, 1, 0 in call order; any other scores 1."""
+    """Fake Harbor trial runner: tasks in `spread` score 1, 0, 1, 0 in call order, others 1."""
 
     def __init__(self, spread: set[str]) -> None:
         self.spread = spread
@@ -59,13 +59,13 @@ def _agent(run: Run, service: FakeService | None, *, anchored: bool = False) -> 
 
 
 def _plan(tmp_path: Path) -> list[list[str]]:
-    """The first pass over the fixture's tasks, two to a batch."""
+    """Return the task names of the first pass over the four-task dataset, two per batch."""
     made = Generator(tasks("four", root=tmp_path / "tasks"), 2, 0)
     return [[task.name for task in batch] for batch in islice(made.batches(), made.per_pass)]
 
 
 async def _train(run: Run, trainer: Trainer, agent: Agent) -> None:
-    """The trainer's `[recipe] steps` steps under `agent`, as `train` takes them."""
+    """Advance `trainer` through its `[recipe] steps` steps under `agent`, as `train` does."""
     with run:
         async with agent.policy:
             while trainer.steps < trainer.recipe.steps:
