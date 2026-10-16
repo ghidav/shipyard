@@ -11,7 +11,7 @@ from shipyard.types import Group
 
 class OPDTrainer(Trainer):
     """Trainer for on-policy distillation, as tinker-cookbook's
-    `distillation/train_on_policy.py` runs it: each token's advantage is `distill` times the
+    `distillation/train_on_policy.py` runs it: each token's advantage is `teacher_coef` times the
     teacher's logprob minus the reference's, with no reward term and no discount.
 
     The verifier still runs, so the step rows show whether the policy gets better at the

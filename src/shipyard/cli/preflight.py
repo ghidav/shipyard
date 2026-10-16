@@ -130,7 +130,7 @@ def findings(loaded: Blueprint, environ: Mapping[str, str] | None = None) -> lis
     ]
     if (teacher := getattr(loaded.recipe, "teacher", None)) is not None:
         named = OWN_TEACHERS.get(teacher, teacher)
-        found.append(Finding("ok", f"teacher {named}, distill {loaded.recipe.distill}"))
+        found.append(Finding("ok", f"teacher {named}, teacher_coef {loaded.recipe.teacher_coef}"))
     for label, names in (("train", loaded.datasets), ("test", loaded.test_sets)):
         if names:
             found.append(Finding("ok", f"{label} {', '.join(names)}"))

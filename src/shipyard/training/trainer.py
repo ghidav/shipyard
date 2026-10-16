@@ -175,7 +175,7 @@ class Trainer:
             parts.append(f"kl {recipe.kl_coef} to the starting weights")
         if recipe.teacher is not None:
             toward = OWN_TEACHERS.get(recipe.teacher, recipe.teacher)
-            parts.append(f"distill {recipe.distill} toward {toward}")
+            parts.append(f"teacher {recipe.teacher_coef} toward {toward}")
         return f"# {recipe.kind}: " + "; ".join(parts)
 
     @classmethod
@@ -747,7 +747,7 @@ class Trainer:
         """Return the per-token advantages of one sequence of `member`'s rollout.
 
         The base puts the rollout's `advantage` on every target, less `kl_coef` times the gap
-        from `anchor` to `reference` when there is an anchor, plus `distill` times the gap from
+        from `anchor` to `reference` when there is an anchor, plus `teacher_coef` times the gap from
         `reference` to `teacher` when there is a teacher. A recipe overrides this to add,
         reshape or replace per-token terms; the group's factor from `weights` is applied
         after."""
@@ -760,9 +760,9 @@ class Trainer:
                 for a, r, b in zip(per_token, reference, signals["anchor"], strict=True)
             ]
         if "teacher" in signals:
-            distill = self.recipe.distill
+            teacher_coef = self.recipe.teacher_coef
             per_token = [
-                a + distill * (t - r)
+                a + teacher_coef * (t - r)
                 for a, r, t in zip(per_token, reference, signals["teacher"], strict=True)
             ]
         return per_token

@@ -382,7 +382,7 @@ async def test_a_dapo_step_with_a_teacher_adds_its_pull_and_keeps_flat_groups(
     harbor: Harbor,
 ) -> None:
     """DAPO's advantage is 0 on groups whose rewards are all 1; the teacher's term, at
-    distill = 0.5, gives them a gradient, so dapo draws no second job for spread."""
+    teacher_coef = 0.5, gives them a gradient, so dapo draws no second job for spread."""
     _, service = fakes
     service.teachers["Qwen/Qwen3-32B"] = FlatAnchor(-0.2)
     run = Run.open(blueprint(tmp_path, **ONE_STEP, **TAUGHT), root=tmp_path)
@@ -399,8 +399,8 @@ async def test_a_dapo_step_with_a_teacher_adds_its_pull_and_keeps_flat_groups(
 
 #: The fixture tasks' instruction, as a harness sends it.
 ASKED = "Write the word alpha to /app/answer.txt."
-#: Blueprint replacement that makes the policy its own teacher, at distill 0.5.
-CURRENT = {"learning_rate = 2e-5": 'learning_rate = 2e-5\ndistill = 0.5\nteacher = "current"'}
+#: Blueprint replacement that makes the policy its own teacher, at teacher_coef 0.5.
+CURRENT = {"learning_rate = 2e-5": 'learning_rate = 2e-5\nteacher_coef = 0.5\nteacher = "current"'}
 FEEDBACK = "Feedback on an earlier attempt at this task:\nCheck the path.\n\n"
 
 
@@ -555,7 +555,7 @@ async def test_the_starting_weights_teach_after_a_fixed_text(
     """The anchor opens for a "start" teacher without a KL term, and reads the text."""
     _, service = fakes
     _taught(fakes, monkeypatch, f"<user>{ASKED}<assistant>")
-    start = {"learning_rate = 2e-5": 'learning_rate = 2e-5\ndistill = 0.5\nteacher = "start"'}
+    start = {"learning_rate = 2e-5": 'learning_rate = 2e-5\nteacher_coef = 0.5\nteacher = "start"'}
     run = Run.open(blueprint(tmp_path, **ONE_STEP, **start), root=tmp_path)
     harbor(Alternating())
 
