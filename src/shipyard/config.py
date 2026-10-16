@@ -20,7 +20,7 @@ from shipyard.record import CONFIG
 
 TINKER = "tinker"
 #: Recipe kinds. Each one except `evaluate` is a module under `shipyard.training.recipes`.
-KINDS = ("dapo", "dr-grpo", "cispo", "gepa", "fst", "evaluate")
+KINDS = ("dapo", "dr-grpo", "cispo", "opd", "gepa", "fst", "evaluate")
 #: Minimum checkpoint TTL in hours, the SDK's floor: `TrainingClient.save_state` takes a TTL
 #: "between 1 hour (3600) and 10 years" (tinker/lib/public_interfaces/training_client.py).
 MIN_TTL_HOURS = 1.0
@@ -153,8 +153,8 @@ LENGTH_CAP = 0.5
 
 
 class Gradient(_Table):
-    """Settings shared by the gradient recipes (`dapo`, `dr-grpo`, `cispo` and `fst`). Each
-    recipe adds its own clipping and reward-shaping settings.
+    """Settings shared by the gradient recipes (`dapo`, `dr-grpo`, `cispo`, `opd` and `fst`).
+    Each recipe adds its own clipping and reward-shaping settings.
 
     The default of one substep follows FST (one mini-batch per step) and Dr. GRPO, which
     states no other."""
@@ -174,6 +174,29 @@ class Gradient(_Table):
     lora_rank: int | None = None
     #: With `[agent] from_checkpoint`, also restore the checkpoint's optimizer state.
     restore_optimizer: bool = False
+    #: Weight of the teacher's term in each token's advantage, `distill × (teacher − reference)`.
+    #: 0 is off.
+    distill: float = Field(default=0.0, ge=0)
+    #: Model whose logprobs score the policy's tokens: a base model the backend serves, or a
+    #: `tinker://` sampler path. It must share the policy's tokenizer.
+    teacher: str | None = Field(default=None, validate_default=True)
+
+    @field_validator("teacher")
+    @classmethod
+    def _taught(cls, value: str | None, info: Any) -> str | None:
+        """Require a teacher exactly when `distill` weighs one, and a sampler path for a
+        checkpoint."""
+        distill = info.data.get("distill", 0.0)
+        if value is None and distill > 0:
+            raise ValueError(f"distill = {distill} weighs a teacher's logprobs; name the teacher")
+        if value is not None and not distill:
+            raise ValueError("set distill above 0 to weigh the teacher, or leave it unset")
+        if value is not None and value.startswith("tinker://") and "/sampler_weights/" not in value:
+            raise ValueError(
+                "a teacher is sampled, so a checkpoint is named by its sampler_path "
+                "(tinker://.../sampler_weights/...)"
+            )
+        return value
 
 
 class DapoRecipe(Gradient):
@@ -199,6 +222,15 @@ class CispoRecipe(Gradient):
     clip_high: float = Field(default=PAPER_CISPO_HIGH, gt=0)
     overlong_penalty: float = Field(default=PAPER_OVERLONG_PENALTY, ge=0, allow_inf_nan=False)
     overlong_buffer: float = Field(default=PAPER_OVERLONG_BUFFER, gt=0, le=1)
+
+
+class OpdRecipe(Gradient):
+    """The `opd` recipe: on-policy distillation. The teacher's logprobs are the only signal;
+    rewards are measured but not trained on."""
+
+    kind: Literal["opd"]
+    distill: float = Field(default=1.0, gt=0)
+    teacher: str
 
 
 #: Default modules directory a search seeds from when `[agent] modules` is unset.
@@ -295,7 +327,9 @@ class EvaluateRecipe(_Table):
     kind: Literal["evaluate"]
 
 
-Recipe = DapoRecipe | DrGrpoRecipe | CispoRecipe | GepaRecipe | FstRecipe | EvaluateRecipe
+Recipe = (
+    DapoRecipe | DrGrpoRecipe | CispoRecipe | OpdRecipe | GepaRecipe | FstRecipe | EvaluateRecipe
+)
 
 
 class Checkpoints(_Table):

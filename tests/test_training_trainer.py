@@ -19,16 +19,18 @@ from shipyard.training.client import TinkerClient
 from shipyard.training.recipes.cispo import CISPOTrainer
 from shipyard.training.recipes.dapo import DAPOTrainer
 from shipyard.training.recipes.dr_grpo import DrGRPOTrainer
+from shipyard.training.recipes.opd import OPDTrainer
 from shipyard.training.trainer import ROW, Signals, Trainer, together
 from shipyard.types import SERVE_TTL, Agent, Datum, Group, Member, Policy, Sequence, harness
 from tests.records import FakeProxy
-from tests.trainers import FakeService
+from tests.trainers import FakeService, FlatAnchor
 from tests.trials import (
     ANCHORED,
     INPUT_TOKENS,
     ONE_STEP,
     SEQUENCE_TOKENS,
     START,
+    TAUGHT,
     Alternating,
     FakeTrials,
     Harbor,
@@ -138,7 +140,7 @@ async def test_the_steps_serve_the_start_sample_step_sync_andcheckpoint(
         assert (row["substeps"], row["loss_fn"]) == (2, "ppo")
         assert row["seconds"] >= 0.0 and "anchor_kl" not in row and "overlong" not in row
         keys = [key for key in row if key not in ("at", "seq")]
-        assert keys == [key for key in ROW if key not in ("anchor_kl", "overlong")]
+        assert keys == [key for key in ROW if key not in ("anchor_kl", "teacher_kl", "overlong")]
     # `every = 1`: a checkpoint per update at the TTL, written down with the position.
     saved = checkpoints(run)
     assert [(c["tag"], c["step"], c["updates"], c["drawn"]) for c in saved] == [
@@ -342,6 +344,52 @@ async def test_the_kl_anchor_is_subtracted_per_token_billed_and_reported(
     assert keys.index("entropy") < keys.index("anchor_kl") < keys.index("learning_rate")
     costs = record.read_json(run.directory / record.COSTS)["parties"]["tinker"]
     assert costs["anchor_tokens"] == 8 * SEQUENCE_TOKENS
+
+
+async def test_opd_trains_every_group_on_the_teachers_gap_alone(
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
+) -> None:
+    """Every reward is 1, so no group has a reward signal. The teacher's -0.2 against the
+    reference's -0.5 puts 0.3 on every target."""
+    _, service = fakes
+    teacher = service.teachers["Qwen/Qwen3-32B"] = FlatAnchor(-0.2)
+    run = Run.open(blueprint(tmp_path, "opd"), root=tmp_path)
+    harbor(FakeTrials())
+    await _train(run, OPDTrainer(run.config, run.directory), _agent(run, service))
+    opened = [c for c in service.calls if c[0] == "sampling"]
+    assert opened == [("sampling", "Qwen/Qwen3-32B", None)], "opened once, on the first step"
+    assert len(teacher.asked) == 8, "two steps of four sequences"
+    trained = [d for d in service.client.sent if "advantages" in d.loss_fn_inputs]
+    found = [a for d in trained for a in d.loss_fn_inputs["advantages"].tolist() if a]
+    assert len(trained) == 8 and found == pytest.approx([0.3] * len(found))
+    for row in rows(run):
+        assert row["trained"] is True and row["degenerate"] == 0 and row["reward_mean"] == 1.0
+        assert row["teacher_kl"] == pytest.approx(-0.3, abs=1e-5) and "anchor_kl" not in row
+        keys = list(row)
+        assert keys.index("entropy") < keys.index("teacher_kl") < keys.index("learning_rate")
+    costs = record.read_json(run.directory / record.COSTS)["parties"]["tinker"]
+    assert costs["teacher_tokens"] == 8 * SEQUENCE_TOKENS and "anchor_tokens" not in costs
+
+
+async def test_a_dapo_step_with_a_teacher_adds_its_pull_and_keeps_flat_groups(
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
+) -> None:
+    """DAPO's advantage is 0 on groups whose rewards are all 1; the teacher's term, at
+    distill = 0.5, gives them a gradient, so dapo draws no second job for spread."""
+    _, service = fakes
+    service.teachers["Qwen/Qwen3-32B"] = FlatAnchor(-0.2)
+    run = Run.open(blueprint(tmp_path, **ONE_STEP, **TAUGHT), root=tmp_path)
+    harbor(FakeTrials())
+    await _train(run, DAPOTrainer(run.config, run.directory), _agent(run, service))
+    (row,) = rows(run)
+    assert len(row["jobs"]) == 1 and row["degenerate"] == 0 and row["trained"] is True
+    trained = [d for d in service.client.sent if "advantages" in d.loss_fn_inputs]
+    found = [a for d in trained for a in d.loss_fn_inputs["advantages"].tolist() if a]
+    assert found and found == pytest.approx([0.15] * len(found))
 
 
 async def test_a_recipe_that_trains_on_flat_groups_gets_their_datums(

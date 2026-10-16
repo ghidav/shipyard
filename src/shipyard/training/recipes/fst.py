@@ -20,6 +20,7 @@ from shipyard.config import (
     CispoRecipe,
     DapoRecipe,
     DrGrpoRecipe,
+    Gradient,
     modules_dir,
 )
 from shipyard.modules import Candidate, keep, seed
@@ -51,20 +52,8 @@ def slow_recipe(recipe: Any) -> Any:
     knobs = {knob: value for knob, value in knobs.items() if value is not None}
     if model is not DrGrpoRecipe:
         knobs["overlong_penalty"] = 0.0
-    shared = {
-        name: getattr(recipe, name)
-        for name in (
-            "learning_rate",
-            "steps",
-            "evaluate_every",
-            "substeps",
-            "warmup",
-            "reference",
-            "lora_rank",
-            "restore_optimizer",
-        )
-    }
-    return model(kind=recipe.slow, kl_coef=recipe.kl_coef, **shared, **knobs)
+    shared = {name: getattr(recipe, name) for name in Gradient.model_fields}
+    return model(kind=recipe.slow, **shared, **knobs)
 
 
 def merged(parts: Values[list[Group]]) -> list[Group]:

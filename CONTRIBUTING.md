@@ -50,8 +50,9 @@ uvx --with mkdocs-material mkdocs build --strict
 A gradient recipe is a `Trainer` subclass that overrides the rules it changes. Per rollout:
 `shape` and `advantage` (rewards into one advantage each). Per group: `trains_on` (whether it
 carries a gradient) and `weights` (its factor on its tokens). Per token, in the order a step
-runs them: `signals` (logprobs and other values each training sequence is scored with),
-`token_advantages` (the rollout's advantage and the signals combined at each target) and
+runs them: `signals` (logprobs and other values each training sequence is scored with, the
+teacher's from `teacher` among them), `token_advantages` (the rollout's advantage and the
+signals combined at each target) and
 `datum` (what Tinker receives). Per substep: `loss_fn` and `bounds` (a Tinker loss and its
 config), or `forward_backward` for several losses or one of its own. Then `ADAM` (the
 optimizer) and `rules` (what `check` prints about it). To add one called `my-recipe`:

@@ -7,6 +7,7 @@ from shipyard.training.recipes.dapo import DAPOTrainer
 from shipyard.training.recipes.dr_grpo import DrGRPOTrainer
 from shipyard.training.recipes.fst import fst_trainer
 from shipyard.training.recipes.gepa import GEPATrainer
+from shipyard.training.recipes.opd import OPDTrainer
 from shipyard.training.trainer import Trainer
 
 __all__ = [
@@ -14,6 +15,7 @@ __all__ = [
     "DAPOTrainer",
     "DrGRPOTrainer",
     "GEPATrainer",
+    "OPDTrainer",
     "Trainer",
     "fst_trainer",
 ]

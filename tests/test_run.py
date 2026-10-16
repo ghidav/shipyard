@@ -82,7 +82,7 @@ def test_exit_records_a_bare_interrupt_as_sigint(tmp_path: Path) -> None:
 
 
 async def test_a_runner_dispatches_to_the_kinds_trainer(tmp_path: Path, monkeypatch) -> None:
-    assert set(KINDS) == {"dapo", "dr-grpo", "cispo", "gepa", "fst", "evaluate"}
+    assert set(KINDS) == {"dapo", "dr-grpo", "cispo", "opd", "gepa", "fst", "evaluate"}
     monkeypatch.chdir(tmp_path)
     opened = Run.open(BLUEPRINTS / "gepa", root=tmp_path / "runs")
     with pytest.raises(NoSuchDataset, match="aime-train"):

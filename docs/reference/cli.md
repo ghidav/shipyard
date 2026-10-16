@@ -18,7 +18,7 @@ Says whether a blueprint could run, before anything is spent.
 | `--verbose` | print the `ok` lines too |
 | `--json` | print one JSON object instead |
 
-It prints the blueprint with every default filled in, as TOML. For a Tinker-served model with no `[rollout] renderer`, the `renderer` line names the renderer the proxy will load. For `dapo`, `dr-grpo`, `cispo` and `fst` a comment line follows, saying what the recipe's name resolves to. Then come the findings, one per line: `blocked`, `warning`, and, under `--verbose`, `ok`. Every problem is listed at once.
+It prints the blueprint with every default filled in, as TOML. For a Tinker-served model with no `[rollout] renderer`, the `renderer` line names the renderer the proxy will load. For `dapo`, `dr-grpo`, `cispo`, `opd` and `fst` a comment line follows, saying what the recipe's name resolves to. Then come the findings, one per line: `blocked`, `warning`, and, under `--verbose`, `ok`. Every problem is listed at once.
 
 For a Tinker-served model, `check` asks the backend whether it serves the model. That network call is made only when `TINKER_API_KEY` is set. Without it, the line is a warning.
 
@@ -38,7 +38,7 @@ docker network ls -q --filter dangling=true --filter name=__env_default --filter
 $ shipyard check blueprints/typo
 blocked  [data] batch_size: field required
 blocked  [data] batchsize: unknown key
-blocked  [recipe] kind: no recipe called 'evalute'; one of dapo, dr-grpo, cispo, gepa, evaluate
+blocked  [recipe] kind: no recipe called 'evalute'; one of dapo, dr-grpo, cispo, opd, gepa, fst, evaluate
 ```
 
 A blueprint that does not load prints no config. Under `--json` the output is `{"config": ..., "findings": [{"level": ..., "text": ...}]}`, with every finding, `ok` included, and `config` null when the blueprint did not load. The JSON has no comment line.

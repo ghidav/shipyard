@@ -67,10 +67,10 @@ How the served keys behave is in [The proxy](../concepts/proxy.md).
 
 ## `[recipe]`
 
-`kind` is required and picks the recipe: `"dapo"`, `"dr-grpo"`, `"cispo"`, `"gepa"`, `"fst"` or
-`"evaluate"`. Each kind accepts only its own keys ([Recipes](../concepts/recipes.md)).
+`kind` is required and picks the recipe: `"dapo"`, `"dr-grpo"`, `"cispo"`, `"opd"`, `"gepa"`,
+`"fst"` or `"evaluate"`. Each kind accepts only its own keys ([Recipes](../concepts/recipes.md)).
 
-### Common to `dapo`, `dr-grpo`, `cispo` and `fst`
+### Common to `dapo`, `dr-grpo`, `cispo`, `opd` and `fst`
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
@@ -83,6 +83,8 @@ How the served keys behave is in [The proxy](../concepts/proxy.md).
 | `kl_coef` | float ≥ 0 | `0.0`, as DAPO (§2.3), Dr. GRPO (App. G) and MiniMax-M1 (§3.1) train | Weight of a per-token KL term to the run's starting weights, folded into the advantage token by token, not centred. `0` is off. |
 | `lora_rank` | integer | unset (32) | The LoRA rank of a new training client. Not used with `[agent] from_checkpoint`. |
 | `restore_optimizer` | boolean | `false` | With `[agent] from_checkpoint`, load the optimizer state as well as the weights. The state continues the earlier run's, so the run skips any warm-up. |
+| `distill` | float ≥ 0 | `0.0` | Weight of the teacher's per-token term, `distill × (teacher − reference)`, added to the advantage. `0` is off. Set together with `teacher`. |
+| `teacher` | string | unset | The model whose logprobs score the policy's tokens: a base model the backend serves, or a checkpoint's `sampler_path` (`tinker://.../sampler_weights/...`). It must tokenize as `[agent] model` does. With a teacher, groups whose rewards are all equal still train ([A teacher in any gradient recipe](../concepts/recipes.md#a-teacher-in-any-gradient-recipe)). |
 
 The gradient recipes need a served model.
 
@@ -124,6 +126,17 @@ with the cookbook's eps 1e-8.
 Token losses are averaged per prompt (MiniMax-M1 Eq. 4). The optimizer is AdamW at betas 0.9 / 0.95
 and eps 1e-15 (MiniMax-M1 §3.2), with no weight decay, no gradient clipping and no warm-up, the
 cookbook's; the paper states none of these.
+
+### `opd`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `teacher` | string | required | As above. |
+| `distill` | float > 0 | `1.0` (tinker-cookbook's `kl_penalty_coef`) | As above. |
+
+The advantage is the teacher's term alone; rewards are logged, not trained on. The loss is
+`importance_sampling` summed over tokens, at the cookbook's AdamW (betas 0.9 / 0.95, eps 1e-8). See
+[opd](../concepts/recipes.md#opd).
 
 ### `gepa`
 

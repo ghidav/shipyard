@@ -52,9 +52,17 @@ the reference logprobs keeps the ratio within one engine.
 **Under `reference = "sampler"`, a batch whose records carry no logprobs is refused.**
 A gap misaligns every ratio after it.
 
-**A group with one measured rollout, or with equal rewards after `dr-grpo`'s length rule, is dropped
-before the reference pass.**
+**Without a teacher, a group with one measured rollout, or with equal rewards after `dr-grpo`'s
+length rule, is dropped before the reference pass.**
 It carries no gradient, and a step left with nothing logs `trained: false`.
+
+**With a teacher, every group with a measured rollout trains, equal rewards or not.**
+The teacher's term gives each of its tokens a gradient, and the batches dropped otherwise include
+those the policy fails entirely, where a teacher has the most to teach.
+
+**A teacher must tokenize as the policy does, and `check` loads both tokenizers to compare them.**
+The teacher scores the policy's token ids. Under another vocabulary those ids are other text, and
+the term pulls toward noise without an error.
 
 **Substeps split the batch by prompt, into at most as many parts as there are groups, and every
 substep keeps the reference logprobs of the weights the batch was sampled at.**

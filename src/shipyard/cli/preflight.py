@@ -127,6 +127,8 @@ def findings(loaded: Blueprint, environ: Mapping[str, str] | None = None) -> lis
         Finding("ok", f"recipe {loaded.recipe.kind}"),
         Finding("ok", f"model {agent.model}, provider {agent.provider}{served}"),
     ]
+    if (teacher := getattr(loaded.recipe, "teacher", None)) is not None:
+        found.append(Finding("ok", f"teacher {teacher}, distill {loaded.recipe.distill}"))
     for label, names in (("train", loaded.datasets), ("test", loaded.test_sets)):
         if names:
             found.append(Finding("ok", f"{label} {', '.join(names)}"))
@@ -161,6 +163,15 @@ def findings(loaded: Blueprint, environ: Mapping[str, str] | None = None) -> lis
                 "warning",
                 f"[recipe] length_cap: {cap} lets the length rule take a solved answer's "
                 "whole reward, so a long solved answer can score as low as a failure",
+            )
+        )
+    if teacher is not None and rollout.temperature != 1.0:
+        found.append(
+            Finding(
+                "warning",
+                f"[rollout] temperature = {rollout.temperature}: the teacher scores at "
+                "temperature 1, so its term is measured on tokens the policy sampled at "
+                "another temperature",
             )
         )
     if not agent.harness.strip():
@@ -813,33 +824,97 @@ def served_findings(cfg: Blueprint, environ: Mapping[str, str]) -> list[Finding]
                 "true instead. It sets the same keys and gives such a call what is left",
             )
         )
-    found.append(probe(agent.model, environ))
+    found += probe(cfg, environ)
     return found
 
 
-def probe(model: str, environ: Mapping[str, str]) -> Finding:
-    """Check whether the backend lists the model.
+def probe(cfg: Blueprint, environ: Mapping[str, str]) -> list[Finding]:
+    """Check whether the backend lists the model, and check the recipe's teacher if any.
 
-    This makes a network call, and only when `TINKER_API_KEY` is set.
+    This makes network calls, and only when `TINKER_API_KEY` is set.
     """
-    name = backend(environ)
+    name, model = backend(environ), cfg.agent.model
+    teacher = getattr(cfg.recipe, "teacher", None)
+
+    def unasked(why: object) -> list[Finding]:
+        said = [Finding("warning", f"could not check the teacher {teacher}: {why}")]
+        return [
+            *(said if teacher is not None else []),
+            Finding("warning", f"could not ask {name} whether it serves {model}: {why}"),
+        ]
+
     if not environ.get("TINKER_API_KEY"):
-        return Finding(
-            "warning", f"could not ask {name} whether it serves {model}: TINKER_API_KEY is unset"
-        )
+        return unasked("TINKER_API_KEY is unset")
     try:
         models = supported_models()
     except Exception as failed:  # noqa: BLE001 - a failed probe is a warning
-        return Finding("warning", f"could not ask {name} whether it serves {model}: {failed}")
+        return unasked(failed)
+    found = [] if teacher is None else teacher_findings(cfg, teacher, models, name)
     if model in models:
-        return Finding("ok", f"{name} serves {model}")
-    return Finding("blocked", f"{name} does not serve {model}; it serves {', '.join(models)}")
+        return [*found, Finding("ok", f"{name} serves {model}")]
+    listed = ", ".join(models)
+    return [*found, Finding("blocked", f"{name} does not serve {model}; it serves {listed}")]
 
 
-def supported_models() -> list[str]:
-    """Return the backend's model names from `get_server_capabilities`.
+def teacher_findings(
+    cfg: Blueprint, teacher: str, models: Mapping[str, Any], name: str
+) -> list[Finding]:
+    """Check that the backend serves the teacher and can sample it, that the teacher reads
+    as many tokens as a rollout may reach, and that it tokenizes as the policy does.
 
-    This is the only Tinker call `check` makes, and tests replace it.
+    A `tinker://` teacher is checked as the base model its checkpoint was trained from.
+    """
+    base = teacher
+    if teacher.startswith("tinker://"):
+        try:
+            base = checkpoint_base(teacher)
+        except Exception as failed:  # noqa: BLE001 - an unreadable checkpoint is the finding
+            return [Finding("blocked", f"[recipe] teacher: cannot read {teacher}: {failed}")]
+    listed = models.get(base)
+    if listed is None:
+        return [Finding("blocked", f"[recipe] teacher: {name} does not serve {base}")]
+    if listed.sampleable is False:
+        return [Finding("blocked", f"[recipe] teacher: {name} lists {base} but cannot sample it")]
+    found = [Finding("ok", f"{name} serves the teacher {base}")]
+    policy = models.get(cfg.agent.model)
+    reach = cfg.rollout.max_context or (policy.max_context_length if policy else None)
+    reads = listed.max_context_length
+    if reach and reads and reads < reach:
+        found.append(
+            Finding(
+                "blocked",
+                f"[recipe] teacher: {base} reads at most {reads} tokens and a rollout may "
+                f"reach {reach}; set [rollout] max_context = {reads}",
+            )
+        )
+    if base != cfg.agent.model:
+        found.append(tokenizer_finding(cfg.agent.model, base))
+    return found
+
+
+def tokenizer_finding(model: str, teacher: str) -> Finding:
+    """Compare the policy's and the teacher's vocabularies. The teacher scores the policy's
+    token ids, so they must mean the same text to both."""
+    try:
+        same = vocabulary(model) == vocabulary(teacher)
+    except Exception as failed:  # noqa: BLE001 - a tokenizer that will not load is a warning
+        return Finding(
+            "warning", f"could not compare the tokenizers of {model} and {teacher}: {failed}"
+        )
+    if same:
+        return Finding("ok", f"the teacher {teacher} tokenizes as {model} does")
+    return Finding(
+        "blocked",
+        f"[recipe] teacher: {teacher} tokenizes differently from {model}, so it would score "
+        "other tokens than the policy sampled",
+    )
+
+
+def supported_models() -> dict[str, Any]:
+    """Return the backend's models from `get_server_capabilities`, by name. Each one says
+    whether it can be sampled and how many tokens it reads.
+
+    Tests replace this, as they do `checkpoint_base` and `vocabulary`.
     """
     import tinker
 
@@ -848,4 +923,23 @@ def supported_models() -> list[str]:
         caps = service.get_server_capabilities()
     finally:
         service.close("success").result()
-    return [str(found.model_name) for found in caps.supported_models]
+    return {str(found.model_name): found for found in caps.supported_models}
+
+
+def checkpoint_base(path: str) -> str:
+    """Return the base model the checkpoint at a `tinker://` path was trained from."""
+    import tinker
+
+    service = tinker.ServiceClient()
+    try:
+        weights = service.create_rest_client().get_weights_info_by_tinker_path(path).result()
+    finally:
+        service.close("success").result()
+    return str(weights.base_model)
+
+
+def vocabulary(model: str) -> dict[str, int]:
+    """Return the model's vocabulary, added tokens included, from its tokenizer."""
+    from tinker_cookbook.tokenizer_utils import get_tokenizer
+
+    return dict(get_tokenizer(model).get_vocab())

@@ -107,12 +107,15 @@ class Update:
     #: Mean of the reference logprobs minus the anchor's over those sequences; None without a
     #: KL term.
     anchor_kl: float | None = None
+    #: Mean of the reference logprobs minus the teacher's over those sequences; None without a
+    #: teacher.
+    teacher_kl: float | None = None
 
 
 @dataclass(frozen=True)
 class TrainingStep:
     """Result of one training step. `update` is None when no gradient was taken: there was
-    no training client, or no group had any reward variance."""
+    no training client, or no group carried one."""
 
     index: int
     groups: list[Group]
@@ -130,6 +133,11 @@ class TrainingClient(ABC):
     @abstractmethod
     async def anchor(self) -> Any:
         """Return a sampling client on the weights as first opened, for the KL term."""
+
+    @abstractmethod
+    async def sampler(self, model: str) -> Any:
+        """Return a sampling client on a base model, or on the sampler weights at a
+        `tinker://` path."""
 
     @abstractmethod
     async def forward_backward(
@@ -220,6 +228,8 @@ class Policy:
     #: is loaded.
     anchored: bool = False
     anchor: Any = field(default=None, init=False)
+    #: Sampling clients opened in the client's session, by the model or path they sample.
+    samplers: dict[str, Any] = field(default_factory=dict, init=False)
 
     async def __aenter__(self) -> Policy:
         try:
@@ -250,6 +260,15 @@ class Policy:
             return
         status = "errored" if isinstance(failed, Exception) else "interrupted"
         await self.client.close(status, f"{type(failed).__name__}: {failed}")
+
+    async def sampler(self, model: str) -> Any:
+        """Return a sampling client on `model`, a base model or a `tinker://` sampler path,
+        opening it on first use."""
+        if self.client is None:
+            raise RuntimeError("a provider's policy has no session to sample another model in")
+        if model not in self.samplers:
+            self.samplers[model] = await self.client.sampler(model)
+        return self.samplers[model]
 
     async def sync(self, tag: str) -> str:
         """Save the client's weights for sampling as `tag`, serve them, and return their

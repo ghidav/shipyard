@@ -82,13 +82,14 @@ A trial that reported nothing adds no tokens.
 
 ## Training counts
 
-A gradient recipe adds up to three counts to the served party, each only once it is spent:
+A gradient recipe adds up to four counts to the served party, each only once it is spent:
 
 | Key | Counts the tokens sent |
 |---|---|
 | `train_tokens` | through the training step, `forward_backward` |
 | `reference_tokens` | through the trainer's forward pass for the reference logprobs; none with `reference = "sampler"` |
 | `anchor_tokens` | to the starting weights, for the KL term; none with `kl_coef = 0` |
+| `teacher_tokens` | to the teacher, for its term; none without a teacher. Priced as the teacher's model, not the policy's |
 
 ## Sandbox seconds
 
@@ -112,4 +113,4 @@ or to tell the reflector's tokens from the policy's, read the rows:
 ```
 
 The job rows carry no training counts. `train_tokens` is on each step's row in `metrics.jsonl`,
-and `reference_tokens` and `anchor_tokens` are in `costs.json` only.
+and `reference_tokens`, `anchor_tokens` and `teacher_tokens` are in `costs.json` only.

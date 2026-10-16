@@ -89,6 +89,7 @@ reference = "trainer"
 kl_coef = 0.0
 lora_rank = 32
 restore_optimizer = false
+distill = 0.0
 clip_low = 0.2
 clip_high = 0.28
 overlong_penalty = 0.5

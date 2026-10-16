@@ -322,6 +322,14 @@ def test_fsts_warmup_key_reaches_its_slow_step(tmp_path: Path) -> None:
     assert "learning rate warmed up over 10 steps" in resolution(recipe)
 
 
+def test_fsts_teacher_reaches_its_slow_step(tmp_path: Path) -> None:
+    taught = 'kind = "fst"\ndistill = 0.5\nteacher = "Qwen/Qwen3-32B"'
+    recipe = load(write_blueprint(tmp_path, _text(**{'kind = "fst"': taught}))).recipe
+    slow = slow_recipe(recipe)
+    assert (slow.distill, slow.teacher, slow.kl_coef) == (0.5, "Qwen/Qwen3-32B", 0.001)
+    assert "distill 0.5 toward Qwen/Qwen3-32B" in resolution(recipe)
+
+
 class AlternatingFakes(Fakes):
     """Fake trial runner that handles reflections like `Fakes` and scores a policy trial by
     the parity of its job number."""

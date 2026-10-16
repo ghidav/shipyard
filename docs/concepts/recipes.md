@@ -9,11 +9,12 @@ of their rewards.
 | `dapo` | Gradient. The advantage is divided by the group's spread, and ppo clips the ratio asymmetrically. | yes |
 | `dr-grpo` | Gradient. The advantage is not divided, and ppo clips symmetrically. It has an optional length rule. | yes |
 | `cispo` | Gradient. The advantage is formed as in `dapo`, and the loss is Tinker's `cispo`. | yes |
+| `opd` | Gradient. A teacher model scores the policy's own tokens, and that score is the only signal. See [opd](#opd). | yes |
 | `gepa` | Searches over the text the harness reads. See [gepa](gepa.md). | no |
 | `fst` | Fast-slow training: gepa and a gradient recipe in cycles. See [fst](#fst). | yes |
 | `evaluate` | Measures the policy. | no |
 
-The first three are the gradient recipes, and `fst` steps like them. They train the weights the run serves, so they need
+The first four are the gradient recipes, and `fst` steps like them. They train the weights the run serves, so they need
 `[agent] provider = "tinker"`, which is the default. With any other provider, the run stops before it trains:
 
 ```
@@ -48,6 +49,8 @@ substeps = 16
 warmup = 0
 reference = "trainer"
 kl_coef = 0.0
+restore_optimizer = false
+distill = 0.0
 clip_low = 0.2
 clip_high = 0.28
 overlong_penalty = 0.5
@@ -191,8 +194,8 @@ instead divide each prompt's token losses by that prompt's tokens, so every prom
 ```
 
 Every prompt's tokens then carry the same total weight, and the step's total stays that of the plain
-sum. The KL term, which is folded into the advantage, is scaled with it, so `kl_coef` weighs the KL
-against the reward the same way in every prompt.
+sum. The KL and teacher terms, which are folded into the advantage, are scaled with it, so `kl_coef`
+and `distill` weigh them against the reward the same way in every prompt.
 `dr-grpo` keeps Tinker's sum. Its §3.2 divides by a constant instead of a prompt's length, and a
 constant only rescales the learning rate.
 
@@ -217,11 +220,14 @@ the weights have moved, the ratio moves with them, and the clip bounds act. With
 | `substeps` | `16` for `dapo` and `cispo`, `1` for `dr-grpo` and `fst` | Optimizer steps per batch, split by prompt (see [Substeps](#substeps)). |
 | `reference` | `"trainer"` | Where the reference logprobs come from: the logprobs of the sampled tokens that the ratio is formed against. `"trainer"` recomputes them in one forward pass on the training engine. `"sampler"` reads the logprobs the proxy recorded and makes no extra pass. |
 | `kl_coef` | `0.0`; `0.001` for `fst` | A per-token penalty for drifting from the run's starting weights, which are the base model or `from_checkpoint`. It is subtracted from the advantage as `kl_coef × (reference − anchor)`, token by token, and is not centred on the step's mean. DAPO (§2.3), Dr. GRPO (App. G) and MiniMax-M1 (§3.1) train without one. FST uses 0.001 (App. D) and does not say how the term enters the loss. |
+| `distill`, `teacher` | `0.0` and unset; `1.0` and required for `opd` | A teacher model that scores the policy's tokens, and the weight of its term, `distill × (teacher − reference)`, added to the advantage token by token. They are set together. See [A teacher in any gradient recipe](#a-teacher-in-any-gradient-recipe). |
 | `modules` | unset | A directory of skills to carry into every rollout. See [Modules](modules.md). |
 
 `"trainer"` is the default because the sampler and the trainer are different engines and their logprobs
 differ slightly. `"sampler"` saves the pass, but it refuses a batch whose records carry no logprobs.
-With `kl_coef = 0.01`, the comment line gains `; kl 0.01 to the starting weights`.
+With `kl_coef = 0.01`, the comment line gains `; kl 0.01 to the starting weights`. With
+`distill = 0.5` and a teacher, `degenerate groups dropped` becomes `groups with equal rewards kept for
+the teacher`, and the line gains `; distill 0.5 toward <teacher>`.
 
 ## How a step runs
 
@@ -237,7 +243,7 @@ A run takes `steps` steps, numbered from 0. Each starts on the stream's next bat
    call starts a new sequence. Each completion is a training target exactly once. Failed
    calls and calls carrying images never pack.
 5. **Credit.** Rollouts are grouped by task, and only the measured ones count (see [Admission](admission.md)).
-   Degenerate groups are dropped, then the advantages, the reference logprobs, the KL term and each prompt's weight are computed.
+   Degenerate groups are dropped, then the advantages, the reference logprobs, the KL term, the teacher's term and each prompt's weight are computed.
 6. **Step.** `forward_backward` and `optim_step` run on Tinker once per substep.
 7. **Log.** One row is appended to `metrics.jsonl`.
 8. **Checkpoint.** When `step + 1` is divisible by `[checkpoints] every`, `step-<step + 1>` is saved. After the last step, `final` is saved with no expiry.
@@ -253,7 +259,8 @@ equal after `dr-grpo`'s length rule. The overlong term of `dapo` and `cispo` com
 A degenerate group carries no gradient, so credit drops it before any reference pass. As a result, `group_size = 1` never trains. If no group of a
 step is left, the step logs `trained: false` and takes no gradient and no checkpoint. Under `dapo` and
 `cispo`, or `dr-grpo` without a length penalty, a policy that solves every task, or fails every one,
-gives flat groups and so takes no step.
+gives flat groups and so takes no step. With a teacher, only a group with no measured rollout is
+degenerate: the teacher's term gives every measured rollout a gradient.
 
 ### Dynamic sampling
 
@@ -305,9 +312,72 @@ never written as 0. Every row also carries `at` and `seq`.
 | `kl_v1`, `kl_v2` | mean(reference − trained) and half its mean square over the trained tokens, where `trained` is the training pass's logprobs. |
 | `entropy` | mean(−reference) over the trained tokens. |
 | `anchor_kl` | mean(reference − anchor), present only when `kl_coef > 0`. |
+| `teacher_kl` | mean(reference − teacher), present only with a teacher. The cookbook's `teacher_kl`. |
 | `overlong` | Graded rollouts that sampled into the last `overlong_buffer` of their token budget; present under `dapo` and `cispo` when the proxy reports a budget. |
 | `learning_rate`, `substeps`, `loss_fn` | As applied, `learning_rate` after any warm-up; `substeps` never exceeds the groups trained on. |
 | `seconds` | The time taken to apply the gradient. |
+
+## opd
+
+`opd` is on-policy distillation (Agarwal et al., arXiv 2306.13649), as tinker-cookbook's
+`distillation/train_on_policy.py` runs it. The policy samples its rollouts as usual, and a teacher model
+scores the policy's own tokens. Each token's advantage is
+
+```
+distill × (teacher − reference)
+```
+
+where `teacher` is the teacher's logprob of the token. A token the teacher finds more likely than the
+policy did is pushed up, and one it finds less likely is pushed down. Summed over a rollout, the gap
+estimates the reverse KL from the policy to the teacher. The cookbook's optional discount over later
+tokens is not applied.
+
+```toml
+[recipe]
+kind = "opd"
+learning_rate = 2e-5
+steps = 100
+teacher = "Qwen/Qwen3-32B"
+```
+
+```
+# opd: advantage = teacher - reference per token, no reward term; loss = importance_sampling, summed over tokens; 1 substep; adamw betas 0.9 / 0.95, eps 1e-08; groups with equal rewards kept for the teacher; distill 1.0 toward Qwen/Qwen3-32B
+```
+
+`distill` defaults to 1, the cookbook's `kl_penalty_coef`. The verifier still runs and `reward_mean` is
+still logged, so the rows show whether the policy gets better at the tasks, but the rewards do not
+enter the advantage.
+
+### The teacher
+
+`teacher` names a base model the backend serves, or a checkpoint by its `sampler_path`
+(`tinker://.../sampler_weights/...`). The first step that trains opens it as a sampling client in the
+run's own Tinker session. Each step then scores every training sequence with it, one
+`compute_logprobs` call per sequence, billed as `teacher_tokens` ([Costs](costs.md)).
+
+The teacher reads the policy's token ids, so it must tokenize as the policy does. Qwen3-32B can teach
+Qwen3-8B; a Llama model cannot. With `TINKER_API_KEY` set, `check` blocks:
+
+- a teacher the backend does not serve, or lists but cannot sample;
+- a teacher whose tokenizer's vocabulary differs from the policy's, loading both;
+- a teacher that reads fewer tokens than a rollout may reach, unless `[rollout] max_context` caps the
+  rollouts at the teacher's length.
+
+A checkpoint is checked as the base model it was trained from. `check` also warns when
+`[rollout] temperature` is not 1, as the teacher always scores at temperature 1.
+
+### A teacher in any gradient recipe
+
+`distill` and `teacher` are common knobs, so `dapo`, `dr-grpo`, `cispo` and the slow steps of `fst`
+take a teacher too. Its term is then added to the recipe's own advantage:
+
+```
+advantage(token) = a − kl_coef × (reference − anchor) + distill × (teacher − reference)
+```
+
+where `a` is the recipe's group-relative advantage. A group whose rewards are all equal then trains on
+the teacher's term alone, and dynamic sampling counts it as carrying a gradient. For DAPO, that means a
+batch the policy fails entirely still teaches it something.
 
 ## fst
 

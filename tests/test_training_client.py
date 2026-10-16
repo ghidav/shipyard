@@ -97,6 +97,18 @@ async def test_the_anchor_is_a_sampling_client_on_the_weights_as_opened() -> Non
     assert service.calls[-1] == ("sampling", MODEL, "tinker://fake/sampler_weights/anchor")
 
 
+async def test_a_sampler_opens_on_a_base_model_or_on_a_checkpoints_sampler_weights() -> None:
+    service = FakeService()
+    opened = TinkerClient(service, MODEL)
+    await opened.open()
+    await opened.sampler("Qwen/Qwen3-32B")
+    await opened.sampler("tinker://r/sampler_weights/final")
+    assert service.calls[-2:] == [
+        ("sampling", "Qwen/Qwen3-32B", None),
+        ("sampling", None, "tinker://r/sampler_weights/final"),
+    ]
+
+
 # -------------------------------------------------------------------- the step
 
 

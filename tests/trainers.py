@@ -140,13 +140,14 @@ def capable(*models: tuple[str, bool]) -> GetServerCapabilitiesResponse:
 @dataclass
 class FakeService:
     """Fake `tinker.ServiceClient` covering what a run uses: the three training client
-    factories (each `user_metadata` is kept in `metadata`), the anchor sampling client, the
-    server capabilities (None makes the call raise, which a run must survive), and `close`,
-    which records its status."""
+    factories (each `user_metadata` is kept in `metadata`), sampling clients (a model or path
+    in `teachers` gets its own, any other the anchor), the server capabilities (None makes the
+    call raise, which a run must survive), and `close`, which records its status."""
 
     client: FakeTrainingClient = field(default_factory=FakeTrainingClient)
     capabilities: GetServerCapabilitiesResponse | None = None
     anchor: FlatAnchor = field(default_factory=FlatAnchor)
+    teachers: dict[str, FlatAnchor] = field(default_factory=dict)
     refusing: Exception | None = None
     calls: list[tuple[Any, ...]] = field(default_factory=list)
     metadata: list[dict[str, str] | None] = field(default_factory=list)
@@ -185,7 +186,7 @@ class FakeService:
         self, model_path: str | None = None, base_model: str | None = None
     ) -> FlatAnchor:
         self.calls.append(("sampling", base_model, model_path))
-        return self.anchor
+        return self.teachers.get(model_path or base_model or "", self.anchor)
 
     async def close(self, status: str, detail: str | None = None) -> None:
         self.closed.append((status, detail))
