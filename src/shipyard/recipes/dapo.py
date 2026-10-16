@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
 from collections.abc import Sequence as Values
 from typing import Any
 
 from shipyard.credit import overlong, weights
 from shipyard.training.trainer import Trainer, centred
-from shipyard.types import Adam, Agent, Batches, Group, Update
+from shipyard.types import Adam, Agent, Group, TrainingStep
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +58,9 @@ class DAPOTrainer(Trainer):
     def aggregated(cls) -> str:
         return "averaged per prompt"
 
-    async def train(self, agent: Agent, tasks: Batches) -> Agent:
+    async def sample(self, agent: Agent) -> list[Group]:
+        """Jobs are held until a batch's worth of groups have spread, over at most a pass's
+        worth of batches."""
         recipe = self.recipe
         if self.steps == 0 and recipe.overlong_penalty > 0 and agent.policy.endpoint.budget is None:
             logger.warning(
@@ -68,19 +69,13 @@ class DAPOTrainer(Trainer):
                 recipe.kind,
                 recipe.overlong_penalty,
             )
-        return await super().train(agent, tasks)
-
-    async def sample(self, agent: Agent, tasks: Batches) -> AsyncIterator[list[Group]]:
-        """Jobs are held until a batch's worth of groups have spread; the epoch bounds it."""
         target = self.run.config.data.batch_size * len(agent.harness)
         held: list[Group] = []
-        for batch in tasks:
-            held += self.credited(await self.job(agent, batch))
+        for _ in range(self.generator.per_pass):
+            held += self.credited(await self.job(agent, self.draw()))
             if sum(group.reward_variance > 0 for group in held) >= target:
-                yield held
-                held = []
-        if held:
-            yield held
+                break
+        return held
 
     def advantage(self, group: Group) -> list[float | None]:
         """The overlong term, then the rewards centred and divided by the spread."""
@@ -114,11 +109,12 @@ class DAPOTrainer(Trainer):
     def bounds(self) -> dict[str, float] | None:
         return clipped(self.recipe.clip_low, self.recipe.clip_high)
 
-    def log(self, found: Values[Group], update: Update | None, **more: Any) -> None:
+    def log(self, done: TrainingStep, **more: Any) -> None:
         """The row with `overlong`, the docked members, when the term is on and the budget known."""
+        found = done.groups
         budget = found[0].agent.policy.endpoint.budget if found else None
         if self.recipe.overlong_penalty > 0 and budget:
             more["overlong"] = sum(
                 term is not None and term < 0 for group in found for term in self.docked(group)
             )
-        super().log(found, update, **more)
+        super().log(done, **more)

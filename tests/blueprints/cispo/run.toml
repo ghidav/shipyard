@@ -13,5 +13,6 @@ concurrency = 2
 
 [recipe]
 kind = "cispo"
+steps = 2
 learning_rate = 2e-5
 reference = "sampler"

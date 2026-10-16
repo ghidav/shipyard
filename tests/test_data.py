@@ -1,9 +1,10 @@
-"""Datasets are directories of Harbor tasks; batches cover them, shuffled once per epoch."""
+"""Datasets are directories of Harbor tasks; batches stream over them, shuffled once a pass."""
 
 from __future__ import annotations
 
 import random
 import shutil
+from itertools import islice
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,11 @@ from tests.trials import FIXTURES, dataset, fixture_tasks, write_blueprint
 
 def _names(found: list[list[Path]]) -> list[str]:
     return [task.name for batch in found for task in batch]
+
+
+def _pass(made: Generator, turn: int = 0) -> list[list[Path]]:
+    """The batches of pass `turn` over the train tasks."""
+    return list(islice(made.batches(turn * made.per_pass), made.per_pass))
 
 
 def test_tasks_are_the_valid_directories_sorted_by_name(tmp_path: Path) -> None:
@@ -53,7 +59,7 @@ def test_a_missing_or_empty_dataset_is_refused_with_its_path(tmp_path: Path) -> 
 def test_a_batch_size_under_one_is_refused_not_clamped(tmp_path: Path) -> None:
     dataset(tmp_path, "d", "x")
     with pytest.raises(ValueError, match="batch_size"):
-        list(Generator(tasks("d", root=tmp_path), 0, 0).batches(0))
+        next(Generator(tasks("d", root=tmp_path), 0, 0).batches())
 
 
 def test_the_train_set_is_the_union_in_list_order_and_a_batch_is_shuffled(
@@ -64,34 +70,35 @@ def test_the_train_set_is_the_union_in_list_order_and_a_batch_is_shuffled(
     dataset(tmp_path / "tasks", "b", "b1", "b2")
     text = (
         '[model]\nname = "Qwen/Qwen3-8B"\n[data]\ntrain = ["a", "b"]\nbatch_size = 5\n'
-        '[rollout]\nharness = "pi@0.85.1"\n[recipe]\nkind = "dapo"\nlearning_rate = 2e-5\n'
+        '[rollout]\nharness = "pi@0.85.1"\n'
+        '[recipe]\nkind = "dapo"\nlearning_rate = 2e-5\nsteps = 1\n'
     )
     made = Generator.of(load(write_blueprint(tmp_path, text)))
     assert [task.name for task in made.train] == ["a1", "a2", "a3", "b1", "b2"]
     expected = ["a1", "a2", "a3", "b1", "b2"]
     random.Random(0).shuffle(expected)
-    assert _names(list(made.batches(0))) == expected
+    assert _names(_pass(made)) == expected
     other = Generator.of(
         load(write_blueprint(tmp_path / "other", text.replace('["a", "b"]', '["b", "a"]')))
     )
     assert [task.name for task in other.train] == ["b1", "b2", "a1", "a2", "a3"]
-    assert _names(list(other.batches(0))) != expected
+    assert _names(_pass(other)) != expected
 
 
 def test_same_seed_same_order_and_the_short_last_batch_is_kept(tmp_path: Path) -> None:
     dataset(tmp_path, "d", *[f"t{n:02d}" for n in range(8)])
-    first = list(Generator(tasks("d", root=tmp_path), 3, 7).batches(0))
+    first = _pass(Generator(tasks("d", root=tmp_path), 3, 7))
     assert [len(batch) for batch in first] == [3, 3, 2]
     assert sorted(_names(first)) == [f"t{n:02d}" for n in range(8)]
-    assert list(Generator(tasks("d", root=tmp_path), 3, 7).batches(0)) == first
-    other = list(Generator(tasks("d", root=tmp_path), 3, 8).batches(0))
+    assert _pass(Generator(tasks("d", root=tmp_path), 3, 7)) == first
+    other = _pass(Generator(tasks("d", root=tmp_path), 3, 8))
     assert _names(other) != _names(first)
 
 
-def test_another_epoch_is_another_order_of_the_same_tasks(tmp_path: Path) -> None:
+def test_another_pass_is_another_order_of_the_same_tasks(tmp_path: Path) -> None:
     dataset(tmp_path, "d", *[f"t{n:02d}" for n in range(8)])
     made = Generator(tasks("d", root=tmp_path), 3, 7)
-    one, two = list(made.batches(0)), list(made.batches(1))
+    one, two = _pass(made, 0), _pass(made, 1)
     assert _names(two) != _names(one) and sorted(_names(two)) == sorted(_names(one))
 
 
@@ -107,12 +114,15 @@ def test_held_out_draws_a_seeded_count_and_keeps_list_order() -> None:
         held_out(listed, 10, seed=0)
 
 
-def test_a_generator_cuts_one_epoch_at_a_time(tmp_path: Path) -> None:
+def test_a_generator_streams_pass_after_pass_from_any_batch(tmp_path: Path) -> None:
     dataset(tmp_path, "d", "a", "b", "c", "d", "e")
     made = Generator(tasks("d", root=tmp_path), 2, 7)
-    assert [len(batch) for batch in made.batches(0)] == [2, 2, 1]
-    assert list(made.batches(0)) != list(made.batches(1))
-    assert list(made.batches(0)) == list(made.batches(0)), "a fresh iterator each call"
+    assert made.per_pass == 3 and [len(batch) for batch in _pass(made)] == [2, 2, 1]
+    assert _pass(made, 0) != _pass(made, 1)
+    streamed = list(islice(made.batches(), 7))
+    assert streamed == _pass(made, 0) + _pass(made, 1) + _pass(made, 2)[:1]
+    assert list(islice(made.batches(4), 3)) == streamed[4:7], "resumed at batch 4"
+    assert list(Generator([], 2, 7).batches()) == [], "no tasks, no batches"
 
 
 def test_a_generator_is_built_from_the_blueprints_data_table(
@@ -124,10 +134,11 @@ def test_a_generator_is_built_from_the_blueprints_data_table(
         tmp_path,
         '[model]\nname = "Qwen/Qwen3-8B"\n[data]\ntrain = "fixture"\ntest = "fixture"\n'
         "batch_size = 1\nseed = 3\n"
-        '[rollout]\nharness = "pi@0.85.1"\n[recipe]\nkind = "dapo"\nlearning_rate = 2e-5\n',
+        '[rollout]\nharness = "pi@0.85.1"\n'
+        '[recipe]\nkind = "dapo"\nlearning_rate = 2e-5\nsteps = 1\n',
     )
     made = Generator.of(load(home))
     assert [task.name for task in made.train] == ["alpha", "beta"]
     assert [task.name for task in made.test] == ["alpha", "beta"]
     assert (made.batch_size, made.seed) == (1, 3)
-    assert [[task.name for task in batch] for batch in made.batches(0)] == [["beta"], ["alpha"]]
+    assert [[task.name for task in batch] for batch in _pass(made)] == [["beta"], ["alpha"]]

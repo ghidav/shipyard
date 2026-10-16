@@ -28,8 +28,7 @@ The **For** column says when a key matters:
 | `dataset` | string or list of strings | required | all | The dataset, or datasets, under `tasks/` ([Datasets](../concepts/datasets.md)). |
 | `batch_size` | integer ≥ 1 | required | all | Tasks per batch. One batch is one Harbor job. |
 | `group_size` | integer ≥ 1 | `1` | all | How many times each task runs in its batch. |
-| `epochs` | integer ≥ 1 | `1` | all | Passes over the tasks. |
-| `seed` | integer | `0` | all | The shuffle's seed. Epoch `e` is shuffled with `seed + e`. `gepa` draws its held-out tasks and its minibatches with it. `fst` draws the fast phase's minibatches in cycle `c` with `seed + c`. |
+| `seed` | integer | `0` | all | The shuffle's seed. Pass `n` over the tasks is shuffled with `seed + n`. `gepa` draws its held-out tasks and its minibatches with it. `fst` draws the fast phase's minibatches in cycle `c` with `seed + c`. |
 
 `gepa` reads only `dataset`, `group_size` and `seed`.
 
@@ -71,6 +70,8 @@ How the served keys behave is in [The proxy](../concepts/proxy.md).
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `learning_rate` | float > 0 | required | AdamW's learning rate, reached after the warm-up if any. The betas, eps, weight decay and gradient clipping come from the recipe's paper ([The optimizer](../concepts/recipes.md#the-optimizer)) and are not keys. |
+| `steps` | integer ≥ 1 | required | The steps the run takes. Each draws its batches from the stream over `[data]` ([Datasets](../concepts/datasets.md#batches-and-steps)). For `fst`, its slow steps. |
+| `evaluate_every` | integer ≥ 0 | `0` | Measure `[data] test` after every this many steps. `0` measures at the end only; a run that names a test set always ends with a measurement. |
 | `warmup` | integer ≥ 0 | `0` | Updates over which the learning rate rises linearly to `learning_rate`. Off by default, as the papers' warm-ups (DAPO §4.1: 20; FST App. D: 10) are sized for runs of hundreds of steps. |
 | `substeps` | integer ≥ 1 | `16` for `dapo` (DAPO §4.1) and `cispo` (MiniMax-M1 §3.1); `1` for `dr-grpo` (Dr. GRPO states none) and `fst` (FST App. D) | Optimizer steps per batch. The batch is split by prompt into this many parts of whole groups, or one part per group carrying a gradient when it has fewer. Each part is one `forward_backward` and one `optim_step`. Every part keeps the reference logprobs of the weights the batch was sampled at. |
 | `reference` | `"trainer"` or `"sampler"` | `"trainer"` | Where the loss's reference logprobs come from: a forward pass on the trainer, or the logprobs recorded when sampling, with no extra pass. |
@@ -85,7 +86,6 @@ The gradient recipes need a served model.
 |---|---|---|---|
 | `clip_low` | float, 0 < x < 1 | `0.2` (DAPO §4.1) | The ratio's lower bound is `1 - clip_low`. |
 | `clip_high` | float > 0 | `0.28` (DAPO §4.1) | The ratio's upper bound is `1 + clip_high`. |
-| `refill` | integer ≥ 0 | `9` (DAPO Alg. 1; ten generation batches a step in DAPO's released recipe) | The most extra batches a step samples from the plan while fewer than `batch_size` groups carry a gradient ([Dynamic sampling](../concepts/recipes.md#dynamic-sampling)). `0` is off. |
 | `overlong_penalty` | float ≥ 0 | `0.5` (DAPO Eq. 13: −1 on its reward of −1 or 1, Eq. 7, which is −0.5 on Harbor's 0 to 1) | The most a rollout loses from its reward for its length, reached at its token budget ([The overlong term](../concepts/recipes.md#the-overlong-term-dapo-and-cispo)). `0` is off. |
 | `overlong_buffer` | float, 0 < x ≤ 1 | `0.2` (DAPO §4.1: L_cache / L_max, 4,096 of 20,480 tokens) | The last share of the token budget over which the loss grows linearly from 0 to `overlong_penalty`. |
 
@@ -102,7 +102,6 @@ recipe (verl `recipe/dapo`); the paper states none of these. It warms up over 20
 | `length_penalty` | float ≥ 0 | `0.0` (Dr. GRPO docks no answer for its length) | shipyard's own length rule ([The length rule](../concepts/recipes.md#the-length-rule-dr-grpo-only)): when at least two answers in a group are solved, each solved one loses `length_penalty × (length - length_floor) / mean solved length`, at most `length_cap`. `0` is off. |
 | `length_floor` | integer ≥ 0 | `0` (shipyard's own; Dr. GRPO has no length rule) | Tokens of an answer the length penalty does not count. |
 | `length_cap` | float > 0, `inf` allowed | `0.5` (shipyard's own; Dr. GRPO has no length rule) | The most the length penalty takes from a solved answer, so a solved answer never falls below a failure scored `1 - length_cap` or less. `inf` lifts the cap. `check` warns at 1 or more while `length_penalty` is above 0. |
-| `refill` | integer ≥ 0 | `0` (Dr. GRPO states no dynamic sampling, App. G) | As for `dapo`. |
 
 Token losses are summed (Dr. GRPO §3.2). The optimizer is AdamW at betas 0.9 / 0.95, no weight
 decay, the gradient norm clipped at 1.0 and a constant learning rate (Dr. GRPO App. G, Table 6),
@@ -113,7 +112,6 @@ with the cookbook's eps 1e-8.
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `clip_high` | float > 0 | `3.0` (ScaleRL App. A.17.2, FST App. D) | The importance weight is cut above `1 + clip_high`. It has no lower bound. |
-| `refill` | integer ≥ 0 | `9` (MiniMax-M1 §3.1, which takes DAPO's dynamic sampling) | As for `dapo`. |
 | `overlong_penalty` | float ≥ 0 | `0.5` (MiniMax-M1 §3.1, which takes DAPO's length penalty) | As for `dapo`. |
 | `overlong_buffer` | float, 0 < x ≤ 1 | `0.2` (as for `dapo`) | As for `dapo`. |
 
@@ -141,7 +139,7 @@ See [gepa](../concepts/gepa.md).
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `slow` | `"dapo"`, `"dr-grpo"` or `"cispo"` | `"cispo"` (FST App. D) | The gradient recipe each slow step uses, with its loss and clipping. Its own knobs (`clip_low`, `clip_high`, `clip`, `length_penalty`, `length_floor`, `length_cap`) are accepted when they belong to it, with its defaults. `refill`, `overlong_penalty` and `overlong_buffer` are not keys of `fst`: a slow step trains on the batch it sampled, with no overlong term. |
+| `slow` | `"dapo"`, `"dr-grpo"` or `"cispo"` | `"cispo"` (FST App. D) | The gradient recipe each slow step uses, with its loss and clipping. Its own knobs (`clip_low`, `clip_high`, `clip`, `length_penalty`, `length_floor`, `length_cap`) are accepted when they belong to it, with its defaults. `overlong_penalty` and `overlong_buffer` are not keys of `fst`: a slow step trains on the batch it sampled, with no dynamic sampling and no overlong term. |
 | `cycle` | integer ≥ 1 | `6` (FST App. D) | Slow steps per cycle, and the batches each fast phase looks ahead. |
 | `population` | integer ≥ 1 | `4` (FST App. E, the light recipe) | Texts kept per cycle. It must divide `group_size`. |
 | `anchor` | integer ≥ 1 | unset | The fast phase evolves on the first `anchor` tasks of the lookahead. Unset, it uses all of them. |
@@ -173,6 +171,22 @@ Optional. Only the gradient recipes save checkpoints.
 | `every` | integer ≥ 1 | `1` | Save a checkpoint after every this many steps. A step that trained nothing saves none. A `final` checkpoint is saved after the last step, regardless of `every`. |
 | `ttl_hours` | float ≥ 1 | `168.0` | How long the backend keeps each `step-<n>` checkpoint, in hours. The backend keeps one for an hour at least. `final` is kept with no expiry. |
 
+## `[wandb]`
+
+Optional. With it, the trainer writes every row to a wandb run as well as to the run directory.
+It needs the `shipyard[wandb]` extra, and `check` blocks without it.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `project` | string | required | The wandb project. |
+| `entity` | string | unset | The wandb team or user; unset, wandb's default. |
+
+The wandb run takes the run's id as its id and its name, so `run --resume` and `evaluate` go
+on with the same wandb run. Its config is the resolved blueprint. A row's numbers are logged
+under its section: `train/` for a step, `eval/` for an evaluation, `search/` for a search's
+round and its end. Each section is plotted against its own `step`, or `round` for `search`.
+The costs are in the run's summary. wandb keeps its files under `wandb/` in the run directory.
+
 ## Not in the file
 
 - `TINKER_API_KEY`: the Tinker-API backend's key, for a served model.
@@ -181,6 +195,7 @@ Optional. Only the gradient recipes save checkpoints.
 - `SHIPYARD_QUIET=1`: no progress bars on a terminal.
 - `SHIPYARD_PROXY_TOKEN`: the harness's key to the proxy; required with `endpoint_url`.
 - `SHIPYARD_CONTROL_TOKEN`: the run's key to point the proxy at weights.
+- `WANDB_API_KEY`, `WANDB_MODE` and wandb's other variables, read by wandb itself with `[wandb]`.
 
 [Commands](cli.md#environment) says which command reads each.
 

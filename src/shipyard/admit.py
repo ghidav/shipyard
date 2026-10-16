@@ -16,6 +16,7 @@ from shipyard.types import Job, Trial, Verdict
 __all__ = [
     "endpoint_failed",
     "harness_log",
+    "judge",
     "read_logs",
     "result_of",
     "results",
@@ -142,6 +143,14 @@ def served_verdict(
     if any(not pictured(item) for item in records if item.error is None):
         return Verdict(None, MULTIMODAL, why)
     return None
+
+
+def judge(job: Job, *, check_turns: bool) -> None:
+    """Fill in the job's verdicts, one per trial. With records on the job, first what its
+    harness logs say: the turns each trial asked for, and the trials whose last call failed."""
+    if job.records is not None:
+        job.asked, job.failed = read_logs(job.trials, job.records, check_turns=check_turns)
+    job.verdicts = verdicts(job)
 
 
 def verdicts(job: Job) -> list[Verdict]:

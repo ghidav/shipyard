@@ -438,14 +438,13 @@ async def test_open_keeps_the_carried_modules_once_and_each_job_delivers_them(
         assert _files(root / "solving") == _files(VALID / SKILLS_DIR / "solving")
     rows = _rows(opened)
     assert [row["modules"] for row in rows] == [opened.carried.digest] * 2
-    assert list(rows[0])[:8] == [
+    assert list(rows[0])[:7] == [
         "at",
         "job",
         "purpose",
         "trials",
         "step",
         "tasks",
-        "epoch",
         "modules",
     ]
     assert sorted(p.name for p in (tmp_path / "jobs" / job_of(first)).iterdir()) == sorted(
@@ -459,6 +458,7 @@ async def test_a_job_delivers_the_candidate_it_is_handed_and_nothing_otherwise(
     harbor: Harbor,
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    fixture_tasks(tmp_path)
     opened = Run.open(BLUEPRINTS / "evaluate", root=tmp_path / "runs")
     assert opened.carried is None and not (opened.directory / record.MODULES).exists()
     runner = harbor(FakeTrials())

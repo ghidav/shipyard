@@ -8,11 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from shipyard import record
 from shipyard.config import KINDS, ConfigError
 from shipyard.data import NoSuchDataset
+from shipyard.recipes import trainer_for
 from shipyard.run import Run, RunRefused, runs_root, version
-from shipyard.runner import Runner
 from shipyard.show import alive, state_of
 from tests.trials import BLUEPRINTS
 
@@ -39,13 +38,27 @@ def test_open_from_the_file_names_its_directory(tmp_path: Path) -> None:
     assert Run.read(run.directory)["blueprint"] == str(DAPO.resolve())
 
 
-def test_log_numbers_rows_from_one(tmp_path: Path) -> None:
+def test_closing_calls_back_last_first_with_why_it_stopped(tmp_path: Path) -> None:
+    told: list[tuple[str, str | None]] = []
+
+    def broken(error: str | None) -> None:
+        raise OSError("the disk went away")
+
     run = Run.open(DAPO, root=tmp_path)
-    assert run.log(reward=0.5)["seq"] == 1
-    assert run.log(reward=0.7)["seq"] == 2
-    rows = list(record.read(run.directory / record.METRICS))
-    assert [row["seq"] for row in rows] == [1, 2]
-    assert all("at" in row for row in rows)
+    run.closing(lambda error: told.append(("first", error)))
+    run.closing(broken)
+    run.closing(lambda error: told.append(("last", error)))
+    with pytest.raises(RuntimeError), run:
+        raise RuntimeError("the loop broke")
+    assert told == [
+        ("last", "RuntimeError: the loop broke"),
+        ("first", "RuntimeError: the loop broke"),
+    ]
+    note = Run.read(run.directory)
+    assert note["error"] == "RuntimeError: the loop broke", "a closer that raised keeps no end off"
+    with run:
+        pass
+    assert len(told) == 2, "each is called once"
 
 
 def test_exit_records_finished(tmp_path: Path) -> None:
@@ -96,7 +109,7 @@ async def test_a_runner_dispatches_to_the_kinds_trainer(tmp_path: Path, monkeypa
     monkeypatch.chdir(tmp_path)
     opened = Run.open(BLUEPRINTS / "gepa", root=tmp_path / "runs")
     with pytest.raises(NoSuchDataset, match="aime-train"):
-        await Runner.from_run(opened).run()
+        await trainer_for(opened.config.recipe)(opened).train()
 
 
 def test_open_refuses_an_existing_directory(tmp_path: Path, monkeypatch) -> None:

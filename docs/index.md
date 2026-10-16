@@ -66,16 +66,16 @@ The **recipe** is the `[recipe] kind`: what the run does with its batches.
 | `kind` | What it does | Model |
 |---|---|---|
 | `evaluate` | measures: the mean reward per batch and over the run | any |
-| `dapo` | trains: reward minus the group mean, divided by the spread; PPO loss, clip 0.2 / 0.28; a penalty for running into the token budget; degenerate groups refilled from the next batches | Tinker-served |
+| `dapo` | trains: reward minus the group mean, divided by the spread; PPO loss, clip 0.2 / 0.28; a penalty for running into the token budget; a step short of groups with a gradient draws the next batches | Tinker-served |
 | `dr-grpo` | trains: reward minus the group mean, not divided; PPO loss, clip 0.2; an optional length rule | Tinker-served |
-| `cispo` | trains: dapo's advantage, overlong penalty and refill; CISPO loss, weight truncated above 4.0 | Tinker-served |
+| `cispo` | trains: dapo's advantage, overlong penalty and dynamic sampling; CISPO loss, weight truncated above 4.0 | Tinker-served |
 | `gepa` | evolves the skills the harness reads; no gradient | any |
 | `fst` | both, in cycles: gepa on the next batches, then steps with every group split across the top skills | Tinker-served |
 
 `shipyard check` prints what a gradient recipe resolves to, on one comment line after the config:
 
 ```
-# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token budget; 16 substeps by prompt; adamw betas 0.9 / 0.95, eps 1e-08, weight decay 0.1, gradient norm clipped at 1.0, no warm-up (the paper's is 20 steps); degenerate groups dropped and refilled from the plan, up to 9 more rounds
+# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, averaged per prompt; overlong penalty up to 0.5 over the last 20% of the token budget; 16 substeps by prompt; adamw betas 0.9 / 0.95, eps 1e-08, weight decay 0.1, gradient norm clipped at 1.0, no warm-up (the paper's is 20 steps); degenerate groups dropped
 ```
 
 [Recipes](concepts/recipes.md) has every knob.

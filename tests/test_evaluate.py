@@ -8,8 +8,8 @@ import pytest
 
 from shipyard import record
 from shipyard.admit import BUDGET
+from shipyard.recipes import trainer_for
 from shipyard.run import Run
-from shipyard.runner import Runner
 from tests.records import FakeProxy, made
 from tests.trials import BLUEPRINTS, FakeTrials, Harbor, dataset
 
@@ -39,7 +39,7 @@ def _blueprint(tmp_path: Path, **replacements: str) -> Path:
 async def _run(home: Path, tmp_path: Path) -> Run:
     opened = Run.open(home, root=tmp_path / "runs")
     with opened:
-        await Runner.from_run(opened).run()
+        await trainer_for(opened.config.recipe)(opened).train()
     return opened
 
 
@@ -52,7 +52,7 @@ async def test_the_test_set_is_measured_in_one_row_over_one_job_per_batch(
     harbor(FakeTrials(breaks=("d",), outcomes=OUTCOMES))
     opened = await _run(_blueprint(tmp_path), tmp_path)
     (row,) = list(record.read(opened.directory / record.METRICS))
-    assert row["evaluation"] is True and (row["step"], row["epoch"]) == (0, 0)
+    assert row["evaluation"] is True and row["step"] == 0
     assert (row["tasks"], row["rollouts"], row["graded"], row["masked"]) == (4, 4, 2, 2)
     assert row["reward_mean"] == 0.5
     jobs = list(record.read(opened.directory / record.JOBS))
@@ -123,7 +123,7 @@ async def test_a_served_model_runs_through_its_proxy_and_is_judged_by_its_record
     assert opened.config.model.served
     trials = harbor(FakeTrials(breaks=("d",), outcomes={**OUTCOMES, "b": {"reward": 1.0}}))
     with opened:
-        await Runner.from_run(opened).run()
+        await trainer_for(opened.config.recipe)(opened).train()
     assert fake.placed[0][0] == "local" and fake.placed[0][2]["host"] == "proxy.lan"
     assert len(fake.placed) == 1, "started once, by the first job"
     assert fake.closed == 1, "stopped when the policy closed"

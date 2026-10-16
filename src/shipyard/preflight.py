@@ -6,6 +6,7 @@ the backend lists the model."""
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import io
 import os
 import re
@@ -28,7 +29,9 @@ from shipyard.config import (
     DrGrpoRecipe,
     FstRecipe,
     GepaRecipe,
+    Gradient,
     Search,
+    Wandb,
     modules_dir,
 )
 from shipyard.data import NoSuchDataset, home_of, search_sets, tasks
@@ -120,6 +123,8 @@ def findings(loaded: Blueprint, environ: Mapping[str, str] | None = None) -> lis
         if names:
             found.append(Finding("ok", f"{label} {', '.join(names)}"))
     found.append(Finding("ok", f"harness {rollout.harness}, sandbox {rollout.sandbox}"))
+    if loaded.wandb is not None:
+        found.append(_wandb_finding(loaded.wandb))
     found += [_dataset_finding(name) for name in [*loaded.datasets, *loaded.test_sets]]
     found += _data_findings(loaded)
     for finding in (_provider_finding(loaded), _checkpoint_finding(loaded)):
@@ -172,7 +177,7 @@ def environment_findings(cfg: Blueprint, environ: Mapping[str, str]) -> list[Fin
 
 
 def _data_findings(loaded: Blueprint) -> list[Finding]:
-    """The older spelling, a task in both sets, an evaluation cadence past the epochs."""
+    """The older spelling, a task in both sets, an evaluation cadence past the steps."""
     found: list[Finding] = []
     if "dataset" in loaded.raw.get("data", {}):
         key = "test" if loaded.recipe.kind == "evaluate" else "train"
@@ -191,13 +196,13 @@ def _data_findings(loaded: Blueprint) -> list[Finding]:
                     "not held out",
                 )
             )
-    data = loaded.data
-    if data.evaluate_every > data.epochs:
+    recipe = loaded.recipe
+    if isinstance(recipe, Gradient) and recipe.evaluate_every > recipe.steps:
         found.append(
             Finding(
                 "warning",
-                f"[data] evaluate_every: {data.evaluate_every} is past the {data.epochs} "
-                "epoch(s), so the run evaluates at its end only",
+                f"[recipe] evaluate_every: {recipe.evaluate_every} is past the {recipe.steps} "
+                "steps, so the run evaluates at its end only",
             )
         )
     return found
@@ -214,6 +219,15 @@ def _length_cap(recipe: Any) -> float | None:
     else:
         return None
     return cap if penalty > 0 else None
+
+
+def _wandb_finding(table: Wandb) -> Finding:
+    """Where `[wandb]` sends the trainer's rows; `blocked` when wandb is not installed."""
+    if importlib.util.find_spec("wandb") is None:
+        return Finding("blocked", "[wandb]: wandb is not installed; install shipyard[wandb]")
+    return Finding(
+        "ok", f"wandb {table.entity}/{table.project}" if table.entity else f"wandb {table.project}"
+    )
 
 
 def _provider_finding(loaded: Blueprint) -> Finding | None:

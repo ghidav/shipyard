@@ -13,6 +13,7 @@ concurrency = 2
 
 [recipe]
 kind = "fst"
+steps = 2
 learning_rate = 2e-5
 population = 2
 cycle = 2

@@ -52,10 +52,10 @@ def report(blueprint: Path, trainer: Any = None) -> Report:
 
 
 def resolved(loaded: Blueprint) -> dict[str, Any]:
-    """Every table as plain data with defaults filled in, in the schema's order. `kind`
-    leads the recipe table as it does in the file. For a served model, `renderer` is the
-    one the proxy will load."""
-    dumped = loaded.model_dump(mode="json")
+    """Every table as plain data with defaults filled in, in the schema's order, an optional
+    one left out when unset. `kind` leads the recipe table as it does in the file. For a
+    served model, `renderer` is the one the proxy will load."""
+    dumped = {key: value for key, value in loaded.model_dump(mode="json").items() if value}
     recipe = dumped["recipe"]
     dumped["recipe"] = {"kind": recipe["kind"], **{k: v for k, v in recipe.items() if k != "kind"}}
     if loaded.model.served:
