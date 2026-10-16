@@ -84,7 +84,7 @@ How the served keys behave is in [The proxy](../concepts/proxy.md).
 | `lora_rank` | integer | unset (32) | The LoRA rank of a new training client. Not used with `[agent] from_checkpoint`. |
 | `restore_optimizer` | boolean | `false` | With `[agent] from_checkpoint`, load the optimizer state as well as the weights. The state continues the earlier run's, so the run skips any warm-up. |
 | `distill` | float ≥ 0 | `0.0` | Weight of the teacher's per-token term, `distill × (teacher − reference)`, added to the advantage. `0` is off. Set together with `teacher`. |
-| `teacher` | string | unset | The model whose logprobs score the policy's tokens: a base model the backend serves, or a checkpoint's `sampler_path` (`tinker://.../sampler_weights/...`). It must tokenize as `[agent] model` does. With a teacher, groups whose rewards are all equal still train ([A teacher in any gradient recipe](../concepts/recipes.md#a-teacher-in-any-gradient-recipe)). |
+| `teacher` | string | unset | The model whose logprobs score the policy's tokens: a base model the backend serves, a checkpoint's `sampler_path` (`tinker://.../sampler_weights/...`), `"start"` for the policy's starting weights, or `"current"` for the weights it samples with. Another model must tokenize as `[agent] model` does. `"start"` and `"current"` need [privileged text](../concepts/recipes.md#privileged-text) from a trainer file. With a teacher, groups whose rewards are all equal still train ([A teacher in any gradient recipe](../concepts/recipes.md#a-teacher-in-any-gradient-recipe)). |
 
 The gradient recipes need a served model.
 

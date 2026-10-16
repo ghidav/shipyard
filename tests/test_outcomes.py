@@ -5,13 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from shipyard.sampling.admit import BUDGET, verdict
+from shipyard.sampling.attempt import MAX_FEEDBACK, MAX_INPUTS, MAX_TRANSCRIPT
 from shipyard.sampling.endpoint import ProviderEndpoint
-from shipyard.training.recipes.gepa.outcomes import (
-    MAX_FEEDBACK,
-    MAX_INPUTS,
-    MAX_TRANSCRIPT,
-    outcomes,
-)
+from shipyard.training.recipes.gepa.outcomes import outcomes
 from shipyard.types import Agent, Group, Member, Policy, Trial, harness
 from tests.records import made
 from tests.trials import write_result

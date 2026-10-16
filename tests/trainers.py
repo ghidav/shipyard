@@ -120,6 +120,29 @@ class FlatAnchor:
         return [None] + [self.logprob] * (prompt.length - 1)
 
 
+class Positional:
+    """Fake teacher that scores each token minus its id over 1000, so a score read at the
+    wrong position shows. The first position is unscored, as in `compute_logprobs`."""
+
+    def __init__(self) -> None:
+        self.asked: list[list[int]] = []
+
+    async def compute_logprobs_async(self, prompt: Any) -> list[float | None]:
+        found = chunk_ids(prompt)
+        self.asked.append(found)
+        return [None] + [-one / 1000 for one in found[1:]]
+
+
+class CharTokenizer:
+    """Fake tokenizer that reads one character per token, as `tests.proxies.ids` renders."""
+
+    def decode(self, tokens: list[int]) -> str:
+        return "".join(chr(one) for one in tokens)
+
+    def encode(self, text: str, add_special_tokens: bool = True) -> list[int]:
+        return [ord(one) for one in text]
+
+
 def chunk_ids(prompt: Any) -> list[int]:
     """Return a prompt's token ids with each image chunk as a run of -1 of its length. This
     avoids `to_ints`, which rejects images."""

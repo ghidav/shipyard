@@ -19,6 +19,9 @@ from pydantic import (
 from shipyard.record import CONFIG
 
 TINKER = "tinker"
+#: `[recipe] teacher` values that name the policy's own weights: as the run started, and as
+#: it serves them now.
+OWN_TEACHERS = {"start": "the starting weights", "current": "the current weights"}
 #: Recipe kinds. Each one except `evaluate` is a module under `shipyard.training.recipes`.
 KINDS = ("dapo", "dr-grpo", "cispo", "opd", "gepa", "fst", "evaluate")
 #: Minimum checkpoint TTL in hours, the SDK's floor: `TrainingClient.save_state` takes a TTL
@@ -177,8 +180,8 @@ class Gradient(_Table):
     #: Weight of the teacher's term in each token's advantage, `distill × (teacher − reference)`.
     #: 0 is off.
     distill: float = Field(default=0.0, ge=0)
-    #: Model whose logprobs score the policy's tokens: a base model the backend serves, or a
-    #: `tinker://` sampler path. It must share the policy's tokenizer.
+    #: Model whose logprobs score the policy's tokens: a base model the backend serves, a
+    #: `tinker://` sampler path, or one of `OWN_TEACHERS`. It must share the policy's tokenizer.
     teacher: str | None = Field(default=None, validate_default=True)
 
     @field_validator("teacher")

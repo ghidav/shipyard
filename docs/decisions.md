@@ -32,8 +32,8 @@ A learning rate tuned with one set of betas, eps and warm-up trains differently 
 ## Training
 
 **The step is shipyard's own, over the Tinker SDK. The cookbook is imported in one adapter module,
-for the renderers and the proxy app only, plus one lazy lookup of its model table when `check`
-names the renderer it would pick.**
+for the renderers, the tokenizers and the proxy app only, plus one lazy lookup of its model table
+when `check` names the renderer it would pick.**
 A cookbook release cannot change the loss under a run, and shipyard sends the same datums and loss
 config to any backend that `TINKER_BASE_URL` names.
 
@@ -63,6 +63,20 @@ those the policy fails entirely, where a teacher has the most to teach.
 **A teacher must tokenize as the policy does, and `check` loads both tokenizers to compare them.**
 The teacher scores the policy's token ids. Under another vocabulary those ids are other text, and
 the term pulls toward noise without an error.
+
+**Privileged text is placed by finding the instruction in the decoded tokens, and inserted at a
+token boundary as its own tokens.**
+The records keep token ids only, and the instruction tokenized alone does not match its tokens in
+context, where they can merge with what comes before.
+
+**A sequence whose instruction does not come before its first completion, or whose text would
+overflow the context, gets no teacher term and is counted; it is never truncated.**
+Text placed after a completion cannot condition it, and a truncated sequence trains on part of its
+tokens with no sign it was cut.
+
+**`check` blocks `teacher = "current"` under a trainer that gives no privileged text.**
+The teacher then scores the tokens with the policy's own weights, and the run pays for a term of
+about 0.
 
 **Substeps split the batch by prompt, into at most as many parts as there are groups, and every
 substep keeps the reference logprobs of the weights the batch was sampled at.**

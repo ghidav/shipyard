@@ -89,7 +89,7 @@ A gradient recipe adds up to four counts to the served party, each only once it 
 | `train_tokens` | through the training step, `forward_backward` |
 | `reference_tokens` | through the trainer's forward pass for the reference logprobs; none with `reference = "sampler"` |
 | `anchor_tokens` | to the starting weights, for the KL term; none with `kl_coef = 0` |
-| `teacher_tokens` | to the teacher, for its term; none without a teacher. Priced as the teacher's model, not the policy's |
+| `teacher_tokens` | to the teacher, for its term, privileged text included; none without a teacher. Priced as the teacher's model, not the policy's |
 
 ## Sandbox seconds
 

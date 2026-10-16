@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections import Counter
 from collections.abc import Awaitable, Iterator, Mapping
 from collections.abc import Sequence as Values
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from functools import cached_property
 from pathlib import Path
 from statistics import fmean, pstdev
 from types import TracebackType
@@ -16,13 +18,14 @@ from typing import Any, Self
 import torch
 
 from shipyard import record
-from shipyard.config import Blueprint, Search, modules_dir
+from shipyard.config import OWN_TEACHERS, Blueprint, Search, modules_dir
 from shipyard.cost import Costs, billed_by, reported, sampled, sandbox_seconds
 from shipyard.data import Generator
 from shipyard.logs import Folder, Logger, Loggers, Wandb
 from shipyard.modules import Candidate, keep, seed
 from shipyard.progress import reporter
 from shipyard.sampling.admit import judge
+from shipyard.sampling.attempt import INSTRUCTION, attempt
 from shipyard.sampling.endpoint import NothingServed, endpoint_for
 from shipyard.sampling.engine import HarborEngine
 from shipyard.sampling.secrets import Pool, Secrets
@@ -31,6 +34,7 @@ from shipyard.training.credit import advantages as relative
 from shipyard.training.credit import sampler_logprobs, scored_logprobs
 from shipyard.training.pack import datum as packed
 from shipyard.training.pack import groups
+from shipyard.training.privileged import placed
 from shipyard.types import (
     Adam,
     Agent,
@@ -57,6 +61,8 @@ Signals = dict[str, list[float]]
 SECONDS_PER_HOUR = 3600
 #: Subdirectory of `<directory>/modules/` where the carried modules are kept for `seed` to read.
 CARRIED = "carried"
+#: File in a trial's directory holding the privileged text the teacher read before it.
+PRIVILEGED = "privileged.txt"
 
 #: Keys of a training step's log row, in order. A key with no value is left out.
 ROW = (
@@ -79,6 +85,8 @@ ROW = (
     "entropy",
     "anchor_kl",
     "teacher_kl",
+    "taught",
+    "untaught",
     "overlong",
     "learning_rate",
     "substeps",
@@ -120,16 +128,18 @@ def centred(rewards: Values[float | None], *, normalize: bool) -> list[float | N
 class Credit:
     """The datums a step trains on, by group, and the tokens spent computing them.
 
-    A skipped group has an empty list. The token counts are those of the reference, anchor
-    and teacher logprob passes; `anchor_kl` and `teacher_kl` are the mean gaps from the
-    reference to each, or None without one."""
+    A skipped group has an empty list. The token counts are those of the reference and anchor
+    logprob passes; the teacher's are billed as it scores. `anchor_kl` and `teacher_kl` are
+    the mean gaps from the reference to each, or None without one. `taught` and `untaught`
+    are as in `Update`."""
 
     datums: list[list[Datum]]
     reference_tokens: int = 0
     anchor_tokens: int = 0
-    teacher_tokens: int = 0
     anchor_kl: float | None = None
     teacher_kl: float | None = None
+    taught: int | None = None
+    untaught: int | None = None
 
     @property
     def sequences(self) -> int:
@@ -164,7 +174,8 @@ class Trainer:
         if recipe.kl_coef > 0:
             parts.append(f"kl {recipe.kl_coef} to the starting weights")
         if recipe.teacher is not None:
-            parts.append(f"distill {recipe.distill} toward {recipe.teacher}")
+            toward = OWN_TEACHERS.get(recipe.teacher, recipe.teacher)
+            parts.append(f"distill {recipe.distill} toward {toward}")
         return f"# {recipe.kind}: " + "; ".join(parts)
 
     @classmethod
@@ -223,6 +234,18 @@ class Trainer:
         self.evaluated: int | None = None
         self._stream: Iterator[list[Task]] | None = None
 
+    @property
+    def distills(self) -> bool:
+        """Whether a teacher scores the policy's tokens, as `[recipe] teacher` asks."""
+        return getattr(self.recipe, "teacher", None) is not None
+
+    @cached_property
+    def tokenizer(self) -> Any:
+        """The policy's tokenizer, loaded the first time privileged text is placed."""
+        from shipyard.proxy.cookbook import tokenizer_for
+
+        return tokenizer_for(self.config.agent.model)
+
     def loggers(self) -> list[Logger]:
         """Return the loggers that receive every row.
 
@@ -280,7 +303,7 @@ class Trainer:
             client,
             start=row.get("sampler_path"),
             state=row.get("state_path"),
-            anchored=cfg.trains and cfg.recipe.kl_coef > 0,
+            anchored=cfg.trains and (cfg.recipe.kl_coef > 0 or cfg.recipe.teacher == "start"),
         )
         return Agent(policy, [harness(cfg.agent.harness)], self.modules)
 
@@ -358,9 +381,10 @@ class Trainer:
         """Sample the policy on `tasks` as one job and return its groups.
 
         This is the only place a policy is sampled: it runs the trials, takes the proxy's
-        records, judges the trials, writes the job's row and groups the trials. `attempts`
-        defaults to `[data] group_size`. The groups carry no advantages; `credited` sets them.
-        Raise `NothingServed` if the endpoint served the job nothing."""
+        records, judges the trials, writes the job's row and groups the trials. For a
+        training job under a teacher, it then asks `privileged` for each measured rollout's
+        text. `attempts` defaults to `[data] group_size`. The groups carry no advantages;
+        `credited` sets them. Raise `NothingServed` if the endpoint served the job nothing."""
         cfg, endpoint = self.config, agent.policy.endpoint
         attempts = cfg.data.group_size if attempts is None else attempts
         job = Job(
@@ -392,7 +416,41 @@ class Trainer:
             except NothingServed as dead:
                 dead.job = job
                 raise
-        return groups(job, agent)
+        found = groups(job, agent)
+        if purpose == "training" and self.distills:
+            await self.given(found)
+        return found
+
+    async def given(self, found: Values[Group]) -> None:
+        """Ask `privileged` for every measured rollout's text at once, keep each on its
+        member, and write a nonempty one to its trial's `privileged.txt`."""
+        asked = [
+            (group, at, one)
+            for group in found
+            for at, one in enumerate(group.members)
+            if one.measured
+        ]
+        texts = await asyncio.gather(*(self.privileged(one, group) for group, _, one in asked))
+        for (group, at, one), text in zip(asked, texts, strict=True):
+            group.members[at] = replace(one, privileged=text)
+            if text:
+                (one.trial.dir / PRIVILEGED).write_text(text, encoding="utf-8")
+
+    async def privileged(self, member: Member, group: Group) -> str | None:
+        """Return the text the teacher reads before this rollout's instruction: "" for none,
+        or None for no teacher term on this rollout.
+
+        Called after each training job under a teacher, at once for every measured rollout,
+        before `trains_on` judges the groups. The base returns "", so the teacher scores the
+        policy's sequences as they are. A subclass overrides this to give the teacher what
+        the policy did not see: feedback on the attempt, a solution from a sibling, a
+        summary of the run. `attempt` renders a rollout for a model to read."""
+        return ""
+
+    def attempt(self, member: Member) -> str:
+        """Render a rollout as GEPA's reflector reads it: its score, the task's instruction,
+        the tail of the agent's transcript and what the tests printed."""
+        return attempt(member.trial.task, member.trial.dir, member.verdict.reward)
 
     def record_job(self, job: Job, *, party: str, **facts: Any) -> None:
         """Write the job's row, including `facts`, and add the job's costs.
@@ -522,12 +580,11 @@ class Trainer:
         """Return whether `group` carries a gradient.
 
         The base requires reward variance, since under a group-relative advantage a group
-        whose members all scored the same has none, unless a teacher scores the tokens: then
-        every group with a measured rollout carries the teacher's term. A recipe with a
-        per-token signal of its own overrides this to keep such groups too."""
-        if getattr(self.recipe, "teacher", None) is not None:
-            return bool(group.measured)
-        return group.reward_variance > 0
+        whose members all scored the same has none, or, under a teacher, a measured rollout
+        the teacher scores: one whose privileged text is not None. A recipe with a per-token
+        signal of its own overrides this to keep such groups too."""
+        taught = self.distills and any(one.privileged is not None for one in group.measured)
+        return group.reward_variance > 0 or taught
 
     async def credit(self, policy: Policy, found: Values[Group]) -> Credit:
         """Build the datums for each group, none for a group `trains_on` rejects.
@@ -570,15 +627,19 @@ class Trainer:
                     per_token = self.token_advantages(member, sequence, row, advantage)
                     built.append(self.datum(sequence, row, [factor * one for one in per_token]))
             datums.append(built)
+        taught = sum("teacher" in row for row in scored)
         return Credit(
             datums,
             reference_tokens=0
             if recipe.reference == "sampler"
             else sum(len(one.tokens) - 1 for one in sequences),
             anchor_tokens=scored_tokens(sequences, scored, "anchor"),
-            teacher_tokens=scored_tokens(sequences, scored, "teacher"),
             anchor_kl=mean_gap(scored, "anchor"),
             teacher_kl=mean_gap(scored, "teacher"),
+            taught=taught if self.distills else None,
+            untaught=sum(one.privileged is not None for one, _ in pairs) - taught
+            if self.distills
+            else None,
         )
 
     async def signals(
@@ -588,9 +649,9 @@ class Trainer:
 
         `reference`, the logprobs the loss's ratio is taken against, is always there;
         `anchor`, the starting weights' logprobs, is there when `kl_coef` is set, and
-        `teacher`, the teacher's logprobs, when `teacher` returns one. A recipe adds its own
-        for `token_advantages` or `datum` to read. Raise `ValueError` if `kl_coef` is set but
-        there is no anchor."""
+        `teacher`, the teacher's logprobs, when `teacher` returns one and
+        `teacher_logprobs` scores the sequence. A recipe adds its own for `token_advantages`
+        or `datum` to read. Raise `ValueError` if `kl_coef` is set but there is no anchor."""
         sequences = [one for _, one in pairs]
         found: list[Signals] = [
             {"reference": list(one)}
@@ -605,20 +666,73 @@ class Trainer:
                 row["anchor"] = base
         teacher = await self.teacher(policy)
         if teacher is not None:
-            taught = await scored_logprobs(teacher, sequences)
+            taught = await self.teacher_logprobs(teacher, pairs, policy)
             for row, theirs in zip(found, taught, strict=True):
-                row["teacher"] = theirs
+                if theirs is not None:
+                    row["teacher"] = theirs
         return found
 
     async def teacher(self, policy: Policy) -> Any:
         """Return the sampling client whose logprobs are the `teacher` signal, or None.
 
-        The default samples `[recipe] teacher` in the policy's session, opened the first time
-        a step scores. A subclass may override this to return a teacher of its own: any
-        object with Tinker's `compute_logprobs_async` that reads the policy's tokens as the
-        policy does."""
+        The default samples `[recipe] teacher` in the policy's session: the starting weights
+        for "start", the weights the endpoint serves for "current", or else the model or
+        checkpoint it names, opened the first time a step scores. A subclass may override
+        this to return a teacher of its own: any object with Tinker's
+        `compute_logprobs_async` that reads the policy's tokens as the policy does. Raise
+        `ValueError` for "start" when the starting weights were not opened."""
         named = getattr(self.recipe, "teacher", None)
-        return None if named is None else await policy.sampler(named)
+        if named is None:
+            return None
+        if named == "start":
+            if policy.anchor is None:
+                raise ValueError('teacher = "start" needs the starting weights, never opened')
+            return policy.anchor
+        if named == "current":
+            if policy.served is None:
+                raise ValueError('teacher = "current" needs the weights the endpoint serves')
+            return await policy.sampler(policy.served)
+        return await policy.sampler(named)
+
+    async def teacher_logprobs(
+        self, teacher: Any, pairs: Values[tuple[Member, Sequence]], policy: Policy
+    ) -> list[list[float] | None]:
+        """Return the teacher's logprobs at every target of each sequence, read after its
+        rollout's privileged text; None for a sequence the teacher does not score.
+
+        A sequence goes unscored when its rollout's text is None, when the text is not empty
+        and the task's instruction does not come before its first completion, or when the
+        text would carry it past the context the endpoint reports. The last two are counted
+        as `untaught` in the step's row, and a warning names how many of each. The tokens
+        sent are billed as `teacher_tokens`."""
+        limit = policy.endpoint.budget
+        read: list[Sequence | None] = []
+        unmatched = overflowed = 0
+        for member, sequence in pairs:
+            text = member.privileged
+            if not text:
+                read.append(None if text is None else sequence)
+                continue
+            found = placed(sequence, text, instruction(member.trial.task), self.tokenizer)
+            if found is None:
+                unmatched += 1
+            elif limit and len(found.tokens) > limit:
+                found, overflowed = None, overflowed + 1
+            read.append(found)
+        if unmatched or overflowed:
+            logger.warning(
+                "%d sequence(s) got no teacher term: %d with no instruction before the first "
+                "completion, %d past the context of %s tokens with the privileged text",
+                unmatched + overflowed,
+                unmatched,
+                overflowed,
+                limit,
+            )
+        sent = [one for one in read if one is not None]
+        scored = iter(await scored_logprobs(teacher, sent))
+        party = policy.endpoint.party or self.config.agent.provider
+        self.spent(party, teacher_tokens=sum(len(one.tokens) for one in sent))
+        return [None if one is None else next(scored) for one in read]
 
     async def reference_logprobs(
         self, client: TrainingClient, sequences: Values[Sequence]
@@ -684,7 +798,6 @@ class Trainer:
             party,
             reference_tokens=credit.reference_tokens,
             anchor_tokens=credit.anchor_tokens,
-            teacher_tokens=credit.teacher_tokens,
         )
         parts = [one for one in credit.datums if one]
         if not parts:
@@ -725,6 +838,8 @@ class Trainer:
             sequences=credit.sequences,
             anchor_kl=credit.anchor_kl,
             teacher_kl=credit.teacher_kl,
+            taught=credit.taught,
+            untaught=credit.untaught,
         )
         return TrainingStep(self.steps, list(found), update)
 
@@ -859,6 +974,14 @@ def next_job(name: str, directory: Path, jobs_dir: Path) -> int:
         if isinstance(one, str) and one.startswith(prefix) and one[len(prefix) :].isdigit()
     ]
     return max(numbers, default=-1) + 1
+
+
+def instruction(task: Path) -> str:
+    """Return the task's instruction, or "" when it cannot be read."""
+    try:
+        return (task / INSTRUCTION).read_text(encoding="utf-8")
+    except OSError:
+        return ""
 
 
 def scored_tokens(sequences: Values[Sequence], scored: Values[Signals], name: str) -> int:

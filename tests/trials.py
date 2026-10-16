@@ -36,6 +36,8 @@ INPUT_TOKENS = 3
 START = "tinker://fake/sampler_weights/start"
 #: Blueprint replacement that adds a KL term to the recipe.
 ANCHORED = {"learning_rate = 2e-5": "learning_rate = 2e-5\nkl_coef = 0.1"}
+#: Keys of a step's row that a run with no KL term, no teacher and no token budget leaves out.
+UNTAUGHT = ("anchor_kl", "teacher_kl", "taught", "untaught", "overlong")
 #: Blueprint replacement that adds a teacher to the recipe.
 TAUGHT = {"learning_rate = 2e-5": 'learning_rate = 2e-5\ndistill = 0.5\nteacher = "Qwen/Qwen3-32B"'}
 #: Blueprint for a GEPA search over the fixture dataset on a hosted model, with Claude Code as

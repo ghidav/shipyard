@@ -313,6 +313,7 @@ never written as 0. Every row also carries `at` and `seq`.
 | `entropy` | mean(−reference) over the trained tokens. |
 | `anchor_kl` | mean(reference − anchor), present only when `kl_coef > 0`. |
 | `teacher_kl` | mean(reference − teacher), present only with a teacher. The cookbook's `teacher_kl`. |
+| `taught`, `untaught` | Sequences the teacher scored, and those whose rollout had privileged text the teacher could not read before them; present only with a teacher. |
 | `overlong` | Graded rollouts that sampled into the last `overlong_buffer` of their token budget; present under `dapo` and `cispo` when the proxy reports a budget. |
 | `learning_rate`, `substeps`, `loss_fn` | As applied, `learning_rate` after any warm-up; `substeps` never exceeds the groups trained on. |
 | `seconds` | The time taken to apply the gradient. |
@@ -350,10 +351,22 @@ enter the advantage.
 
 ### The teacher
 
-`teacher` names a base model the backend serves, or a checkpoint by its `sampler_path`
-(`tinker://.../sampler_weights/...`). The first step that trains opens it as a sampling client in the
-run's own Tinker session. Each step then scores every training sequence with it, one
+`teacher` is one of:
+
+| Value | The teacher |
+|---|---|
+| a base model, such as `"Qwen/Qwen3-32B"` | another model the backend serves |
+| a `sampler_path`, `"tinker://.../sampler_weights/..."` | a checkpoint, such as a fine-tuned teacher |
+| `"start"` | the policy's starting weights, the KL anchor's |
+| `"current"` | the weights the policy samples with, at each step |
+
+The first step that trains opens it as a sampling client in the run's own Tinker session; `"current"`
+opens again on each step's weights. Each step scores every training sequence with it, one
 `compute_logprobs` call per sequence, billed as `teacher_tokens` ([Costs](costs.md)).
+
+`"start"` and `"current"` teach only with [privileged text](#privileged-text). Without it,
+`"current"` scores the tokens as the policy does, so its term is about 0 and `check` blocks it, and
+`"start"` pulls toward the starting weights as `kl_coef` does, which `check` warns about.
 
 The teacher reads the policy's token ids, so it must tokenize as the policy does. Qwen3-32B can teach
 Qwen3-8B; a Llama model cannot. With `TINKER_API_KEY` set, `check` blocks:
@@ -378,6 +391,76 @@ advantage(token) = a − kl_coef × (reference − anchor) + distill × (teacher
 where `a` is the recipe's group-relative advantage. A group whose rewards are all equal then trains on
 the teacher's term alone, and dynamic sampling counts it as carrying a gradient. For DAPO, that means a
 batch the policy fails entirely still teaches it something.
+
+### Privileged text
+
+The teacher can read what the policy did not see: feedback on the attempt, a solution from another
+rollout, a summary of the run so far. A trainer file returns that text from `privileged`, and the
+teacher reads it before the task's instruction, then scores the policy's own tokens after it. With the
+policy as its own teacher, this is on-policy self-distillation: the policy learns to act as it would
+have with the text in front of it.
+
+This trainer file gives each failed rollout Claude's feedback, and leaves solved ones to DAPO alone:
+
+```python
+# feedback_dapo.py
+from anthropic import AsyncAnthropic
+
+from shipyard.training import DAPOTrainer
+
+
+class FeedbackDAPO(DAPOTrainer):
+    claude = AsyncAnthropic()
+
+    async def privileged(self, member, group):
+        if member.verdict.reward == 1.0:
+            return None
+        reply = await self.claude.messages.create(
+            model="claude-sonnet-5-5",
+            max_tokens=1024,
+            messages=[{
+                "role": "user",
+                "content": f"{self.attempt(member)}\nWhat should the agent have done differently?",
+            }],
+        )
+        usage = reply.usage
+        self.spent("anthropic", input_tokens=usage.input_tokens, output_tokens=usage.output_tokens)
+        return f"Feedback on an earlier attempt at this task:\n{reply.content[0].text}\n\n"
+```
+
+```toml
+[recipe]
+kind = "dapo"
+learning_rate = 2e-5
+steps = 100
+distill = 0.5
+teacher = "current"
+```
+
+`shipyard run blueprints/rg feedback_dapo.py` runs it. How the hook is called:
+
+- After each training job, `privileged` runs once for every measured rollout, all at once, before
+  dynamic sampling counts the groups. Evaluation jobs skip it.
+- It returns `""` for no text, which is the default and plain distillation, or `None` for no teacher
+  term on that rollout. A group trains when its rewards spread or one of its rollouts has a teacher
+  term, so a group of solved rollouts with no feedback is still degenerate.
+- `self.attempt(member)` renders the rollout as GEPA's reflector reads it: its score, the task's
+  instruction, the tail of the agent's transcript and what the tests printed.
+- Each text is written to `privileged.txt` in its trial's directory.
+- `self.spent` adds the critic's tokens to `costs.json`.
+
+The text is placed in a copy of each sequence. The records keep token ids only, so the copy finds the
+first 200 characters of the task's `instruction.md` in the decoded tokens, and inserts the text's own
+tokens at the token boundary before them. Its completions and images shift to match, so the teacher's
+logprobs line up with the policy's tokens. A sequence gets no teacher term, and counts as `untaught`,
+when:
+
+- the instruction does not appear before its first completion, as in a sequence a harness started
+  after compacting its context, or one a subagent wrote;
+- the text would carry it past the model's context. It is not truncated, since a cut sequence would
+  train on part of its tokens with no sign it was cut.
+
+A step warns with how many of each it found.
 
 ## fst
 

@@ -7,9 +7,12 @@ from pathlib import Path
 import pytest
 from tinker.types import SupportedModel
 
-from shipyard.cli import preflight
+from shipyard.cli import preflight, resolved
 from shipyard.cli.preflight import Finding
+from shipyard.cli.resolved import UNTOLD
 from shipyard.proxy import tunnel
+from shipyard.training.recipes.opd import OPDTrainer
+from shipyard.types import Group, Member
 from tests.trials import BLUEPRINTS, check, fixture_tasks, write_blueprint
 
 #: Provider-hosted evaluate blueprint that passes `check` from a directory with the fixtures.
@@ -390,6 +393,30 @@ def test_a_checkpoint_teacher_is_checked_as_its_base_model(
         Finding("blocked", f"[recipe] teacher: cannot read {gone}: 404 not found")
     ]
     assert asked == [path, gone]
+
+
+def test_a_teacher_of_the_policys_own_weights_needs_privileged_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The backend is not asked about the policy's own weights, and a trainer that gives the
+    teacher text lifts the block on "current" and the warning on "start"."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TINKER_API_KEY", "sk")
+    models = _catalog(SupportedModel(model_name="Qwen/Qwen3-8B"))
+    monkeypatch.setattr("shipyard.cli.preflight.supported_models", lambda: models)
+
+    class Told(OPDTrainer):
+        async def privileged(self, member: Member, group: Group) -> str | None:
+            return "Think first.\n"
+
+    for teacher, said in (("current", "the current weights"), ("start", "the starting weights")):
+        text = (BLUEPRINTS / "opd" / "run.toml").read_text(encoding="utf-8")
+        home = write_blueprint(tmp_path / teacher, text.replace(TEACHER, teacher))
+        found = [f for f in resolved.report(home).findings if "teacher" in f.text]
+        assert found == [Finding("ok", f"teacher {said}, distill 1.0"), UNTOLD[teacher]]
+        told = resolved.report(home, Told).findings
+        assert UNTOLD[teacher] not in told
+        assert Finding("ok", "privileged text from Told.privileged") in told
 
 
 # ------------------------------------------------------------------ the reflector's key

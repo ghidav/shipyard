@@ -27,6 +27,7 @@ from harbor.models.environment_type import EnvironmentType
 
 from shipyard.config import (
     LENGTH_CAP,
+    OWN_TEACHERS,
     Blueprint,
     DrGrpoRecipe,
     FstRecipe,
@@ -128,7 +129,8 @@ def findings(loaded: Blueprint, environ: Mapping[str, str] | None = None) -> lis
         Finding("ok", f"model {agent.model}, provider {agent.provider}{served}"),
     ]
     if (teacher := getattr(loaded.recipe, "teacher", None)) is not None:
-        found.append(Finding("ok", f"teacher {teacher}, distill {loaded.recipe.distill}"))
+        named = OWN_TEACHERS.get(teacher, teacher)
+        found.append(Finding("ok", f"teacher {named}, distill {loaded.recipe.distill}"))
     for label, names in (("train", loaded.datasets), ("test", loaded.test_sets)):
         if names:
             found.append(Finding("ok", f"{label} {', '.join(names)}"))
@@ -829,12 +831,14 @@ def served_findings(cfg: Blueprint, environ: Mapping[str, str]) -> list[Finding]
 
 
 def probe(cfg: Blueprint, environ: Mapping[str, str]) -> list[Finding]:
-    """Check whether the backend lists the model, and check the recipe's teacher if any.
+    """Check whether the backend lists the model, and check the recipe's teacher if it is
+    another model or a checkpoint.
 
     This makes network calls, and only when `TINKER_API_KEY` is set.
     """
     name, model = backend(environ), cfg.agent.model
     teacher = getattr(cfg.recipe, "teacher", None)
+    teacher = None if teacher in OWN_TEACHERS else teacher
 
     def unasked(why: object) -> list[Finding]:
         said = [Finding("warning", f"could not check the teacher {teacher}: {why}")]
@@ -940,6 +944,6 @@ def checkpoint_base(path: str) -> str:
 
 def vocabulary(model: str) -> dict[str, int]:
     """Return the model's vocabulary, added tokens included, from its tokenizer."""
-    from tinker_cookbook.tokenizer_utils import get_tokenizer
+    from shipyard.proxy.cookbook import tokenizer_for
 
-    return dict(get_tokenizer(model).get_vocab())
+    return dict(tokenizer_for(model).get_vocab())

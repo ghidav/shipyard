@@ -22,6 +22,7 @@ from tests.trials import (
     ONE_STEP,
     SEQUENCE_TOKENS,
     START,
+    UNTAUGHT,
     Alternating,
     Harbor,
     Interrupting,
@@ -87,7 +88,7 @@ async def test_a_two_step_dapo_run_opens_a_client_serves_samples_steps_andcheckp
         assert row["learning_rate"] == pytest.approx(2e-5), "no warm-up by default"
         assert (row["substeps"], row["loss_fn"]) == (2, "ppo")
         keys = [key for key in row if key not in ("at", "seq")]
-        assert keys == [key for key in ROW if key not in ("anchor_kl", "teacher_kl", "overlong")]
+        assert keys == [key for key in ROW if key not in UNTAUGHT]
     # `every = 1`: a checkpoint per update at the TTL, then `final`, kept with none.
     saved = checkpoints(opened)
     assert [(c["tag"], c["step"], c["updates"], c["drawn"], c["ttl_hours"]) for c in saved] == [

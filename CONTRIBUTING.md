@@ -48,7 +48,8 @@ uvx --with mkdocs-material mkdocs build --strict
 ## A new recipe
 
 A gradient recipe is a `Trainer` subclass that overrides the rules it changes. Per rollout:
-`shape` and `advantage` (rewards into one advantage each). Per group: `trains_on` (whether it
+`shape` and `advantage` (rewards into one advantage each), and `privileged` (text the
+teacher reads first). Per group: `trains_on` (whether it
 carries a gradient) and `weights` (its factor on its tokens). Per token, in the order a step
 runs them: `signals` (logprobs and other values each training sequence is scored with, the
 teacher's from `teacher` among them), `token_advantages` (the rollout's advantage and the

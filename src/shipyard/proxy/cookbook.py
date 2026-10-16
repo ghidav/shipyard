@@ -1,6 +1,7 @@
-"""Single point of import for the parts of `tinker_cookbook` the proxy uses.
+"""Single point of import for the parts of `tinker_cookbook` shipyard uses: the proxy's app
+and renderers, and the tokenizers the trainer and `check` read.
 
-Every cookbook symbol the proxy uses is named here, so a rename in the cookbook fails at
+Every cookbook symbol shipyard uses is named here, so a rename in the cookbook fails at
 import time."""
 
 from __future__ import annotations
@@ -151,6 +152,11 @@ def image_processor_for(base_model: str) -> Any:
         return get_image_processor(base_model)
     except Exception:  # noqa: BLE001 - a failed build means no processor
         return None
+
+
+def tokenizer_for(base_model: str) -> Any:
+    """Return the model's tokenizer. The cookbook caches it after the first load."""
+    return get_tokenizer(base_model)
 
 
 def scope_value(key: str) -> str | None:

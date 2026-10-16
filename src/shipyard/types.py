@@ -110,6 +110,10 @@ class Update:
     #: Mean of the reference logprobs minus the teacher's over those sequences; None without a
     #: teacher.
     teacher_kl: float | None = None
+    #: Sequences the teacher scored, and those whose rollout had privileged text the teacher
+    #: could not read before them; None without a teacher.
+    taught: int | None = None
+    untaught: int | None = None
 
 
 @dataclass(frozen=True)
@@ -230,6 +234,8 @@ class Policy:
     anchor: Any = field(default=None, init=False)
     #: Sampling clients opened in the client's session, by the model or path they sample.
     samplers: dict[str, Any] = field(default_factory=dict, init=False)
+    #: Sampler path the endpoint serves; None while it serves the base model.
+    served: str | None = field(default=None, init=False)
 
     async def __aenter__(self) -> Policy:
         try:
@@ -242,6 +248,7 @@ class Policy:
             await self.endpoint.open()
             if self.start is not None:
                 await self.endpoint.serve(self.start)
+                self.served = self.start
             elif self.client is not None:
                 await self.sync("start")
         except BaseException as failed:
@@ -272,11 +279,14 @@ class Policy:
 
     async def sync(self, tag: str) -> str:
         """Save the client's weights for sampling as `tag`, serve them, and return their
-        path."""
+        path. A sampler opened on the weights served before is dropped, as they expire."""
         if self.client is None:
             raise RuntimeError("a provider's policy has no weights to sync")
         path = await self.client.save_weights_for_sampler(tag, ttl_seconds=SERVE_TTL)
         await self.endpoint.serve(path)
+        if self.served is not None:
+            self.samplers.pop(self.served, None)
+        self.served = path
         return path
 
 
@@ -394,6 +404,9 @@ class Member:
     #: Empty when masked.
     sequences: tuple[Sequence, ...]
     sampled_tokens: int
+    #: Text the teacher reads before this rollout's instruction, from `Trainer.privileged`:
+    #: "" for none, None for no teacher term.
+    privileged: str | None = None
 
     @property
     def measured(self) -> bool:

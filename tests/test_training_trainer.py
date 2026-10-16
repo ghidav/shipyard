@@ -6,6 +6,7 @@ import json
 import logging
 from itertools import islice
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -22,8 +23,9 @@ from shipyard.training.recipes.dr_grpo import DrGRPOTrainer
 from shipyard.training.recipes.opd import OPDTrainer
 from shipyard.training.trainer import ROW, Signals, Trainer, together
 from shipyard.types import SERVE_TTL, Agent, Datum, Group, Member, Policy, Sequence, harness
-from tests.records import FakeProxy
-from tests.trainers import FakeService, FlatAnchor
+from tests.proxies import MODEL
+from tests.records import FakeProxy, made
+from tests.trainers import CharTokenizer, FakeService, FlatAnchor, Positional
 from tests.trials import (
     ANCHORED,
     INPUT_TOKENS,
@@ -31,6 +33,7 @@ from tests.trials import (
     SEQUENCE_TOKENS,
     START,
     TAUGHT,
+    UNTAUGHT,
     Alternating,
     FakeTrials,
     Harbor,
@@ -140,7 +143,7 @@ async def test_the_steps_serve_the_start_sample_step_sync_andcheckpoint(
         assert (row["substeps"], row["loss_fn"]) == (2, "ppo")
         assert row["seconds"] >= 0.0 and "anchor_kl" not in row and "overlong" not in row
         keys = [key for key in row if key not in ("at", "seq")]
-        assert keys == [key for key in ROW if key not in ("anchor_kl", "teacher_kl", "overlong")]
+        assert keys == [key for key in ROW if key not in UNTAUGHT]
     # `every = 1`: a checkpoint per update at the TTL, written down with the position.
     saved = checkpoints(run)
     assert [(c["tag"], c["step"], c["updates"], c["drawn"]) for c in saved] == [
@@ -390,6 +393,185 @@ async def test_a_dapo_step_with_a_teacher_adds_its_pull_and_keeps_flat_groups(
     trained = [d for d in service.client.sent if "advantages" in d.loss_fn_inputs]
     found = [a for d in trained for a in d.loss_fn_inputs["advantages"].tolist() if a]
     assert found and found == pytest.approx([0.15] * len(found))
+
+
+# ---------------------------------------------------------------------- privileged text
+
+#: The fixture tasks' instruction, as a harness sends it.
+ASKED = "Write the word alpha to /app/answer.txt."
+#: Blueprint replacement that makes the policy its own teacher, at distill 0.5.
+CURRENT = {"learning_rate = 2e-5": 'learning_rate = 2e-5\ndistill = 0.5\nteacher = "current"'}
+FEEDBACK = "Feedback on an earlier attempt at this task:\nCheck the path.\n\n"
+
+
+class Critic:
+    """Fake Anthropic messages API: the same advice for every attempt, each prompt kept."""
+
+    def __init__(self) -> None:
+        self.read: list[str] = []
+
+    async def create(self, **asked: Any) -> Any:
+        self.read.append(asked["messages"][0]["content"])
+        return SimpleNamespace(
+            content=[SimpleNamespace(text="Check the path.")],
+            usage=SimpleNamespace(input_tokens=100, output_tokens=10),
+        )
+
+
+class FeedbackDAPO(DAPOTrainer):
+    """DAPO with Claude's feedback on failed rollouts, as a trainer file writes it."""
+
+    claude: Any = None
+
+    async def privileged(self, member: Member, group: Group) -> str | None:
+        if member.verdict.reward == 1.0:
+            return None
+        reply = await self.claude.messages.create(
+            model="claude-sonnet-5-5",
+            max_tokens=1024,
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"{self.attempt(member)}\nWhat should the agent have done?",
+                }
+            ],
+        )
+        usage = reply.usage
+        self.spent("anthropic", input_tokens=usage.input_tokens, output_tokens=usage.output_tokens)
+        return f"Feedback on an earlier attempt at this task:\n{reply.content[0].text}\n\n"
+
+
+def _critiqued(run: Run, critic: Critic) -> FeedbackDAPO:
+    trainer = FeedbackDAPO(run.config, run.directory)
+    trainer.claude = SimpleNamespace(messages=critic)
+    return trainer
+
+
+def _taught(
+    fakes: tuple[FakeProxy, FakeService], monkeypatch: pytest.MonkeyPatch, prompt: str
+) -> Positional:
+    """Serve one call per rollout, `prompt` then "ok", and score with a positional teacher
+    on every weights the run serves."""
+    proxy, service = fakes
+    proxy.default = [made(prompt=prompt, completion="ok")]
+    teacher = Positional()
+    for tag in ("start", "sample-1", "sample-2"):
+        service.teachers[f"tinker://fake/sampler_weights/{tag}"] = teacher
+    monkeypatch.setattr("shipyard.proxy.cookbook.tokenizer_for", lambda model: CharTokenizer())
+    return teacher
+
+
+def _advantages(service: FakeService) -> list[float]:
+    trained = [d for d in service.client.sent if "advantages" in d.loss_fn_inputs]
+    found = {round(a, 4) for d in trained for a in d.loss_fn_inputs["advantages"].tolist() if a}
+    return sorted(found)
+
+
+async def test_dapo_with_claudes_feedback_teaches_each_failure_through_the_current_weights(
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each group has a success and a failure. Claude's feedback on the failure goes before
+    the instruction in the teacher's copy, and the current weights score the policy's own
+    tokens after it: "o" and "k" at -0.111 and -0.107 against the reference's -0.5."""
+    _, service = fakes
+    teacher = _taught(fakes, monkeypatch, f"<user>{ASKED}<assistant>")
+    run = Run.open(blueprint(tmp_path, **CURRENT), root=tmp_path)
+    harbor(Alternating())
+    critic = Critic()
+    agent = _agent(run, service)
+    await _train(run, _critiqued(run, critic), agent)
+
+    assert len(critic.read) == 4, "one failure per group, two groups a step, two steps"
+    assert all("score: 0.000" in one and f"--- asked ---\n{ASKED}" in one for one in critic.read)
+    read = [CharTokenizer().decode(one) for one in teacher.asked]
+    assert read == [f"<user>{FEEDBACK}{ASKED}<assistant>ok"] * 4
+    kept = sorted(Path(run.config.rollout.jobs_dir).rglob("privileged.txt"))
+    assert [one.read_text() for one in kept] == [FEEDBACK] * 4
+    opened = [c for c in service.calls if c[0] == "sampling"]
+    assert opened == [
+        ("sampling", None, START),
+        ("sampling", None, "tinker://fake/sampler_weights/sample-1"),
+    ], "the weights each step sampled with"
+    assert agent.policy.samplers == {}, "a sampler on weights since replaced is dropped"
+    # DAPO's -1 on the failure plus 0.5 x (teacher - reference); the success keeps its 1.
+    assert _advantages(service) == [-0.8055, -0.8035, 1.0]
+    for row in rows(run):
+        assert (row["taught"], row["untaught"], row["degenerate"]) == (2, 0, 0)
+        assert row["teacher_kl"] == pytest.approx(-0.391, abs=1e-5)
+    costs = record.read_json(run.directory / record.COSTS)["parties"]
+    assert (costs["anthropic"]["input_tokens"], costs["anthropic"]["output_tokens"]) == (400, 40)
+    assert costs["tinker"]["teacher_tokens"] == 4 * len(read[0])
+
+
+async def test_feedback_trains_a_group_that_failed_entirely_with_no_second_job(
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, service = fakes
+    _taught(fakes, monkeypatch, f"<user>{ASKED}<assistant>")
+    run = Run.open(blueprint(tmp_path, **ONE_STEP, **CURRENT), root=tmp_path)
+    harbor(FakeTrials(default={"reward": 0.0}))
+    await _train(run, _critiqued(run, Critic()), _agent(run, service))
+    (row,) = rows(run)
+    assert len(row["jobs"]) == 1 and row["degenerate"] == 0 and row["taught"] == 8
+    assert _advantages(service) == [0.1945, 0.1965], "the teacher's term alone"
+
+
+@pytest.mark.parametrize("why", ["unmatched", "overflowed"])
+async def test_a_sequence_the_teacher_cannot_read_after_its_text_is_counted_untaught(
+    why: str,
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    proxy, service = fakes
+    prompt = "<user>go<assistant>" if why == "unmatched" else f"<user>{ASKED}<assistant>"
+    teacher = _taught(fakes, monkeypatch, prompt)
+    proxy.budget = len(prompt) + 10
+    run = Run.open(blueprint(tmp_path, **ONE_STEP, **CURRENT), root=tmp_path)
+    harbor(Alternating())
+    await _train(run, _critiqued(run, Critic()), _agent(run, service))
+    (row,) = rows(run)
+    assert (row["taught"], row["untaught"]) == (0, 4) and "teacher_kl" not in row
+    assert teacher.asked == [] and row["trained"] is True, "DAPO still trains on the spread"
+    counted = "4 with no instruction" if why == "unmatched" else "4 past the context of"
+    said = [r.getMessage() for r in caplog.records if "got no teacher term" in r.getMessage()]
+    assert len(said) == 1 and counted in said[0]
+
+
+async def test_the_starting_weights_teach_after_a_fixed_text(
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The anchor opens for a "start" teacher without a KL term, and reads the text."""
+    _, service = fakes
+    _taught(fakes, monkeypatch, f"<user>{ASKED}<assistant>")
+    start = {"learning_rate = 2e-5": 'learning_rate = 2e-5\ndistill = 0.5\nteacher = "start"'}
+    run = Run.open(blueprint(tmp_path, **ONE_STEP, **start), root=tmp_path)
+    harbor(Alternating())
+
+    class Prompted(DAPOTrainer):
+        async def privileged(self, member: Member, group: Group) -> str | None:
+            return "Think first.\n"
+
+    trainer = Prompted(run.config, run.directory)
+    with pytest.raises(ValueError, match="never opened"):
+        await trainer.teacher(_agent(run, service).policy)
+    await _train(run, trainer, trainer.agent())
+    assert [c for c in service.calls if c[0] == "sampling"] == [("sampling", MODEL, None)]
+    read = [CharTokenizer().decode(one) for one in service.anchor.asked]
+    assert read == [f"<user>Think first.\n{ASKED}<assistant>ok"] * 8
+    (row,) = rows(run)
+    assert (row["taught"], row["untaught"]) == (8, 0) and "anchor_kl" not in row
 
 
 async def test_a_recipe_that_trains_on_flat_groups_gets_their_datums(
