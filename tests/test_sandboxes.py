@@ -21,9 +21,9 @@ from types import ModuleType
 import pytest
 from typer.testing import CliRunner
 
-from shipyard import preflight
-from shipyard.cli import app
-from shipyard.preflight import (
+from shipyard.cli import preflight
+from shipyard.cli.main import app
+from shipyard.cli.preflight import (
     INSTEAD,
     LEFTOVER_NETWORKS,
     LOGINS,

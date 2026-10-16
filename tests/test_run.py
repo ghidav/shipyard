@@ -8,11 +8,11 @@ from pathlib import Path
 
 import pytest
 
+from shipyard.cli.show import alive, state_of
 from shipyard.config import KINDS, ConfigError
 from shipyard.data import NoSuchDataset
 from shipyard.recipes import trainer_for
 from shipyard.run import Run, RunRefused, runs_root, version
-from shipyard.show import alive, state_of
 from tests.trials import BLUEPRINTS
 
 DAPO = BLUEPRINTS / "dapo"

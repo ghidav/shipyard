@@ -40,7 +40,7 @@ def _shell_vars_unset(monkeypatch: pytest.MonkeyPatch) -> None:
 def _machine_pinned(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin the machine: every provider's extra installed and logged in, Modal not asked,
     docker running with no leftover networks. The tests of those findings undo the pins."""
-    from shipyard import preflight
+    from shipyard.cli import preflight
 
     monkeypatch.setattr(preflight, "extra_installed", lambda name: True)
     monkeypatch.setattr(preflight, "extra_missing", lambda name: [])

@@ -14,10 +14,10 @@ import pytest
 from typer.testing import CliRunner
 
 from shipyard import record
-from shipyard.cli import app
+from shipyard.cli.main import app
+from shipyard.cli.show import state_of
 from shipyard.logs import Folder
 from shipyard.run import Run
-from shipyard.show import state_of
 from shipyard.training.trainer import Trainer
 from tests.records import FakeProxy, made
 from tests.trials import BLUEPRINTS, FakeTrials, fixture_tasks

@@ -15,7 +15,8 @@ from harbor.utils.templating import render_prompt_template
 from typer.testing import CliRunner
 
 from shipyard import record
-from shipyard.cli import app
+from shipyard.cli.main import app
+from shipyard.cli.preflight import Finding
 from shipyard.config import Rollout
 from shipyard.modules import (
     KINDS,
@@ -36,7 +37,6 @@ from shipyard.modules import (
     seed,
     write,
 )
-from shipyard.preflight import Finding
 from shipyard.run import CARRIED, Run
 from shipyard.sampling.endpoint import ProviderEndpoint
 from shipyard.sampling.engine import DELIVERED, HarborEngine, laid_over

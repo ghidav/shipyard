@@ -13,12 +13,12 @@ import pytest
 from typer.testing import CliRunner
 
 from shipyard import record
-from shipyard.cli import app
+from shipyard.cli.main import app
+from shipyard.cli.smoke import Smoked, Trial, planned, wiring
 from shipyard.config import load
 from shipyard.data import Generator
 from shipyard.modules import seed
 from shipyard.run import Run
-from shipyard.smoke import Smoked, Trial, planned, wiring
 from tests.records import FakeProxy, made
 from tests.trials import BLUEPRINTS, GEPA, VALID, FakeTrials, dataset, write_blueprint
 

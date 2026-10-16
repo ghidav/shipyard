@@ -18,16 +18,17 @@ from rich.console import Console
 from rich.logging import RichHandler
 from rich.markup import escape
 
-from shipyard import data, record, resolved
+from shipyard import data, record
+from shipyard.cli import resolved
+from shipyard.cli.preflight import Finding
+from shipyard.cli.show import print_fields, print_run, print_runs, sections, state_of, styled
+from shipyard.cli.smoke import SmokeFailed
+from shipyard.cli.smoke import smoke as smoke_job
 from shipyard.data import NoSuchDataset
-from shipyard.preflight import Finding
 from shipyard.proxy.client import Unreachable
 from shipyard.recipes import reopened, trainer_in, trainer_of
 from shipyard.run import Run, RunRefused, runs_root
 from shipyard.sampling.endpoint import NothingServed, ProxyGone
-from shipyard.show import print_fields, print_run, print_runs, sections, state_of, styled
-from shipyard.smoke import SmokeFailed
-from shipyard.smoke import smoke as smoke_job
 from shipyard.training.trainer import Trainer
 
 app = typer.Typer(
