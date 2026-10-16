@@ -86,13 +86,6 @@ class Adam:
     weight_decay: float = 0.0
     #: Tinker's `grad_clip_norm`; 0 is none.
     grad_clip_norm: float = 0.0
-    #: Updates over which the learning rate rises linearly to its value; 0 is none.
-    warmup: int = 0
-
-    def rate(self, learning_rate: float, done: int) -> float:
-        if done >= self.warmup:
-            return learning_rate
-        return learning_rate * (done + 1) / self.warmup
 
 
 @dataclass(frozen=True)

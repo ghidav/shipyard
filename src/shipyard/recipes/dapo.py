@@ -5,12 +5,11 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from collections.abc import Sequence as Values
-from dataclasses import replace
 from typing import Any
 
 from shipyard.credit import overlong, weights
-from shipyard.training.trainer import COOKBOOK, Trainer, centred
-from shipyard.types import Agent, Batches, Group, Update
+from shipyard.training.trainer import Trainer, centred
+from shipyard.types import Adam, Agent, Batches, Group, Update
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +44,7 @@ class DAPOTrainer(Trainer):
     #: 4.1 states no betas, eps, weight decay or gradient clipping. The authors' released
     #: recipe (verl recipe/dapo, run_dapo_qwen2.5_32b.sh) sets weight decay 0.1 and clips
     #: the gradient norm at 1.0. Betas and eps are the cookbook's.
-    ADAM = replace(COOKBOOK, weight_decay=0.1, grad_clip_norm=1.0)
+    ADAM = Adam(beta1=0.9, beta2=0.95, eps=1e-8, weight_decay=0.1, grad_clip_norm=1.0)
     PAPER_WARMUP = 20
 
     @classmethod

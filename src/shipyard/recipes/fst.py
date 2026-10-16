@@ -47,7 +47,7 @@ def slow_recipe(recipe: Any) -> Any:
     return model(kind=recipe.slow, kl_coef=recipe.kl_coef, **shared, **knobs)
 
 
-class FST(GEPATrainer):
+class FSTTrainer(GEPATrainer):
     """The fast-slow pass: the search, then the slow trainer it is mixed with."""
 
     ADAM = ADAM
@@ -93,7 +93,7 @@ class FST(GEPATrainer):
             cycle = self.cycles
             if self.offset:
                 self.offset = 0
-                agent = await Trainer.train(self, agent, iter(chunk))
+                agent = await super(GEPATrainer, self).train(agent, iter(chunk))
                 self.cycles += 1
                 continue
             anchor = list(dict.fromkeys(task for batch in chunk for task in batch))
@@ -124,8 +124,8 @@ class FST(GEPATrainer):
                 frontier=len(result.fitness.frontier()),
                 pool=len(result.pool),
             )
-            # The slow steps: the base pass over the chunk, under the slow class's rules.
-            agent = await Trainer.train(self, agent, iter(chunk))
+            # The slow steps: the slow class's pass over the chunk, past the search's own.
+            agent = await super(GEPATrainer, self).train(agent, iter(chunk))
             self.cycles += 1
         keep(agent.modules, kept / BEST)
         return agent
@@ -180,4 +180,4 @@ class FST(GEPATrainer):
 
 def fst_trainer(slow: type[Trainer]) -> type[Trainer]:
     """The fst kind over the slow class `[recipe] slow` names."""
-    return type(f"FST{slow.__name__}", (FST, slow), {})
+    return type(f"FST{slow.__name__}", (FSTTrainer, slow), {})

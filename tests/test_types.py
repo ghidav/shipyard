@@ -84,7 +84,7 @@ def _member(tmp_path: Path, reward: float | None, *, mask: str | None = None) ->
 
 
 def test_the_unchanged_dataclasses_are_the_same_objects_under_their_old_names() -> None:
-    assert trainer.COOKBOOK == types.Adam(beta1=0.9, beta2=0.95, eps=1e-8)
+    assert trainer.Trainer.ADAM == types.Adam(beta1=0.9, beta2=0.95, eps=1e-8)
     assert types.Datum is __import__("tinker").Datum
     assert types.Task is Path
 
