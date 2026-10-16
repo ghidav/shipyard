@@ -14,10 +14,36 @@ from dataclasses import replace
 from typing import Any
 
 from shipyard.proxy.wire import IMAGE_TOKEN
-from shipyard.types import Sequence
+from shipyard.sampling import attempt
+from shipyard.types import Member, Sequence
 
 #: Characters of the task's instruction, from its start, looked for in the decoded tokens.
 PROBE = 200
+
+
+def read_after(
+    pairs: Values[tuple[Member, Sequence]], tokenizer: Any, limit: int | None
+) -> tuple[list[Sequence | None], int, int]:
+    """Return each sequence as the teacher reads it, after its rollout's privileged text, or
+    None where the teacher does not score it; then how many of those had no instruction
+    before their first completion, and how many the text carried past `limit` tokens.
+
+    A rollout whose text is None gets no teacher term, and one whose text is "" is read as
+    it is."""
+    read: list[Sequence | None] = []
+    unmatched = overflowed = 0
+    for member, sequence in pairs:
+        text = member.privileged
+        if not text:
+            read.append(None if text is None else sequence)
+            continue
+        found = placed(sequence, text, attempt.instruction(member.trial.task), tokenizer)
+        if found is None:
+            unmatched += 1
+        elif limit and len(found.tokens) > limit:
+            found, overflowed = None, overflowed + 1
+        read.append(found)
+    return read, unmatched, overflowed
 
 
 def placed(sequence: Sequence, text: str, instruction: str, tokenizer: Any) -> Sequence | None:

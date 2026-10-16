@@ -38,6 +38,14 @@ def attempt(task: Path, trial: Path, reward: float | None) -> str:
     return body + f"--- observed ---\n{observed(trial)}\n"
 
 
+def instruction(task: Path) -> str:
+    """Return the task's instruction, or "" when it cannot be read."""
+    try:
+        return (task / INSTRUCTION).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
 def inputs(task: Path) -> str:
     """Return the head of the task's `instruction.md`, or "" when it cannot be read."""
     try:

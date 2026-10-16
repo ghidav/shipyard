@@ -602,8 +602,8 @@ def test_toml_values_are_spelled_as_toml() -> None:
             "opd",
             "# opd: advantage = teacher - reference per token, no reward term; loss = "
             "importance_sampling, summed over tokens; 1 substep; adamw betas 0.9 / 0.95, eps "
-            "1e-08; groups with equal rewards kept for the teacher; teacher 1.0 toward "
-            "Qwen/Qwen3-32B",
+            "1e-08; groups with equal rewards kept when the teacher scores a rollout; teacher "
+            "1.0 toward Qwen/Qwen3-32B",
         ),
         ("gepa", None),
         ("evaluate", None),
@@ -634,8 +634,8 @@ def test_the_resolution_line_names_a_teacher_and_the_groups_it_keeps(tmp_path: P
     report = resolved.report(write_blueprint(tmp_path, MINIMAL.replace('kind = "dapo"', taught)))
     assert report.resolution is not None
     assert report.resolution.endswith(
-        "groups with equal rewards kept for the teacher; kl 0.05 to the starting weights; "
-        "teacher 0.5 toward Qwen/Qwen3-32B"
+        "groups with equal rewards kept when the teacher scores a rollout; kl 0.05 to the "
+        "starting weights; teacher 0.5 toward Qwen/Qwen3-32B"
     )
 
 

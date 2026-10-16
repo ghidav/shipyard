@@ -1,14 +1,16 @@
-"""Credit assignment: reward shaping, advantages, group weights and reference logprobs."""
+"""Credit assignment: reward shaping, advantages, group weights, logprobs to score against,
+and what a step's credit holds."""
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence as Values
+from dataclasses import dataclass
 from statistics import fmean, pstdev
 from typing import Any
 
 from shipyard.proxy.wire import model_input
-from shipyard.types import Sequence
+from shipyard.types import Datum, Sequence
 
 #: Harbor's reward for a fully solved task. The length penalty compares solved rollouts only.
 SOLVED = 1.0
@@ -17,6 +19,9 @@ LOGPROB_CONCURRENCY = 16
 
 #: Added to the standard deviation when normalizing, to avoid dividing by zero.
 EPSILON = 1e-6
+
+#: Per-token values one training sequence is scored with, by name, aligned to its targets.
+Signals = dict[str, list[float]]
 
 
 def shaped(
@@ -79,6 +84,13 @@ def advantages(shaped_rewards: Values[float], *, normalize: bool) -> list[float]
     return [(one - mean) / scale for one in shaped_rewards]
 
 
+def centred(rewards: Values[float | None], *, normalize: bool) -> list[float | None]:
+    """Apply `advantages` to the measured rewards, leaving None entries in place."""
+    found = [one for one in rewards if one is not None]
+    scored = iter(advantages(found, normalize=normalize) if found else [])
+    return [next(scored) if one is not None else None for one in rewards]
+
+
 def sampler_logprobs(sequence: Sequence) -> list[float]:
     """Return the sampler's logprobs at the sequence's targets, as the proxy recorded them.
 
@@ -115,3 +127,42 @@ async def scored_logprobs(sampler: Any, sequences: Values[Sequence]) -> list[lis
 
 def _number(value: Any) -> float:
     return float(value) if value is not None else 0.0
+
+
+def scored_tokens(sequences: Values[Sequence], scored: Values[Signals], name: str) -> int:
+    """Return the tokens sent to score the sequences that carry signal `name`."""
+    return sum(len(one.tokens) for one, row in zip(sequences, scored, strict=True) if name in row)
+
+
+def mean_gap(scored: Values[Signals], name: str) -> float | None:
+    """Return the mean of `reference` minus signal `name` over every target that carries it,
+    or None when none does."""
+    gaps = [
+        r - x
+        for row in scored
+        if name in row
+        for r, x in zip(row["reference"], row[name], strict=True)
+    ]
+    return fmean(gaps) if gaps else None
+
+
+@dataclass(frozen=True)
+class Credit:
+    """The datums a step trains on, by group, and the tokens spent computing them.
+
+    A skipped group has an empty list. The token counts are those of the reference and anchor
+    logprob passes; the teacher's are billed as it scores. `anchor_kl` and `teacher_kl` are
+    the mean gaps from the reference to each, or None without one. `taught` and `untaught`
+    are as in `Update`."""
+
+    datums: list[list[Datum]]
+    reference_tokens: int = 0
+    anchor_tokens: int = 0
+    anchor_kl: float | None = None
+    teacher_kl: float | None = None
+    taught: int | None = None
+    untaught: int | None = None
+
+    @property
+    def sequences(self) -> int:
+        return sum(len(one) for one in self.datums)

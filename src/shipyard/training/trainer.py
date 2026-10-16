@@ -8,7 +8,7 @@ import time
 from collections import Counter
 from collections.abc import Awaitable, Iterator, Mapping
 from collections.abc import Sequence as Values
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from functools import cached_property
 from pathlib import Path
 from statistics import fmean, pstdev
@@ -24,17 +24,25 @@ from shipyard.data import Generator
 from shipyard.logs import Folder, Logger, Loggers, Wandb
 from shipyard.modules import Candidate, keep, seed
 from shipyard.sampling.admit import judge
-from shipyard.sampling.attempt import INSTRUCTION, attempt
+from shipyard.sampling.attempt import attempt
 from shipyard.sampling.endpoint import NothingServed, endpoint_for
 from shipyard.sampling.engine import HarborEngine
 from shipyard.sampling.progress import reporter
 from shipyard.sampling.secrets import Pool, Secrets
 from shipyard.training.client import TinkerClient
-from shipyard.training.credit import advantages as relative
-from shipyard.training.credit import sampler_logprobs, scored_logprobs
+from shipyard.training.credit import (
+    Credit,
+    Signals,
+    centred,
+    mean_gap,
+    sampler_logprobs,
+    scored_logprobs,
+    scored_tokens,
+)
 from shipyard.training.pack import datum as packed
 from shipyard.training.pack import groups
-from shipyard.training.privileged import placed
+from shipyard.training.privileged import read_after
+from shipyard.training.step import observed, split, warmed
 from shipyard.types import (
     Adam,
     Agent,
@@ -54,9 +62,6 @@ from shipyard.types import (
 )
 
 logger = logging.getLogger(__name__)
-
-#: Per-token values one training sequence is scored with, by name, aligned to its targets.
-Signals = dict[str, list[float]]
 
 SECONDS_PER_HOUR = 3600
 #: Subdirectory of `<directory>/modules/` where the carried modules are kept for `seed` to read.
@@ -95,13 +100,6 @@ ROW = (
 )
 
 
-def warmed(learning_rate: float, warmup: int, done: int) -> float:
-    """Return the learning rate after `done` updates, warmed up linearly over `warmup` updates."""
-    if done >= warmup:
-        return learning_rate
-    return learning_rate * (done + 1) / warmup
-
-
 def optimizer(adam: Adam, warmup: int, paper_warmup: int = 0) -> str:
     """Describe the optimizer settings for the `resolution` line."""
     said = f"adamw betas {adam.beta1} / {adam.beta2}, eps {adam.eps:g}"
@@ -115,35 +113,6 @@ def optimizer(adam: Adam, warmup: int, paper_warmup: int = 0) -> str:
     elif paper_warmup > 0:
         said += f", no warm-up (the paper's is {paper_warmup} steps)"
     return said
-
-
-def centred(rewards: Values[float | None], *, normalize: bool) -> list[float | None]:
-    """Apply `advantages` to the measured rewards, leaving None entries in place."""
-    found = [one for one in rewards if one is not None]
-    scored = iter(relative(found, normalize=normalize) if found else [])
-    return [next(scored) if one is not None else None for one in rewards]
-
-
-@dataclass(frozen=True)
-class Credit:
-    """The datums a step trains on, by group, and the tokens spent computing them.
-
-    A skipped group has an empty list. The token counts are those of the reference and anchor
-    logprob passes; the teacher's are billed as it scores. `anchor_kl` and `teacher_kl` are
-    the mean gaps from the reference to each, or None without one. `taught` and `untaught`
-    are as in `Update`."""
-
-    datums: list[list[Datum]]
-    reference_tokens: int = 0
-    anchor_tokens: int = 0
-    anchor_kl: float | None = None
-    teacher_kl: float | None = None
-    taught: int | None = None
-    untaught: int | None = None
-
-    @property
-    def sequences(self) -> int:
-        return sum(len(one) for one in self.datums)
 
 
 class Trainer:
@@ -169,7 +138,7 @@ class Trainer:
             optimizer(cls.ADAM, recipe.warmup, cls.PAPER_WARMUP),
             "degenerate groups dropped"
             if recipe.teacher is None
-            else "groups with equal rewards kept for the teacher",
+            else "groups with equal rewards kept when the teacher scores a rollout",
         ]
         if recipe.kl_coef > 0:
             parts.append(f"kl {recipe.kl_coef} to the starting weights")
@@ -223,7 +192,7 @@ class Trainer:
         self.logs = Loggers(self.loggers())
         #: Accumulated costs, including those spent before a resume.
         self.costs = Costs.from_dict(record.read_json(self.directory / record.COSTS))
-        self._next_job = next_job(self.name, self.directory, Path(config.rollout.jobs_dir))
+        self._next_job = record.next_job(self.name, self.directory, Path(config.rollout.jobs_dir))
         #: Checkpoint row the run resumed from; None on a fresh run.
         self.resumed: Mapping[str, Any] | None = None
         self.steps = 0
@@ -702,19 +671,8 @@ class Trainer:
         as `untaught` in the step's row, and a warning names how many of each. The tokens
         sent are billed as `teacher_tokens`."""
         limit = policy.endpoint.budget
-        read: list[Sequence | None] = []
-        unmatched = overflowed = 0
-        for member, sequence in pairs:
-            text = member.privileged
-            if not text:
-                read.append(None if text is None else sequence)
-                continue
-            found = placed(sequence, text, instruction(member.trial.task), self.tokenizer)
-            if found is None:
-                unmatched += 1
-            elif limit and len(found.tokens) > limit:
-                found, overflowed = None, overflowed + 1
-            read.append(found)
+        tokenizer = self.tokenizer if any(one.privileged for one, _ in pairs) else None
+        read, unmatched, overflowed = read_after(pairs, tokenizer, limit)
         if unmatched or overflowed:
             logger.warning(
                 "%d sequence(s) got no teacher term: %d with no instruction before the first "
@@ -845,10 +803,9 @@ class Trainer:
         """Submit one substep's forward-backward pass and return its result's awaitable.
 
         The base sends `loss_fn` with `bounds`. A recipe overrides this to send several losses,
-        whose gradients add up before the optimizer step (return `together(...)` of their
-        results), or a loss of its own. It must submit
-        before it returns, so the next substep can be queued behind it, and it must not run
-        concurrently with another training call."""
+        whose gradients add up before the optimizer step (return `step.together(...)` of their
+        results), or a loss of its own. It must submit before it returns, so the next substep
+        can be queued behind it, and it must not run concurrently with another training call."""
         return await client.forward_backward(part, self.loss_fn, self.bounds())
 
     async def _submit(
@@ -956,92 +913,3 @@ def seeded(config: Blueprint) -> Candidate | None:
     """Return the modules `[agent] modules` seeds, for any recipe, or None when it is unset."""
     named = modules_dir(config)
     return None if named is None else seed(named)
-
-
-def next_job(name: str, directory: Path, jobs_dir: Path) -> int:
-    """Return the next job number: one past the highest in the job log or on disk, else 0."""
-    named = [row.get("job") for row in record.read(directory / record.JOBS)]
-    if jobs_dir.is_dir():
-        named += [one.name for one in jobs_dir.iterdir()]
-    prefix = f"{name}-"
-    numbers = [
-        int(one[len(prefix) :])
-        for one in named
-        if isinstance(one, str) and one.startswith(prefix) and one[len(prefix) :].isdigit()
-    ]
-    return max(numbers, default=-1) + 1
-
-
-def instruction(task: Path) -> str:
-    """Return the task's instruction, or "" when it cannot be read."""
-    try:
-        return (task / INSTRUCTION).read_text(encoding="utf-8")
-    except OSError:
-        return ""
-
-
-def scored_tokens(sequences: Values[Sequence], scored: Values[Signals], name: str) -> int:
-    """Return the tokens sent to score the sequences that carry signal `name`."""
-    return sum(len(one.tokens) for one, row in zip(sequences, scored, strict=True) if name in row)
-
-
-def mean_gap(scored: Values[Signals], name: str) -> float | None:
-    """Return the mean of `reference` minus signal `name` over every target that carries it,
-    or None when none does."""
-    gaps = [
-        r - x
-        for row in scored
-        if name in row
-        for r, x in zip(row["reference"], row[name], strict=True)
-    ]
-    return fmean(gaps) if gaps else None
-
-
-async def together(*pending: Awaitable[Forward]) -> Forward:
-    """Await several submitted forward-backward passes and return the last one's result.
-
-    For a `forward_backward` that sends more than one loss: Tinker adds their gradients up
-    before the optimizer step, and the last result's logprobs feed the step's metrics."""
-    found = [await one for one in pending]
-    return found[-1]
-
-
-def split(items: list[Any], parts: int) -> list[list[Any]]:
-    """Split `items` into `parts` slices whose sizes differ by at most one.
-
-    The slices are cut as the cookbook's `split_list` cuts them."""
-    step = len(items) / parts
-    edges = [int(index * step) for index in range(parts)] + [len(items)]
-    return [items[start:end] for start, end in zip(edges[:-1], edges[1:], strict=True)]
-
-
-def observed(datums: Values[Any], trained: Values[Any]) -> dict[str, float]:
-    """Return kl_v1, kl_v2 and entropy over the target tokens, computed as the cookbook does.
-
-    Return {} if the logprobs cannot be read."""
-    if len(trained) != len(datums):
-        return {}
-    try:
-        drifts: list[torch.Tensor] = []
-        chosen: list[torch.Tensor] = []
-        for one, scored in zip(datums, trained, strict=True):
-            inputs = one.loss_fn_inputs
-            if "logprobs" not in inputs or "mask" not in inputs or scored is None:
-                return {}
-            reference = inputs["logprobs"].to_torch()
-            acted = inputs["mask"].to_torch() > 0
-            if not bool(acted.any()):
-                continue
-            drifts.append(reference[acted] - scored[acted])
-            chosen.append(reference[acted])
-        if not drifts:
-            return {}
-        moved, sampled = torch.cat(drifts), torch.cat(chosen)
-        return {
-            "kl_v1": float(moved.mean()),
-            "kl_v2": float(0.5 * (moved**2).mean()),
-            "entropy": float(-sampled.mean()),
-        }
-    except Exception:  # noqa: BLE001 - these numbers are extras and must not fail the step
-        logger.warning("could not read the step's own logprobs; the row goes without them")
-        return {}
