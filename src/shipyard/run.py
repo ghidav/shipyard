@@ -5,8 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import replace
+from collections.abc import Iterable, Mapping
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as installed
 from pathlib import Path
@@ -21,7 +20,6 @@ from shipyard.config import Blueprint, Search, config_file, load, modules_dir
 from shipyard.cost import Costs, billed_by, reported, sampled, sandbox_seconds
 from shipyard.modules import Candidate, keep, seed
 from shipyard.progress import Reporter, reporter
-from shipyard.rollout import Rollouts
 from shipyard.sampling.endpoint import tinker_base_url
 
 logger = logging.getLogger(__name__)
@@ -120,7 +118,7 @@ class Run:
         current.update(about)
         record.write_json(self.directory / record.PROCESS, current)
 
-    def reserve_job(self) -> str:
+    def reserve_name(self) -> str:
         """The next job name, `<run id>-NNNN`, with its directory created; raises if it exists."""
         name = f"{self.id}-{self._next_job:04d}"
         try:
@@ -130,50 +128,37 @@ class Run:
         self._next_job += 1
         return name
 
-    def recorded(
-        self,
-        job: str,
-        trials: Sequence[types.Trial],
-        records: types.Records | None,
-        *,
-        party: str | None,
-        step: int,
-        modules: Candidate | None = None,
-        purpose: str = "training",
-        **about: Any,
-    ) -> Rollouts:
+    def recorded(self, job: types.Job, *, party: str | None) -> None:
         """The job's record side: logs read against the records the endpoint served (None for
-        a provider), the row written with its modules digest, graded count, masks, endings and
-        the party billed: `party` for served records, else the one the trials name."""
-        rolled = Rollouts.of(job, trials)
-        if records is not None:
-            asked, failed = read_logs(trials, records, check_turns=self.config.rollout.check_turns)
-            rolled = replace(rolled, records=records, asked=asked, failed=failed)
-        tasks = len({one.task for one in trials})
-        judged = verdicts(rolled)
-        served = rolled.records is not None
+        a provider), the trials judged once, the row written with its modules digest, graded
+        count, masks, endings and the party billed: `party` for served records, else the one
+        the trials name."""
+        if job.records is not None:
+            job.asked, job.failed = read_logs(
+                job.trials, job.records, check_turns=self.config.rollout.check_turns
+            )
+        job.verdicts = verdicts(job)
+        served = job.records is not None
         if served:
-            counted, noted = sampled(rolled)
+            counted, noted = sampled(job)
         else:
-            counted, party, noted = reported(rolled), billed_by(rolled), {}
-        masked = _tally(each.mask for each in judged)
-        ended = _tally(each.ended for each in judged)
+            counted, party, noted = reported(job), billed_by(job), {}
+        masked = _tally(each.mask for each in job.verdicts)
+        ended = _tally(each.ended for each in job.verdicts)
         self.record_job(
-            rolled,
-            purpose=purpose,
+            job,
             party=party or self.config.model.provider,
             counted=counted,
-            step=step,
-            tasks=tasks,
-            **about,
-            **({"modules": modules.digest} if modules is not None else {}),
-            graded=sum(each.reward is not None for each in judged),
+            tasks=len({one.task for one in job.trials}),
+            **({"epoch": job.epoch} if job.epoch is not None else {}),
+            **job.about,
+            **({"modules": job.modules.digest} if job.modules is not None else {}),
+            graded=sum(each.reward is not None for each in job.verdicts),
             **({"masked": masked} if masked else {}),
             **({"ended": ended} if ended else {}),
             served="tinker" if served else "provider",
             **{key: value for key, value in noted.items() if value},
         )
-        return rolled
 
     def spent(self, party: str, **counts: int) -> None:
         """Add training counts to a party on `costs.json`. Zero counts are skipped."""
@@ -185,24 +170,24 @@ class Run:
 
     def record_job(
         self,
-        rolled: Rollouts,
+        job: types.Job,
         *,
-        purpose: str,
         party: str,
         counted: Mapping[str, int] | None = None,
         **about: Any,
     ) -> dict[str, Any]:
-        """Append a job row and bill it: the purpose, the trial count, `about`, the tokens
-        (`counted`, else what the harness reported) under `party`, and the sandbox's
-        seconds. A reflection records no verdicts because nothing was graded."""
-        counted = reported(rolled) if counted is None else counted
-        timed, seconds = sandbox_seconds(rolled)
+        """Append a job row and bill it: the job's name, purpose, trial count and step,
+        `about`, the tokens (`counted`, else what the harness reported) under `party`, and
+        the sandbox's seconds. A reflection records no verdicts because nothing was graded."""
+        counted = reported(job) if counted is None else counted
+        timed, seconds = sandbox_seconds(job)
         row = record.append(
             self.directory / record.JOBS,
             {
-                "job": rolled.job,
-                "purpose": purpose,
-                "trials": len(rolled),
+                "job": job.name,
+                "purpose": job.purpose,
+                "trials": len(job.trials),
+                **({"step": job.step} if job.step is not None else {}),
                 **about,
                 "party": party,
                 "input_tokens": counted["input_tokens"],

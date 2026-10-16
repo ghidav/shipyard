@@ -9,12 +9,22 @@ from typing import Any
 import pytest
 
 from shipyard import record
+from shipyard.pack import groups
 from shipyard.run import Run
 from shipyard.sampling.endpoint import ProviderEndpoint
 from shipyard.sampling.engine import HarborEngine
 from shipyard.training.trainer import Trainer
-from shipyard.types import Agent, Settings, Trial
-from tests.trials import BLUEPRINTS, FakeTrials, Harbor, fixture_tasks, job, job_of, trials_of
+from shipyard.types import Agent, Job, Policy, Settings, Trial, Verdict, harness
+from tests.trials import (
+    BLUEPRINTS,
+    FakeTrials,
+    Harbor,
+    fixture_tasks,
+    job,
+    job_of,
+    trial,
+    trials_of,
+)
 
 EVALUATE = BLUEPRINTS / "evaluate"
 
@@ -85,8 +95,8 @@ def test_the_job_counter_is_seeded_from_the_record_and_the_disk(
     record.append(opened.directory / record.JOBS, {"job": "elsewhere"})
     (tmp_path / "jobs" / f"{opened.id}-0005").mkdir(parents=True)
     reopened = Run(opened.directory, opened.config)
-    assert reopened.reserve_job() == f"{opened.id}-0006"
-    assert Run(opened.directory, opened.config).reserve_job() == f"{opened.id}-0007"
+    assert reopened.reserve_name() == f"{opened.id}-0006"
+    assert Run(opened.directory, opened.config).reserve_name() == f"{opened.id}-0007"
 
 
 async def test_a_job_name_already_taken_on_disk_is_refused(
@@ -202,3 +212,11 @@ async def test_jobs_dir_comes_from_the_blueprint(
     assert sorted(p.name for p in (tmp_path / "elsewhere" / "jobs" / job_of(rolled)).iterdir()) == [
         trials_of(rolled)[0].name
     ]
+
+
+def test_groups_read_the_jobs_verdicts_and_judge_nothing_again(tmp_path: Path) -> None:
+    gone = trial(tmp_path / "alpha__0000001", task=Path("alpha"))
+    job = Job("j", trials=[gone], verdicts=[Verdict(1.0, None, "completed")])
+    agent = Agent(Policy(ProviderEndpoint("m")), [harness("pi")])
+    (group,) = groups(job, agent)
+    assert group.members[0].verdict.reward == 1.0, "no result on disk, the verdict stands"

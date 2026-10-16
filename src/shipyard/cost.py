@@ -15,7 +15,7 @@ from shipyard.proxy.wire import BUDGET, CONTEXT
 
 if TYPE_CHECKING:
     from shipyard.proxy.wire import Record
-    from shipyard.rollout import Rollouts
+    from shipyard.types import Job
 
 logger = logging.getLogger(__name__)
 
@@ -71,12 +71,12 @@ class Costs:
         return costs
 
 
-def reported(rollouts: Rollouts) -> dict[str, int]:
+def reported(job: Job) -> dict[str, int]:
     """Sum, over the trials with a result, the trial count (`trials`) and the
     `n_input_tokens` (cache included), `n_cache_tokens` and `n_output_tokens` their agents
     reported. A trial that reported nothing adds no tokens."""
     totals = dict.fromkeys(COUNTS, 0)
-    for trial, payload in results(rollouts):
+    for trial, payload in results(job):
         totals["trials"] += 1
         stated = [payload.get("agent_result")] + [
             step.get("agent_result")
@@ -94,11 +94,11 @@ def reported(rollouts: Rollouts) -> dict[str, int]:
     return totals
 
 
-def sampled(rollouts: Rollouts) -> tuple[dict[str, int], dict[str, int]]:
+def sampled(job: Job) -> tuple[dict[str, int], dict[str, int]]:
     """A served job's bill off its records: counts, graded trials, refused and bridged calls."""
-    calls = [item for found in (rollouts.records or {}).values() for item in found]
+    calls = [item for found in (job.records or {}).values() for item in found]
     counted = {
-        "trials": sum(1 for _ in results(rollouts)),
+        "trials": sum(1 for _ in results(job)),
         "input_tokens": sum(len(item.prompt_token_ids) for item in calls),
         "cache_tokens": sum(cached(item) for item in calls),
         "output_tokens": sum(len(item.completion_token_ids) for item in calls),
@@ -115,11 +115,11 @@ def cached(item: Record) -> int:
     return min(int(item.cached_tokens or 0), len(item.prompt_token_ids))
 
 
-def billed_by(rollouts: Rollouts) -> str | None:
+def billed_by(job: Job) -> str | None:
     """`agent_info.model_info.provider`, lower-cased, when every trial that recorded one
     agrees; None when none did or they differ, and the blueprint's provider stands."""
     providers: set[str] = set()
-    for _, payload in results(rollouts):
+    for _, payload in results(job):
         info = payload.get("agent_info")
         model = info.get("model_info") if isinstance(info, dict) else None
         named = model.get("provider") if isinstance(model, dict) else None
@@ -128,11 +128,11 @@ def billed_by(rollouts: Rollouts) -> str | None:
     return providers.pop() if len(providers) == 1 else None
 
 
-def sandbox_seconds(rollouts: Rollouts) -> tuple[int, float]:
+def sandbox_seconds(job: Job) -> tuple[int, float]:
     """How many trials left a result, and their summed container seconds. A trial with
     no result has no time on it."""
     trials, seconds = 0, 0.0
-    for _, payload in results(rollouts):
+    for _, payload in results(job):
         trials += 1
         seconds += _container_seconds(payload)
     return trials, seconds

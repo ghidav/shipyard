@@ -378,7 +378,7 @@ async def test_check_raises_the_stop_for_after_the_row(fake: FakeProxy, tmp_path
     records = await held.record("j", batch)
     with pytest.raises(NothingServed, match="no trial reached the proxy") as caught:
         held.check("j", records)
-    assert caught.value.rolled is None
+    assert caught.value.job is None
     assert str(caught.value) == (
         "job j: no trial reached the proxy; the endpoint is dead or unreachable"
     )

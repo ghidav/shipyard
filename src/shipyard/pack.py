@@ -13,13 +13,11 @@ import torch
 from tinker import TensorData
 
 from shipyard import types
-from shipyard.admit import verdicts
 from shipyard.proxy.wire import IMAGE_TOKEN, Picture, Record, model_input, pictured
 from shipyard.types import Sequence
 
 if TYPE_CHECKING:
-    from shipyard.rollout import Rollouts
-    from shipyard.types import Agent, Trial
+    from shipyard.types import Agent, Job
 
 __all__ = [
     "chains",
@@ -141,12 +139,11 @@ def datum(
     )
 
 
-def groups(trials: Values[Trial], rolled: Rollouts, agent: Agent) -> list[types.Group]:
-    """One group per task and harness in plan order, each trial a member."""
-    judged = verdicts(rolled)
-    records = rolled.records or {}
+def groups(job: Job, agent: Agent) -> list[types.Group]:
+    """One group per task and harness in plan order, each trial a member with its verdict."""
+    records = job.records or {}
     out: list[types.Group] = []
-    for trial, verdict in zip(trials, judged, strict=True):
+    for trial, verdict in zip(job.trials, job.verdicts, strict=True):
         taken = list(records.get(trial.name) or [])
         member = types.Member(
             trial,

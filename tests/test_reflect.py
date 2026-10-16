@@ -28,10 +28,10 @@ from shipyard.recipes.gepa.reflect import (
     unwrapped,
     written,
 )
-from shipyard.rollout import Rollouts
 from shipyard.run import Run
 from shipyard.sampling.engine import HarborEngine
-from tests.trials import Harbor, write_blueprint, write_result
+from shipyard.types import Job
+from tests.trials import Harbor, trial, write_blueprint, write_result
 
 SKILL = "---\nname: solving\ndescription: how to solve.\n---\n\nset up the algebra first\n"
 REWRITTEN = "---\nname: solving\ndescription: how to solve.\n---\n\ncheck the constraints\n"
@@ -69,8 +69,8 @@ def _reflection(
     return Reflection(Candidate({module.name: module}), module.name, outcomes)
 
 
-def _rollouts(*trials: Path) -> Rollouts:
-    return Rollouts(job="r-0001", trials=list(trials))
+def _job(*trials: Path) -> Job:
+    return Job("r-0001", trials=[trial(one, job="r-0001") for one in trials])
 
 
 def _published(trial: Path, *parts: str) -> Path:
@@ -179,7 +179,7 @@ def test_the_rewrite_is_read_back_as_a_module_of_the_same_name_and_kind(tmp_path
     _published(trial, SKILL_FILE).write_text(REWRITTEN)
     _published(trial, "examples", "worked.md").write_text("the corrected example")
     _published(trial, ".hidden").write_text("not a file of the module")
-    found = written(_rollouts(trial), _module())
+    found = written(_job(trial), _module())
     assert found is not None and (found.name, found.kind) == ("solving", "skill")
     assert found.files == {SKILL_FILE: REWRITTEN, "examples/worked.md": "the corrected example"}
     assert found.digest != _module().digest
@@ -196,7 +196,7 @@ def test_a_prompts_rewrite_is_its_marker_alone(tmp_path: Path) -> None:
     trial = tmp_path / "reflection__abc"
     _published(trial, PROMPT_FILE).write_text("Run the tests, then read their output.\n")
     _published(trial, "notes.md").write_text("why I changed it")
-    found = written(_rollouts(trial), prompt)
+    found = written(_job(trial), prompt)
     assert found is not None and found.files == {
         PROMPT_FILE: "Run the tests, then read their output.\n"
     }
@@ -208,7 +208,7 @@ def test_a_rewrite_that_fails_the_kinds_check_is_declined_and_said(
     trial = tmp_path / "reflection__abc"
     _published(trial, SKILL_FILE).write_text("# Solving\n\nno frontmatter any more\n")
     with caplog.at_level(logging.WARNING, logger="shipyard.recipes.gepa.reflect"):
-        assert written(_rollouts(trial), _module()) is None
+        assert written(_job(trial), _module()) is None
     assert "rewrite of 'solving' declined" in caplog.text
     assert "does not open with a `---` frontmatter block" in caplog.text
 
@@ -216,7 +216,7 @@ def test_a_rewrite_that_fails_the_kinds_check_is_declined_and_said(
 def test_a_wrapper_around_the_file_is_not_the_file(tmp_path: Path) -> None:
     trial = tmp_path / "reflection__abc"
     _published(trial, SKILL_FILE).write_text("```markdown\n" + REWRITTEN + "```\n")
-    found = written(_rollouts(trial), _module())
+    found = written(_job(trial), _module())
     assert found is not None and found.text == REWRITTEN
     body = "from x import y\n\n\nclass Harness(y):\n    pass\n"
     assert unwrapped(body + "</content>\n") == body
@@ -232,33 +232,33 @@ def test_a_rewrite_left_one_directory_down_is_read_and_two_are_not(tmp_path: Pat
     trial = tmp_path / "reflection__1"
     _published(trial, "solving", SKILL_FILE).write_text(REWRITTEN)
     _published(trial, "solving", "worked.md").write_text("beside it\n")
-    found = written(_rollouts(trial), _module())
+    found = written(_job(trial), _module())
     assert found is not None and found.text == REWRITTEN and "worked.md" in found.files
     _published(trial, "other", SKILL_FILE).write_text(REWRITTEN)
-    assert written(_rollouts(trial), _module()) is None
+    assert written(_job(trial), _module()) is None
 
 
 def test_a_trial_that_wrote_nothing_declines_and_one_that_died_says_so(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    assert written(_rollouts(), _module()) is None
+    assert written(_job(), _module()) is None
     quiet = tmp_path / "quiet"
     _published(quiet, "x")  # the directory, and nothing in it
     write_result(quiet)
     with caplog.at_level(logging.INFO, logger="shipyard.recipes.gepa.reflect"):
-        assert written(_rollouts(quiet), _module()) is None
+        assert written(_job(quiet), _module()) is None
     assert "WARNING" not in caplog.text and "wrote no 'SKILL.md'" in caplog.text
     caplog.clear()
     wrong = tmp_path / "wrong"
     _published(wrong, "notes.md").write_text("prose instead of the file")
     with caplog.at_level(logging.WARNING, logger="shipyard.recipes.gepa.reflect"):
-        assert written(_rollouts(wrong), _module()) is None
+        assert written(_job(wrong), _module()) is None
     assert "it left ['notes.md']" in caplog.text
     caplog.clear()
     dead = tmp_path / "dead"
     write_result(dead, exception="AgentSetupTimeoutError")
     with caplog.at_level(logging.WARNING, logger="shipyard.recipes.gepa.reflect"):
-        assert written(_rollouts(dead), _module()) is None
+        assert written(_job(dead), _module()) is None
     assert "the reflection trial failed: AgentSetupTimeoutError" in caplog.text
 
 

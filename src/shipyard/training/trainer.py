@@ -26,6 +26,7 @@ from shipyard.types import (
     Evaluation,
     Forward,
     Group,
+    Job,
     Policy,
     Sequence,
     Task,
@@ -191,31 +192,28 @@ class Trainer:
         advantages; `credited` sets them where a step trains on them."""
         run, endpoint = self.run, agent.policy.endpoint
         attempts = run.config.data.group_size if attempts is None else attempts
-        job = run.reserve_job()
-        run.progress.started(
-            job, trials=len(tasks) * len(agent.harness) * attempts, step=self.steps
-        )
-        trials = await self.engine.run(job, tasks, attempts, agent=agent)
-        run.progress.done(job)
-        records = await endpoint.record(job, trials)
-        rolled = run.recorded(
-            job,
-            trials,
-            records,
-            party=endpoint.party,
-            step=self.steps,
-            modules=agent.modules,
+        job = Job.reserve(
+            run,
             purpose=purpose,
+            step=self.steps,
             epoch=self.epoch,
-            **about,
+            modules=agent.modules,
+            about=about,
         )
-        if records is not None:  # once the job is on record, stop if the endpoint is dead
+        run.progress.started(
+            job.name, trials=len(tasks) * len(agent.harness) * attempts, step=self.steps
+        )
+        job.trials = await self.engine.run(job.name, tasks, attempts, agent=agent)
+        run.progress.done(job.name)
+        job.records = await endpoint.record(job.name, job.trials)
+        run.recorded(job, party=endpoint.party)
+        if job.records is not None:  # once the job is on record, stop if the endpoint is dead
             try:
-                endpoint.check(job, records)
+                endpoint.check(job.name, job.records)
             except NothingServed as dead:
-                dead.rolled = rolled
+                dead.job = job
                 raise
-        return groups(trials, rolled, agent)
+        return groups(job, agent)
 
     async def evaluate(self, agent: Agent, tasks: Values[Task], **more: Any) -> Evaluation | None:
         """One job per batch of `tasks` at `[data] test_group_size`, then one row with the mean."""
