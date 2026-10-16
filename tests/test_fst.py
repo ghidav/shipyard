@@ -65,12 +65,11 @@ def test_the_fixture_takes_the_papers_defaults(tmp_path: Path) -> None:
     assert (trainer.recipe.substeps, trainer.recipe.overlong_penalty) == (1, 0.0), "App. D"
     assert trainer.weights([1, 3]) == [2.0, 2 / 3], "Eq. 4: averaged per prompt"
     assert trainer.ADAM == ADAM, "App. D; ScaleRL A.10"
-    assert (ADAM.beta1, ADAM.beta2, ADAM.eps, ADAM.weight_decay, ADAM.warmup) == (
+    assert (ADAM.beta1, ADAM.beta2, ADAM.eps, ADAM.weight_decay) == (
         0.9,
         0.999,
         1e-8,
         0.0,
-        0,
     ), "App. D; its 10-step warm-up is the warmup key's"
     assert ADAM.grad_clip_norm == 0.0, "App. D states no gradient clipping"
     assert resolution(recipe).startswith("# fst: cycles of 2 cispo steps")
@@ -143,6 +142,31 @@ async def test_the_jobs_of_a_step_merge_into_one_group_per_task(tmp_path: Path) 
     assert found[0].advantages == pytest.approx([1.0, -1.0], abs=1e-5), "credited as one group"
     with pytest.raises(ValueError, match="different numbers of groups"):
         trainer.merged([parts[0], parts[1][:1]])
+
+
+@pytest.mark.usefixtures("fakes")
+async def test_the_slow_steps_run_the_slow_classs_own_train(tmp_path: Path) -> None:
+    passes: list[int] = []
+
+    class Marked(CISPOTrainer):
+        async def train(self, agent: Agent, tasks: Any) -> Agent:
+            passes.append(self.steps)
+            return await super().train(agent, tasks)
+
+    dataset(tmp_path / "tasks", "four", *"abcd")
+    home = write_blueprint(
+        tmp_path, _text(**{'"aime-train"': '"four"', "group_size = 4": "group_size = 2"})
+    )
+    shutil.copytree(VALID, home / "modules")
+    opened = Run.open(home, root=tmp_path / "runs")
+    opened.engine.run_trial = Fakes()
+    started = Runner.from_run(opened, fst_trainer(Marked))
+    with opened:
+        await started.run()
+    assert type(started.trainer).__name__ == "FSTMarked"
+    assert passes and passes[0] == 0 and len(passes) == started.trainer.cycles, (
+        "the slow class's train runs once per cycle, for its slow steps"
+    )
 
 
 @pytest.mark.usefixtures("fakes")

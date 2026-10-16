@@ -6,7 +6,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Mapping
 from collections.abc import Sequence as Values
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from statistics import fmean, pstdev
 from typing import TYPE_CHECKING, Any
 
@@ -37,9 +37,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 SECONDS_PER_HOUR = 3600
-#: Adam as the cookbook's `train_step` sets it (no weight decay, gradient clipping or
-#: warm-up), for whatever a paper leaves unstated. The SDK's `eps` default is 1e-12.
-COOKBOOK = Adam(beta1=0.9, beta2=0.95, eps=1e-8)
 
 #: The step's row keys, in this order. A measure with nothing behind it is left out.
 ROW = (
@@ -69,16 +66,23 @@ ROW = (
 )
 
 
-def optimizer(adam: Adam, paper_warmup: int = 0) -> str:
+def warmed(learning_rate: float, warmup: int, done: int) -> float:
+    """The rate after `done` updates, rising linearly to `learning_rate` over `warmup`."""
+    if done >= warmup:
+        return learning_rate
+    return learning_rate * (done + 1) / warmup
+
+
+def optimizer(adam: Adam, warmup: int, paper_warmup: int = 0) -> str:
     """The optimizer clause of the resolution line."""
     said = f"adamw betas {adam.beta1} / {adam.beta2}, eps {adam.eps:g}"
     if adam.weight_decay > 0:
         said += f", weight decay {adam.weight_decay}"
     if adam.grad_clip_norm > 0:
         said += f", gradient norm clipped at {adam.grad_clip_norm}"
-    if adam.warmup > 0:
-        steps = "step" if adam.warmup == 1 else "steps"
-        said += f", learning rate warmed up over {adam.warmup} {steps}"
+    if warmup > 0:
+        steps = "step" if warmup == 1 else "steps"
+        said += f", learning rate warmed up over {warmup} {steps}"
     elif paper_warmup > 0:
         said += f", no warm-up (the paper's is {paper_warmup} steps)"
     return said
@@ -110,8 +114,9 @@ class Trainer:
 
     #: Tinker's loss, with `bounds` as its config.
     loss_fn = "importance_sampling"
-    #: The optimizer; `[recipe] warmup` is set on it at the step.
-    ADAM = COOKBOOK
+    #: Adam as the cookbook's `train_step` sets it (no weight decay or gradient clipping),
+    #: for whatever a paper leaves unstated. The SDK's `eps` default is 1e-12.
+    ADAM = Adam(beta1=0.9, beta2=0.95, eps=1e-8)
     #: The warm-up the recipe's paper trains with, shown beside the run's own `warmup`.
     PAPER_WARMUP = 0
 
@@ -121,7 +126,7 @@ class Trainer:
         parts = [
             *cls.rules(recipe),
             "1 substep" if recipe.substeps == 1 else f"{recipe.substeps} substeps by prompt",
-            optimizer(replace(cls.ADAM, warmup=recipe.warmup), cls.PAPER_WARMUP),
+            optimizer(cls.ADAM, recipe.warmup, cls.PAPER_WARMUP),
             "degenerate groups dropped",
         ]
         if recipe.kl_coef > 0:
@@ -340,21 +345,18 @@ class Trainer:
         pieces = [[one for group in piece for one in group] for piece in split(parts, count)]
         datums = [one for piece in pieces for one in piece]
         train_tokens = sum(int(one.model_input.length) for one in datums)
-        adam = replace(self.ADAM, warmup=recipe.warmup)
         # An earlier run's optimizer state continues its schedule; a resume stands at `updates`.
         model = self.run.config.model
         rate = (
             recipe.learning_rate
             if model.from_checkpoint and model.restore_optimizer
-            else adam.rate(recipe.learning_rate, self.updates)
+            else warmed(recipe.learning_rate, recipe.warmup, self.updates)
         )
         trained: list[torch.Tensor] = []
-        forward, optim = await self._submit(client, pieces[0], adam, rate)
+        forward, optim = await self._submit(client, pieces[0], rate)
         for index in range(count):
             following = (
-                await self._submit(client, pieces[index + 1], adam, rate)
-                if index + 1 < count
-                else None
+                await self._submit(client, pieces[index + 1], rate) if index + 1 < count else None
             )
             result = await forward
             trained.extend(torch.tensor(row) for row in result.logprobs)
@@ -377,10 +379,10 @@ class Trainer:
         )
 
     async def _submit(
-        self, client: TrainingClient, part: list[Datum], adam: Adam, rate: float
+        self, client: TrainingClient, part: list[Datum], rate: float
     ) -> tuple[Awaitable[Forward], Awaitable[None]]:
         forward = await client.forward_backward(part, self.loss_fn, self.bounds())
-        return forward, await client.optim_step(adam, rate)
+        return forward, await client.optim_step(self.ADAM, rate)
 
     def log(self, found: Values[Group], update: Update | None, **more: Any) -> None:
         """The step's row in `ROW` order, naming its jobs, with `more` in it or after it."""
