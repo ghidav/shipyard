@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from shipyard import preflight
-from shipyard.preflight import Finding
+from shipyard.cli import preflight
+from shipyard.cli.preflight import Finding
 from shipyard.proxy import tunnel
 from tests.trials import BLUEPRINTS, check, fixture_tasks, write_blueprint
 
@@ -261,10 +261,12 @@ def test_the_probe_asks_the_backend_only_under_a_key_and_names_it(
     fixture_tasks(tmp_path)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("TINKER_API_KEY", "sk")
-    monkeypatch.setattr("shipyard.preflight.supported_models", lambda: ["Qwen/Qwen3-8B", "other/m"])
+    monkeypatch.setattr(
+        "shipyard.cli.preflight.supported_models", lambda: ["Qwen/Qwen3-8B", "other/m"]
+    )
     assert _served(tmp_path, sandbox="docker")[-1] == Finding("ok", "tinker serves Qwen/Qwen3-8B")
     monkeypatch.setenv("TINKER_BASE_URL", "https://api.fireworks.ai/inference/v1")
-    monkeypatch.setattr("shipyard.preflight.supported_models", lambda: ["other/m"])
+    monkeypatch.setattr("shipyard.cli.preflight.supported_models", lambda: ["other/m"])
     assert _served(tmp_path / "f", sandbox="docker")[-1] == Finding(
         "blocked", "tinker@api.fireworks.ai does not serve Qwen/Qwen3-8B; it serves other/m"
     )
@@ -272,7 +274,7 @@ def test_the_probe_asks_the_backend_only_under_a_key_and_names_it(
     def broken() -> list[str]:
         raise ConnectionError("no route to host")
 
-    monkeypatch.setattr("shipyard.preflight.supported_models", broken)
+    monkeypatch.setattr("shipyard.cli.preflight.supported_models", broken)
     assert _served(tmp_path / "b", sandbox="docker")[-1] == Finding(
         "warning",
         "could not ask tinker@api.fireworks.ai whether it serves Qwen/Qwen3-8B: no route to host",

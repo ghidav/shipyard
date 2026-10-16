@@ -13,7 +13,8 @@ from harbor.models.trial.config import TrialConfig
 from typer.testing import CliRunner
 
 from shipyard import record
-from shipyard.cli import app
+from shipyard.cli.main import app
+from shipyard.cli.preflight import NO_REFLECTOR, Finding
 from shipyard.config import (
     REFLECTION_IMAGE,
     ConfigError,
@@ -21,7 +22,6 @@ from shipyard.config import (
 )
 from shipyard.data import Generator, held_out, search_sets, tasks
 from shipyard.modules import SKILL_FILE, seed
-from shipyard.preflight import NO_REFLECTOR, Finding
 from shipyard.recipes import trainer_for
 from shipyard.recipes.gepa import BEST, SEED, GEPATrainer
 from shipyard.run import Run

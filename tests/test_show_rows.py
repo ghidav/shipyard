@@ -12,8 +12,9 @@ import pytest
 from rich.console import Console
 from typer.testing import CliRunner
 
-from shipyard import record, show
-from shipyard.cli import app
+from shipyard import record
+from shipyard.cli import show
+from shipyard.cli.main import app
 from shipyard.run import Run
 from tests.trials import BLUEPRINTS
 

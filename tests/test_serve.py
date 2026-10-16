@@ -20,7 +20,7 @@ import pytest
 from typer.testing import CliRunner
 
 import shipyard
-from shipyard.cli import app
+from shipyard.cli.main import app
 from shipyard.proxy import serve
 from shipyard.proxy.server import Server
 from shipyard.proxy.wire import records_of

@@ -9,9 +9,10 @@ from pathlib import Path
 
 import pytest
 
-from shipyard import config, resolved
+from shipyard import config
+from shipyard.cli import resolved
+from shipyard.cli.preflight import Finding
 from shipyard.config import Blueprint, ConfigError, load
-from shipyard.preflight import Finding
 from tests.trials import BLUEPRINTS, check, fixture_tasks, write_blueprint
 
 #: The kinds whose recipe is a `Gradient`: the three the loop trains.
