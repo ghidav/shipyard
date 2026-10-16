@@ -138,7 +138,7 @@ class Trainer:
             optimizer(cls.ADAM, recipe.warmup, cls.PAPER_WARMUP),
             "degenerate groups dropped"
             if recipe.teacher is None
-            else "groups with equal rewards kept for the teacher",
+            else "groups with equal rewards kept when the teacher scores a rollout",
         ]
         if recipe.kl_coef > 0:
             parts.append(f"kl {recipe.kl_coef} to the starting weights")

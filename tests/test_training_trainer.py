@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from itertools import islice
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ from shipyard.data import Generator, tasks
 from shipyard.sampling.endpoint import ProviderEndpoint, endpoint_for
 from shipyard.training.client import TinkerClient
 from shipyard.training.credit import Signals
+from shipyard.training.recipes import trainer_in
 from shipyard.training.recipes.cispo import CISPOTrainer
 from shipyard.training.recipes.dapo import DAPOTrainer
 from shipyard.training.recipes.dr_grpo import DrGRPOTrainer
@@ -420,32 +422,19 @@ class Critic:
         )
 
 
-class FeedbackDAPO(DAPOTrainer):
-    """DAPO with Claude's feedback on failed rollouts, as a trainer file writes it."""
-
-    claude: Any = None
-
-    async def privileged(self, member: Member, group: Group) -> str | None:
-        if member.verdict.reward == 1.0:
-            return None
-        reply = await self.claude.messages.create(
-            model="claude-sonnet-5-5",
-            max_tokens=1024,
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"{self.attempt(member)}\nWhat should the agent have done?",
-                }
-            ],
-        )
-        usage = reply.usage
-        self.spent("anthropic", input_tokens=usage.input_tokens, output_tokens=usage.output_tokens)
-        return f"Feedback on an earlier attempt at this task:\n{reply.content[0].text}\n\n"
+#: The Claude feedback example's trainer file.
+FEEDBACK_EXAMPLE = (
+    Path(__file__).parent.parent / "examples/blueprints/feedback-dapo-reasoning-gym/trainer.py"
+)
 
 
-def _critiqued(run: Run, critic: Critic) -> FeedbackDAPO:
-    trainer = FeedbackDAPO(run.config, run.directory)
-    trainer.claude = SimpleNamespace(messages=critic)
+def _critiqued(run: Run, critic: Critic, monkeypatch: pytest.MonkeyPatch) -> Trainer:
+    """Build the feedback example's trainer with `critic` in place of Claude. The `anthropic`
+    package it imports is stubbed, since the tests do not install it."""
+    stub = SimpleNamespace(AsyncAnthropic=lambda: SimpleNamespace(messages=critic))
+    monkeypatch.setitem(sys.modules, "anthropic", stub)
+    trainer = trainer_in(FEEDBACK_EXAMPLE)(run.config, run.directory)
+    trainer.claude = SimpleNamespace(messages=critic)  # type: ignore[attr-defined]
     return trainer
 
 
@@ -469,7 +458,7 @@ def _advantages(service: FakeService) -> list[float]:
     return sorted(found)
 
 
-async def test_dapo_with_claudes_feedback_teaches_each_failure_through_the_current_weights(
+async def test_the_feedback_example_teaches_each_failure_through_the_current_weights(
     tmp_path: Path,
     fakes: tuple[FakeProxy, FakeService],
     harbor: Harbor,
@@ -484,7 +473,7 @@ async def test_dapo_with_claudes_feedback_teaches_each_failure_through_the_curre
     harbor(Alternating())
     critic = Critic()
     agent = _agent(run, service)
-    await _train(run, _critiqued(run, critic), agent)
+    await _train(run, _critiqued(run, critic, monkeypatch), agent)
 
     assert len(critic.read) == 4, "one failure per group, two groups a step, two steps"
     assert all("score: 0.000" in one and f"--- asked ---\n{ASKED}" in one for one in critic.read)
@@ -518,7 +507,7 @@ async def test_feedback_trains_a_group_that_failed_entirely_with_no_second_job(
     _taught(fakes, monkeypatch, f"<user>{ASKED}<assistant>")
     run = Run.open(blueprint(tmp_path, **ONE_STEP, **CURRENT), root=tmp_path)
     harbor(FakeTrials(default={"reward": 0.0}))
-    await _train(run, _critiqued(run, Critic()), _agent(run, service))
+    await _train(run, _critiqued(run, Critic(), monkeypatch), _agent(run, service))
     (row,) = rows(run)
     assert len(row["jobs"]) == 1 and row["degenerate"] == 0 and row["taught"] == 8
     assert _advantages(service) == [0.1945, 0.1965], "the teacher's term alone"
@@ -539,7 +528,7 @@ async def test_a_sequence_the_teacher_cannot_read_after_its_text_is_counted_unta
     proxy.budget = len(prompt) + 10
     run = Run.open(blueprint(tmp_path, **ONE_STEP, **CURRENT), root=tmp_path)
     harbor(Alternating())
-    await _train(run, _critiqued(run, Critic()), _agent(run, service))
+    await _train(run, _critiqued(run, Critic(), monkeypatch), _agent(run, service))
     (row,) = rows(run)
     assert (row["taught"], row["untaught"]) == (0, 4) and "teacher_kl" not in row
     assert teacher.asked == [] and row["trained"] is True, "DAPO still trains on the spread"

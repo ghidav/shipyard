@@ -226,8 +226,8 @@ the weights have moved, the ratio moves with them, and the clip bounds act. With
 `"trainer"` is the default because the sampler and the trainer are different engines and their logprobs
 differ slightly. `"sampler"` saves the pass, but it refuses a batch whose records carry no logprobs.
 With `kl_coef = 0.01`, the comment line gains `; kl 0.01 to the starting weights`. With
-`teacher_coef = 0.5` and a teacher, `degenerate groups dropped` becomes `groups with equal rewards kept for
-the teacher`, and the line gains `; teacher 0.5 toward <teacher>`.
+`teacher_coef = 0.5` and a teacher, `degenerate groups dropped` becomes `groups with equal rewards kept when
+the teacher scores a rollout`, and the line gains `; teacher 0.5 toward <teacher>`.
 
 ## How a step runs
 
@@ -342,7 +342,7 @@ teacher = "Qwen/Qwen3-32B"
 ```
 
 ```
-# opd: advantage = teacher - reference per token, no reward term; loss = importance_sampling, summed over tokens; 1 substep; adamw betas 0.9 / 0.95, eps 1e-08; groups with equal rewards kept for the teacher; teacher 1.0 toward Qwen/Qwen3-32B
+# opd: advantage = teacher - reference per token, no reward term; loss = importance_sampling, summed over tokens; 1 substep; adamw betas 0.9 / 0.95, eps 1e-08; groups with equal rewards kept when the teacher scores a rollout; teacher 1.0 toward Qwen/Qwen3-32B
 ```
 
 `teacher_coef` defaults to 1, the cookbook's `kl_penalty_coef`. The verifier still runs and `reward_mean` is
@@ -400,44 +400,45 @@ teacher reads it before the task's instruction, then scores the policy's own tok
 policy as its own teacher, this is on-policy self-distillation: the policy learns to act as it would
 have with the text in front of it.
 
-This trainer file gives each failed rollout Claude's feedback, and leaves solved ones to DAPO alone:
+The [feedback example](https://github.com/ghidav/shipyard/tree/main/examples/blueprints/feedback-dapo-reasoning-gym)
+gives each failed rollout Claude's feedback, and leaves solved ones to DAPO alone. Its trainer
+file, in short:
 
 ```python
-# feedback_dapo.py
-from anthropic import AsyncAnthropic
-
-from shipyard.training import DAPOTrainer
-
-
 class FeedbackDAPO(DAPOTrainer):
-    claude = AsyncAnthropic()
+    def __init__(self, config, directory):
+        super().__init__(config, directory)
+        self.claude = AsyncAnthropic()
+        self.gate = asyncio.Semaphore(CONCURRENCY)
 
     async def privileged(self, member, group):
-        if member.verdict.reward == 1.0:
+        if member.verdict.reward >= 1.0:
             return None
-        reply = await self.claude.messages.create(
-            model="claude-sonnet-5-5",
-            max_tokens=1024,
-            messages=[{
-                "role": "user",
-                "content": f"{self.attempt(member)}\nWhat should the agent have done differently?",
-            }],
-        )
+        async with self.gate:
+            reply = await self.claude.messages.create(
+                model=CRITIC,
+                max_tokens=1024,
+                messages=[{"role": "user", "content": ASK.format(attempt=self.attempt(member))}],
+            )
         usage = reply.usage
         self.spent("anthropic", input_tokens=usage.input_tokens, output_tokens=usage.output_tokens)
         return f"Feedback on an earlier attempt at this task:\n{reply.content[0].text}\n\n"
 ```
+
+Its blueprint is a `dapo` one with the policy as its own teacher:
 
 ```toml
 [recipe]
 kind = "dapo"
 learning_rate = 2e-5
 steps = 100
-teacher_coef = 0.5
 teacher = "current"
+teacher_coef = 0.5
 ```
 
-`shipyard run blueprints/rg feedback_dapo.py` runs it. How the hook is called:
+The client is made in `__init__`, so `check` can load the file without `ANTHROPIC_API_KEY`, and
+the gate keeps a job's failures from all asking Claude at once. The tests run this file with Claude
+faked. How the hook is called:
 
 - After each training job, `privileged` runs once for every measured rollout, all at once, before
   dynamic sampling counts the groups. Evaluation jobs skip it.
