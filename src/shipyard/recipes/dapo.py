@@ -69,7 +69,7 @@ class DAPOTrainer(Trainer):
                 recipe.kind,
                 recipe.overlong_penalty,
             )
-        target = self.run.config.data.batch_size * len(agent.harness)
+        target = self.config.data.batch_size * len(agent.harness)
         held: list[Group] = []
         for _ in range(self.generator.per_pass):
             held += self.credited(await self.job(agent, self.draw()))

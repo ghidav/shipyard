@@ -33,9 +33,11 @@ runs/02-eval-tinker-docker__eTNXY25/
 | `proxy.log` | the proxy's output | while the proxy runs |
 | `wandb/` | wandb's own files, with [`[wandb]`](../reference/configuration.md#wandb) | while the run writes rows |
 
-The run itself writes `run.toml`, `process.json` and `modules/carried/`. The trainer writes
-`metrics.jsonl`, `jobs.jsonl`, `checkpoints.jsonl` and `costs.json` through its loggers. The
-run directory is always one of them, and wandb is another with `[wandb]`.
+`shipyard run` opens the run, which writes `run.toml` and `process.json`, and hands the
+trainer the run's directory. The trainer writes the rest: `modules/`, and `metrics.jsonl`,
+`jobs.jsonl`, `checkpoints.jsonl` and `costs.json` through its loggers. Its directory is always
+one of them, and wandb is another with `[wandb]`. A trainer made in Python with a directory of
+its own writes the same files there, without a run's `run.toml` or process note.
 
 A file the run had no reason to write is absent. An `evaluate` run has no `checkpoints.jsonl`.
 A run whose model is not served (any `[model] provider` but `"tinker"`) has no
@@ -44,7 +46,7 @@ elsewhere has no `proxy.log` either. Without that key, a remote sandbox reaches 
 a tunnel the run starts, and the tunnel's command and output go to `tunnel.log`.
 
 `modules/` holds `carried/` when a gradient or `evaluate` recipe names `[recipe] modules`,
-copied when the run opens. A `gepa` run writes `seed/` when it starts and `best/` when its
+copied when the trainer starts. A `gepa` run writes `seed/` when it starts and `best/` when its
 search ends. See [Modules](modules.md).
 
 The trials live outside the run directory, in one Harbor job directory per batch under

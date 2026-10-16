@@ -132,8 +132,8 @@ def run(
     ended. With --resume, go on with a run from its last checkpoint, under the trainer it was
     opened with."""
     if resume:
-        started = _reopened(runs_root(root) / blueprint.name)
-        raise typer.Exit(_executed(started.run, lambda: asyncio.run(started.train())))
+        ongoing, resumed = _reopened(runs_root(root) / blueprint.name)
+        raise typer.Exit(_executed(ongoing, lambda: _trained(resumed)))
     chosen, about = _trainer(trainer)
     found = resolved.report(blueprint, chosen)
     found.findings.extend(about)
@@ -149,7 +149,7 @@ def run(
     work = (
         (lambda: _smoke(opened))
         if smoke
-        else (lambda: asyncio.run(trainer_of(opened)(opened).train()))
+        else (lambda: _trained(trainer_of(opened)(opened.config, opened.directory)))
     )
     raise typer.Exit(_executed(opened, work))
 
@@ -162,9 +162,9 @@ def evaluate(
     test: TestOption = None,
 ) -> None:
     """Measure one of a run's checkpoints on a test set, as one more row of its metrics."""
-    started = _reopened(runs_root(root) / run_id, checkpoint=checkpoint)
+    ongoing, trainer = _reopened(runs_root(root) / run_id, checkpoint=checkpoint)
     try:
-        tasks = data.tasks(test) if test else started.generator.test
+        tasks = data.tasks(test) if test else trainer.generator.test
     except NoSuchDataset as refused:
         console.print(f"[red]{escape(str(refused))}[/red]")
         raise typer.Exit(1) from None
@@ -172,19 +172,30 @@ def evaluate(
         console.print("[red]the run names no [data] test; pass --test[/red]")
         raise typer.Exit(1)
     found: list[Any] = []
-    code = _executed(started.run, lambda: found.append(asyncio.run(started.measure(tasks))))
+
+    def measured() -> None:
+        with trainer:
+            found.append(asyncio.run(trainer.measure(tasks)))
+
+    code = _executed(ongoing, measured)
     if found and found[0] is not None:
         print_fields(vars(found[0]))
     raise typer.Exit(code)
 
 
-def _reopened(directory: Path, *, checkpoint: str = "last") -> Trainer:
-    """The trainer over a run reopened at a checkpoint, or exit 1 saying why not."""
+def _reopened(directory: Path, *, checkpoint: str = "last") -> tuple[Run, Trainer]:
+    """A run reopened at a checkpoint and its trainer, or exit 1 saying why not."""
     try:
         return reopened(directory, tag=checkpoint)
     except (ValueError, NoSuchDataset) as refused:
         console.print(f"[red]{escape(str(refused))}[/red]")
         raise typer.Exit(1) from None
+
+
+def _trained(trainer: Trainer) -> None:
+    """Train, the trainer's bars and loggers closed however it ends."""
+    with trainer:
+        asyncio.run(trainer.train())
 
 
 def _trainer(path: Path | None) -> tuple[type[Trainer] | None, list[Finding]]:

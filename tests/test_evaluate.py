@@ -39,7 +39,7 @@ def _blueprint(tmp_path: Path, **replacements: str) -> Path:
 async def _run(home: Path, tmp_path: Path) -> Run:
     opened = Run.open(home, root=tmp_path / "runs")
     with opened:
-        await trainer_for(opened.config.recipe)(opened).train()
+        await trainer_for(opened.config.recipe)(opened.config, opened.directory).train()
     return opened
 
 
@@ -123,7 +123,7 @@ async def test_a_served_model_runs_through_its_proxy_and_is_judged_by_its_record
     assert opened.config.model.served
     trials = harbor(FakeTrials(breaks=("d",), outcomes={**OUTCOMES, "b": {"reward": 1.0}}))
     with opened:
-        await trainer_for(opened.config.recipe)(opened).train()
+        await trainer_for(opened.config.recipe)(opened.config, opened.directory).train()
     assert fake.placed[0][0] == "local" and fake.placed[0][2]["host"] == "proxy.lan"
     assert len(fake.placed) == 1, "started once, by the first job"
     assert fake.closed == 1, "stopped when the policy closed"

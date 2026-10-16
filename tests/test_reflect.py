@@ -298,7 +298,7 @@ async def test_the_reflector_runs_the_trial_our_way_and_records_it_as_a_reflecti
     with _run(tmp_path) as opened:
         harbor(runner)
         write = reflect(
-            Trainer(opened),
+            Trainer(opened.config, opened.directory),
             harness="claude-code",
             model="anthropic/claude-sonnet-5",
             image="i",
@@ -353,7 +353,7 @@ async def test_a_reflection_that_published_nothing_or_crashed_is_a_decline(
     with _run(tmp_path) as opened:
         harbor(Reflector(answer=None))
         write = reflect(
-            Trainer(opened),
+            Trainer(opened.config, opened.directory),
             harness="claude-code",
             model=None,
             image="i",
@@ -384,7 +384,7 @@ async def test_the_party_falls_back_to_the_models_prefix(
     with _run(tmp_path) as opened:
         harbor(wrote_no_result)
         write = reflect(
-            Trainer(opened),
+            Trainer(opened.config, opened.directory),
             harness="pi",
             model="openai/gpt-5",
             image="i",

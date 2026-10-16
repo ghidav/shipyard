@@ -8,16 +8,13 @@ from collections.abc import Sequence as Values
 from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import pvariance
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import tinker
 
 from shipyard.harnesses import Profile, bare_name, profile_for
 from shipyard.modules import Candidate
 from shipyard.proxy.wire import Picture, Record
-
-if TYPE_CHECKING:
-    from shipyard.run import Run
 
 __all__ = [
     "Adam",
@@ -303,8 +300,8 @@ class Trial:
 
 @dataclass
 class Job:
-    """One sampling of a policy: reserved with its facts, filled by the engine and the
-    endpoint, then written down by the run."""
+    """One sampling of a policy: named with its facts, filled by the engine and the endpoint,
+    judged, then written down by the trainer."""
 
     name: str
     purpose: str = "training"
@@ -319,11 +316,6 @@ class Job:
     #: model call failed.
     asked: dict[str, int] | None = None
     failed: set[str] | None = None
-
-    @classmethod
-    def reserve(cls, run: Run, **facts: Any) -> Job:
-        """A job with the run's next name, its directory made."""
-        return cls(run.reserve_name(), **facts)
 
 
 class RolloutEngine(ABC):

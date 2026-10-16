@@ -60,10 +60,10 @@ async def test_the_recipe_runs_end_to_end_on_fakes(
     monkeypatch.chdir(tmp_path)
     home = _blueprint(tmp_path, GEPA + "pareto = 0\n")
     opened = Run.open(home, root=tmp_path / "runs")
-    assert opened.carried is None and opened.config.recipe.budget is None
+    assert opened.config.recipe.budget is None
     fakes = harbor(Fakes())
     with opened:
-        await trainer_for(opened.config.recipe)(opened).train()
+        await trainer_for(opened.config.recipe)(opened.config, opened.directory).train()
     seeded = seed(home / "modules")
     kept = opened.directory / record.MODULES
     assert seed(kept / SEED) == seeded, "the blueprint's modules, as the search started"
@@ -137,7 +137,7 @@ async def test_by_default_two_thirds_are_held_out_and_the_winner_is_scored_on_th
     opened = Run.open(home, root=tmp_path / "runs")
     fakes = harbor(Fakes())
     with opened:
-        await trainer_for(opened.config.recipe)(opened).train()
+        await trainer_for(opened.config.recipe)(opened.config, opened.directory).train()
     taught, held = feedback[0].name, pareto[0].name
     assert _names(fakes.configs) == [held, taught, "reflection", taught, held]
     assert fakes.reflected == [[f"00-tasks-fixture-{taught}.txt"]]
@@ -166,7 +166,7 @@ async def test_data_seed_draws_the_minibatches(
         opened = Run.open(home, root=tmp_path / "runs")
         fakes = harbor(Fakes())
         with opened:
-            await trainer_for(opened.config.recipe)(opened).train()
+            await trainer_for(opened.config.recipe)(opened.config, opened.directory).train()
         names = _names(fakes.configs)
         runs = [names[at - 2 : at] for at, name in enumerate(names) if name == "reflection"]
         feedback, _ = search_sets(tasks("six"), 0, seed=value)
@@ -194,7 +194,7 @@ async def test_a_quiet_reflector_leaves_the_seed_as_the_winner(
 
     harbor(quiet)
     with opened:
-        agent = await GEPATrainer(opened).train()
+        agent = await GEPATrainer(opened.config, opened.directory).train()
     seeded = seed(opened.directory / record.MODULES / SEED)
     assert seed(opened.directory / record.MODULES / BEST) == seeded
     assert agent.modules == seeded, "handed back, for a caller"
@@ -230,7 +230,7 @@ async def test_a_seed_perfect_on_its_minibatches_is_never_reflected_on(
 
     harbor(solved)
     with opened:
-        await trainer_for(opened.config.recipe)(opened).train()
+        await trainer_for(opened.config.recipe)(opened.config, opened.directory).train()
     assert "reflection" not in ran and len(ran) == 3, "the seed's scoring, then two parents"
     *rounds, final = list(record.read(opened.directory / record.METRICS))
     assert [(row["skipped"], row["component"], row["child"]) for row in rounds] == [

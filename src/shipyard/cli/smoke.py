@@ -14,9 +14,8 @@ from shipyard import record
 from shipyard.config import Blueprint
 from shipyard.data import Generator
 from shipyard.harnesses import PROFILES, bare_name, profile_for
-from shipyard.run import seeded
 from shipyard.sampling.endpoint import NothingServed, ProxyEndpoint, endpoint_for
-from shipyard.training.trainer import Trainer
+from shipyard.training.trainer import Trainer, seeded
 from shipyard.types import Agent, Endpoint, Policy, Verdict, harness
 
 if TYPE_CHECKING:
@@ -110,14 +109,15 @@ async def smoke(run: Run) -> Smoked:
     cfg = run.config
     endpoint = endpoint_for(cfg, run.directory)
     agent = Agent(Policy(endpoint), [harness(cfg.rollout.harness)], seeded(cfg))
-    async with agent.policy:
-        try:
-            found = await Trainer(run).job(agent, planned(cfg), 1, purpose=PURPOSE)
-        except NothingServed as dead:
-            if dead.job is None:
-                raise
-            trials = [one.dir for one in dead.job.trials]
-            return replace(report(run, endpoint, trials, dead.job.verdicts), dead=dead)
+    with Trainer(cfg, run.directory) as trainer:
+        async with agent.policy:
+            try:
+                found = await trainer.job(agent, planned(cfg), 1, purpose=PURPOSE)
+            except NothingServed as dead:
+                if dead.job is None:
+                    raise
+                trials = [one.dir for one in dead.job.trials]
+                return replace(report(run, endpoint, trials, dead.job.verdicts), dead=dead)
     members = [one for group in found for one in group.members]
     trials = [one.trial.dir for one in members]
     return report(run, endpoint, trials, [one.verdict for one in members])

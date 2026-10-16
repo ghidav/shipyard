@@ -7,9 +7,9 @@ from collections.abc import Sequence as Values
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from shipyard import record
+from shipyard.config import Blueprint
 from shipyard.data import search_sets
 from shipyard.modules import Candidate, keep, seed
 from shipyard.recipes.gepa.cycle import Evolution, Log, evolve
@@ -18,9 +18,6 @@ from shipyard.recipes.gepa.outcomes import outcomes
 from shipyard.recipes.gepa.reflect import reflect
 from shipyard.training.trainer import Trainer
 from shipyard.types import Agent
-
-if TYPE_CHECKING:
-    from shipyard.run import Run
 
 #: Directory names under `runs/<id>/modules/` for the starting text and the winner.
 SEED = "seed"
@@ -36,10 +33,10 @@ class GEPATrainer(Trainer):
     #: Rollouts per candidate per task when the search scores it.
     score_group_size: int
 
-    def __init__(self, run: Run) -> None:
-        super().__init__(run)
-        search = run.config.recipe
-        self.score_group_size = run.config.data.group_size
+    def __init__(self, config: Blueprint, directory: Path) -> None:
+        super().__init__(config, directory)
+        search = config.recipe
+        self.score_group_size = config.data.group_size
         self.reflect = reflect(
             self,
             harness=search.reflection_harness,
@@ -98,9 +95,9 @@ class GEPATrainer(Trainer):
     async def search(self, agent: Agent) -> Agent:
         """GEPA over the train tasks from `[recipe] modules`, kept under `seed`; the agent
         carries the best candidate, kept under `best`."""
-        recipe, data = self.recipe, self.run.config.data
-        kept = self.run.directory / record.MODULES
-        start = seed(self.run.config.home / recipe.modules)
+        recipe, data = self.recipe, self.config.data
+        kept = self.directory / record.MODULES
+        start = seed(self.config.home / recipe.modules)
         keep(start, kept / SEED)
         feedback, pareto = search_sets(self.generator.train, recipe.pareto, seed=data.seed)
         budget = recipe.budget or DEFAULT_PASSES * len({*feedback, *pareto}) * data.group_size

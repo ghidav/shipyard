@@ -36,7 +36,7 @@ from tests.trials import (
 
 async def _run(home: Path, tmp_path: Path) -> tuple[Run, Trainer]:
     opened = Run.open(home, root=tmp_path / "runs")
-    trainer = trainer_for(opened.config.recipe)(opened)
+    trainer = trainer_for(opened.config.recipe)(opened.config, opened.directory)
     with opened:
         await trainer.train()
     return opened, trainer
@@ -224,7 +224,7 @@ async def test_a_trainer_class_of_ones_own_replaces_the_kinds(
     opened = Run.open(blueprint(tmp_path), root=tmp_path / "runs")
     harbor(Alternating())
     with opened:
-        agent = await Trainer(opened).train()
+        agent = await Trainer(opened.config, opened.directory).train()
     assert agent.policy.client is not None
     assert [row["loss_fn"] for row in rows(opened)] == ["importance_sampling"] * 2
 
@@ -283,10 +283,10 @@ async def test_a_resumed_run_anchors_kl_to_its_start_before_loading_the_checkpoi
     opened = Run.open(home, root=tmp_path / "runs")
     harbor(Interrupting(after=5))
     with pytest.raises(Stopped), opened:
-        await trainer_for(opened.config.recipe)(opened).train()
-    resumed = reopened(opened.directory)
+        await trainer_for(opened.config.recipe)(opened.config, opened.directory).train()
+    again, resumed = reopened(opened.directory)
     harbor(Alternating())
-    with resumed.run:
+    with again:
         await resumed.train()
     published = "tinker://fake/sampler_weights/anchor"
     assert service.calls[-2:] == [("from_state", state), ("sampling", MODEL, published)]
@@ -306,12 +306,12 @@ async def test_a_resumed_run_continues_its_warm_up(
     opened = Run.open(home, root=tmp_path / "runs")
     harbor(Interrupting(after=5))
     with pytest.raises(Stopped), opened:
-        await trainer_for(opened.config.recipe)(opened).train()
-    resumed = reopened(opened.directory)
+        await trainer_for(opened.config.recipe)(opened.config, opened.directory).train()
+    again, resumed = reopened(opened.directory)
     harbor(Alternating())
-    with resumed.run:
+    with again:
         await resumed.train()
-    rates = [row["learning_rate"] for row in rows(resumed.run)]
+    rates = [row["learning_rate"] for row in rows(again)]
     assert rates == pytest.approx([2e-5 / 20, 2e-5 * 2 / 20]), "the second update of twenty"
 
 
@@ -343,7 +343,7 @@ async def test_a_step_that_fails_closes_the_session_as_errored_and_the_run_as_fa
     opened = Run.open(blueprint(tmp_path, **ONE_STEP), root=tmp_path / "runs")
     harbor(Alternating())
     with pytest.raises(RuntimeError, match="went away"), opened:
-        await trainer_for(opened.config.recipe)(opened).train()
+        await trainer_for(opened.config.recipe)(opened.config, opened.directory).train()
     assert service.closed == [("errored", "RuntimeError: the backend went away")]
     assert rows(opened) == [] and checkpoints(opened) == [] and proxy.closed == 1
     note = Run.read(opened.directory)
@@ -359,15 +359,14 @@ async def test_a_run_killed_mid_way_resumes_from_its_last_checkpoint(
     opened = Run.open(blueprint(tmp_path), root=tmp_path / "runs")
     harbor(Interrupting(after=5))  # the second batch's first trial
     with pytest.raises(Stopped), opened:
-        await trainer_for(opened.config.recipe)(opened).train()
+        await trainer_for(opened.config.recipe)(opened.config, opened.directory).train()
     assert [c["tag"] for c in checkpoints(opened)] == ["step-1"]
     assert Run.read(opened.directory)["error"] == "Stopped: SIGINT"
     assert service.closed[-1][0] == "interrupted"
 
-    resumed = reopened(opened.directory)
+    again, resumed = reopened(opened.directory)
     assert resumed.resumed is not None and resumed.resumed["tag"] == "step-1"
     assert (resumed.steps, resumed.updates, resumed.drawn) == (1, 1, 1), "one batch drawn"
-    again = resumed.run
     trials = harbor(Alternating())
     with again:
         await resumed.train()
@@ -411,22 +410,22 @@ async def test_a_run_is_evaluated_at_a_checkpoint_as_one_more_row(
     harbor(Alternating())
     opened, _ = await _run(blueprint(tmp_path), tmp_path)
     dataset(tmp_path / "tasks", "two", "x", "y")
-    trainer = reopened(opened.directory, tag="step-1")
+    again, trainer = reopened(opened.directory, tag="step-1")
     harbor(Alternating())
     calls = len(service.calls)
-    with trainer.run:
+    with again:
         result = await trainer.measure(tasks("two", root=tmp_path / "tasks"))
     assert result is not None
     assert (result.step, result.tasks, result.rollouts) == (1, 2, 4)
     assert result.reward_mean == 0.5
-    logged = rows(trainer.run)
+    logged = rows(again)
     assert logged[-1]["evaluation"] is True and logged[-1]["checkpoint"] == "step-1"
     assert logged[-1]["seq"] == 3, "numbered after the run's own rows"
     assert len(service.calls) == calls, "no training client was opened"
     assert proxy.swapped[-1] == "tinker://fake/sampler_weights/step-1"
-    jobs = list(record.read(trainer.run.directory / record.JOBS))
+    jobs = list(record.read(again.directory / record.JOBS))
     assert jobs[-1]["purpose"] == "evaluation"
-    assert Run.read(trainer.run.directory)["resumed"] == "step-1"
+    assert Run.read(again.directory)["resumed"] == "step-1"
     with pytest.raises(ValueError, match="no checkpoint tagged 'step-9'"):
         reopened(opened.directory, tag="step-9")
 
@@ -470,12 +469,12 @@ async def test_a_run_under_a_trainer_file_trains_under_it_and_resumes_under_the_
     opened = Run.open(blueprint(tmp_path), root=tmp_path / "runs", trainer=file)
     assert (opened.directory / record.TRAINER).read_bytes() == file.read_bytes()
     harbor(Alternating())
-    started = trainer_in(file)(opened)
+    started = trainer_in(file)(opened.config, opened.directory)
     with opened:
         await started.train()
     assert type(started).__name__ == "Marked"
     assert rows(opened) and all(row["marked"] for row in rows(opened))
     file.unlink()
-    resumed = reopened(opened.directory)
+    again, resumed = reopened(opened.directory)
     assert type(resumed).__name__ == "Marked"
     assert resumed.resumed is not None and resumed.resumed["tag"] == "final"

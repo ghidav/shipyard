@@ -81,7 +81,7 @@ async def test_the_steps_serve_the_start_sample_step_sync_andcheckpoint(
     run = Run.open(blueprint(tmp_path), root=tmp_path / "runs")
     harbor(Alternating())
     agent = _agent(run, service)
-    trainer = DAPOTrainer(run)
+    trainer = DAPOTrainer(run.config, run.directory)
     await _train(run, trainer, agent)
 
     client = service.client
@@ -170,7 +170,7 @@ async def test_a_step_with_every_group_flat_logs_untrained_and_takes_no_gradient
     proxy, service = fakes
     run = Run.open(blueprint(tmp_path, **ONE_STEP), root=tmp_path)
     harbor(FakeTrials())
-    trainer = DAPOTrainer(run)
+    trainer = DAPOTrainer(run.config, run.directory)
     await _train(run, trainer, _agent(run, service))
     calls = [c[0] for c in service.client.calls]
     assert calls == ["save_weights_for_sampler"], "the start, and no step"
@@ -199,7 +199,7 @@ async def test_groups_a_sample_left_uncredited_are_refused_before_the_step(
             return await self.job(agent, self.draw())
 
     with pytest.raises(ValueError, match="Uncredited.sample returned groups it never credited"):
-        await _train(run, Uncredited(run), _agent(run, service))
+        await _train(run, Uncredited(run.config, run.directory), _agent(run, service))
     assert [c[0] for c in service.client.calls] == ["save_weights_for_sampler"], "no step"
 
 
@@ -212,7 +212,7 @@ async def test_dapo_holds_jobs_until_a_batchs_worth_of_groups_have_spread(
     run = Run.open(blueprint(tmp_path, **{"steps = 2": "steps = 1"}), root=tmp_path / "runs")
     first, second = _plan(tmp_path)
     harbor(Spread({first[0], *second}))
-    trainer = DAPOTrainer(run)
+    trainer = DAPOTrainer(run.config, run.directory)
     await _train(run, trainer, _agent(run, service))
     (row,) = rows(run)
     jobs = list(record.read(run.directory / record.JOBS))
@@ -240,7 +240,7 @@ async def test_a_dapo_step_draws_at_most_a_passs_worth_and_takes_what_it_holds(
     home = blueprint(tmp_path, tasks=6, **{"steps = 2": "steps = 1"})
     run = Run.open(home, root=tmp_path / "runs")
     harbor(FakeTrials())
-    trainer = DAPOTrainer(run)
+    trainer = DAPOTrainer(run.config, run.directory)
     await _train(run, trainer, _agent(run, service))
     (row,) = rows(run)
     assert (row["step"], row["trained"], row["groups"], row["degenerate"]) == (0, False, 6, 6)
@@ -256,7 +256,7 @@ async def test_dr_grpo_keeps_the_base_sample_and_steps_once_per_batch(
     run = Run.open(blueprint(tmp_path, "dr-grpo"), root=tmp_path / "runs")
     first, second = _plan(tmp_path)
     harbor(Spread({first[0], *second}))
-    trainer = DrGRPOTrainer(run)
+    trainer = DrGRPOTrainer(run.config, run.directory)
     await _train(run, trainer, _agent(run, service))
     logged = rows(run)
     assert [(row["step"], row["groups"], row["degenerate"], row["trained"]) for row in logged] == [
@@ -278,7 +278,7 @@ async def test_the_base_trainer_is_the_plain_policy_gradient(
     _, service = fakes
     run = Run.open(blueprint(tmp_path), root=tmp_path / "runs")
     harbor(Alternating())
-    await _train(run, Trainer(run), _agent(run, service))
+    await _train(run, Trainer(run.config, run.directory), _agent(run, service))
     client = service.client
     sent = [c for c in client.calls if c[0] == "forward_backward"]
     assert [c[2:] for c in sent] == [("importance_sampling", {})] * 4
@@ -307,7 +307,7 @@ async def test_cispo_reads_the_samplers_logprobs_and_makes_no_forward(
     _, service = fakes
     run = Run.open(blueprint(tmp_path, "cispo", **ONE_STEP), root=tmp_path)
     harbor(Alternating())
-    await _train(run, CISPOTrainer(run), _agent(run, service))
+    await _train(run, CISPOTrainer(run.config, run.directory), _agent(run, service))
     client = service.client
     assert not any(c[0] == "forward" for c in client.calls)
     sent = [c for c in client.calls if c[0] == "forward_backward"]
@@ -331,7 +331,7 @@ async def test_the_kl_anchor_is_subtracted_per_token_billed_and_reported(
     home = blueprint(tmp_path, **ONE_STEP, **ANCHORED)
     run = Run.open(home, root=tmp_path)
     harbor(Alternating())
-    trainer = DAPOTrainer(run)
+    trainer = DAPOTrainer(run.config, run.directory)
     await _train(run, trainer, _agent(run, service, anchored=True))
     assert len(service.anchor.asked) == 8
     (row,) = rows(run)
@@ -352,7 +352,7 @@ async def test_a_kl_term_without_an_anchor_is_refused_at_the_step(
     run = Run.open(blueprint(tmp_path, **ANCHORED), root=tmp_path / "runs")
     harbor(Alternating())
     with pytest.raises(ValueError, match="needs the starting weights to anchor to"):
-        await _train(run, DAPOTrainer(run), _agent(run, service))
+        await _train(run, DAPOTrainer(run.config, run.directory), _agent(run, service))
     assert service.closed == [
         ("errored", "ValueError: kl_coef = 0.1 needs the starting weights to anchor to")
     ]
@@ -369,7 +369,7 @@ async def test_the_overlong_term_docks_against_the_budget_or_warns_once_that_it_
     run = Run.open(home, root=tmp_path / "runs")
     harbor(Alternating())
     with caplog.at_level(logging.WARNING):
-        await _train(run, DAPOTrainer(run), _agent(run, service))
+        await _train(run, DAPOTrainer(run.config, run.directory), _agent(run, service))
     logged = rows(run)
     assert len(logged) == 2 and all("overlong" not in row for row in logged)
     warned = [one.getMessage() for one in caplog.records if "overlong term" in one.getMessage()]
@@ -383,7 +383,7 @@ async def test_the_overlong_term_docks_against_the_budget_or_warns_once_that_it_
     run = Run.open(home, root=tmp_path / "runs")
     harbor(Alternating())
     with caplog.at_level(logging.WARNING):
-        await _train(run, DAPOTrainer(run), _agent(run, service))
+        await _train(run, DAPOTrainer(run.config, run.directory), _agent(run, service))
     assert [row["overlong"] for row in rows(run)] == [4, 4]
     assert all(row["trained"] for row in rows(run)), "1 - 0.5 against 0 - 0.5 still has spread"
     assert not [one for one in caplog.records if "overlong term" in one.getMessage()]
@@ -398,7 +398,7 @@ async def test_a_job_on_a_provider_agent_groups_the_verdicts_and_the_step_takes_
     home = blueprint(tmp_path, **{"lora_rank = 32": 'lora_rank = 32\nprovider = "openrouter"'})
     run = Run.open(home, root=tmp_path / "runs")
     harbor(Alternating())
-    trainer = DAPOTrainer(run)
+    trainer = DAPOTrainer(run.config, run.directory)
     endpoint = endpoint_for(run.config, run.directory)
     agent = Agent(Policy(endpoint), [harness("pi@0.85.1"), harness("claude-code")])
     assert isinstance(endpoint, ProviderEndpoint)

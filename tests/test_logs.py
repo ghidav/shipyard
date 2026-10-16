@@ -1,4 +1,4 @@
-"""Where a trainer writes: the run's folder, wandb beside it, and both closed with the run."""
+"""Where a trainer writes: its directory, wandb beside it, and both closed with the trainer."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from shipyard import record
+from shipyard.config import load
 from shipyard.cost import Costs
 from shipyard.logs import Folder, Logger, Loggers, Wandb
 from shipyard.recipes import trainer_for
@@ -18,7 +19,7 @@ from shipyard.run import Run
 from shipyard.training.trainer import Trainer
 from tests.records import FakeProxy
 from tests.trainers import FakeService
-from tests.trials import Alternating, Harbor, blueprint, check, dataset, rows
+from tests.trials import Alternating, Harbor, blueprint, check, dataset
 
 WANDB = '\n[wandb]\nproject = "shipyard"\nentity = "team"\n'
 
@@ -103,7 +104,7 @@ def test_loggers_hand_every_row_to_each_in_order() -> None:
         def log(self, section: str, /, **row: Any) -> None:
             told.append((self.name, (section, row)))
 
-        def close(self, error: str | None) -> None:
+        def close(self, error: BaseException | None) -> None:
             told.append((self.name, error))
 
     both = Loggers([Told("a"), Told("b")])
@@ -122,7 +123,7 @@ def test_wandb_takes_the_runs_id_and_writes_each_rows_numbers_under_its_section(
     tmp_path: Path, wandb: list[FakeWandbRun]
 ) -> None:
     opened = _wandb_run(tmp_path)
-    logs = Wandb(opened)
+    logs = Wandb(opened.config, opened.directory)
     (started,) = wandb
     assert started.init == {
         "project": "shipyard",
@@ -158,7 +159,7 @@ def test_wandb_takes_the_runs_id_and_writes_each_rows_numbers_under_its_section(
     costs.add_party("tinker", train_tokens=7)
     logs.costs(costs)
     assert started.summary == {"costs": costs.to_dict()}
-    logs.close("RuntimeError: the loop broke")
+    logs.close(RuntimeError("the loop broke"))
     assert started.finished == [1]
 
 
@@ -166,7 +167,7 @@ def test_wandb_missing_is_said_by_name(tmp_path: Path, monkeypatch: pytest.Monke
     opened = _wandb_run(tmp_path)
     monkeypatch.setitem(sys.modules, "wandb", None)
     with pytest.raises(ImportError, match=r"install shipyard\[wandb\]"):
-        Wandb(opened)
+        Wandb(opened.config, opened.directory)
 
 
 def test_check_names_the_wandb_project_or_blocks_without_wandb(
@@ -180,7 +181,7 @@ def test_check_names_the_wandb_project_or_blocks_without_wandb(
     assert ("blocked", "[wandb]: wandb is not installed; install shipyard[wandb]") in found
 
 
-async def test_a_trainer_writes_to_the_folder_and_wandb_and_closes_wandb_with_the_run(
+async def test_a_trainer_without_a_run_writes_to_its_directory_and_wandb_and_closes_them(
     tmp_path: Path,
     fakes: tuple[FakeProxy, FakeService],
     harbor: Harbor,
@@ -189,11 +190,16 @@ async def test_a_trainer_writes_to_the_folder_and_wandb_and_closes_wandb_with_th
     dataset(tmp_path / "tasks", "two", "x", "y")
     home = _wandb_home(tmp_path, **{"batch_size = 2": 'batch_size = 2\ntest = "two"'})
     harbor(Alternating())
-    opened = Run.open(home, root=tmp_path / "runs")
-    with opened:
-        await trainer_for(opened.config.recipe)(opened).train()
+    config, out = load(home), tmp_path / "out" / "dapo-1"
+    with trainer_for(config.recipe)(config, out) as trainer:
+        await trainer.train()
     (started,) = wandb
-    assert [row["step"] for row in rows(opened)] == [0, 1, 2]
+    assert started.init["id"] == "dapo-1" and started.init["dir"] == out
+    metrics = list(record.read(out / record.METRICS))
+    assert [row["step"] for row in metrics] == [0, 1, 2]
+    assert [row["job"] for row in record.read(out / record.JOBS)][0] == "dapo-1-0000"
+    noted = record.read_json(out / record.PROCESS)
+    assert list(noted) == ["proxy"], "where the proxy stood; who ran it is a run's to note"
     assert [sorted({key.split("/")[0] for key in one}) for one in started.logged] == [
         ["train"],
         ["train"],
@@ -201,12 +207,23 @@ async def test_a_trainer_writes_to_the_folder_and_wandb_and_closes_wandb_with_th
     ]
     assert [one["train/step"] for one in started.logged[:2]] == [0, 1]
     assert started.logged[2]["eval/reward_mean"] == 0.5
-    assert started.summary["costs"] == record.read_json(opened.directory / record.COSTS)
+    assert started.summary["costs"] == record.read_json(out / record.COSTS)
     assert started.finished == [0]
 
 
+def test_a_trainer_that_raises_closes_wandb_as_failed(
+    tmp_path: Path, wandb: list[FakeWandbRun]
+) -> None:
+    opened = _wandb_run(tmp_path)
+    with pytest.raises(RuntimeError), Trainer(opened.config, opened.directory):
+        raise RuntimeError("the loop broke")
+    (started,) = wandb
+    assert started.finished == [1]
+
+
 def test_a_trainer_without_wandb_writes_to_its_folder_alone(tmp_path: Path) -> None:
-    trainer = Trainer(Run.open(blueprint(tmp_path), root=tmp_path / "runs"))
+    opened = Run.open(blueprint(tmp_path), root=tmp_path / "runs")
+    trainer = Trainer(opened.config, opened.directory)
     assert [type(one) for one in trainer.logs.each] == [Folder]
 
 
@@ -217,10 +234,9 @@ def test_real_wandb_offline_writes_its_run_inside_the_run_directory(
     monkeypatch.setenv("WANDB_MODE", "offline")
     monkeypatch.setenv("WANDB_SILENT", "true")
     opened = _wandb_run(tmp_path)
-    with opened:
-        logs = Wandb(opened)
-        opened.closing(logs.close)
-        logs.log("train", step=0, reward_mean=0.5, jobs=["j"])
-        logs.costs(Costs())
+    logs = Wandb(opened.config, opened.directory)
+    logs.log("train", step=0, reward_mean=0.5, jobs=["j"])
+    logs.costs(Costs())
+    logs.close(None)
     (kept,) = (opened.directory / "wandb").glob(f"offline-run-*-{opened.id}")
     assert kept.is_dir()

@@ -10,8 +10,8 @@ from typing import TYPE_CHECKING, Any
 from shipyard import record
 
 if TYPE_CHECKING:
+    from shipyard.config import Blueprint
     from shipyard.cost import Costs
-    from shipyard.run import Run
 
 
 class Logger:
@@ -30,8 +30,8 @@ class Logger:
     def checkpoint(self, row: Mapping[str, Any]) -> None:
         """A checkpoint's row: where its weights are, and where the run stood."""
 
-    def close(self, error: str | None) -> None:
-        """The run is over: `error` says why it stopped, None when it finished."""
+    def close(self, error: BaseException | None) -> None:
+        """The trainer is done: `error` is what stopped it, None when it finished."""
 
 
 class Folder(Logger):
@@ -58,29 +58,30 @@ class Folder(Logger):
 
 
 class Wandb(Logger):
-    """A wandb run with the run's id, so a resume goes on with it. A row's numbers go under
-    its section, plotted against the section's axis; the costs go to the summary."""
+    """A wandb run with the directory's name as its id, so a resume goes on with it. A row's
+    numbers go under its section, plotted against the section's axis; the costs go to the
+    summary. Its own files go under `wandb/` in the directory."""
 
     #: What each section's rows are plotted against.
     AXES = {"train": "step", "eval": "step", "search": "round"}
 
-    def __init__(self, run: Run) -> None:
+    def __init__(self, config: Blueprint, directory: Path) -> None:
         try:
             import wandb
         except ImportError:
             raise ImportError("[wandb] needs wandb: install shipyard[wandb]") from None
-        table = run.config.wandb
+        table = config.wandb
         if table is None:
             raise ValueError("the blueprint has no [wandb] table")
         self.run = wandb.init(
             project=table.project,
             entity=table.entity,
-            id=run.id,
-            name=run.id,
+            id=directory.name,
+            name=directory.name,
             resume="allow",
             reinit="create_new",
-            dir=run.directory,
-            config=run.config.model_dump(mode="json"),
+            dir=directory,
+            config=config.model_dump(mode="json"),
         )
         self._sections: set[str] = set()
 
@@ -101,7 +102,7 @@ class Wandb(Logger):
     def costs(self, costs: Costs) -> None:
         self.run.summary["costs"] = costs.to_dict()
 
-    def close(self, error: str | None) -> None:
+    def close(self, error: BaseException | None) -> None:
         self.run.finish(exit_code=0 if error is None else 1)
 
 
@@ -127,6 +128,6 @@ class Loggers(Logger):
         for one in self.each:
             one.checkpoint(row)
 
-    def close(self, error: str | None) -> None:
+    def close(self, error: BaseException | None) -> None:
         for one in self.each:
             one.close(error)

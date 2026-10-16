@@ -19,6 +19,7 @@ from tests.trials import (
     BLUEPRINTS,
     FakeTrials,
     Harbor,
+    agent_for,
     fixture_tasks,
     job,
     job_of,
@@ -74,7 +75,7 @@ async def test_jobs_are_named_in_turn_and_reserved_by_directory_first(
     assert attempts == 2 and agent.modules is None
     assert [one.agent for one in agent.harness] == ["pi@0.85.1"]
     assert agent.policy.endpoint == ProviderEndpoint("some-hosted-model")
-    trainer = Trainer(opened)
+    trainer = Trainer(opened.config, opened.directory)
     engine = trainer.engine
     assert engine.sandbox == "modal" and engine.jobs_dir == Path("jobs")
     assert engine.settings == Settings() and engine.progress is trainer.progress
@@ -95,19 +96,22 @@ def test_the_job_counter_is_seeded_from_the_record_and_the_disk(
     record.append(opened.directory / record.JOBS, {"job": f"{opened.id}-0003"})
     record.append(opened.directory / record.JOBS, {"job": "elsewhere"})
     (tmp_path / "jobs" / f"{opened.id}-0005").mkdir(parents=True)
-    reopened = Run(opened.directory, opened.config)
-    assert reopened.reserve_name() == f"{opened.id}-0006"
-    assert Run(opened.directory, opened.config).reserve_name() == f"{opened.id}-0007"
+    trainer = Trainer(opened.config, opened.directory)
+    assert trainer.reserve_name() == f"{opened.id}-0006"
+    assert Trainer(opened.config, opened.directory).reserve_name() == f"{opened.id}-0007"
 
 
 async def test_a_job_name_already_taken_on_disk_is_refused(
     opened: Run, tmp_path: Path, harbor: Harbor
 ) -> None:
+    trainer = Trainer(opened.config, opened.directory)
     taken = tmp_path / "jobs" / f"{opened.id}-0000"
-    taken.mkdir(parents=True)
+    taken.mkdir(parents=True)  # after the trainer counted what was there
     harbor(FakeTrials())
+    agent = agent_for(opened)
     with pytest.raises(FileExistsError, match=f"{opened.id}-0000 is taken"):
-        await job(opened, _batch(tmp_path, "alpha"), rollouts=1, step=0)
+        async with agent.policy:
+            await trainer.job(agent, _batch(tmp_path, "alpha"), 1)
     assert not (opened.directory / record.JOBS).exists() and not any(taken.iterdir())
 
 
@@ -160,7 +164,8 @@ async def test_the_job_row_counts_verdicts_endings_tokens_and_seconds(
         },
         "sandboxes": {"modal": {"trials": 4, "seconds": 80.0}},
     }
-    assert Trainer(opened).costs.to_dict() == costs, "a trainer goes on from what was spent"
+    again = Trainer(opened.config, opened.directory)
+    assert again.costs.to_dict() == costs, "a trainer goes on from what was spent"
 
 
 async def test_empty_maps_are_left_off_and_costs_add_up_across_jobs(

@@ -23,7 +23,7 @@ from shipyard.recipes.gepa.cycle import minibatches
 from shipyard.recipes.gepa.reflect import COLLECTED
 from shipyard.run import Run
 from shipyard.sampling.endpoint import endpoint_for
-from shipyard.training.trainer import Trainer
+from shipyard.training.trainer import Trainer, carried
 from shipyard.types import Agent, Group, Member, Policy, Trial, harness
 
 FIXTURES = Path(__file__).parent / "tasks"
@@ -293,7 +293,7 @@ async def job(
     """One job through the trainer under `agent`, whose policy the caller holds open; its
     endpoint is checked still up first. Without one, an agent made for the run, its policy
     opened for the job and closed after."""
-    trainer = Trainer(run)
+    trainer = Trainer(run.config, run.directory)
     trainer.steps = step
     if agent is not None:
         await agent.policy.endpoint.open()
@@ -306,9 +306,9 @@ async def job(
 def agent_for(run: Run, modules: Candidate | None = None) -> Agent:
     """The agent a run's jobs carry: its harness over an endpoint of its own, carrying the
     run's modules unless handed others."""
-    carried = run.carried if modules is None else modules
+    held = carried(run.config, run.directory) if modules is None else modules
     policy = Policy(endpoint_for(run.config, run.directory))
-    return Agent(policy, [harness(run.config.rollout.harness)], carried)
+    return Agent(policy, [harness(run.config.rollout.harness)], held)
 
 
 def members_of(found: list[Group]) -> list[Member]:

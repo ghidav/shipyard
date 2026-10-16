@@ -37,9 +37,10 @@ from shipyard.modules import (
     seed,
     write,
 )
-from shipyard.run import CARRIED, Run
+from shipyard.run import Run
 from shipyard.sampling.endpoint import ProviderEndpoint
 from shipyard.sampling.engine import DELIVERED, HarborEngine, laid_over
+from shipyard.training.trainer import CARRIED, Trainer, carried
 from shipyard.types import Agent, Policy, harness
 from tests.trials import (
     BLUEPRINTS,
@@ -411,7 +412,7 @@ def _rows(opened: Run) -> list[dict[str, Any]]:
     return list(record.read(opened.directory / record.JOBS))
 
 
-async def test_open_keeps_the_carried_modules_once_and_each_job_delivers_them(
+async def test_a_trainer_keeps_the_carried_modules_once_and_each_job_delivers_them(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     harbor: Harbor,
@@ -420,16 +421,20 @@ async def test_open_keeps_the_carried_modules_once_and_each_job_delivers_them(
     home = _carrying(tmp_path)
     kept: list[Path] = []
     keeping = keep
-    monkeypatch.setattr("shipyard.run.keep", lambda c, into: (kept.append(into), keeping(c, into)))
+    monkeypatch.setattr(
+        "shipyard.training.trainer.keep", lambda c, into: (kept.append(into), keeping(c, into))
+    )
     opened = Run.open(home, root=tmp_path / "runs")
-    assert opened.carried is not None and opened.carried == seed(home / "modules")
-    carried = opened.directory / record.MODULES / CARRIED
-    assert kept == [carried] and _files(carried) == _files(VALID)
-    assert seed(carried).digest == opened.carried.digest
+    assert not (opened.directory / record.MODULES).exists(), "the run keeps no modules"
+    trainer = Trainer(opened.config, opened.directory)
+    assert trainer.modules is not None and trainer.modules == seed(home / "modules")
+    copy = opened.directory / record.MODULES / CARRIED
+    assert kept == [copy] and _files(copy) == _files(VALID)
+    assert seed(copy).digest == trainer.modules.digest
     runner = harbor(FakeTrials())
     first = await job(opened, _batch(tmp_path, "alpha", "beta"), rollouts=2, step=0)
     second = await job(opened, _batch(tmp_path, "alpha"), rollouts=1, step=1)
-    assert kept == [carried], "the carried copy is written once, at open"
+    assert kept == [copy], "the carried copy is written once; later trainers read it back"
     assert len(runner.configs) == 5
     for config, name in zip(runner.configs, [job_of(first)] * 4 + [job_of(second)], strict=True):
         root = (tmp_path / "jobs" / name / DELIVERED / "skills").resolve()
@@ -437,7 +442,7 @@ async def test_open_keeps_the_carried_modules_once_and_each_job_delivers_them(
         assert config.agent.name == "pi" and config.agent.kwargs == {"version": "0.85.1"}
         assert _files(root / "solving") == _files(VALID / SKILLS_DIR / "solving")
     rows = _rows(opened)
-    assert [row["modules"] for row in rows] == [opened.carried.digest] * 2
+    assert [row["modules"] for row in rows] == [trainer.modules.digest] * 2
     assert list(rows[0])[:7] == [
         "at",
         "job",
@@ -460,7 +465,8 @@ async def test_a_job_delivers_the_candidate_it_is_handed_and_nothing_otherwise(
     monkeypatch.chdir(tmp_path)
     fixture_tasks(tmp_path)
     opened = Run.open(BLUEPRINTS / "evaluate", root=tmp_path / "runs")
-    assert opened.carried is None and not (opened.directory / record.MODULES).exists()
+    assert Trainer(opened.config, opened.directory).modules is None
+    assert not (opened.directory / record.MODULES).exists()
     runner = harbor(FakeTrials())
     bare = await job(opened, _batch(tmp_path, "alpha"), rollouts=1, step=0)
     assert runner.configs[0].agent.skills == []
@@ -490,7 +496,7 @@ async def test_a_handed_candidate_wins_over_the_carried_one(
     rolled = await job(opened, _batch(tmp_path, "alpha"), rollouts=1, step=0, modules=other)
     root = Path(runner.configs[0].agent.skills[0])
     assert sorted(p.name for p in root.iterdir()) == ["planning"]
-    assert _rows(opened)[0]["modules"] == other.digest != opened.carried.digest
+    assert _rows(opened)[0]["modules"] == other.digest != seed(VALID).digest
     assert job_of(rolled) == f"{opened.id}-0000"
 
 
@@ -528,20 +534,22 @@ def test_a_gradient_recipe_carries_and_a_gepa_run_seeds_its_own(tmp_path: Path) 
     text = (BLUEPRINTS / "dapo" / "run.toml").read_text(encoding="utf-8")
     home = _carrying(tmp_path, text.replace("[recipe]", '[recipe]\nmodules = "modules"'))
     opened = Run.open(home, root=tmp_path / "runs")
-    assert opened.carried == seed(VALID)
+    assert carried(opened.config, opened.directory) == seed(VALID)
     assert (
         opened.directory / record.MODULES / CARRIED / SKILLS_DIR / "solving" / SKILL_FILE
     ).is_file()
     gepa = Run.open(BLUEPRINTS / "gepa", root=tmp_path / "runs")
-    assert gepa.config.recipe.modules == "modules" and gepa.carried is None
+    assert gepa.config.recipe.modules == "modules"
+    assert carried(gepa.config, gepa.directory) is None
     assert not (gepa.directory / record.MODULES).exists()
 
 
-def test_open_refuses_a_broken_seed_before_writing_anything(tmp_path: Path) -> None:
+def test_a_broken_seed_is_refused_before_anything_is_kept(tmp_path: Path) -> None:
     home = _carrying(tmp_path, modules=FIXTURES / "bare")
+    opened = Run.open(home, root=tmp_path / "runs")
     with pytest.raises(Inadmissible, match="'solving' cannot be delivered as a skill"):
-        Run.open(home, root=tmp_path / "runs")
-    assert not (tmp_path / "runs").exists()
+        carried(opened.config, opened.directory)
+    assert not (opened.directory / record.MODULES).exists()
 
 
 # ---------------------------------------------------------------- check's findings
