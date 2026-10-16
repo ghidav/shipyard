@@ -131,7 +131,7 @@ def run(
     with."""
     if resume:
         started = _reopened(runs_root(root) / blueprint.name)
-        raise typer.Exit(_executed(started.opened, lambda: asyncio.run(started.run())))
+        raise typer.Exit(_executed(started.trainer.run, lambda: asyncio.run(started.run())))
     chosen, about = _runner(runner)
     found = resolved.report(blueprint, chosen.trainer)
     found.findings.extend(about)
@@ -168,7 +168,9 @@ def evaluate(
         console.print("[red]the run names no [data] test; pass --test[/red]")
         raise typer.Exit(1)
     found: list[Any] = []
-    code = _executed(started.opened, lambda: found.append(asyncio.run(started.evaluate(tasks))))
+    code = _executed(
+        started.trainer.run, lambda: found.append(asyncio.run(started.evaluate(tasks)))
+    )
     if found and found[0] is not None:
         for key, value in vars(found[0]).items():
             console.print(f"  {key:<10}{value}", highlight=False)

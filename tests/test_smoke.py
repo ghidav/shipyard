@@ -36,7 +36,7 @@ def here(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     def no_session(metadata: Any = None) -> Any:
         raise AssertionError("a smoke run opens no training session")
 
-    monkeypatch.setattr("shipyard.runner.service_client", no_session)
+    monkeypatch.setattr("shipyard.training.client.service_client", no_session)
     return tmp_path
 
 

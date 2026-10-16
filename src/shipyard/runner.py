@@ -9,19 +9,16 @@ from collections.abc import Sequence as Values
 from hashlib import sha256
 from itertools import islice
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from shipyard import record
 from shipyard.data import Generator
 from shipyard.modules import Candidate
 from shipyard.recipes import trainer_for
 from shipyard.run import Run
-from shipyard.training.client import TinkerClient, service_client
+from shipyard.training.client import TinkerClient
 from shipyard.training.trainer import Trainer
-from shipyard.types import SERVE_TTL, Agent, Evaluation, Policy, harness
-
-if TYPE_CHECKING:
-    from shipyard.config import Model
+from shipyard.types import Agent, Batches, Evaluation, Policy, harness
 
 __all__ = ["Runner", "runner_in"]
 
@@ -33,7 +30,6 @@ class Runner:
 
     def __init__(
         self,
-        run: Run,
         generator: Generator,
         trainer: Trainer,
         *,
@@ -41,15 +37,16 @@ class Runner:
         evaluate_every: int = 0,
         modules: Candidate | None = None,
     ) -> None:
-        self.opened = run
         self.generator = generator
         self.trainer = trainer
         self.epochs = epochs
         self.evaluate_every = evaluate_every
         #: What the agent carries: the run's own modules, or the head of a restored search.
         self.modules = modules
-        #: On a resume, the checkpoint row and how many batches of its epoch were stepped.
-        self.position: tuple[Mapping[str, Any], int] | None = None
+        #: On a resume, the checkpoint row the run reopened at and how many batches of its
+        #: epoch were already stepped.
+        self.checkpoint: Mapping[str, Any] | None = None
+        self.consumed = 0
 
     @classmethod
     def from_run(cls, run: Run, trainer: type[Trainer] | None = None) -> Runner:
@@ -57,7 +54,6 @@ class Runner:
         cfg = run.config
         chosen = trainer or cls.trainer or trainer_for(cfg.recipe)
         return cls(
-            run,
             Generator.of(cfg),
             chosen(run),
             epochs=0 if cfg.recipe.kind == "evaluate" else cfg.data.epochs,
@@ -84,74 +80,57 @@ class Runner:
             raise ValueError(f"{directory.name} has no checkpoint tagged {tag!r}; it has {tags}")
         run = Run.reopen(directory, resumed=row["tag"])
         runner = cls.from_run(run)
-        consumed = runner.trainer.consumed(list(record.read(directory / record.JOBS)), row)
-        runner.modules = runner.trainer.restore(row, consumed)
-        runner.position = (row, consumed)
+        runner.consumed = runner.trainer.consumed(list(record.read(directory / record.JOBS)), row)
+        runner.modules = runner.trainer.restore(row, runner.consumed)
+        runner.checkpoint = row
         return runner
 
     async def run(self) -> Agent:
-        """Open the agent, train an epoch at a time, evaluate on the cadence, checkpoint `final`.
-        The client opens as the blueprint says, so the KL anchor is the run's start; a resume
-        then loads the checkpoint's state."""
-        run, trainer, generator = self.opened, self.trainer, self.generator
+        """Open the agent, train an epoch at a time, evaluate on the cadence, checkpoint `final`."""
+        run = self.trainer.run
         cfg = run.config
-        model, recipe = cfg.model, cfg.recipe
-        row, consumed = self.position or (None, 0)
-        service = client = None
-        if cfg.trains:
-            metadata = {"shipyard_run": run.id, "shipyard_recipe": recipe.kind}
-            service = service_client(metadata)
-            client = await TinkerClient.open(
-                service,
-                model.name,
-                from_checkpoint=model.from_checkpoint,
-                lora_rank=model.lora_rank,
-                restore_optimizer=model.restore_optimizer,
-                metadata=metadata,
-            )
-        policy = Policy(run.endpoint, client, None if row is None else row["sampler_path"])
+        row = self.checkpoint or {}
+        client = TinkerClient.from_run(run) if cfg.trains else None
+        policy = Policy(
+            run.endpoint,
+            client,
+            start=row.get("sampler_path"),
+            state=row.get("state_path"),
+            anchored=cfg.trains and cfg.recipe.kl_coef > 0,
+        )
         agent = Agent(policy, [harness(cfg.rollout.harness)], self.modules)
         async with agent.policy:
-            if client is not None and recipe.kl_coef > 0:
-                trainer.anchor = await anchor(service, client, model)
-            if client is not None and row is not None:
-                await client.load_state(row["state_path"])
             evaluated = 0
-            for epoch in range(trainer.epoch, self.epochs):
-                trainer.epoch = epoch
-                batches = generator.batches(epoch)
-                if row is not None and epoch == row["epoch"]:
-                    batches = islice(batches, consumed, None)
-                agent = await trainer.train(agent, batches)
+            for epoch in range(self.trainer.epoch, self.epochs):
+                self.trainer.epoch = epoch
+                agent = await self.trainer.train(agent, self.batches(epoch))
                 if self.evaluate_every and (epoch + 1) % self.evaluate_every == 0:
-                    await trainer.evaluate(agent, generator.test)
+                    await self.trainer.evaluate(agent, self.generator.test)
                     evaluated = epoch + 1
-            if generator.test and (self.epochs == 0 or evaluated != self.epochs):
-                await trainer.evaluate(agent, generator.test)
+            if self.generator.test and (self.epochs == 0 or evaluated != self.epochs):
+                await self.trainer.evaluate(agent, self.generator.test)
             if client is not None:
-                await trainer.checkpoint(agent, "final", keep=True)
+                await self.trainer.checkpoint(agent, "final", keep=True)
         return agent
+
+    def batches(self, epoch: int) -> Batches:
+        """The epoch's batches, less the ones stepped before the checkpoint the run reopened at."""
+        found = self.generator.batches(epoch)
+        if self.checkpoint is not None and epoch == self.checkpoint["epoch"]:
+            return islice(found, self.consumed, None)
+        return found
 
     async def evaluate(self, tasks: Values[Path]) -> Evaluation | None:
         """One evaluation of the checkpoint the runner was reopened at, on `tasks`."""
-        if self.position is None:
+        if self.checkpoint is None:
             raise ValueError("an evaluation needs a run reopened at a checkpoint")
-        row, _ = self.position
-        run = self.opened
-        policy = Policy(run.endpoint, None, row["sampler_path"])
+        run = self.trainer.run
+        policy = Policy(run.endpoint, start=self.checkpoint["sampler_path"])
         agent = Agent(policy, [harness(run.config.rollout.harness)], self.modules)
         async with agent.policy:
-            return await self.trainer.evaluate(agent, list(tasks), checkpoint=row["tag"])
-
-
-async def anchor(service: Any, client: TinkerClient, model: Model) -> Any:
-    """The KL anchor: a sampling client on the start, published first when it is a loaded state."""
-    start = (
-        await client.save_weights_for_sampler("anchor", ttl_seconds=SERVE_TTL)
-        if model.from_checkpoint
-        else None
-    )
-    return await service.create_sampling_client_async(base_model=model.name, model_path=start)
+            return await self.trainer.evaluate(
+                agent, list(tasks), checkpoint=self.checkpoint["tag"]
+            )
 
 
 def runner_in(path: Path) -> type[Runner]:

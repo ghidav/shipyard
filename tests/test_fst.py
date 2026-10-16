@@ -327,21 +327,23 @@ async def test_a_cycle_interrupted_after_a_slow_step_resumes_without_another_fas
     before = list(record.read(opened.directory / record.JOBS))
 
     resumed = Runner.from_checkpoint(opened.directory)
-    assert resumed.position[1] == 1 and resumed.trainer.offset == 1
+    assert resumed.consumed == 1 and resumed.trainer.offset == 1
     assert resumed.trainer.cycles == 0
     population = [one.digest for one in resumed.trainer.population]
     assert len(population) == 2 and resumed.modules is not None
     assert resumed.modules.digest == population[0]
-    resumed.opened.engine.run_trial = AlternatingFakes()
-    with resumed.opened:
+    resumed.trainer.run.engine.run_trial = AlternatingFakes()
+    with resumed.trainer.run:
         await resumed.run()
-    after = list(record.read(resumed.opened.directory / record.JOBS))[len(before) :]
+    after = list(record.read(resumed.trainer.run.directory / record.JOBS))[len(before) :]
     assert [job["purpose"] for job in after] == ["training", "training"], (
         "the cycle's last step only"
     )
     assert [job["modules"] for job in after] == population
-    rows = [row for row in record.read(resumed.opened.directory / record.METRICS) if "step" in row]
+    rows = [
+        row for row in record.read(resumed.trainer.run.directory / record.METRICS) if "step" in row
+    ]
     assert [(row["step"], row["cycle"]) for row in rows] == [(0, 0), (1, 0)]
-    saved = list(record.read(resumed.opened.directory / record.CHECKPOINTS))
+    saved = list(record.read(resumed.trainer.run.directory / record.CHECKPOINTS))
     assert [(c["tag"], c["cycle"]) for c in saved] == [("step-1", 0), ("step-2", 0), ("final", 1)]
-    assert seed(resumed.opened.directory / record.MODULES / "best").digest == population[0]
+    assert seed(resumed.trainer.run.directory / record.MODULES / "best").digest == population[0]

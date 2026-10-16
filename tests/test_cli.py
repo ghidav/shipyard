@@ -37,8 +37,8 @@ def isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 async def _finishes(self: Runner) -> None:
-    self.opened.log(reward=1.0)
-    self.opened.note(hello="world")
+    self.trainer.run.log(reward=1.0)
+    self.trainer.run.note(hello="world")
 
 
 def _only_run(root: Path) -> Path:
@@ -444,7 +444,7 @@ def test_a_refused_evaluate_leaves_a_finished_runs_note_as_it_was(
 ) -> None:
     async def checkpoints(self: Runner) -> None:
         record.append(
-            self.opened.directory / record.CHECKPOINTS,
+            self.trainer.run.directory / record.CHECKPOINTS,
             {
                 "tag": "final",
                 "state_path": "s",
@@ -516,9 +516,9 @@ def test_run_under_a_runner_file_keeps_a_copy_and_resumes_under_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async def marks(self: Runner) -> None:
-        self.opened.note(ran=type(self).__name__, under=type(self.trainer).__name__)
+        self.trainer.run.note(ran=type(self).__name__, under=type(self.trainer).__name__)
         record.append(
-            self.opened.directory / record.CHECKPOINTS,
+            self.trainer.run.directory / record.CHECKPOINTS,
             {
                 "tag": "final",
                 "state_path": "s",

@@ -24,6 +24,7 @@ from shipyard.types import (
     Evaluation,
     Forward,
     Group,
+    Policy,
     Sequence,
     Task,
     TrainingClient,
@@ -105,7 +106,7 @@ class Credit:
 
 
 class Trainer:
-    """The plain policy gradient; `anchor` is a sampling client on the start, for `kl_coef`."""
+    """The plain policy gradient."""
 
     #: Tinker's loss, with `bounds` as its config.
     loss_fn = "importance_sampling"
@@ -142,7 +143,6 @@ class Trainer:
     def __init__(self, run: Run) -> None:
         self.run = run
         self.recipe = run.config.recipe
-        self.anchor: Any = None
         self.steps = 0
         self.updates = 0
         self.epoch = 0
@@ -242,7 +242,7 @@ class Trainer:
         """`loss_fn_config` for the step; the base loss takes none."""
         return None
 
-    async def credit(self, client: TrainingClient, found: Values[Group]) -> Credit:
+    async def credit(self, policy: Policy, found: Values[Group]) -> Credit:
         """The datums by group, none for a flat one; the anchor gap times `kl_coef` subtracted."""
         recipe = self.recipe
         kept: list[list[tuple[Any, float]]] = []
@@ -260,11 +260,11 @@ class Trainer:
         sequences = [one for members in kept for member, _ in members for one in member.sequences]
         if not sequences:
             return Credit([[] for _ in found], 0, 0, None)
-        mu = await self.mu(client, sequences)
+        mu = await self.mu(policy.client, sequences)
         reference_tokens = (
             0 if recipe.reference == "sampler" else sum(len(one.tokens) - 1 for one in sequences)
         )
-        gaps = await self.gaps(sequences, mu)
+        gaps = await self.gaps(sequences, mu, policy.anchor)
         anchor_tokens = 0 if gaps is None else sum(len(one.tokens) for one in sequences)
         sizes = [
             sum(len(one.targets) for member, _ in members for one in member.sequences)
@@ -304,15 +304,15 @@ class Trainer:
         return await client.compute_logprobs(sequences)
 
     async def gaps(
-        self, sequences: Values[Sequence], mu: Values[Values[float]]
+        self, sequences: Values[Sequence], mu: Values[Values[float]], anchor: Any
     ) -> list[list[float]] | None:
         """mu less the anchor's logprobs at every target; None without a KL term."""
         kl_coef = self.recipe.kl_coef
         if kl_coef <= 0:
             return None
-        if self.anchor is None:
+        if anchor is None:
             raise ValueError(f"kl_coef = {kl_coef} needs the starting weights to anchor to")
-        anchored = await anchor_logprobs(self.anchor, sequences)
+        anchored = await anchor_logprobs(anchor, sequences)
         return [
             [a - b for a, b in zip(scored, base, strict=True)]
             for scored, base in zip(mu, anchored, strict=True)
@@ -328,7 +328,7 @@ class Trainer:
             return None
         began = time.monotonic()
         party = agent.policy.endpoint.party or run.config.model.provider
-        credit = await self.credit(client, found)
+        credit = await self.credit(agent.policy, found)
         run.spent(
             party, reference_tokens=credit.reference_tokens, anchor_tokens=credit.anchor_tokens
         )
