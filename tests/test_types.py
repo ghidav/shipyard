@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from shipyard import admit, types
+from shipyard.config import Model
 from shipyard.harnesses import PROFILES, Profile
 from shipyard.training import trainer
 from shipyard.training.client import TinkerClient
@@ -31,6 +32,7 @@ from shipyard.types import (
     Verdict,
     harness,
 )
+from tests.proxies import MODEL
 from tests.trainers import FakeService
 from tests.trials import write_result
 
@@ -68,8 +70,8 @@ def _agent(*names: str) -> Agent:
     return Agent(Policy(_Provider()), [harness(name) for name in names])
 
 
-def _client(service: FakeService) -> TinkerClient:
-    return TinkerClient(service.client, service=service)
+def _client(service: FakeService, **model: Any) -> TinkerClient:
+    return TinkerClient(service, Model(name=MODEL, **model))
 
 
 def _trial(tmp_path: Path, task: str = "t", attempt: int = 0) -> Trial:
@@ -207,6 +209,37 @@ async def test_a_policy_closes_its_client_with_how_the_run_ended(
         async with Policy(endpoint, _client(service)):
             raise failed
     assert endpoint.calls[-1] == "close" and service.closed == [closed]
+
+
+async def test_an_anchored_resumed_policy_takes_the_anchor_before_loading_its_state() -> None:
+    endpoint, service = _Served(), FakeService()
+    client = _client(service, from_checkpoint="tinker://c")
+    policy = Policy(endpoint, client, start="tinker://w", state="tinker://s", anchored=True)
+    assert policy.anchor is None and client.client is None
+    async with policy:
+        assert policy.anchor is service.anchor and client.client is service.client
+    published = "tinker://fake/sampler_weights/anchor"
+    assert service.calls == [("from_state", "tinker://c"), ("sampling", MODEL, published)]
+    assert service.client.calls == [
+        ("save_weights_for_sampler", "anchor", SERVE_TTL),
+        ("load_state_with_optimizer", "tinker://s"),
+        ("consumed", "load"),
+    ], "the anchor is the weights as opened, before the checkpoint's state replaces them"
+    assert endpoint.calls == ["open", ("serve", "tinker://w"), "close"]
+    assert service.closed == [("success", None)]
+
+
+async def test_a_policy_that_cannot_enter_closes_the_client_it_opened() -> None:
+    class Down(_Served):
+        async def open(self) -> None:
+            raise RuntimeError("the proxy never came up")
+
+    endpoint, service = Down(), FakeService()
+    with pytest.raises(RuntimeError, match="never came up"):
+        async with Policy(endpoint, _client(service)):
+            raise AssertionError("not entered")
+    assert endpoint.calls == ["close"] and service.calls == [("lora", MODEL, 32)]
+    assert service.closed == [("errored", "RuntimeError: the proxy never came up")]
 
 
 def test_an_evaluation_carries_its_mean() -> None:

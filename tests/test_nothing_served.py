@@ -122,7 +122,9 @@ def test_served_nothing_is_about_records_not_rewards() -> None:
 @pytest.fixture
 def service(monkeypatch: pytest.MonkeyPatch) -> FakeService:
     made_service = FakeService(capabilities=capable((MODEL, True)))
-    monkeypatch.setattr("shipyard.runner.service_client", lambda metadata=None: made_service)
+    monkeypatch.setattr(
+        "shipyard.training.client.service_client", lambda metadata=None: made_service
+    )
     return made_service
 
 

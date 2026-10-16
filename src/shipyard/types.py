@@ -115,6 +115,14 @@ class TrainingClient(ABC):
     """Tinker's training client; a step call submits on await and returns the result's awaitable."""
 
     @abstractmethod
+    async def open(self) -> None:
+        """Start the session; a policy opens its client on entry."""
+
+    @abstractmethod
+    async def anchor(self) -> Any:
+        """A sampling client on the weights as opened, for the KL term."""
+
+    @abstractmethod
     async def forward_backward(
         self, datums: Values[Datum], loss_fn: str, loss_config: Mapping[str, float] | None
     ) -> Awaitable[Forward]: ...
@@ -182,22 +190,38 @@ class Endpoint(ABC):
         return None
 
 
-@dataclass(frozen=True)
+@dataclass
 class Policy:
-    """The model behind an agent; entering serves the start, leaving closes endpoint and client."""
+    """The model behind an agent; entering opens the client and serves the start, leaving
+    closes endpoint and client."""
 
     endpoint: Endpoint
     #: None for a provider.
     client: TrainingClient | None = None
     #: A sampler path to serve first: a checkpoint's, on a resumed run.
     start: str | None = None
+    #: A state path to load once the client is open: a checkpoint's, on a resumed run.
+    state: str | None = None
+    #: Whether to take the KL anchor from the weights as opened, before any state loads.
+    anchored: bool = False
+    anchor: Any = field(default=None, init=False)
 
     async def __aenter__(self) -> Policy:
-        await self.endpoint.open()
-        if self.start is not None:
-            await self.endpoint.serve(self.start)
-        elif self.client is not None:
-            await self.sync("start")
+        try:
+            if self.client is not None:
+                await self.client.open()
+                if self.anchored:
+                    self.anchor = await self.client.anchor()
+                if self.state is not None:
+                    await self.client.load_state(self.state)
+            await self.endpoint.open()
+            if self.start is not None:
+                await self.endpoint.serve(self.start)
+            elif self.client is not None:
+                await self.sync("start")
+        except BaseException as failed:
+            await self.__aexit__(type(failed), failed, failed.__traceback__)
+            raise
         return self
 
     async def __aexit__(

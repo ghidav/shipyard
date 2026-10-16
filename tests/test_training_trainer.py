@@ -49,9 +49,10 @@ class Spread:
         write_result(Path(config.trials_dir) / config.trial_name, reward=reward)
 
 
-def _agent(run: Run, service: FakeService | None) -> Agent:
-    client = None if service is None else TinkerClient(service.client, service=service)
-    return Agent(Policy(run.endpoint, client), [harness(run.config.rollout.harness)])
+def _agent(run: Run, service: FakeService | None, *, anchored: bool = False) -> Agent:
+    client = None if service is None else TinkerClient(service, run.config.model)
+    policy = Policy(run.endpoint, client, anchored=anchored)
+    return Agent(policy, [harness(run.config.rollout.harness)])
 
 
 def _plan(tmp_path: Path) -> list[list[str]]:
@@ -302,8 +303,7 @@ async def test_the_kl_anchor_is_subtracted_per_token_billed_and_reported(
     run = Run.open(home, root=tmp_path)
     run.engine.run_trial = Alternating()
     trainer = DAPOTrainer(run)
-    trainer.anchor = service.anchor
-    await _train(run, trainer, _agent(run, service))
+    await _train(run, trainer, _agent(run, service, anchored=True))
     assert len(service.anchor.asked) == 8
     (row,) = rows(run)
     # mu is the forward's -0.5 and the anchor says -0.1: the gap is -0.4 on every token.

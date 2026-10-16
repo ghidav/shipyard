@@ -267,8 +267,8 @@ async def test_a_resumed_run_anchors_kl_to_its_start_before_loading_the_checkpoi
     with pytest.raises(Stopped), opened:
         await Runner.from_run(opened).run()
     resumed = Runner.from_checkpoint(opened.directory)
-    resumed.opened.engine.run_trial = Alternating()
-    with resumed.opened:
+    resumed.trainer.run.engine.run_trial = Alternating()
+    with resumed.trainer.run:
         await resumed.run()
     published = "tinker://fake/sampler_weights/anchor"
     assert service.calls[-2:] == [("from_state", state), ("sampling", MODEL, published)]
@@ -288,10 +288,10 @@ async def test_a_resumed_run_continues_its_warm_up(
     with pytest.raises(Stopped), opened:
         await Runner.from_run(opened).run()
     resumed = Runner.from_checkpoint(opened.directory)
-    resumed.opened.engine.run_trial = Alternating()
-    with resumed.opened:
+    resumed.trainer.run.engine.run_trial = Alternating()
+    with resumed.trainer.run:
         await resumed.run()
-    rates = [row["learning_rate"] for row in rows(resumed.opened)]
+    rates = [row["learning_rate"] for row in rows(resumed.trainer.run)]
     assert rates == pytest.approx([2e-5 / 20, 2e-5 * 2 / 20]), "the second update of twenty"
 
 
@@ -340,11 +340,11 @@ async def test_a_run_killed_mid_epoch_resumes_from_its_last_checkpoint(
     assert service.closed[-1][0] == "interrupted"
 
     resumed = Runner.from_checkpoint(opened.directory)
-    row, consumed = resumed.position
+    row, consumed = resumed.checkpoint, resumed.consumed
     assert (row["tag"], consumed) == ("step-1", 1), "one batch of the epoch was stepped"
     trainer = resumed.trainer
     assert (trainer.steps, trainer.updates, trainer.epoch) == (1, 1, 0)
-    again = resumed.opened
+    again = resumed.trainer.run
     again.engine.run_trial = trials = Alternating()
     with again:
         await resumed.run()
@@ -386,21 +386,21 @@ async def test_a_run_is_evaluated_at_a_checkpoint_as_one_more_row(
     opened, _ = await _run(blueprint(tmp_path), tmp_path, Alternating())
     dataset(tmp_path / "tasks", "two", "x", "y")
     reopened = Runner.from_checkpoint(opened.directory, tag="step-1")
-    reopened.opened.engine.run_trial = Alternating()
+    reopened.trainer.run.engine.run_trial = Alternating()
     calls = len(service.calls)
-    with reopened.opened:
+    with reopened.trainer.run:
         result = await reopened.evaluate(tasks("two", root=tmp_path / "tasks"))
     assert result is not None
     assert (result.step, result.epoch, result.tasks, result.rollouts) == (1, 0, 2, 4)
     assert result.reward_mean == 0.5
-    logged = rows(reopened.opened)
+    logged = rows(reopened.trainer.run)
     assert logged[-1]["evaluation"] is True and logged[-1]["checkpoint"] == "step-1"
     assert logged[-1]["seq"] == 3, "numbered after the run's own rows"
     assert len(service.calls) == calls, "no training client was opened"
     assert proxy.swapped[-1] == "tinker://fake/sampler_weights/step-1"
-    jobs = list(record.read(reopened.opened.directory / record.JOBS))
+    jobs = list(record.read(reopened.trainer.run.directory / record.JOBS))
     assert jobs[-1]["purpose"] == "evaluation"
-    assert Run.read(reopened.opened.directory)["resumed"] == "step-1"
+    assert Run.read(reopened.trainer.run.directory)["resumed"] == "step-1"
     with pytest.raises(ValueError, match="no checkpoint tagged 'step-9'"):
         Runner.from_checkpoint(opened.directory, tag="step-9")
 
@@ -455,4 +455,4 @@ async def test_a_run_under_a_runner_file_trains_under_its_trainer_and_resumes_un
     file.unlink()
     resumed = Runner.from_checkpoint(opened.directory)
     assert type(resumed).__name__ == "MyRunner" and type(resumed.trainer).__name__ == "Marked"
-    assert resumed.position is not None and resumed.position[0]["tag"] == "final"
+    assert resumed.checkpoint is not None and resumed.checkpoint["tag"] == "final"

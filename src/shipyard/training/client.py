@@ -5,14 +5,18 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Mapping
 from collections.abc import Sequence as Values
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import tinker
 import torch
 from tinker import TensorData
 
 from shipyard.pack import shifted
-from shipyard.types import Adam, Datum, Forward, Sequence, TrainingClient
+from shipyard.types import SERVE_TTL, Adam, Datum, Forward, Sequence, TrainingClient
+
+if TYPE_CHECKING:
+    from shipyard.config import Model
+    from shipyard.run import Run
 
 logger = logging.getLogger(__name__)
 
@@ -33,42 +37,54 @@ def service_client(metadata: dict[str, str] | None = None) -> Any:
 
 
 class TinkerClient(TrainingClient):
-    """Over an SDK training client."""
+    """Over a service's SDK training client, made on `open` from the model config."""
 
-    def __init__(self, client: Any, *, service: Any = None) -> None:
-        self.client = client
+    def __init__(self, service: Any, model: Model, metadata: dict[str, str] | None = None) -> None:
         self.service = service
+        self.model = model
+        self.metadata = metadata
+        self.client: Any = None
 
     @classmethod
-    async def open(
-        cls,
-        service: Any,
-        base_model: str,
-        *,
-        from_checkpoint: str | None = None,
-        lora_rank: int | None = None,
-        restore_optimizer: bool = False,
-        metadata: dict[str, str] | None = None,
-    ) -> TinkerClient:
-        """A LoRA on `base_model`, or the weights at `from_checkpoint`; the server is checked."""
+    def from_run(cls, run: Run) -> TinkerClient:
+        """On the run's model, with the session named after the run."""
+        cfg = run.config
+        metadata = {"shipyard_run": run.id, "shipyard_recipe": cfg.recipe.kind}
+        return cls(service_client(metadata), cfg.model, metadata)
+
+    async def open(self) -> None:
+        """A LoRA on the model, or the weights at its checkpoint; the server is checked."""
+        model, metadata, service = self.model, self.metadata, self.service
         try:
-            await _server_has(service, base_model)
-            if from_checkpoint:
+            await _server_has(service, model.name)
+            if model.from_checkpoint:
                 resume = (
                     service.create_training_client_from_state_with_optimizer_async
-                    if restore_optimizer
+                    if model.restore_optimizer
                     else service.create_training_client_from_state_async
                 )
-                client = await resume(from_checkpoint, user_metadata=metadata)
+                self.client = await resume(model.from_checkpoint, user_metadata=metadata)
             else:
-                rank = DEFAULT_LORA_RANK if lora_rank is None else int(lora_rank)
-                client = await service.create_lora_training_client_async(
-                    base_model=base_model, rank=rank, user_metadata=metadata
+                rank = DEFAULT_LORA_RANK if model.lora_rank is None else int(model.lora_rank)
+                self.client = await service.create_lora_training_client_async(
+                    base_model=model.name, rank=rank, user_metadata=metadata
                 )
         except BaseException as failed:
+            self.service = None
             await _quietly_closed(service, failed)
             raise
-        return cls(client, service=service)
+
+    async def anchor(self) -> Any:
+        """A sampling client on the weights as opened, published first when they are a state."""
+        model = self.model
+        start = (
+            await self.save_weights_for_sampler("anchor", ttl_seconds=SERVE_TTL)
+            if model.from_checkpoint
+            else None
+        )
+        return await self.service.create_sampling_client_async(
+            base_model=model.name, model_path=start
+        )
 
     async def forward_backward(
         self, datums: Values[Datum], loss_fn: str, loss_config: Mapping[str, float] | None
