@@ -39,12 +39,13 @@ Give `-o` the `tasks` directory. With `-o tasks/hello-world` the task lands one 
 
 ## A provider-served blueprint
 
-A provider-served model is one whose `[model] provider` is not `tinker`. The harness calls the provider directly.
+A provider-served model is one whose `[agent] provider` is not `tinker`. The harness calls the provider directly.
 
 ```toml title="blueprints/01-eval-provider-docker/run.toml"
-[model]
-name = "claude-sonnet-5-5"
+[agent]
+model = "claude-sonnet-5-5"
 provider = "anthropic"
+harness = "claude-code"
 
 [data]
 dataset = "hello-world"
@@ -52,7 +53,6 @@ batch_size = 1
 group_size = 1
 
 [rollout]
-harness = "claude-code"
 sandbox = "docker"
 concurrency = 1
 
@@ -67,8 +67,9 @@ kind = "evaluate"
 When `provider` is left out it defaults to `tinker`, and the run serves the weights. It starts the proxy, which samples from Tinker and records every model call the harness makes. See [The proxy](../concepts/proxy.md).
 
 ```toml title="blueprints/02-eval-tinker-docker/run.toml"
-[model]
-name = "Qwen/Qwen3-8B"
+[agent]
+model = "Qwen/Qwen3-8B"
+harness = "pi@0.85.1"
 
 [data]
 dataset = "hello-world"
@@ -76,7 +77,6 @@ batch_size = 1
 group_size = 2
 
 [rollout]
-harness = "pi@0.85.1"
 sandbox = "docker"
 concurrency = 2
 max_tokens = 4096

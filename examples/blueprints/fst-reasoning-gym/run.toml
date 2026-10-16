@@ -1,8 +1,8 @@
 # Fast-slow training on Reasoning Gym: the weights and four skill texts in cycles of six steps.
 # Each problem's 8 rollouts split 2 per text. Defaults otherwise are the paper's.
-[model]
-name = "thinkingmachines/Inkling-Small"
-lora_rank = 32
+[agent]
+model = "thinkingmachines/Inkling-Small"
+harness = "pi@0.85.1"
 
 [data]
 train = "reasoning-gym-easy"
@@ -10,7 +10,6 @@ batch_size = 16
 group_size = 8
 
 [rollout]
-harness = "pi@0.85.1"
 sandbox = "modal"
 concurrency = 32
 setup_timeout = 900
@@ -24,6 +23,7 @@ population = 4
 cycle = 6
 reflection_harness = "claude-code"
 reflection_model = "claude-sonnet-5-5"
+lora_rank = 32
 
 [checkpoints]
 every = 12

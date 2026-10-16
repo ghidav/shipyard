@@ -121,7 +121,7 @@ def _process(config: Blueprint, blueprint: str | None, **extra: Any) -> dict[str
         "version": version(),
         "blueprint": blueprint,
         "kind": config.recipe.kind,
-        **({"tinker_base_url": tinker_base_url()} if config.model.served else {}),
+        **({"tinker_base_url": tinker_base_url()} if config.agent.served else {}),
         **{key: value for key, value in extra.items() if value},
     }
 

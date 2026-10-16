@@ -12,7 +12,14 @@ from pathlib import Path
 from typing import Any
 
 from shipyard import record
-from shipyard.config import SLOW_KNOBS, Blueprint, CispoRecipe, DapoRecipe, DrGrpoRecipe
+from shipyard.config import (
+    SLOW_KNOBS,
+    Blueprint,
+    CispoRecipe,
+    DapoRecipe,
+    DrGrpoRecipe,
+    modules_dir,
+)
 from shipyard.credit import weights
 from shipyard.modules import Candidate, keep, seed
 from shipyard.recipes.gepa import BEST, SEED, GEPATrainer
@@ -41,7 +48,16 @@ def slow_recipe(recipe: Any) -> Any:
         knobs["overlong_penalty"] = 0.0
     shared = {
         name: getattr(recipe, name)
-        for name in ("learning_rate", "steps", "evaluate_every", "substeps", "warmup", "reference")
+        for name in (
+            "learning_rate",
+            "steps",
+            "evaluate_every",
+            "substeps",
+            "warmup",
+            "reference",
+            "lora_rank",
+            "restore_optimizer",
+        )
     }
     return model(kind=recipe.slow, kl_coef=recipe.kl_coef, **shared, **knobs)
 
@@ -92,7 +108,7 @@ class FSTTrainer(GEPATrainer):
         slow step on each; then `finish`."""
         kept = self.directory / record.MODULES
         if not self.population:
-            seeded = seed(self.config.home / self.fst.modules)
+            seeded = seed(modules_dir(self.config))
             keep(seeded, kept / SEED)
             self.population = [seeded]
         self.modules = self.population[0]

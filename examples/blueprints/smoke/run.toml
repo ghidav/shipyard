@@ -1,6 +1,7 @@
 # One task, two rollouts: Inkling-Small served by this run, pi in a local Docker container.
-[model]
-name = "thinkingmachines/Inkling-Small"
+[agent]
+model = "thinkingmachines/Inkling-Small"
+harness = "pi@0.85.1"
 
 [data]
 test = "hello-world"
@@ -8,7 +9,6 @@ batch_size = 1
 group_size = 2
 
 [rollout]
-harness = "pi@0.85.1"
 sandbox = "docker"
 concurrency = 2
 max_tokens = 4096

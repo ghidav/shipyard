@@ -21,8 +21,9 @@ shipyard needs Python 3.12 or newer. A Docker sandbox needs Docker running. A cl
 `blueprints/02-eval-tinker-docker/run.toml` measures Qwen3-8B, served from Tinker, with the `pi` harness in Docker:
 
 ```toml
-[model]
-name = "Qwen/Qwen3-8B"
+[agent]
+model = "Qwen/Qwen3-8B"
+harness = "pi@0.85.1"
 
 [data]
 dataset = "hello-world"
@@ -30,7 +31,6 @@ batch_size = 1
 group_size = 2
 
 [rollout]
-harness = "pi@0.85.1"
 sandbox = "docker"
 concurrency = 2
 max_tokens = 4096

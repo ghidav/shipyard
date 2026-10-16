@@ -42,13 +42,10 @@ def _batch(tmp_path: Path, *names: str) -> list[Path]:
 
 
 def _engine(tmp_path: Path, harbor: Any, **rollout: Any) -> HarborEngine:
-    table = {
-        "harness": "pi",
-        "sandbox": "docker",
-        "concurrency": 4,
-        "jobs_dir": str(tmp_path / "jobs"),
-    }
-    return HarborEngine(Rollout(**{**table, **rollout}), run_trial=harbor)
+    """An engine over `[rollout]`; `env` and `kwargs` are the harness's, from `[agent]`."""
+    env, kwargs = rollout.pop("env", None), rollout.pop("kwargs", None)
+    table = {"sandbox": "docker", "concurrency": 4, "jobs_dir": str(tmp_path / "jobs")}
+    return HarborEngine(Rollout(**{**table, **rollout}), env=env, kwargs=kwargs, run_trial=harbor)
 
 
 def _agent(*names: str, endpoint: Endpoint | None = None) -> Agent:

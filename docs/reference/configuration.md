@@ -7,42 +7,47 @@ filled in.
 The **For** column says when a key matters:
 
 - **all**: every run.
-- **served**: only when the model is served, that is `[model] provider = "tinker"`. Otherwise
+- **served**: only when the model is served, that is `[agent] provider = "tinker"`. Otherwise
   the key is accepted and has no effect.
 - **gradient**: only for `dapo`, `dr-grpo` and `cispo`.
 
-## `[model]`
+## `[agent]`
+
+What acts in a trial: the model, the harness that drives it, and the modules it carries.
 
 | Key | Type | Default | For | Meaning |
 |---|---|---|---|---|
-| `name` | string | required | all | The model. For a served model, the base model as the backend lists it, such as `"Qwen/Qwen3-8B"`; otherwise the name the harness asks its provider for. |
+| `model` | string | required | all | The model. For a served model, the base model as the backend lists it, such as `"Qwen/Qwen3-8B"`; otherwise the name the harness asks its provider for. |
 | `provider` | string | `"tinker"` | all | Who serves the weights. `"tinker"`: this run serves them through its proxy from a Tinker-API backend. Any other value: the harness calls that provider. |
 | `from_checkpoint` | string | unset | served | A `tinker://` path to start from instead of the base model: a checkpoint's `state_path` to go on training, its `sampler_path` to measure it. `check` blocks the other one. |
-| `lora_rank` | integer | unset (32) | gradient | The LoRA rank of a new training client. Not used with `from_checkpoint`. |
-| `restore_optimizer` | boolean | `false` | gradient | With `from_checkpoint`, load the optimizer state as well as the weights. The state continues the earlier run's, so the run skips any warm-up. |
+| `harness` | string | required | all | The Harbor agent that runs each task, such as `"claude-code"`. `name@version` pins its version: `"pi@0.85.1"`. A blank name blocks the run. |
+| `env` | table of strings | `{}` | all | Environment variables for the harness in every trial. `check` blocks a key starting with `TINKER_`, and `SHIPYARD_CONTROL_TOKEN`, and a value such as `"${TINKER_API_KEY}"` that Harbor would fill with one. |
+| `kwargs` | table | `{}` | all | Extra arguments for the Harbor agent. |
+| `modules` | string | unset; `"modules"` for `gepa` and `fst` | all | A modules directory, relative to the blueprint ([Modules](../concepts/modules.md)): carried into every job, or the seed `gepa` and `fst` search from. |
 
 ## `[data]`
 
 | Key | Type | Default | For | Meaning |
 |---|---|---|---|---|
-| `dataset` | string or list of strings | required | all | The dataset, or datasets, under `tasks/` ([Datasets](../concepts/datasets.md)). |
+| `train` | string or list of strings | required, except for `evaluate` | all | The dataset, or datasets, to learn from, under `tasks/` ([Datasets](../concepts/datasets.md)). `evaluate` reads it as `test`. |
+| `test` | string or list of strings | unset | all | The datasets to measure on. A run that names them ends with a measurement. |
 | `batch_size` | integer ≥ 1 | required | all | Tasks per batch. One batch is one Harbor job. |
 | `group_size` | integer ≥ 1 | `1` | all | How many times each task runs in its batch. |
+| `test_group_size` | integer ≥ 1 | `group_size` | all | How many times each test task runs. |
 | `seed` | integer | `0` | all | The shuffle's seed. Pass `n` over the tasks is shuffled with `seed + n`. `gepa` draws its held-out tasks and its minibatches with it. `fst` draws the fast phase's minibatches in cycle `c` with `seed + c`. |
 
-`gepa` reads only `dataset`, `group_size` and `seed`.
+`gepa` reads only `train`, `group_size` and `seed`.
 
 ## `[rollout]`
 
+Optional: every key has a default. How trials run and how the model reaches them.
+
 | Key | Type | Default | For | Meaning |
 |---|---|---|---|---|
-| `harness` | string | required | all | The Harbor agent that runs each task, such as `"claude-code"`. `name@version` pins its version: `"pi@0.85.1"`. A blank name blocks the run. |
 | `sandbox` | string | `"docker"` | all | A Harbor environment type, such as `"docker"`, `"podman"`, `"apple-container"` or `"modal"`. `check` lists them all on a typo. |
 | `concurrency` | integer ≥ 1 | `4` | all | Trials of one job running at once. |
 | `timeout` | float | unset | all | Seconds the agent may run, in place of the task's own timeout. |
 | `setup_timeout` | float | unset | all | Seconds the harness's setup may take, in place of the agent's default. For a sandbox elsewhere, `check` warns when it is set under 600. Unset, `check` does not check the agent's default. |
-| `env` | table of strings | `{}` | all | Environment variables for the harness in every trial. `check` blocks a key starting with `TINKER_`, and `SHIPYARD_CONTROL_TOKEN`, and a value such as `"${TINKER_API_KEY}"` that Harbor would fill with one. |
-| `kwargs` | table | `{}` | all | Extra arguments for the Harbor agent. |
 | `jobs_dir` | string | `"jobs"` | all | Where job directories go, relative to the working directory. |
 | `endpoint_url` | string | `""` | served | A proxy started elsewhere. The run starts no proxy and needs `SHIPYARD_PROXY_TOKEN` set. A gradient run, or one with `from_checkpoint`, also needs `SHIPYARD_CONTROL_TOKEN` to point it at weights; `check` does not look for that one. |
 | `host` | string | `"host.docker.internal"` | served | The name a sandbox on this machine reaches the proxy by. |
@@ -54,8 +59,7 @@ The **For** column says when a key matters:
 | `max_tokens` | integer ≥ 1 | `8192` | served | The longest reply. A call asking for more, or naming no limit, gets this. |
 | `max_context` | integer ≥ 0 | `0` | served | The context window each call must fit, and the most tokens one trial may sample in all. `0` takes the model's from the backend. |
 | `renderer` | string | `""` | served | A tinker-cookbook renderer to use in place of the model's own. A family whose thinking comes in levels (Qwen3.8, GLM-5.3, GPT-OSS, Nemotron-3) has a renderer per level, and this picks one. Inkling's levels are named `tml_v0_effort_<e>`, such as `tml_v0_effort_0.7`, with `e` in [0, 1); plain `tml_v0` renders at its default, 0.9. |
-| `cut_volatile` | boolean | `true` | served | Cut the lines the harness changes on every call from its system message, such as Claude Code's `<total_tokens>` line. |
-| `fill_context` | boolean | `false` | served | A call that would overflow the context gets a shorter `max_tokens` instead of a refusal. Also switches the harness's own compaction off, where its profile knows how. `check` warns when `env` sets one of the profile's compaction keys to the profile's own value, such as `DISABLE_COMPACT = "1"`, without it. |
+| `fill_context` | boolean | `false` | served | A call that would overflow the context gets a shorter `max_tokens` instead of a refusal. Also switches the harness's own compaction off, where its profile knows how. `check` warns when `[agent] env` sets one of the profile's compaction keys to the profile's own value, such as `DISABLE_COMPACT = "1"`, without it. |
 | `check_turns` | boolean | `false` | served | Count the calls the harness made in its own log, and mask a trial whose count is more than the proxy recorded. Claude Code and opencode only. |
 
 How the served keys behave is in [The proxy](../concepts/proxy.md).
@@ -76,7 +80,8 @@ How the served keys behave is in [The proxy](../concepts/proxy.md).
 | `substeps` | integer ≥ 1 | `16` for `dapo` (DAPO §4.1) and `cispo` (MiniMax-M1 §3.1); `1` for `dr-grpo` (Dr. GRPO states none) and `fst` (FST App. D) | Optimizer steps per batch. The batch is split by prompt into this many parts of whole groups, or one part per group carrying a gradient when it has fewer. Each part is one `forward_backward` and one `optim_step`. Every part keeps the reference logprobs of the weights the batch was sampled at. |
 | `reference` | `"trainer"` or `"sampler"` | `"trainer"` | Where the loss's reference logprobs come from: a forward pass on the trainer, or the logprobs recorded when sampling, with no extra pass. |
 | `kl_coef` | float ≥ 0 | `0.0`, as DAPO (§2.3), Dr. GRPO (App. G) and MiniMax-M1 (§3.1) train | Weight of a per-token KL term to the run's starting weights, folded into the advantage token by token, not centred. `0` is off. |
-| `modules` | string | unset | A modules directory, relative to the blueprint, carried into every job ([Modules](../concepts/modules.md)). |
+| `lora_rank` | integer | unset (32) | The LoRA rank of a new training client. Not used with `[agent] from_checkpoint`. |
+| `restore_optimizer` | boolean | `false` | With `[agent] from_checkpoint`, load the optimizer state as well as the weights. The state continues the earlier run's, so the run skips any warm-up. |
 
 The gradient recipes need a served model.
 
@@ -126,7 +131,6 @@ cookbook's; the paper states none of these.
 | `reflection_harness` | string | required | The harness the reflector runs as, in its own Harbor trial. A blank name blocks the run. |
 | `reflection_model` | string | unset | The model the reflector's harness uses. Unset, it uses the harness's default. |
 | `reflection_image` | string | `"python:3.12-slim"` | The container image the reflector runs in. |
-| `modules` | string | `"modules"` | The seed: a modules directory, relative to the blueprint. |
 | `pareto` | integer ≥ 0 or string | unset | The Pareto tasks, which score every candidate the search keeps. Minibatches come from the rest. A count holds that many of the run's tasks out, drawn with `[data] seed`. `0` holds none out and selects on the tasks the search reflects on. A dataset name selects on that dataset. Unset holds out two thirds of the run's tasks, rounded down, as in three of GEPA's four benchmarks (GEPA §4.1 for split sizes, §4.3 for the validation set D_pareto). §4.1 states no single proportion: 300 validation tasks beside 150 training ones for three benchmarks, 111 beside 111 for PUPA. |
 | `minibatch` | integer ≥ 1 | `3` (GEPA §4.3) | How many feedback tasks the parent and a new candidate run on each round. A round whose parent scores 1.0 on every one of them asks for no rewrite, as GEPA's released code does by default (gepa 0.1.4, `api.py`: `skip_perfect_score = True`, `perfect_score = 1.0`). |
 | `budget` | integer ≥ 1 | unset (GEPA states no default: §4.3 matches MIPROv2's rollouts per benchmark) | Rollouts the search may spend, every scoring counted. Unset is two passes: 2 × tasks × `group_size`, over every task it may score. |
@@ -147,8 +151,8 @@ See [gepa](../concepts/gepa.md).
 | `budget` | integer ≥ 1 | unset | Rollouts each fast phase may spend. The fast phase scores each (task, text) pair with one rollout. Unset is five passes: 5 × its tasks (FST App. D: 960 metric calls over 192 examples, one rollout each). Each text carried from the previous cycle, beyond the first, adds one pass on top to score it. |
 | `edits` | `"rewrite"` or `"incremental"` | `"incremental"` (FST App. E) | As for `gepa`. |
 
-`reflection_harness` (required), `reflection_model`, `reflection_image`, `modules` (the seed, default
-`"modules"`), `minibatch` and `patience` are as for `gepa`, and so is the round whose parent scores 1.0
+`reflection_harness` (required), `reflection_model`, `reflection_image`, `minibatch` and `patience`
+are as for `gepa`, and so is the round whose parent scores 1.0
 on its whole minibatch. The fast phase selects on the paper's anchor set.
 FST names that set (§3, App. A) as the only source for the minibatches, so fst draws them from it
 too. Token losses are averaged per prompt (FST Eq. 4) for every `slow`. The optimizer is AdamW at
@@ -158,9 +162,7 @@ as the paper states none. See [fst](../concepts/recipes.md#fst).
 
 ### `evaluate`
 
-| Key | Type | Default | Meaning |
-|---|---|---|---|
-| `modules` | string | unset | A modules directory, relative to the blueprint, carried into every job. |
+No keys besides `kind`.
 
 ## `[checkpoints]`
 
@@ -171,9 +173,13 @@ Optional. Only the gradient recipes save checkpoints.
 | `every` | integer ≥ 1 | `1` | Save a checkpoint after every this many steps. A step that trained nothing saves none. A `final` checkpoint is saved after the last step, regardless of `every`. |
 | `ttl_hours` | float ≥ 1 | `168.0` | How long the backend keeps each `step-<n>` checkpoint, in hours. The backend keeps one for an hour at least. `final` is kept with no expiry. |
 
-## `[wandb]`
+## `[logging]`
 
-Optional. With it, the trainer writes every row to a wandb run as well as to the run directory.
+Optional. Where the trainer writes besides its run directory, one table per destination.
+
+### `[logging.wandb]`
+
+With it, the trainer writes every row to a wandb run as well as to the run directory.
 It needs the `shipyard[wandb]` extra, and `check` blocks without it.
 
 | Key | Type | Default | Meaning |
@@ -195,7 +201,7 @@ The costs are in the run's summary. wandb keeps its files under `wandb/` in the 
 - `SHIPYARD_QUIET=1`: no progress bars on a terminal.
 - `SHIPYARD_PROXY_TOKEN`: the harness's key to the proxy; required with `endpoint_url`.
 - `SHIPYARD_CONTROL_TOKEN`: the run's key to point the proxy at weights.
-- `WANDB_API_KEY`, `WANDB_MODE` and wandb's other variables, read by wandb itself with `[wandb]`.
+- `WANDB_API_KEY`, `WANDB_MODE` and wandb's other variables, read by wandb itself with `[logging.wandb]`.
 
 [Commands](cli.md#environment) says which command reads each.
 

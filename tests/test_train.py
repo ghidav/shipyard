@@ -258,7 +258,7 @@ async def test_a_kl_anchor_from_a_checkpoint_samples_weights_published_from_its_
         tmp_path,
         **{
             **ONE_STEP,
-            "[model]\n": f'[model]\nfrom_checkpoint = "{state}"\n',
+            "[agent]\n": f'[agent]\nfrom_checkpoint = "{state}"\n',
             **ANCHORED,
         },
     )
@@ -278,7 +278,7 @@ async def test_a_resumed_run_anchors_kl_to_its_start_before_loading_the_checkpoi
     _, service = fakes
     state = "tinker://run:train:0/weights/final"
     home = blueprint(
-        tmp_path, **{"[model]\n": f'[model]\nfrom_checkpoint = "{state}"\n', **ANCHORED}
+        tmp_path, **{"[agent]\n": f'[agent]\nfrom_checkpoint = "{state}"\n', **ANCHORED}
     )
     opened = Run.open(home, root=tmp_path / "runs")
     harbor(Interrupting(after=5))
@@ -324,8 +324,8 @@ async def test_a_run_continuing_an_optimizer_state_skips_the_warm_up(
     home = blueprint(
         tmp_path,
         **{
-            "[model]\n": f'[model]\nfrom_checkpoint = "{state}"\nrestore_optimizer = true\n',
-            "learning_rate = 2e-5": "learning_rate = 2e-5\nwarmup = 20",
+            "[agent]\n": f'[agent]\nfrom_checkpoint = "{state}"\n',
+            "learning_rate = 2e-5": "learning_rate = 2e-5\nwarmup = 20\nrestore_optimizer = true",
         },
     )
     harbor(Alternating())

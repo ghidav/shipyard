@@ -15,7 +15,7 @@ from shipyard.pack import shifted
 from shipyard.types import SERVE_TTL, Adam, Datum, Forward, Sequence, TrainingClient
 
 if TYPE_CHECKING:
-    from shipyard.config import Blueprint, Model
+    from shipyard.config import Blueprint
 
 logger = logging.getLogger(__name__)
 
@@ -36,36 +36,57 @@ def service_client(metadata: dict[str, str] | None = None) -> Any:
 
 
 class TinkerClient(TrainingClient):
-    """Over a service's SDK training client, made on `open` from the model config."""
+    """Over a service's SDK training client, made on `open`: a LoRA on `model`, or the weights
+    at `from_checkpoint`, with its optimizer state when `restore_optimizer`."""
 
-    def __init__(self, service: Any, model: Model, metadata: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        service: Any,
+        model: str,
+        *,
+        from_checkpoint: str | None = None,
+        lora_rank: int | None = None,
+        restore_optimizer: bool = False,
+        metadata: dict[str, str] | None = None,
+    ) -> None:
         self.service = service
         self.model = model
+        self.from_checkpoint = from_checkpoint
+        self.lora_rank = lora_rank
+        self.restore_optimizer = restore_optimizer
         self.metadata = metadata
         self.client: Any = None
 
     @classmethod
     def of(cls, cfg: Blueprint, *, name: str) -> TinkerClient:
-        """On the blueprint's model, with the session named `name`."""
+        """On the blueprint's model and recipe, with the session named `name`."""
         metadata = {"shipyard_run": name, "shipyard_recipe": cfg.recipe.kind}
-        return cls(service_client(metadata), cfg.model, metadata)
+        recipe = cfg.recipe
+        return cls(
+            service_client(metadata),
+            cfg.agent.model,
+            from_checkpoint=cfg.agent.from_checkpoint,
+            lora_rank=getattr(recipe, "lora_rank", None),
+            restore_optimizer=getattr(recipe, "restore_optimizer", False),
+            metadata=metadata,
+        )
 
     async def open(self) -> None:
         """A LoRA on the model, or the weights at its checkpoint; the server is checked."""
-        model, metadata, service = self.model, self.metadata, self.service
+        metadata, service = self.metadata, self.service
         try:
-            await _server_has(service, model.name)
-            if model.from_checkpoint:
+            await _server_has(service, self.model)
+            if self.from_checkpoint:
                 resume = (
                     service.create_training_client_from_state_with_optimizer_async
-                    if model.restore_optimizer
+                    if self.restore_optimizer
                     else service.create_training_client_from_state_async
                 )
-                self.client = await resume(model.from_checkpoint, user_metadata=metadata)
+                self.client = await resume(self.from_checkpoint, user_metadata=metadata)
             else:
-                rank = DEFAULT_LORA_RANK if model.lora_rank is None else int(model.lora_rank)
+                rank = DEFAULT_LORA_RANK if self.lora_rank is None else int(self.lora_rank)
                 self.client = await service.create_lora_training_client_async(
-                    base_model=model.name, rank=rank, user_metadata=metadata
+                    base_model=self.model, rank=rank, user_metadata=metadata
                 )
         except BaseException as failed:
             self.service = None
@@ -74,14 +95,13 @@ class TinkerClient(TrainingClient):
 
     async def anchor(self) -> Any:
         """A sampling client on the weights as opened, published first when they are a state."""
-        model = self.model
         start = (
             await self.save_weights_for_sampler("anchor", ttl_seconds=SERVE_TTL)
-            if model.from_checkpoint
+            if self.from_checkpoint
             else None
         )
         return await self.service.create_sampling_client_async(
-            base_model=model.name, model_path=start
+            base_model=self.model, model_path=start
         )
 
     async def forward_backward(
@@ -188,7 +208,7 @@ async def _server_has(service: Any, base_model: str) -> None:
     if found.trainable is False:
         raise ValueError(
             f"{base_model!r} can be sampled but not trained; name the trainable variant "
-            "under [model] name"
+            "under [agent] model"
         )
 
 

@@ -9,7 +9,7 @@ from functools import partial
 from pathlib import Path
 
 from shipyard import record
-from shipyard.config import Blueprint
+from shipyard.config import Blueprint, modules_dir
 from shipyard.data import search_sets
 from shipyard.modules import Candidate, keep, seed
 from shipyard.recipes.gepa.cycle import Evolution, Log, evolve
@@ -93,11 +93,11 @@ class GEPATrainer(Trainer):
             return await self.finish(await self.search(agent))
 
     async def search(self, agent: Agent) -> Agent:
-        """GEPA over the train tasks from `[recipe] modules`, kept under `seed`; the agent
+        """GEPA over the train tasks from `[agent] modules`, kept under `seed`; the agent
         carries the best candidate, kept under `best`."""
         recipe, data = self.recipe, self.config.data
         kept = self.directory / record.MODULES
-        start = seed(self.config.home / recipe.modules)
+        start = seed(modules_dir(self.config))
         keep(start, kept / SEED)
         feedback, pareto = search_sets(self.generator.train, recipe.pareto, seed=data.seed)
         budget = recipe.budget or DEFAULT_PASSES * len({*feedback, *pareto}) * data.group_size

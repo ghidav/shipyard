@@ -22,9 +22,9 @@ $ for c in arithmetic-time-intervals arithmetic-prime-factorization logic-knight
 ## The blueprint
 
 ```toml title="blueprints/dapo-docker/run.toml"
-[model]
-name = "Qwen/Qwen3-8B"
-lora_rank = 32
+[agent]
+model = "Qwen/Qwen3-8B"
+harness = "pi@0.85.1"
 
 [data]
 dataset = "rg-small"
@@ -32,7 +32,6 @@ batch_size = 4
 group_size = 4
 
 [rollout]
-harness = "pi@0.85.1"
 sandbox = "docker"
 concurrency = 4
 max_tokens = 4096
@@ -44,6 +43,7 @@ kind = "dapo"
 learning_rate = 2e-5
 steps = 2
 substeps = 1
+lora_rank = 32
 
 [checkpoints]
 every = 1
@@ -63,7 +63,7 @@ Two rollout keys matter for these tasks:
 - **`timeout = 600`.** Each Reasoning Gym task gives the agent 120 seconds. Qwen3-8B thinks at length, and a first run at that limit had 26 of its 32 rollouts cut by the clock. A rollout the clock cut is masked, not scored 0, so neither step had a group left to train on. `timeout` replaces the task's limit.
 - **`max_context = 12288`.** It is the context each call must fit, and the most tokens one trial may sample. With Qwen3-8B, pi often keeps calling tools long after it has written its answer, up to 127 calls in one trial. Once its history passes 8,192 tokens, a call's prompt plus its 4,096-token `max_tokens` no longer fits, the proxy refuses the call, and pi stops. In this run 20 of the 32 trials ended that way, and the verifier graded each on the answer it had written.
 
-A gradient recipe trains the weights its own proxy serves, so `[model] provider` must stay `tinker`.
+A gradient recipe trains the weights its own proxy serves, so `[agent] provider` must stay `tinker`.
 
 ## Check
 
@@ -87,6 +87,8 @@ substeps = 1
 warmup = 0
 reference = "trainer"
 kl_coef = 0.0
+lora_rank = 32
+restore_optimizer = false
 clip_low = 0.2
 clip_high = 0.28
 overlong_penalty = 0.5
@@ -215,13 +217,15 @@ A third row follows with the tag `final`, the same weights as `step-2`, and `ttl
 To continue a run, start a new one from its checkpoint:
 
 ```toml title="blueprints/dapo-continue/run.toml"
-[model]
-name = "Qwen/Qwen3-8B"
+[agent]
+model = "Qwen/Qwen3-8B"
 from_checkpoint = "tinker://51e37fd8-eb13-58bb-b463-376215fad05e:train:0/weights/final"
-restore_optimizer = true
 
 [data]
 dataset = "rg-four"
+
+[recipe]
+restore_optimizer = true
 ```
 
 The rest of the blueprint is as before. `from_checkpoint` loads the training client from that state, so `lora_rank` is not read. The first step publishes those weights for sampling and points the proxy at them. With `kl_coef > 0` the KL anchor samples them too. `check` blocks a `sampler_path` here. `restore_optimizer = true` also loads the earlier run's optimizer state. Left `false`, the weights continue with a fresh optimizer. The continuation is a new run with its own id, and its steps count from 0 again.

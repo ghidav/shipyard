@@ -55,8 +55,8 @@ The first line must be `---`, and a second `---` must close the block. Between t
 one, the file is uploaded and never used. `shipyard check` refuses such a skill:
 
 ```
-blocked  [recipe] modules: 'solving' cannot be delivered as a skill: it does not open with a `---` frontmatter block, so the harness will upload the file and never surface the skill
-blocked  [recipe] modules: 'solving' cannot be delivered as a skill: the frontmatter has no name
+blocked  [agent] modules: 'solving' cannot be delivered as a skill: it does not open with a `---` frontmatter block, so the harness will upload the file and never surface the skill
+blocked  [agent] modules: 'solving' cannot be delivered as a skill: the frontmatter has no name
 ```
 
 ## How a skill reaches the container
@@ -91,16 +91,16 @@ names the template in the agent's `prompt_template_path` kwarg. Harbor renders e
 instruction through it, so the harness receives the text, a blank line, and then the instruction. The
 raw block keeps any `{{ }}` or `{% %}` in the text as plain text.
 
-When `[rollout.kwargs]` names its own `prompt_template_path` and the modules hold a prompt, the
+When `[agent.kwargs]` names its own `prompt_template_path` and the modules hold a prompt, the
 prompt's template wins. `check` warns about this:
 
 ```
-warning  [rollout.kwargs] prompt_template_path: the prompt in the modules is delivered as the prompt template, so this one is not used where the prompt is carried
+warning  [agent.kwargs] prompt_template_path: the prompt in the modules is delivered as the prompt template, so this one is not used where the prompt is carried
 ```
 
 ## Carrying modules
 
-`[recipe] modules` names a directory relative to the blueprint. A gradient recipe or `evaluate` carries
+`[agent] modules` names a directory relative to the blueprint. A gradient recipe or `evaluate` carries
 it into every rollout of the run:
 
 ```toml
@@ -127,8 +127,8 @@ job row matches that copy.
 directories kept for tools and harnesses are refused by name:
 
 ```
-blocked  [recipe] modules: 'tools' is for tool modules, and tool modules are not supported in this version
-blocked  [recipe] modules: 'harness' is for harness modules, and harness modules are not supported in this version
+blocked  [agent] modules: 'tools' is for tool modules, and tool modules are not supported in this version
+blocked  [agent] modules: 'harness' is for harness modules, and harness modules are not supported in this version
 ```
 
 These cases are refused too:

@@ -1,12 +1,12 @@
-[model]
-name = "Qwen/Qwen3-8B"
+[agent]
+model = "Qwen/Qwen3-8B"
+harness = "pi@0.85.1"
 
 [data]
 train = ["aime-train", "math-500"]
 batch_size = 4
 
 [rollout]
-harness = "pi@0.85.1"
 
 [recipe]
 kind = "gepa"

@@ -15,15 +15,16 @@ from tests.proxies import MODEL, ids
 
 
 def served(**rollout: Any) -> Blueprint:
-    """A served evaluate blueprint: `from_checkpoint` goes to `[model]`, the rest to `[rollout]`."""
-    model = {"name": MODEL}
+    """A served evaluate blueprint: `from_checkpoint` and `harness` go to `[agent]`, the rest
+    to `[rollout]`."""
+    agent = {"model": MODEL, "harness": rollout.pop("harness", "pi@0.85.1")}
     if "from_checkpoint" in rollout:
-        model["from_checkpoint"] = rollout.pop("from_checkpoint")
+        agent["from_checkpoint"] = rollout.pop("from_checkpoint")
     return Blueprint.model_validate(
         {
-            "model": model,
+            "agent": agent,
             "data": {"dataset": "d", "batch_size": 1},
-            "rollout": {"harness": "pi@0.85.1", **rollout},
+            "rollout": rollout,
             "recipe": {"kind": "evaluate"},
         }
     )

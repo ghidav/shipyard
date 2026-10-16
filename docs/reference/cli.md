@@ -203,6 +203,6 @@ To use a proxy you started yourself, name its address in `[rollout] endpoint_url
 | `SHIPYARD_CONTROL_TOKEN` | `run`, `serve` | the run's key to point the proxy at weights. Generated per run when unset |
 | `TINKER_API_KEY` | `check`, `run`, `serve` | the Tinker-API backend's key |
 | `TINKER_BASE_URL` | `check`, `run`, `serve` | another Tinker-API backend. Costs are then filed under `tinker@<host>` |
-| `WANDB_API_KEY` | `run`, `evaluate` | wandb's key, for a blueprint with `[wandb]`; `WANDB_MODE=offline` keeps the wandb run on disk |
+| `WANDB_API_KEY` | `run`, `evaluate` | wandb's key, for a blueprint with `[logging.wandb]`; `WANDB_MODE=offline` keeps the wandb run on disk |
 
 See [Configuration](configuration.md) for every `run.toml` key.

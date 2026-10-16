@@ -69,8 +69,8 @@ def test_the_train_set_is_the_union_in_list_order_and_a_batch_is_shuffled(
     dataset(tmp_path / "tasks", "a", "a1", "a2", "a3")
     dataset(tmp_path / "tasks", "b", "b1", "b2")
     text = (
-        '[model]\nname = "Qwen/Qwen3-8B"\n[data]\ntrain = ["a", "b"]\nbatch_size = 5\n'
-        '[rollout]\nharness = "pi@0.85.1"\n'
+        '[agent]\nmodel = "Qwen/Qwen3-8B"\nharness = "pi@0.85.1"\n'
+        '[data]\ntrain = ["a", "b"]\nbatch_size = 5\n'
         '[recipe]\nkind = "dapo"\nlearning_rate = 2e-5\nsteps = 1\n'
     )
     made = Generator.of(load(write_blueprint(tmp_path, text)))
@@ -132,9 +132,9 @@ def test_a_generator_is_built_from_the_blueprints_data_table(
     fixture_tasks(tmp_path)
     home = write_blueprint(
         tmp_path,
-        '[model]\nname = "Qwen/Qwen3-8B"\n[data]\ntrain = "fixture"\ntest = "fixture"\n'
+        '[agent]\nmodel = "Qwen/Qwen3-8B"\nharness = "pi@0.85.1"\n'
+        '[data]\ntrain = "fixture"\ntest = "fixture"\n'
         "batch_size = 1\nseed = 3\n"
-        '[rollout]\nharness = "pi@0.85.1"\n'
         '[recipe]\nkind = "dapo"\nlearning_rate = 2e-5\nsteps = 1\n',
     )
     made = Generator.of(load(home))

@@ -9,8 +9,9 @@ You write a **blueprint**: a directory holding a `run.toml`. `shipyard run` read
 This blueprint measures Qwen3-8B, served from Tinker. The `pi` harness, the agent program that attempts each task, runs in a Docker sandbox:
 
 ```toml title="blueprints/02-eval-tinker-docker/run.toml"
-[model]
-name = "Qwen/Qwen3-8B"
+[agent]
+model = "Qwen/Qwen3-8B"
+harness = "pi@0.85.1"
 
 [data]
 dataset = "hello-world"
@@ -18,7 +19,6 @@ batch_size = 1
 group_size = 2
 
 [rollout]
-harness = "pi@0.85.1"
 sandbox = "docker"
 concurrency = 2
 max_tokens = 4096
@@ -50,14 +50,14 @@ Four parts do the work:
 
 | Part | What it does | Chosen by |
 |---|---|---|
-| Harbor | runs each trial in a sandbox, runs the harness there, grades the result: the **reward** | `[rollout] harness`, `[rollout] sandbox` |
-| Tinker-API backend | holds the weights; samples from them, trains them, saves checkpoints | `[model] name`, `TINKER_BASE_URL` |
+| Harbor | runs each trial in a sandbox, runs the harness there, grades the result: the **reward** | `[agent] harness`, `[rollout] sandbox` |
+| Tinker-API backend | holds the weights; samples from them, trains them, saves checkpoints | `[agent] model`, `TINKER_BASE_URL` |
 | The proxy | serves the backend's weights to the harness and records every call as token ids | started by the run for a Tinker-served model |
 | shipyard | cuts the dataset into batches, starts one Harbor **job** per batch, turns rewards into a training step, writes the run | `[recipe] kind` |
 
 The backend is Thinking Machines' Tinker by default. `TINKER_BASE_URL` points shipyard at another backend that implements the same API, such as Fireworks or Baseten.
 
-A model from another provider, such as `[model] provider = "anthropic"`, needs neither the proxy nor the backend. The harness calls the provider through Harbor's own model connection. Only `evaluate` and `gepa` take such a model.
+A model from another provider, such as `[agent] provider = "anthropic"`, needs neither the proxy nor the backend. The harness calls the provider through Harbor's own model connection. Only `evaluate` and `gepa` take such a model.
 
 ## The six recipes
 

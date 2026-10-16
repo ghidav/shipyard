@@ -1,4 +1,4 @@
-"""Where a trainer writes what happened: the run's own folder, and wandb when `[wandb]`
+"""Where a trainer writes what happened: the run's own folder, and wandb when `[logging.wandb]`
 names a project. A trainer writes every row to each of its loggers."""
 
 from __future__ import annotations
@@ -69,10 +69,10 @@ class Wandb(Logger):
         try:
             import wandb
         except ImportError:
-            raise ImportError("[wandb] needs wandb: install shipyard[wandb]") from None
-        table = config.wandb
+            raise ImportError("[logging.wandb] needs wandb: install shipyard[wandb]") from None
+        table = config.logging.wandb
         if table is None:
-            raise ValueError("the blueprint has no [wandb] table")
+            raise ValueError("the blueprint has no [logging.wandb] table")
         self.run = wandb.init(
             project=table.project,
             entity=table.entity,

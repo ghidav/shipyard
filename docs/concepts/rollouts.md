@@ -34,14 +34,14 @@ A trial that crashes keeps its slot. If Harbor raises, the run logs
 
 ## Served or provider-served
 
-`[model] provider` decides who answers the harness.
+`[agent] provider` decides who answers the harness.
 
 - `provider = "tinker"`, the default: the model is **served**. The run starts
   [the proxy](proxy.md), and every trial calls the model through it. The proxy
   records every call. Only a served model can be trained, since the gradient
   recipes train on those records.
 - Any other provider: the model is **provider-served**. The harness calls the
-  provider itself, under `[model] name` as written, with the provider's key
+  provider itself, under `[agent] model` as written, with the provider's key
   from your environment. The token counts are the ones the harness reported
   to Harbor.
 
@@ -49,13 +49,13 @@ Two real blueprints, one of each:
 
 ```toml
 # blueprints/01-eval-provider-docker/run.toml
-[model]
-name = "claude-sonnet-5-5"
+[agent]
+model = "claude-sonnet-5-5"
 provider = "anthropic"
 
 # blueprints/02-eval-tinker-docker/run.toml
-[model]
-name = "Qwen/Qwen3-8B"
+[agent]
+model = "Qwen/Qwen3-8B"
 ```
 
 `shipyard check --verbose` says which is which:
@@ -69,7 +69,7 @@ Each job row records it as `"served": "provider"` or `"served": "tinker"`.
 A gradient recipe on a provider-served model stops with:
 
 ```text
-[recipe] kind = 'dapo' trains the weights this run serves, and [model] provider = 'anthropic' serves them elsewhere
+[recipe] kind = 'dapo' trains the weights this run serves, and [agent] provider = 'anthropic' serves them elsewhere
 ```
 
 ## How a harness reaches the proxy
@@ -80,12 +80,12 @@ Harbor's model connection. For a served model, each trial gets:
 
 - `OPENAI_BASE_URL`: the proxy's address, with the trial's name in it;
 - `OPENAI_API_KEY`: the proxy's harness token;
-- the model name `openai/<[model] name>`.
+- the model name `openai/<[agent] model>`.
 
 A harness whose [profile](#harness-profiles) speaks the Anthropic dialect gets `ANTHROPIC_BASE_URL`,
-`ANTHROPIC_API_KEY` and `anthropic/<[model] name>` instead. opencode's profile
+`ANTHROPIC_API_KEY` and `anthropic/<[agent] model>` instead. opencode's profile
 names a provider of its own, so opencode gets `SHIPYARD_BASE_URL`,
-`SHIPYARD_API_KEY` and `shipyard/<[model] name>`. Here is a trial's
+`SHIPYARD_API_KEY` and `shipyard/<[agent] model>`. Here is a trial's
 `config.json` from the served run above, the token elided:
 
 ```json
@@ -101,7 +101,7 @@ names a provider of its own, so opencode gets `SHIPYARD_BASE_URL`,
 ```
 
 The trial's name in the address tells the proxy which trial a call belongs to.
-These variables win over `[rollout] env`. When a task's agent phase runs in
+These variables win over `[agent] env`. When a task's agent phase runs in
 Harbor's allowlist network mode, the proxy's host is added to the agent's
 allowed hosts.
 
@@ -119,7 +119,7 @@ speaks, and what it needs beyond the model connection. Four harnesses have one:
 
 The turn counters serve `[rollout] check_turns` (see
 [Admission](admission.md)). The profile's kwargs are laid over
-`[rollout] kwargs` table by table. An `opencode_config` in the blueprint keeps
+`[agent] kwargs` table by table. An `opencode_config` in the blueprint keeps
 its own keys, such as a model's limits under `provider.shipyard.models`. The
 profile's keys win where both set one.
 
@@ -140,29 +140,39 @@ nothing added. For a served model, `check` and `run` both say so:
 warning  no profile for harness <harness>; generic OpenAI wiring
 ```
 
-## The [rollout] keys that shape a trial
+## The keys that shape a trial
 
 The served run above used:
 
 ```toml
-[rollout]
+[agent]
+model = "Qwen/Qwen3-8B"
 harness = "pi@0.85.1"
+
+[rollout]
 sandbox = "docker"
 concurrency = 2
 max_tokens = 4096
 ```
 
+What acts in the trial is `[agent]`'s:
+
 | key | default | what it does |
 |---|---|---|
 | `harness` | required | the Harbor agent, optionally `name@version`; `check` blocks an empty one, since Harbor reads an unnamed agent as its oracle, which runs the task's reference solution |
+| `env` | `{}` | environment variables for every trial's agent; `check` blocks a key starting with `TINKER_`, and `SHIPYARD_CONTROL_TOKEN`, and a `${...}` value naming one |
+| `kwargs` | `{}` | agent kwargs for every trial |
+
+How the trial runs is `[rollout]`'s:
+
+| key | default | what it does |
+|---|---|---|
 | `sandbox` | `"docker"` | Harbor's environment type: `docker`, `podman`, `apple-container`, `modal`, and the others Harbor lists; `check` blocks a name Harbor does not know |
 | `concurrency` | `4` | how many trials of a job run at once |
 | `timeout` | unset | overrides the agent's timeout, in seconds |
 | `setup_timeout` | unset | overrides the agent's setup timeout, in seconds |
-| `env` | `{}` | environment variables for every trial's agent; `check` blocks a key starting with `TINKER_`, and `SHIPYARD_CONTROL_TOKEN`, and a `${...}` value naming one |
-| `kwargs` | `{}` | agent kwargs for every trial |
 | `jobs_dir` | `"jobs"` | where the job directories go |
-| `fill_context` | `false` | lays the profile's environment on each served trial, and lets a turn fill the context (see [The proxy](proxy.md)); `check` warns when `env` sets one of the profile's keys to the profile's own value without it, since the proxy then still refuses an overflowing call |
+| `fill_context` | `false` | lays the profile's environment on each served trial, and lets a turn fill the context (see [The proxy](proxy.md)); `check` warns when `[agent] env` sets one of the profile's keys to the profile's own value without it, since the proxy then still refuses an overflowing call |
 | `check_turns` | `false` | compares the harness's own turn count with the proxy's records (see [Admission](admission.md)) |
 
 The other `[rollout]` keys configure the proxy (see [The proxy](proxy.md)).

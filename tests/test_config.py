@@ -19,13 +19,14 @@ from tests.trials import BLUEPRINTS, check, fixture_tasks, write_blueprint
 GRADIENT = ("dapo", "dr-grpo", "cispo", "fst")
 
 MINIMAL = """
-[model]
-name = "Qwen/Qwen3-8B"
+[agent]
+model = "Qwen/Qwen3-8B"
+harness = "pi@0.85.1"
+
 [data]
 train = "aime-train"
 batch_size = 2
 [rollout]
-harness = "pi@0.85.1"
 [recipe]
 kind = "dapo"
 learning_rate = 2e-5
@@ -65,13 +66,13 @@ def test_load_accepts_the_file_as_well_as_the_directory() -> None:
 
 def test_dapo_fixture_defaults() -> None:
     found = load(BLUEPRINTS / "dapo")
-    assert found.model.served and found.model.provider == "tinker"
+    assert found.agent.served and found.agent.provider == "tinker"
     assert found.recipe.kind == "dapo" and found.recipe.learning_rate == 2e-5
     assert found.recipe.reference == "trainer" and found.recipe.substeps == 16
     assert found.recipe.clip_low == 0.2 and found.recipe.clip_high == 0.28
-    assert found.recipe.kl_coef == 0.0 and found.recipe.modules is None
+    assert found.recipe.kl_coef == 0.0 and found.agent.modules is None
     assert found.rollout.sandbox == "docker" and found.rollout.max_tokens == 8192
-    assert found.rollout.env == {}
+    assert found.agent.env == {} and found.recipe.lora_rank == 32
 
 
 def test_dr_grpo_and_cispo_fixtures_carry_their_own_knobs() -> None:
@@ -169,7 +170,7 @@ def test_the_length_cap_is_a_dr_grpo_knob_that_takes_infinity_and_warns_from_one
 def test_gepa_fixture_defaults() -> None:
     found = load(BLUEPRINTS / "gepa")
     assert found.recipe.kind == "gepa" and not isinstance(found.recipe, config.Gradient)
-    assert found.recipe.modules == "modules" and found.recipe.minibatch == 3
+    assert found.agent.modules == "modules" and found.recipe.minibatch == 3
     assert found.recipe.budget is None and found.recipe.patience is None
     assert found.recipe.reflection_image == "python:3.12-slim"
     assert found.recipe.edits == "rewrite"
@@ -178,37 +179,68 @@ def test_gepa_fixture_defaults() -> None:
 def test_evaluate_fixture_is_provider_served() -> None:
     found = load(BLUEPRINTS / "evaluate")
     assert found.recipe.kind == "evaluate"
-    assert not found.model.served and found.model.provider == "openrouter"
+    assert not found.agent.served and found.agent.provider == "openrouter"
 
 
 def test_missing_required_keys_are_named(tmp_path: Path) -> None:
     problems = _problems(
         tmp_path,
         """
-        [model]
+        [agent]
         [data]
         dataset = "aime-train"
-        [rollout]
         [recipe]
         kind = "dapo"
         """,
     )
-    assert "[model] name: field required" in problems
+    assert "[agent] model: field required" in problems
     assert "[data] batch_size: field required" in problems
-    assert "[rollout] harness: field required" in problems
+    assert "[agent] harness: field required" in problems
     assert "[recipe] learning_rate: field required" in problems
 
 
+def test_a_key_in_the_table_it_left_is_refused_naming_where_it_went(tmp_path: Path) -> None:
+    text = """
+[model]
+name = "Qwen/Qwen3-8B"
+lora_rank = 32
+[data]
+train = "aime-train"
+batch_size = 2
+[rollout]
+harness = "pi@0.85.1"
+[recipe]
+kind = "dapo"
+learning_rate = 2e-5
+steps = 1
+modules = "skills"
+[wandb]
+project = "p"
+"""
+    assert _problems(tmp_path, text) == [
+        "[model] name: now [agent] model",
+        "[model] lora_rank: now [recipe] lora_rank",
+        "[rollout] harness: now [agent] harness",
+        "[recipe] modules: now [agent] modules",
+        "[wandb] project: now [logging.wandb] project",
+    ]
+
+
 def test_missing_table_is_named(tmp_path: Path) -> None:
-    problems = _problems(tmp_path, MINIMAL.replace("[rollout]", "[other]").replace("harness", "x"))
-    assert "[rollout]: table required" in problems
+    problems = _problems(tmp_path, MINIMAL.replace("[data]", "[other]"))
+    assert "[data]: table required" in problems
     assert "[other]: unknown table" in problems
+
+
+def test_rollout_is_optional_every_key_having_a_default(tmp_path: Path) -> None:
+    found = load(write_blueprint(tmp_path, MINIMAL.replace("[rollout]\n", "")))
+    assert found.rollout.sandbox == "docker" and found.rollout.concurrency == 4
 
 
 def test_unknown_key_and_table_are_named(tmp_path: Path) -> None:
     text = MINIMAL.replace('harness = "pi@0.85.1"', 'harness = "pi@0.85.1"\nfoo = 1')
     problems = _problems(tmp_path, text + "\n[extra]\nbar = 2\n")
-    assert problems == ["[rollout] foo: unknown key", "[extra]: unknown table"]
+    assert problems == ["[agent] foo: unknown key", "[extra]: unknown table"]
 
 
 def test_the_advantage_and_stabilize_tables_are_gone(tmp_path: Path) -> None:
@@ -240,12 +272,12 @@ def test_each_gradient_recipe_takes_the_shared_knobs(tmp_path: Path) -> None:
         text = MINIMAL.replace(
             'kind = "dapo"',
             f'kind = "{kind}"\nsubsteps = 2\nreference = "sampler"\nkl_coef = 0.1\n'
-            'modules = "skills"'
+            "lora_rank = 16\nrestore_optimizer = true"
             + ('\nreflection_harness = "claude-code"' if kind == "fst" else ""),
         )
         found = load(write_blueprint(tmp_path / str(at), text)).recipe
         assert found.kind == kind and found.substeps == 2 and found.reference == "sampler"
-        assert found.kl_coef == 0.1 and found.modules == "skills"
+        assert found.kl_coef == 0.1 and found.lora_rank == 16 and found.restore_optimizer
 
 
 def test_train_takes_a_name_or_a_list_and_dataset_is_its_older_spelling(tmp_path: Path) -> None:
@@ -374,8 +406,8 @@ def test_check_is_blocked_for_a_broken_file(tmp_path: Path) -> None:
     findings = check(broken)
     assert [f.level for f in findings] == ["blocked"]
     assert "not readable TOML" in findings[0].text
-    bad = write_blueprint(tmp_path / "bad", MINIMAL.replace('name = "Qwen/Qwen3-8B"', ""))
-    assert check(bad) == [Finding("blocked", "[model] name: field required")]
+    bad = write_blueprint(tmp_path / "bad", MINIMAL.replace('model = "Qwen/Qwen3-8B"', ""))
+    assert check(bad) == [Finding("blocked", "[agent] model: field required")]
     report = resolved.report(bad)
     assert report.config is None and report.resolution is None and report.text() == ""
     assert report.blocked and report.findings == check(bad)
@@ -383,11 +415,11 @@ def test_check_is_blocked_for_a_broken_file(tmp_path: Path) -> None:
 
 def test_check_blocks_a_training_kind_on_a_provider_model(tmp_path: Path) -> None:
     text = MINIMAL.replace(
-        'name = "Qwen/Qwen3-8B"', 'name = "Qwen/Qwen3-8B"\nprovider = "openrouter"'
+        'model = "Qwen/Qwen3-8B"', 'model = "Qwen/Qwen3-8B"\nprovider = "openrouter"'
     )
     said = (
         "[recipe] kind = 'dapo' trains the weights this run serves, and "
-        "[model] provider = 'openrouter' serves them elsewhere"
+        "[agent] provider = 'openrouter' serves them elsewhere"
     )
     assert Finding("blocked", said) in check(write_blueprint(tmp_path, text))
     text = text.replace('kind = "dapo"\nlearning_rate = 2e-5\nsteps = 1', 'kind = "evaluate"')
@@ -400,13 +432,15 @@ def test_check_blocks_a_training_kind_on_a_provider_model(tmp_path: Path) -> Non
 
 def test_the_resolved_config_fills_every_table_and_leads_the_recipe_with_its_kind() -> None:
     found = resolved.resolved(load(BLUEPRINTS / "dapo"))
-    assert list(found) == ["model", "data", "rollout", "recipe", "checkpoints"]
-    assert found["model"] == {
-        "name": "Qwen/Qwen3-8B",
+    assert list(found) == ["agent", "data", "rollout", "recipe", "checkpoints"]
+    assert found["agent"] == {
+        "model": "Qwen/Qwen3-8B",
         "provider": "tinker",
         "from_checkpoint": None,
-        "lora_rank": 32,
-        "restore_optimizer": False,
+        "harness": "pi@0.85.1",
+        "kwargs": {},
+        "env": {},
+        "modules": None,
     }
     assert found["data"] == {
         "train": "aime-train",
@@ -416,7 +450,7 @@ def test_the_resolved_config_fills_every_table_and_leads_the_recipe_with_its_kin
         "test_group_size": None,
         "seed": 0,
     }
-    assert found["rollout"]["concurrency"] == 2 and found["rollout"]["env"] == {}
+    assert found["rollout"]["concurrency"] == 2 and "env" not in found["rollout"]
     assert found["rollout"]["max_tokens"] == 8192 and found["rollout"]["timeout"] is None
     assert list(found["recipe"])[0] == "kind"
     assert found["recipe"] == {
@@ -428,7 +462,8 @@ def test_the_resolved_config_fills_every_table_and_leads_the_recipe_with_its_kin
         "warmup": 0,
         "reference": "trainer",
         "kl_coef": 0.0,
-        "modules": None,
+        "lora_rank": 32,
+        "restore_optimizer": False,
         "clip_low": 0.2,
         "clip_high": 0.28,
         "overlong_penalty": 0.5,
@@ -448,7 +483,7 @@ def test_the_resolved_config_names_the_renderer_a_served_model_loads() -> None:
     )
     assert resolved.resolved(named)["rollout"]["renderer"] == "x"
     hosted = loaded.model_copy(
-        update={"model": loaded.model.model_copy(update={"provider": "openrouter"})}
+        update={"agent": loaded.agent.model_copy(update={"provider": "openrouter"})}
     )
     assert resolved.resolved(hosted)["rollout"]["renderer"] == ""
     assert resolved.recommended_renderer("nobody/knows-this") == ""
@@ -463,7 +498,7 @@ def test_the_resolved_toml_reads_back_as_the_resolved_config_without_its_nones()
             for table, body in found.items()
         }
         assert tomllib.loads(text) == expected, kind
-        assert text.startswith("[model]\n") and "\n[rollout.env]\n" in text
+        assert text.startswith("[agent]\n") and "\n[agent.env]\n" in text
         assert "\n[recipe]\n" + f'kind = "{kind}"\n' in text
 
 
@@ -540,7 +575,7 @@ def test_the_resolution_line_states_what_the_recipe_name_resolves_to(
     report = resolved.report(BLUEPRINTS / kind)
     assert report.resolution == line
     text = report.text()
-    assert text.startswith("[model]\n")
+    assert text.startswith("[agent]\n")
     if line is None:
         assert text.endswith("ttl_hours = 168.0\n") and "#" not in text
     else:

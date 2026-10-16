@@ -10,7 +10,6 @@ from typing import Any
 import pytest
 
 from shipyard import admit, types
-from shipyard.config import Model
 from shipyard.harnesses import PROFILES, Profile
 from shipyard.training import trainer
 from shipyard.training.client import TinkerClient
@@ -71,7 +70,7 @@ def _agent(*names: str) -> Agent:
 
 
 def _client(service: FakeService, **model: Any) -> TinkerClient:
-    return TinkerClient(service, Model(name=MODEL, **model))
+    return TinkerClient(service, MODEL, **model)
 
 
 def _trial(tmp_path: Path, task: str = "t", attempt: int = 0) -> Trial:

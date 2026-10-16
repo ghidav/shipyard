@@ -53,7 +53,7 @@ def _fixture_dapo(tmp_path: Path, *, provider: str | None = None) -> Path:
     home.mkdir(parents=True)
     text = (DAPO / "run.toml").read_text(encoding="utf-8")
     if provider:
-        text = text.replace("lora_rank = 32", f'lora_rank = 32\nprovider = "{provider}"')
+        text = text.replace("[agent]\n", f'[agent]\nprovider = "{provider}"\n')
     text = text.replace('train = "aime-train"', 'train = "fixture"')
     (home / "run.toml").write_text(text, encoding="utf-8")
     return home
@@ -94,13 +94,13 @@ def test_check_ok() -> None:
     """The resolved config, then nothing: the ok lines are hidden unless asked for."""
     result = runner.invoke(app, ["check", str(EVALUATE)])
     assert result.exit_code == 0, result.output
-    assert result.output.startswith("[model]\n")
+    assert result.output.startswith("[agent]\n")
     assert 'kind = "evaluate"' in result.output and "ttl_hours = 168.0" in result.output
     assert "ok  " not in result.output and "blocked" not in result.output
     assert "recipe evaluate" not in result.output
     verbose = runner.invoke(app, ["check", str(EVALUATE), "--verbose"])
     assert verbose.exit_code == 0, verbose.output
-    assert verbose.output.startswith("[model]\n")
+    assert verbose.output.startswith("[agent]\n")
     assert "ok  recipe evaluate" in verbose.output
     assert "ok  dataset fixture: 2 tasks under tasks/fixture" in verbose.output
 
@@ -116,7 +116,7 @@ def test_check_prints_the_resolution_line_for_a_gradient_recipe(tmp_path: Path) 
     result = runner.invoke(app, ["check", str(home)])
     assert result.exit_code == 0, result.output
     lines = result.output.splitlines()
-    assert lines[0] == "[model]"
+    assert lines[0] == "[agent]"
     comment = next(line for line in lines if line.startswith("#"))
     assert comment == (
         "# dapo: advantage = group mean, divided by spread; loss = ppo, clip 0.2 / 0.28, "
@@ -172,10 +172,12 @@ def test_check_reports_a_served_model_on_loopback_for_a_docker_sandbox(tmp_path:
 def test_check_blocked(tmp_path: Path) -> None:
     broken = tmp_path / "broken"
     broken.mkdir()
-    (broken / "run.toml").write_text('[model]\nname = "m"\n[recipe]\nkind = "dapo"\n')
+    (broken / "run.toml").write_text(
+        '[agent]\nmodel = "m"\nharness = "pi"\n[recipe]\nkind = "dapo"\n'
+    )
     result = runner.invoke(app, ["check", str(broken)])
     assert result.exit_code == 1
-    assert "blocked" in result.output and "[model]" not in result.output
+    assert "blocked" in result.output and "[agent]" not in result.output
     assert "[data]: table required" in result.output
     assert "[recipe] learning_rate: field required" in result.output
     result = runner.invoke(app, ["check", str(tmp_path / "missing")])
@@ -187,9 +189,9 @@ def test_check_json(tmp_path: Path) -> None:
     assert result.exit_code == 0
     report = json.loads(result.stdout)
     assert list(report) == ["config", "findings"]
-    assert list(report["config"]) == ["model", "data", "rollout", "recipe", "checkpoints"]
-    assert report["config"]["recipe"] == {"kind": "evaluate", "modules": None}
-    assert report["config"]["model"]["from_checkpoint"] is None
+    assert list(report["config"]) == ["agent", "data", "rollout", "recipe", "checkpoints"]
+    assert report["config"]["recipe"] == {"kind": "evaluate"}
+    assert report["config"]["agent"]["from_checkpoint"] is None
     assert report["config"]["checkpoints"] == {"every": 1, "ttl_hours": 168.0}
     findings = report["findings"]
     assert findings[0] == {"level": "ok", "text": "recipe evaluate"}
@@ -216,7 +218,7 @@ def test_check_blocks_a_training_kind_on_a_provider_model_and_run_starts_nothing
     result = runner.invoke(app, ["check", str(home)])
     assert result.exit_code == 1
     assert "blocked  [recipe] kind = 'dapo' trains the weights this run serves" in result.output
-    assert "[model] provider = 'openrouter' serves them elsewhere" in result.output
+    assert "[agent] provider = 'openrouter' serves them elsewhere" in result.output
     result = runner.invoke(app, ["run", str(home), "--root", str(root)])
     assert result.exit_code == 1 and "nothing was started" in result.output
     assert not root.exists()

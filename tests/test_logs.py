@@ -21,7 +21,7 @@ from tests.records import FakeProxy
 from tests.trainers import FakeService
 from tests.trials import Alternating, Harbor, blueprint, check, dataset
 
-WANDB = '\n[wandb]\nproject = "shipyard"\nentity = "team"\n'
+WANDB = '\n[logging.wandb]\nproject = "shipyard"\nentity = "team"\n'
 
 
 class FakeWandbRun:
@@ -67,7 +67,7 @@ def wandb(monkeypatch: pytest.MonkeyPatch) -> list[FakeWandbRun]:
 
 
 def _wandb_home(tmp_path: Path, **replacements: str) -> Path:
-    """The dapo fixture with a `[wandb]` table."""
+    """The dapo fixture with a `[logging.wandb]` table."""
     home = blueprint(tmp_path, **replacements)
     (home / "run.toml").write_text((home / "run.toml").read_text() + WANDB)
     return home
@@ -178,7 +178,7 @@ def test_check_names_the_wandb_project_or_blocks_without_wandb(
     assert ("ok", "wandb team/shipyard") in found
     monkeypatch.setitem(sys.modules, "wandb", None)
     found = [(one.level, one.text) for one in check(home)]
-    assert ("blocked", "[wandb]: wandb is not installed; install shipyard[wandb]") in found
+    assert ("blocked", "[logging.wandb]: wandb is not installed; install shipyard[wandb]") in found
 
 
 async def test_a_trainer_without_a_run_writes_to_its_directory_and_wandb_and_closes_them(

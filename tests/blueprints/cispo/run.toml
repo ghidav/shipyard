@@ -1,6 +1,6 @@
-[model]
-name = "Qwen/Qwen3-8B"
-lora_rank = 32
+[agent]
+model = "Qwen/Qwen3-8B"
+harness = "pi@0.85.1"
 
 [data]
 train = "aime-train"
@@ -8,7 +8,6 @@ batch_size = 2
 group_size = 4
 
 [rollout]
-harness = "pi@0.85.1"
 concurrency = 2
 
 [recipe]
@@ -16,3 +15,4 @@ kind = "cispo"
 steps = 2
 learning_rate = 2e-5
 reference = "sampler"
+lora_rank = 32

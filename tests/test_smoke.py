@@ -119,7 +119,7 @@ def test_a_dapo_smoke_carries_the_blueprints_modules(
     here: Path, proxy: FakeProxy, trials: FakeTrials
 ) -> None:
     proxy.default = [made("prompt", "said", seq=1)]
-    home = blueprint(here, "dapo", **{'kind = "dapo"': 'kind = "dapo"\nmodules = "modules"'})
+    home = blueprint(here, "dapo", **{"[agent]\n": '[agent]\nmodules = "modules"\n'})
     shutil.copytree(VALID, home / "modules")
     result = runner.invoke(app, ["run", str(home), "--smoke"])
     assert result.exit_code == 0, result.output
@@ -149,7 +149,12 @@ def test_a_tunnelled_smoke_names_the_tunnel_and_claude_codes_wiring(
 ) -> None:
     monkeypatch.setattr("shipyard.proxy.tunnel.found", lambda: ("/opt/bin/cloudflared", []))
     home = blueprint(
-        here, "dapo", **{'harness = "pi@0.85.1"': 'harness = "claude-code"\nsandbox = "modal"'}
+        here,
+        "dapo",
+        **{
+            'harness = "pi@0.85.1"': 'harness = "claude-code"',
+            "[rollout]\n": '[rollout]\nsandbox = "modal"\n',
+        },
     )
     result = runner.invoke(app, ["run", str(home), "--smoke"])
     assert result.exit_code == 0, result.output

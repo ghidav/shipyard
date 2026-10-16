@@ -243,11 +243,12 @@ async def test_a_seed_perfect_on_its_minibatches_is_never_reflected_on(
 
 
 def test_the_fixture_loads_with_the_searchs_knobs() -> None:
-    found = load(BLUEPRINTS / "gepa").recipe
+    loaded = load(BLUEPRINTS / "gepa")
+    found = loaded.recipe
     assert found.kind == "gepa" and found.reflection_harness == "pi@0.85.1"
     assert found.reflection_model == "Qwen/Qwen3-8B"
     assert found.reflection_image == REFLECTION_IMAGE == "python:3.12-slim"
-    assert found.modules == "modules" and found.minibatch == 3 and found.pareto is None
+    assert loaded.agent.modules == "modules" and found.minibatch == 3 and found.pareto is None
     assert found.budget is None and found.patience is None and found.edits == "rewrite"
     for gone in ("tolerance", "max_metric_calls", "components", "rng_seed", "population"):
         assert not hasattr(found, gone)
@@ -295,7 +296,7 @@ def test_check_names_the_reflector_and_blocks_a_blank_one(
     assert [f.text for f in found][6].startswith(
         "reflector claude-code, model the harness's own default, image"
     ), "after the blocked modules line: no modules/ beside this one"
-    assert [f.text for f in found if f.level == "blocked"][0].startswith("[recipe] modules: no")
+    assert [f.text for f in found if f.level == "blocked"][0].startswith("[agent] modules: no")
 
 
 def test_check_prints_the_resolved_config_and_the_modules_finding(

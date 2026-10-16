@@ -39,14 +39,15 @@ START = "tinker://fake/sampler_weights/start"
 ANCHORED = {"learning_rate = 2e-5": "learning_rate = 2e-5\nkl_coef = 0.1"}
 #: A gepa search over the fixture dataset on a hosted model, Claude Code reflecting.
 GEPA = """
-[model]
-name = "some-hosted-model"
+[agent]
+model = "some-hosted-model"
 provider = "openrouter"
+harness = "pi@0.85.1"
+
 [data]
 train = "fixture"
 batch_size = 1
 [rollout]
-harness = "pi@0.85.1"
 sandbox = "modal"
 [recipe]
 kind = "gepa"
@@ -308,7 +309,7 @@ def agent_for(run: Run, modules: Candidate | None = None) -> Agent:
     run's modules unless handed others."""
     held = carried(run.config, run.directory) if modules is None else modules
     policy = Policy(endpoint_for(run.config, run.directory))
-    return Agent(policy, [harness(run.config.rollout.harness)], held)
+    return Agent(policy, [harness(run.config.agent.harness)], held)
 
 
 def members_of(found: list[Group]) -> list[Member]:

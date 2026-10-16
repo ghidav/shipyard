@@ -1,6 +1,7 @@
-[model]
-name = "some-hosted-model"
+[agent]
+model = "some-hosted-model"
 provider = "openrouter"
+harness = "pi@0.85.1"
 
 [data]
 test = "fixture"
@@ -8,7 +9,6 @@ batch_size = 1
 group_size = 2
 
 [rollout]
-harness = "pi@0.85.1"
 sandbox = "modal"
 
 [recipe]

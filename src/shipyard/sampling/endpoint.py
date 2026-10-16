@@ -66,7 +66,7 @@ def tinker_base_url(environ: Mapping[str, str] | None = None) -> str:
 
 def start_weights(cfg: Blueprint) -> str | None:
     """The sampler path the proxy starts on; None for a state path, which cannot be sampled."""
-    return None if cfg.trains else (cfg.model.from_checkpoint or None)
+    return None if cfg.trains else (cfg.agent.from_checkpoint or None)
 
 
 def endpoint_settings(cfg: Blueprint, *, run: str | None = None) -> dict[str, Any]:
@@ -74,7 +74,7 @@ def endpoint_settings(cfg: Blueprint, *, run: str | None = None) -> dict[str, An
     rollout = cfg.rollout
     tagged = {"metadata": {"shipyard_run": run, "shipyard_recipe": cfg.recipe.kind}} if run else {}
     return {
-        "model": cfg.model.name,
+        "model": cfg.agent.model,
         "weights": start_weights(cfg),
         "renderer": rollout.renderer or None,
         "bind": rollout.bind,
@@ -113,7 +113,7 @@ class ProviderEndpoint(Endpoint):
 
 def endpoint_for(cfg: Blueprint, directory: Path) -> Endpoint:
     """The proxy over the run's weights, or the provider the harness dials itself."""
-    return ProxyEndpoint(cfg, directory) if cfg.model.served else ProviderEndpoint(cfg.model.name)
+    return ProxyEndpoint(cfg, directory) if cfg.agent.served else ProviderEndpoint(cfg.agent.model)
 
 
 @dataclass
@@ -157,7 +157,7 @@ class ProxyEndpoint(Endpoint):
                 await self.serve(weights)
             elif weights is not None:
                 raise RuntimeError(
-                    f"[model] from_checkpoint names {weights}, and the proxy at "
+                    f"[agent] from_checkpoint names {weights}, and the proxy at "
                     f"{cfg.rollout.endpoint_url} opened no control route to this run: set "
                     f"{CONTROL_TOKEN_ENV}, or start it with --weights"
                 )
@@ -214,7 +214,7 @@ class ProxyEndpoint(Endpoint):
             f"{slug.upper()}_API_KEY": self.proxy.token,
         }
         return Connection(
-            model=f"{slug}/{self.config.model.name}",
+            model=f"{slug}/{self.config.agent.model}",
             address=address,
             token=self.proxy.token,
             env=env,

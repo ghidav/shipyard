@@ -53,9 +53,9 @@ class Spread:
 
 
 def _agent(run: Run, service: FakeService | None, *, anchored: bool = False) -> Agent:
-    client = None if service is None else TinkerClient(service, run.config.model)
+    client = None if service is None else TinkerClient(service, run.config.agent.model)
     policy = Policy(endpoint_for(run.config, run.directory), client, anchored=anchored)
-    return Agent(policy, [harness(run.config.rollout.harness)])
+    return Agent(policy, [harness(run.config.agent.harness)])
 
 
 def _plan(tmp_path: Path) -> list[list[str]]:
@@ -395,7 +395,7 @@ async def test_a_job_on_a_provider_agent_groups_the_verdicts_and_the_step_takes_
     harbor: Harbor,
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    home = blueprint(tmp_path, **{"lora_rank = 32": 'lora_rank = 32\nprovider = "openrouter"'})
+    home = blueprint(tmp_path, **{"[agent]\n": '[agent]\nprovider = "openrouter"\n'})
     run = Run.open(home, root=tmp_path / "runs")
     harbor(Alternating())
     trainer = DAPOTrainer(run.config, run.directory)

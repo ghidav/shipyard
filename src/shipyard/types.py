@@ -260,7 +260,7 @@ class Harness:
 
 
 def harness(named: str) -> Harness:
-    """A built-in harness by the name `[rollout] harness` takes."""
+    """A built-in harness by the name `[agent] harness` takes."""
     return Harness(bare_name(named).strip(), named, profile_for(named))
 
 

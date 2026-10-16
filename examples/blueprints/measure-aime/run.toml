@@ -1,6 +1,7 @@
 # Inkling-Small's mean reward on AIME, four rollouts a problem, on Modal.
-[model]
-name = "thinkingmachines/Inkling-Small"
+[agent]
+model = "thinkingmachines/Inkling-Small"
+harness = "pi@0.85.1"
 
 [data]
 test = "aime"
@@ -8,7 +9,6 @@ batch_size = 10
 group_size = 4
 
 [rollout]
-harness = "pi@0.85.1"
 sandbox = "modal"
 concurrency = 16
 setup_timeout = 900
