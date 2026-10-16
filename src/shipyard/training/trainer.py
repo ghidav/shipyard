@@ -156,6 +156,8 @@ class Trainer:
         """One epoch: a step per yield of `sample`, the weights served after each update."""
         every = self.run.config.checkpoints.every
         async for found in self.sample(agent, tasks):
+            if any(len(group.shaped) != len(group.members) for group in found):
+                raise ValueError(f"{type(self).__name__}.sample yielded groups it never credited")
             update = await self.step(agent, found)
             self.log(found, update)
             self.steps += 1
@@ -170,7 +172,7 @@ class Trainer:
     async def sample(self, agent: Agent, tasks: Batches) -> AsyncIterator[list[Group]]:
         """How a step's groups are composed out of jobs: one job per batch."""
         for batch in tasks:
-            yield await self.job(agent, batch)
+            yield self.credited(await self.job(agent, batch))
 
     async def job(
         self,
@@ -181,7 +183,8 @@ class Trainer:
         purpose: str = "training",
         **about: Any,
     ) -> list[Group]:
-        """The one place a policy is sampled: run, record, group, shape, advantage."""
+        """The one place a policy is sampled: run, record, group. The groups carry no
+        advantages; `credited` sets them where a step trains on them."""
         run = self.run
         attempts = run.config.data.group_size if attempts is None else attempts
         job = run.reserve_job()
@@ -199,11 +202,7 @@ class Trainer:
             epoch=self.epoch,
             **about,
         )
-        found = groups(trials, rolled, agent)
-        for group in found:
-            group.shaped = self.shape(group)
-            group.advantages = self.advantage(group)
-        return found
+        return groups(trials, rolled, agent)
 
     async def evaluate(self, agent: Agent, tasks: Values[Task], **more: Any) -> Evaluation | None:
         """One job per batch of `tasks` at `[data] test_group_size`, then one row with the mean."""
@@ -230,6 +229,13 @@ class Trainer:
         )
         self.run.log(evaluation=True, **vars(result), **more)
         return result
+
+    def credited(self, found: list[Group]) -> list[Group]:
+        """`found`, each group's shaped rewards and advantages set by this class's rules."""
+        for group in found:
+            group.shaped = self.shape(group)
+            group.advantages = self.advantage(group)
+        return found
 
     def shape(self, group: Group) -> list[float | None]:
         """The rewards as the verifier scored them; None on an unmeasured member."""

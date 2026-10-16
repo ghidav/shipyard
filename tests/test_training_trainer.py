@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
@@ -18,7 +19,7 @@ from shipyard.run import Run
 from shipyard.sampling.endpoint import ProviderEndpoint
 from shipyard.training.client import TinkerClient
 from shipyard.training.trainer import ROW, Trainer
-from shipyard.types import SERVE_TTL, Agent, Policy, harness
+from shipyard.types import SERVE_TTL, Agent, Batches, Group, Policy, harness
 from tests.records import FakeProxy
 from tests.trainers import FakeService
 from tests.trials import (
@@ -173,6 +174,23 @@ async def test_a_step_with_every_group_flat_logs_untrained_and_takes_no_gradient
     assert checkpoints(run) == [] and proxy.swapped == [START]
     assert (trainer.steps, trainer.updates) == (1, 0)
     assert "train_tokens" not in record.read_json(run.directory / record.COSTS)["parties"]["tinker"]
+
+
+async def test_groups_a_sample_left_uncredited_are_refused_before_the_step(
+    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
+) -> None:
+    _, service = fakes
+    run = Run.open(blueprint(tmp_path), root=tmp_path / "runs")
+    run.engine.run_trial = Alternating()
+
+    class Uncredited(Trainer):
+        async def sample(self, agent: Agent, tasks: Batches) -> AsyncIterator[list[Group]]:
+            for batch in tasks:
+                yield await self.job(agent, batch)
+
+    with pytest.raises(ValueError, match="Uncredited.sample yielded groups it never credited"):
+        await _train(run, Uncredited(run), _agent(run, service))
+    assert [c[0] for c in service.client.calls] == ["save_weights_for_sampler"], "no step"
 
 
 async def test_dapo_holds_jobs_until_a_batchs_worth_of_groups_have_spread(
@@ -368,7 +386,7 @@ async def test_a_job_on_a_provider_agent_groups_the_verdicts_and_the_step_takes_
     tasks = [tmp_path / "tasks" / "four" / name for name in ("a", "b")]
     with run:
         async with agent.policy:
-            found = await trainer.job(agent, tasks, purpose="evaluation")
+            found = trainer.credited(await trainer.job(agent, tasks, purpose="evaluation"))
             assert await trainer.step(agent, found) is None
     assert [(group.task.name, group.harness.name) for group in found] == [
         ("a", "pi"),

@@ -26,7 +26,7 @@ from shipyard.data import Generator, tasks
 from shipyard.modules import seed
 from shipyard.recipes import resolution, trainer_for
 from shipyard.recipes.cispo import CISPOTrainer
-from shipyard.recipes.fst import ADAM, BUDGET_PASSES, fst_trainer, slow_recipe
+from shipyard.recipes.fst import ADAM, BUDGET_PASSES, fst_trainer, merged, slow_recipe
 from shipyard.run import Run
 from shipyard.runner import Runner
 from shipyard.sampling.endpoint import ProviderEndpoint
@@ -134,14 +134,14 @@ async def test_the_jobs_of_a_step_merge_into_one_group_per_task(tmp_path: Path) 
         [_group("a", "j1", 1.0), _group("b", "j1", 0.0)],
         [_group("a", "j2", 0.0), _group("b", "j2", 0.0)],
     ]
-    found = trainer.merged(parts)
+    found = trainer.credited(merged(parts))
     assert [group.task.name for group in found] == ["a", "b"]
     assert [[one.trial.job for one in group.members] for group in found] == [["j1", "j2"]] * 2
     assert found[0].shaped == [1.0, 0.0] and found[0].reward_variance == 0.25
     assert found[1].shaped == [0.0, 0.0] and found[1].reward_variance == 0.0
     assert found[0].advantages == pytest.approx([1.0, -1.0], abs=1e-5), "credited as one group"
     with pytest.raises(ValueError, match="different numbers of groups"):
-        trainer.merged([parts[0], parts[1][:1]])
+        merged([parts[0], parts[1][:1]])
 
 
 @pytest.mark.usefixtures("fakes")

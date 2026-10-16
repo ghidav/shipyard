@@ -47,6 +47,18 @@ def slow_recipe(recipe: Any) -> Any:
     return model(kind=recipe.slow, kl_coef=recipe.kl_coef, **shared, **knobs)
 
 
+def merged(parts: Values[list[Group]]) -> list[Group]:
+    """The jobs of one step as one group per task, each text's share in turn."""
+    first = parts[0]
+    if any(len(part) != len(first) for part in parts):
+        raise ValueError("the jobs of one step planned different numbers of groups")
+    found: list[Group] = []
+    for index, lead in enumerate(first):
+        members = [one for part in parts for one in part[index].members]
+        found.append(Group(lead.task, lead.agent, lead.harness, members))
+    return found
+
+
 class FSTTrainer(GEPATrainer):
     """The fast-slow pass: the search, then the slow trainer it is mixed with."""
 
@@ -131,28 +143,15 @@ class FSTTrainer(GEPATrainer):
         return agent
 
     async def sample(self, agent: Agent, tasks: Batches) -> AsyncIterator[list[Group]]:
-        """One job per text at its share of the group, merged into one group per task."""
+        """One job per text at its share of the group, merged into one group per task and
+        credited as one."""
         share = self.run.config.data.group_size // self.fst.population
         for batch in tasks:
             parts = [
                 await self.job(replace(agent, modules=text), batch, share)
                 for text in self.population
             ]
-            yield self.merged(parts)
-
-    def merged(self, parts: Values[list[Group]]) -> list[Group]:
-        """The jobs of one step as one group per task, each text's share in turn."""
-        first = parts[0]
-        if any(len(part) != len(first) for part in parts):
-            raise ValueError("the jobs of one step planned different numbers of groups")
-        found: list[Group] = []
-        for index, lead in enumerate(first):
-            members = [one for part in parts for one in part[index].members]
-            group = Group(lead.task, lead.agent, lead.harness, members)
-            group.shaped = self.shape(group)
-            group.advantages = self.advantage(group)
-            found.append(group)
-        return found
+            yield self.credited(merged(parts))
 
     async def checkpoint(self, agent: Agent, tag: str, *, keep: bool = False, **more: Any) -> None:
         await super().checkpoint(agent, tag, keep=keep, cycle=self.cycles, **more)
