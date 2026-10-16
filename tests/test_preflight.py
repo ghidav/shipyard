@@ -318,7 +318,7 @@ def test_a_teacher_is_named_and_checked_only_under_a_key(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     assert _taught(tmp_path / "a") == [
-        Finding("ok", f"teacher {TEACHER}, distill 1.0"),
+        Finding("ok", f"teacher {TEACHER}, teacher_coef 1.0"),
         Finding("warning", f"could not check the teacher {TEACHER}: TINKER_API_KEY is unset"),
     ]
     found = _taught(tmp_path / "b", rollout="temperature = 0.7\n")
@@ -413,7 +413,7 @@ def test_a_teacher_of_the_policys_own_weights_needs_privileged_text(
         text = (BLUEPRINTS / "opd" / "run.toml").read_text(encoding="utf-8")
         home = write_blueprint(tmp_path / teacher, text.replace(TEACHER, teacher))
         found = [f for f in resolved.report(home).findings if "teacher" in f.text]
-        assert found == [Finding("ok", f"teacher {said}, distill 1.0"), UNTOLD[teacher]]
+        assert found == [Finding("ok", f"teacher {said}, teacher_coef 1.0"), UNTOLD[teacher]]
         told = resolved.report(home, Told).findings
         assert UNTOLD[teacher] not in told
         assert Finding("ok", "privileged text from Told.privileged") in told

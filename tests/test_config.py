@@ -271,13 +271,14 @@ def test_each_gradient_recipe_takes_the_shared_knobs(tmp_path: Path) -> None:
         text = MINIMAL.replace(
             'kind = "dapo"',
             f'kind = "{kind}"\nsubsteps = 2\nreference = "sampler"\nkl_coef = 0.1\n'
-            'lora_rank = 16\nrestore_optimizer = true\ndistill = 0.5\nteacher = "Qwen/Qwen3-32B"'
+            "lora_rank = 16\nrestore_optimizer = true\nteacher_coef = 0.5\n"
+            'teacher = "Qwen/Qwen3-32B"'
             + ('\nreflection_harness = "claude-code"' if kind == "fst" else ""),
         )
         found = load(write_blueprint(tmp_path / str(at), text)).recipe
         assert found.kind == kind and found.substeps == 2 and found.reference == "sampler"
         assert found.kl_coef == 0.1 and found.lora_rank == 16 and found.restore_optimizer
-        assert found.distill == 0.5 and found.teacher == "Qwen/Qwen3-32B"
+        assert found.teacher_coef == 0.5 and found.teacher == "Qwen/Qwen3-32B"
 
 
 def test_a_teacher_and_its_weight_come_together(tmp_path: Path) -> None:
@@ -285,19 +286,19 @@ def test_a_teacher_and_its_weight_come_together(tmp_path: Path) -> None:
         text = MINIMAL.replace('kind = "dapo"', f'kind = "{kind}"\n{knobs}')
         return _problems(tmp_path / name, text)
 
-    assert problems("weight", "distill = 0.5") == [
-        "[recipe] teacher: distill = 0.5 weighs a teacher's logprobs; name the teacher"
+    assert problems("weight", "teacher_coef = 0.5") == [
+        "[recipe] teacher: teacher_coef = 0.5 weighs a teacher's logprobs; name the teacher"
     ]
     assert problems("teacher", 'teacher = "Qwen/Qwen3-32B"') == [
-        "[recipe] teacher: set distill above 0 to weigh the teacher, or leave it unset"
+        "[recipe] teacher: set teacher_coef above 0 to weigh the teacher, or leave it unset"
     ]
-    assert problems("state", 'distill = 1.0\nteacher = "tinker://r/weights/final"') == [
+    assert problems("state", 'teacher_coef = 1.0\nteacher = "tinker://r/weights/final"') == [
         "[recipe] teacher: a teacher is sampled, so a checkpoint is named by its sampler_path "
         "(tinker://.../sampler_weights/...)"
     ]
     assert problems("opd", "", kind="opd") == ["[recipe] teacher: field required"]
     found = load(BLUEPRINTS / "opd").recipe
-    assert (found.distill, found.teacher) == (1.0, "Qwen/Qwen3-32B")
+    assert (found.teacher_coef, found.teacher) == (1.0, "Qwen/Qwen3-32B")
     path = 'teacher = "tinker://r/sampler_weights/final"'
     assert (
         load(
@@ -494,7 +495,7 @@ def test_the_resolved_config_fills_every_table_and_leads_the_recipe_with_its_kin
         "kl_coef": 0.0,
         "lora_rank": 32,
         "restore_optimizer": False,
-        "distill": 0.0,
+        "teacher_coef": 0.0,
         "teacher": None,
         "clip_low": 0.2,
         "clip_high": 0.28,
@@ -601,7 +602,7 @@ def test_toml_values_are_spelled_as_toml() -> None:
             "opd",
             "# opd: advantage = teacher - reference per token, no reward term; loss = "
             "importance_sampling, summed over tokens; 1 substep; adamw betas 0.9 / 0.95, eps "
-            "1e-08; groups with equal rewards kept for the teacher; distill 1.0 toward "
+            "1e-08; groups with equal rewards kept for the teacher; teacher 1.0 toward "
             "Qwen/Qwen3-32B",
         ),
         ("gepa", None),
@@ -629,12 +630,12 @@ def test_the_resolution_line_names_a_kl_anchor_when_asked(tmp_path: Path) -> Non
 
 
 def test_the_resolution_line_names_a_teacher_and_the_groups_it_keeps(tmp_path: Path) -> None:
-    taught = 'kind = "dapo"\ndistill = 0.5\nteacher = "Qwen/Qwen3-32B"\nkl_coef = 0.05'
+    taught = 'kind = "dapo"\nteacher_coef = 0.5\nteacher = "Qwen/Qwen3-32B"\nkl_coef = 0.05'
     report = resolved.report(write_blueprint(tmp_path, MINIMAL.replace('kind = "dapo"', taught)))
     assert report.resolution is not None
     assert report.resolution.endswith(
         "groups with equal rewards kept for the teacher; kl 0.05 to the starting weights; "
-        "distill 0.5 toward Qwen/Qwen3-32B"
+        "teacher 0.5 toward Qwen/Qwen3-32B"
     )
 
 

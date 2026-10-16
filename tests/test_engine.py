@@ -15,7 +15,6 @@ from harbor.models.trial.config import AgentConfig, TrialConfig
 
 from shipyard.config import Rollout
 from shipyard.harnesses import PROFILES
-from shipyard.progress import Reporter
 from shipyard.sampling.admit import result_of
 from shipyard.sampling.endpoint import ProviderEndpoint, ProxyEndpoint
 from shipyard.sampling.engine import (
@@ -29,6 +28,7 @@ from shipyard.sampling.engine import (
     laid_over,
     quiet_litellm,
 )
+from shipyard.sampling.progress import Reporter
 from shipyard.types import Agent, Connection, Endpoint, Policy, Settings, Trial, harness
 from tests.records import FakeProxy, served
 from tests.trials import FakeTrials
@@ -223,23 +223,31 @@ async def test_the_modal_builder_is_set_unless_the_shell_chose(
     assert os.environ[MODAL_IMAGE_BUILDER] == "legacy"
 
 
-async def test_every_finished_trial_is_reported_to_the_progress_with_its_mask(
+async def test_the_job_and_every_finished_trial_are_reported_to_the_progress(
     tmp_path: Path,
 ) -> None:
     class Counting(Reporter):
         def __init__(self) -> None:
+            self.events: list[tuple[str, int] | str] = []
             self.seen: dict[Path, bool] = {}
+
+        def started(self, job: str, *, trials: int) -> None:
+            self.events.append((job, trials))
 
         def finished(self, trial: Path, *, masked: bool) -> None:
             self.seen[trial] = masked
+
+        def done(self, job: str) -> None:
+            self.events.append(job)
 
     progress = Counting()
     batch = _batch(tmp_path, "alpha", "beta")
     engine = _engine(tmp_path, FakeTrials(breaks=("beta",)))
     engine.progress = progress
-    found = await engine.run("j", batch, 1, agent=_agent("pi"))
+    found = await engine.run("j", batch, 2, agent=_agent("pi"))
+    assert progress.events == [("j", 4), "j"]
     assert sorted(progress.seen) == sorted(one.dir for one in found)
-    assert [progress.seen[one.dir] for one in found] == [False, True]
+    assert [progress.seen[one.dir] for one in found] == [False, False, True, True]
 
 
 async def test_a_stray_cancellation_is_one_trials_mask_not_the_batchs(tmp_path: Path) -> None:

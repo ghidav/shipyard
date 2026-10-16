@@ -177,9 +177,9 @@ class Gradient(_Table):
     lora_rank: int | None = None
     #: With `[agent] from_checkpoint`, also restore the checkpoint's optimizer state.
     restore_optimizer: bool = False
-    #: Weight of the teacher's term in each token's advantage, `distill × (teacher − reference)`.
-    #: 0 is off.
-    distill: float = Field(default=0.0, ge=0)
+    #: Weight of the teacher's term in each token's advantage,
+    #: `teacher_coef × (teacher − reference)`. 0 is off.
+    teacher_coef: float = Field(default=0.0, ge=0)
     #: Model whose logprobs score the policy's tokens: a base model the backend serves, a
     #: `tinker://` sampler path, or one of `OWN_TEACHERS`. It must share the policy's tokenizer.
     teacher: str | None = Field(default=None, validate_default=True)
@@ -187,13 +187,15 @@ class Gradient(_Table):
     @field_validator("teacher")
     @classmethod
     def _taught(cls, value: str | None, info: Any) -> str | None:
-        """Require a teacher exactly when `distill` weighs one, and a sampler path for a
+        """Require a teacher exactly when `teacher_coef` weighs one, and a sampler path for a
         checkpoint."""
-        distill = info.data.get("distill", 0.0)
-        if value is None and distill > 0:
-            raise ValueError(f"distill = {distill} weighs a teacher's logprobs; name the teacher")
-        if value is not None and not distill:
-            raise ValueError("set distill above 0 to weigh the teacher, or leave it unset")
+        teacher_coef = info.data.get("teacher_coef", 0.0)
+        if value is None and teacher_coef > 0:
+            raise ValueError(
+                f"teacher_coef = {teacher_coef} weighs a teacher's logprobs; name the teacher"
+            )
+        if value is not None and not teacher_coef:
+            raise ValueError("set teacher_coef above 0 to weigh the teacher, or leave it unset")
         if value is not None and value.startswith("tinker://") and "/sampler_weights/" not in value:
             raise ValueError(
                 "a teacher is sampled, so a checkpoint is named by its sampler_path "
@@ -232,7 +234,7 @@ class OpdRecipe(Gradient):
     rewards are measured but not trained on."""
 
     kind: Literal["opd"]
-    distill: float = Field(default=1.0, gt=0)
+    teacher_coef: float = Field(default=1.0, gt=0)
     teacher: str
 
 

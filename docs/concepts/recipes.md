@@ -50,7 +50,7 @@ warmup = 0
 reference = "trainer"
 kl_coef = 0.0
 restore_optimizer = false
-distill = 0.0
+teacher_coef = 0.0
 clip_low = 0.2
 clip_high = 0.28
 overlong_penalty = 0.5
@@ -195,7 +195,7 @@ instead divide each prompt's token losses by that prompt's tokens, so every prom
 
 Every prompt's tokens then carry the same total weight, and the step's total stays that of the plain
 sum. The KL and teacher terms, which are folded into the advantage, are scaled with it, so `kl_coef`
-and `distill` weigh them against the reward the same way in every prompt.
+and `teacher_coef` weigh them against the reward the same way in every prompt.
 `dr-grpo` keeps Tinker's sum. Its §3.2 divides by a constant instead of a prompt's length, and a
 constant only rescales the learning rate.
 
@@ -220,14 +220,14 @@ the weights have moved, the ratio moves with them, and the clip bounds act. With
 | `substeps` | `16` for `dapo` and `cispo`, `1` for `dr-grpo` and `fst` | Optimizer steps per batch, split by prompt (see [Substeps](#substeps)). |
 | `reference` | `"trainer"` | Where the reference logprobs come from: the logprobs of the sampled tokens that the ratio is formed against. `"trainer"` recomputes them in one forward pass on the training engine. `"sampler"` reads the logprobs the proxy recorded and makes no extra pass. |
 | `kl_coef` | `0.0`; `0.001` for `fst` | A per-token penalty for drifting from the run's starting weights, which are the base model or `from_checkpoint`. It is subtracted from the advantage as `kl_coef × (reference − anchor)`, token by token, and is not centred on the step's mean. DAPO (§2.3), Dr. GRPO (App. G) and MiniMax-M1 (§3.1) train without one. FST uses 0.001 (App. D) and does not say how the term enters the loss. |
-| `distill`, `teacher` | `0.0` and unset; `1.0` and required for `opd` | A teacher model that scores the policy's tokens, and the weight of its term, `distill × (teacher − reference)`, added to the advantage token by token. They are set together. See [A teacher in any gradient recipe](#a-teacher-in-any-gradient-recipe). |
+| `teacher`, `teacher_coef` | unset and `0.0`; required and `1.0` for `opd` | A teacher model that scores the policy's tokens, and the weight of its term, `teacher_coef × (teacher − reference)`, added to the advantage token by token. They are set together. See [A teacher in any gradient recipe](#a-teacher-in-any-gradient-recipe). |
 | `modules` | unset | A directory of skills to carry into every rollout. See [Modules](modules.md). |
 
 `"trainer"` is the default because the sampler and the trainer are different engines and their logprobs
 differ slightly. `"sampler"` saves the pass, but it refuses a batch whose records carry no logprobs.
 With `kl_coef = 0.01`, the comment line gains `; kl 0.01 to the starting weights`. With
-`distill = 0.5` and a teacher, `degenerate groups dropped` becomes `groups with equal rewards kept for
-the teacher`, and the line gains `; distill 0.5 toward <teacher>`.
+`teacher_coef = 0.5` and a teacher, `degenerate groups dropped` becomes `groups with equal rewards kept for
+the teacher`, and the line gains `; teacher 0.5 toward <teacher>`.
 
 ## How a step runs
 
@@ -325,7 +325,7 @@ never written as 0. Every row also carries `at` and `seq`.
 scores the policy's own tokens. Each token's advantage is
 
 ```
-distill × (teacher − reference)
+teacher_coef × (teacher − reference)
 ```
 
 where `teacher` is the teacher's logprob of the token. A token the teacher finds more likely than the
@@ -342,10 +342,10 @@ teacher = "Qwen/Qwen3-32B"
 ```
 
 ```
-# opd: advantage = teacher - reference per token, no reward term; loss = importance_sampling, summed over tokens; 1 substep; adamw betas 0.9 / 0.95, eps 1e-08; groups with equal rewards kept for the teacher; distill 1.0 toward Qwen/Qwen3-32B
+# opd: advantage = teacher - reference per token, no reward term; loss = importance_sampling, summed over tokens; 1 substep; adamw betas 0.9 / 0.95, eps 1e-08; groups with equal rewards kept for the teacher; teacher 1.0 toward Qwen/Qwen3-32B
 ```
 
-`distill` defaults to 1, the cookbook's `kl_penalty_coef`. The verifier still runs and `reward_mean` is
+`teacher_coef` defaults to 1, the cookbook's `kl_penalty_coef`. The verifier still runs and `reward_mean` is
 still logged, so the rows show whether the policy gets better at the tasks, but the rewards do not
 enter the advantage.
 
@@ -381,11 +381,11 @@ A checkpoint is checked as the base model it was trained from. `check` also warn
 
 ### A teacher in any gradient recipe
 
-`distill` and `teacher` are common knobs, so `dapo`, `dr-grpo`, `cispo` and the slow steps of `fst`
+`teacher` and `teacher_coef` are common knobs, so `dapo`, `dr-grpo`, `cispo` and the slow steps of `fst`
 take a teacher too. Its term is then added to the recipe's own advantage:
 
 ```
-advantage(token) = a − kl_coef × (reference − anchor) + distill × (teacher − reference)
+advantage(token) = a − kl_coef × (reference − anchor) + teacher_coef × (teacher − reference)
 ```
 
 where `a` is the recipe's group-relative advantage. A group whose rewards are all equal then trains on
@@ -433,7 +433,7 @@ class FeedbackDAPO(DAPOTrainer):
 kind = "dapo"
 learning_rate = 2e-5
 steps = 100
-distill = 0.5
+teacher_coef = 0.5
 teacher = "current"
 ```
 
