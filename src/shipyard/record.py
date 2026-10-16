@@ -86,3 +86,17 @@ def read_json(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def next_job(name: str, directory: Path, jobs_dir: Path) -> int:
+    """Return the next job number: one past the highest in the job log or on disk, else 0."""
+    named = [row.get("job") for row in read(directory / JOBS)]
+    if jobs_dir.is_dir():
+        named += [one.name for one in jobs_dir.iterdir()]
+    prefix = f"{name}-"
+    numbers = [
+        int(one[len(prefix) :])
+        for one in named
+        if isinstance(one, str) and one.startswith(prefix) and one[len(prefix) :].isdigit()
+    ]
+    return max(numbers, default=-1) + 1

@@ -17,11 +17,13 @@ from shipyard.cli.run import Run
 from shipyard.data import Generator, tasks
 from shipyard.sampling.endpoint import ProviderEndpoint, endpoint_for
 from shipyard.training.client import TinkerClient
+from shipyard.training.credit import Signals
 from shipyard.training.recipes.cispo import CISPOTrainer
 from shipyard.training.recipes.dapo import DAPOTrainer
 from shipyard.training.recipes.dr_grpo import DrGRPOTrainer
 from shipyard.training.recipes.opd import OPDTrainer
-from shipyard.training.trainer import ROW, Signals, Trainer, together
+from shipyard.training.step import together
+from shipyard.training.trainer import ROW, Trainer
 from shipyard.types import SERVE_TTL, Agent, Datum, Group, Member, Policy, Sequence, harness
 from tests.proxies import MODEL
 from tests.records import FakeProxy, made

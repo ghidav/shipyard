@@ -6,8 +6,8 @@ import logging
 from collections.abc import Sequence as Values
 from typing import Any
 
-from shipyard.training.credit import overlong, weights
-from shipyard.training.trainer import Trainer, centred
+from shipyard.training.credit import centred, overlong, weights
+from shipyard.training.trainer import Trainer
 from shipyard.types import Adam, Agent, Group, TrainingStep
 
 logger = logging.getLogger(__name__)
