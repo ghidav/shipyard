@@ -23,7 +23,7 @@ from shipyard.recipes.gepa.reflect import COLLECTED
 from shipyard.run import Run
 from shipyard.sampling.endpoint import endpoint_for
 from shipyard.training.trainer import Trainer
-from shipyard.types import Agent, Group, Member, Policy, harness
+from shipyard.types import Agent, Group, Member, Policy, Trial, harness
 
 FIXTURES = Path(__file__).parent / "tasks"
 BLUEPRINTS = Path(__file__).parent / "blueprints"
@@ -316,6 +316,11 @@ def job_of(found: list[Group]) -> str:
 
 def trials_of(found: list[Group]) -> list[Path]:
     return [one.trial.dir for one in members_of(found)]
+
+
+def trial(directory: Path, *, job: str = "j", task: Path | None = None) -> Trial:
+    """A trial over a directory, for the readers that need no more than its name and dir."""
+    return Trial(job, Path(directory.name) if task is None else task, 0, harness("pi"), directory)
 
 
 def rows(run: Run) -> list[dict[str, Any]]:

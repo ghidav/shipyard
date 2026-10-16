@@ -16,9 +16,8 @@ from shipyard.cost import billed_by
 from shipyard.modules import KINDS, Module, read, write
 from shipyard.recipes.gepa.fitness import Outcome
 from shipyard.recipes.gepa.propose import Proposer, Reflection
-from shipyard.rollout import Rollouts
 from shipyard.sampling.endpoint import ProviderEndpoint
-from shipyard.types import Agent, Policy, Settings
+from shipyard.types import Agent, Job, Policy, Settings
 
 if TYPE_CHECKING:
     from shipyard.run import Run
@@ -88,20 +87,17 @@ async def _job(
     harness: str,
     model: str | None,
     about: Reflection,
-) -> Rollouts:
+) -> Job:
     """A job that is no rollout: its own agent on a provider endpoint, recorded as a reflection."""
-    job = run.reserve_job()
-    reflector = Agent(Policy(ProviderEndpoint(model)), [types.harness(harness)])
-    trials = await engine.run(job, [task], 1, agent=reflector, settings=REFLECTION)
-    rolled = Rollouts.of(job, trials)
-    run.record_job(
-        rolled,
+    job = Job.reserve(
+        run,
         purpose="reflection",
-        party=billed_by(rolled) or party_of(model),
-        component=about.component,
-        candidate=about.candidate.digest,
+        about={"component": about.component, "candidate": about.candidate.digest},
     )
-    return rolled
+    reflector = Agent(Policy(ProviderEndpoint(model)), [types.harness(harness)])
+    job.trials = await engine.run(job.name, [task], 1, agent=reflector, settings=REFLECTION)
+    run.record_job(job, party=billed_by(job) or party_of(model), **job.about)
+    return job
 
 
 def party_of(model: str | None) -> str:
@@ -220,14 +216,14 @@ def instruction(
     )
 
 
-def written(rolled: Rollouts, module: Module) -> Module | None:
+def written(job: Job, module: Module) -> Module | None:
     """The rewrite the trial published, as a module of the same name and kind, or None when
     the artifacts hold no marker or the kind's `check` refuses the rewrite. Each case is
     logged with its cause. A marker inside exactly one subdirectory is read; inside two,
     neither is."""
-    if not rolled.trials:
+    if not job.trials:
         return None
-    trial = Path(rolled.trials[0])
+    trial = job.trials[0].dir
     kind = KINDS[module.kind]
     marker = kind.marker
     published = trial.joinpath(*COLLECTED)

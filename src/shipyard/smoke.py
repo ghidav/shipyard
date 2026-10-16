@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from shipyard import record
-from shipyard.admit import verdicts
 from shipyard.config import Blueprint
 from shipyard.data import Generator
 from shipyard.harnesses import PROFILES, bare_name, profile_for
@@ -115,10 +114,10 @@ async def smoke(run: Run) -> Smoked:
         try:
             found = await Trainer(run).job(agent, planned(cfg), 1, purpose=PURPOSE)
         except NothingServed as dead:
-            if dead.rolled is None:
+            if dead.job is None:
                 raise
-            judged = verdicts(dead.rolled)
-            return replace(report(run, endpoint, dead.rolled.trials, judged), dead=dead)
+            trials = [one.dir for one in dead.job.trials]
+            return replace(report(run, endpoint, trials, dead.job.verdicts), dead=dead)
     members = [one for group in found for one in group.members]
     trials = [one.trial.dir for one in members]
     return report(run, endpoint, trials, [one.verdict for one in members])

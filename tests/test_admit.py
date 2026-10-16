@@ -6,6 +6,7 @@ from __future__ import annotations
 import inspect
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -26,10 +27,9 @@ from shipyard.admit import (
     verdicts,
 )
 from shipyard.proxy.wire import BUDGET, CONTEXT, IMAGE_TOKEN, Picture
-from shipyard.rollout import Rollouts
-from shipyard.types import Trial, harness
+from shipyard.types import Job, Trial, harness
 from tests.records import made
-from tests.trials import write_result
+from tests.trials import trial, write_result
 
 #: Harbor's `ApiError` subclasses that are the policy's own doing, and keep the
 #: verifier's number. Kept here so a new Harbor class must be put in one list or the other.
@@ -40,6 +40,10 @@ POLICY_OWN = frozenset(
 
 def verified(reward: float, ended: str | None = None) -> Verdict:
     return Verdict(reward, None, ended, {"reward": reward})
+
+
+def _job(*trials: Path, **more: Any) -> Job:
+    return Job("j", trials=[trial(one) for one in trials], **more)
 
 
 def test_no_result_is_an_env_error(tmp_path: Path) -> None:
@@ -130,10 +134,10 @@ def test_verdicts_follow_plan_order_and_a_masked_one_has_no_reward(tmp_path: Pat
     lost = write_result(tmp_path / "lost", reward=0.0)
     cut = write_result(tmp_path / "cut", reward=1.0, exception="AgentTimeoutError")
     gone = tmp_path / "gone"
-    rollouts = Rollouts(job="j", trials=[won, gone, lost, cut])
+    rollouts = _job(won, gone, lost, cut)
     assert [found.mask for found in verdicts(rollouts)] == [None, ENV_ERROR, None, TIMEOUT]
     assert [v.reward for v in verdicts(rollouts) if v.reward is not None] == [1.0, 0.0]
-    assert all(v.reward is None for v in verdicts(Rollouts(job="j", trials=[gone, cut])))
+    assert all(v.reward is None for v in verdicts(_job(gone, cut)))
 
 
 # ----------------------------------------------------------------- the served endings
@@ -251,14 +255,14 @@ def test_verdicts_read_the_records_and_turn_counts_attached_to_the_rollouts(
         quiet.name: [],
         short.name: [made()],
     }
-    rollouts = Rollouts(job="j", trials=[won, cut, quiet, short], records=records)
+    rollouts = _job(won, cut, quiet, short, records=records)
     assert [v.mask for v in verdicts(rollouts)] == [None, None, ENV_ERROR, None]
     assert [v.reward for v in verdicts(rollouts) if v.reward is not None] == [1.0, 0.0, 1.0]
-    asked = Rollouts(job="j", trials=[won, short], records=records, asked={short.name: 2})
+    asked = _job(won, short, records=records, asked={short.name: 2})
     assert [v.mask for v in verdicts(asked)] == [None, ENV_ERROR]
-    failed = Rollouts(job="j", trials=[won, short], records=records, failed={won.name})
+    failed = _job(won, short, records=records, failed={won.name})
     assert [v.mask for v in verdicts(failed)] == [API_ERROR, None]
-    plain = Rollouts(job="j", trials=[won, cut, quiet])
+    plain = _job(won, cut, quiet)
     assert [v.reward for v in verdicts(plain)] == [1.0, 1.0, 1.0], "the files alone decide"
 
 
@@ -292,10 +296,10 @@ def test_a_pi_log_ending_on_a_failed_call_is_read_whatever_check_turns_says(
     tmp_path: Path,
 ) -> None:
     alpha, beta = _trial(tmp_path, "alpha", "pi"), _trial(tmp_path, "beta", "pi", 1)
-    for trial, stop in zip((alpha, beta), ("error", "stop"), strict=True):
-        (trial.dir / "agent").mkdir()
+    for one, stop in zip((alpha, beta), ("error", "stop"), strict=True):
+        (one.dir / "agent").mkdir()
         message = {"role": "assistant", "stopReason": stop}
-        (trial.dir / "agent" / "pi.txt").write_text(
+        (one.dir / "agent" / "pi.txt").write_text(
             json.dumps({"type": "message_end", "message": message})
         )
     records = {alpha.name: [made()], beta.name: [made()]}

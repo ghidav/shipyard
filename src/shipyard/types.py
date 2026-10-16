@@ -8,13 +8,16 @@ from collections.abc import Sequence as Values
 from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import pvariance
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import tinker
 
 from shipyard.harnesses import Profile, bare_name, profile_for
 from shipyard.modules import Candidate
 from shipyard.proxy.wire import Picture, Record
+
+if TYPE_CHECKING:
+    from shipyard.run import Run
 
 __all__ = [
     "Adam",
@@ -27,6 +30,7 @@ __all__ = [
     "Forward",
     "Group",
     "Harness",
+    "Job",
     "Member",
     "Policy",
     "Records",
@@ -286,6 +290,32 @@ class Trial:
     @property
     def name(self) -> str:
         return self.dir.name
+
+
+@dataclass
+class Job:
+    """One sampling of a policy: reserved with its facts, filled by the engine and the
+    endpoint, then written down by the run."""
+
+    name: str
+    purpose: str = "training"
+    step: int | None = None
+    epoch: int | None = None
+    modules: Candidate | None = None
+    #: What else the row says: a search's round, a reflection's component.
+    about: dict[str, Any] = field(default_factory=dict)
+    trials: list[Trial] = field(default_factory=list)
+    records: Records | None = None
+    verdicts: list[Verdict] = field(default_factory=list)
+    #: By trial name, off the harness logs: the turns asked, and the trials whose last
+    #: model call failed.
+    asked: dict[str, int] | None = None
+    failed: set[str] | None = None
+
+    @classmethod
+    def reserve(cls, run: Run, **facts: Any) -> Job:
+        """A job with the run's next name, its directory made."""
+        return cls(run.reserve_name(), **facts)
 
 
 class RolloutEngine(ABC):

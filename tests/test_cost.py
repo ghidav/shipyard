@@ -4,17 +4,18 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from shipyard.cost import Costs, billed_by, reported, sampled, sandbox_seconds
-from shipyard.rollout import Rollouts
+from shipyard.types import Job
 from tests.records import made
-from tests.trials import write_result
+from tests.trials import trial, write_result
 
 
-def _rollouts(*trials: Path) -> Rollouts:
-    return Rollouts(job="j", trials=list(trials))
+def _job(*trials: Path, **more: Any) -> Job:
+    return Job("j", trials=[trial(one) for one in trials], **more)
 
 
 def test_reported_counts_trials_with_a_result_and_sums_what_their_agents_said(
@@ -25,10 +26,10 @@ def test_reported_counts_trials_with_a_result_and_sums_what_their_agents_said(
     silent = write_result(tmp_path / "silent", reward=1.0)
     gone = tmp_path / "gone"
     broken = write_result(tmp_path / "broken", raw="{not json")
-    found = reported(_rollouts(first, second, silent, gone, broken))
+    found = reported(_job(first, second, silent, gone, broken))
     assert found == {"trials": 3, "input_tokens": 150, "cache_tokens": 40, "output_tokens": 15}
     # A trial that reported nothing is still a trial the party served; it adds no tokens.
-    assert reported(_rollouts(silent, gone)) == {
+    assert reported(_job(silent, gone)) == {
         "trials": 1,
         "input_tokens": 0,
         "cache_tokens": 0,
@@ -50,11 +51,11 @@ def test_sampled_sums_the_records_and_counts_the_trials_with_a_result(tmp_path: 
             made(seq=3, error="sampler: ConnectError"),
         ],
     }
-    counted, noted = sampled(Rollouts(job="j", trials=[graded, gone], records=records))
+    counted, noted = sampled(_job(graded, gone, records=records))
     # The whole prompt counts as input; the cached part is capped at the prompt.
     assert counted == {"trials": 1, "input_tokens": 17, "cache_tokens": 7, "output_tokens": 6}
     assert noted == {"turned_away": 2, "bridged": 1}, "a sampler failure is not a refusal"
-    assert sampled(Rollouts(job="j", trials=[gone], records={})) == (
+    assert sampled(_job(gone, records={})) == (
         {"trials": 0, "input_tokens": 0, "cache_tokens": 0, "output_tokens": 0},
         {"turned_away": 0, "bridged": 0},
     )
@@ -62,7 +63,7 @@ def test_sampled_sums_the_records_and_counts_the_trials_with_a_result(tmp_path: 
 
 def test_reported_reads_a_multi_step_trials_steps(tmp_path: Path) -> None:
     stepped = write_result(tmp_path / "stepped", reward=1.0, steps=[(10, 0, 1), (20, 5, 2)])
-    assert reported(_rollouts(stepped)) == {
+    assert reported(_job(stepped)) == {
         "trials": 1,
         "input_tokens": 30,
         "cache_tokens": 5,
@@ -75,9 +76,9 @@ def test_billed_by_needs_every_trial_that_recorded_a_provider_to_agree(tmp_path:
     two = write_result(tmp_path / "two", reward=1.0, provider="anthropic ")
     none = write_result(tmp_path / "none", reward=1.0)
     other = write_result(tmp_path / "other", reward=1.0, provider="openai")
-    assert billed_by(_rollouts(one, two, none, tmp_path / "gone")) == "anthropic"
-    assert billed_by(_rollouts(one, other)) is None
-    assert billed_by(_rollouts(none, tmp_path / "gone")) is None
+    assert billed_by(_job(one, two, none, tmp_path / "gone")) == "anthropic"
+    assert billed_by(_job(one, other)) is None
+    assert billed_by(_job(none, tmp_path / "gone")) is None
 
 
 def test_sandbox_seconds_span_the_timed_phases_of_trials_with_a_result(tmp_path: Path) -> None:
@@ -85,8 +86,8 @@ def test_sandbox_seconds_span_the_timed_phases_of_trials_with_a_result(tmp_path:
     short = write_result(tmp_path / "short", reward=0.0, seconds=30.5)
     untimed = write_result(tmp_path / "untimed", reward=1.0)
     gone = tmp_path / "gone"
-    assert sandbox_seconds(_rollouts(long, short, untimed, gone)) == (3, 120.5)
-    assert sandbox_seconds(_rollouts(gone)) == (0, 0.0)
+    assert sandbox_seconds(_job(long, short, untimed, gone)) == (3, 120.5)
+    assert sandbox_seconds(_job(gone)) == (0, 0.0)
 
 
 def test_costs_accumulate_per_party_and_per_sandbox() -> None:

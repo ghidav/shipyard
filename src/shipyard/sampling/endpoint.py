@@ -21,7 +21,7 @@ from shipyard.types import Connection, Endpoint, Records, Trial
 if TYPE_CHECKING:
     from shipyard.config import Blueprint, Rollout
     from shipyard.proxy.wire import Record
-    from shipyard.rollout import Rollouts
+    from shipyard.types import Job
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +38,9 @@ class ProxyGone(RuntimeError):
 class NothingServed(RuntimeError):
     """The proxy served a job nothing: it is dead, or its sampler refuses every request."""
 
-    def __init__(self, message: str, rolled: Rollouts | None = None) -> None:
+    def __init__(self, message: str, job: Job | None = None) -> None:
         super().__init__(message)
-        self.rolled = rolled
+        self.job = job
 
 
 def placement(rollout: Rollout) -> str:

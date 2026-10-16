@@ -7,14 +7,11 @@ import json
 import logging
 from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from shipyard.harnesses import bare_name
 from shipyard.proxy.wire import BUDGET, CONTEXT, Record, pictured
-from shipyard.types import Trial, Verdict
-
-if TYPE_CHECKING:
-    from shipyard.rollout import Rollouts
+from shipyard.types import Job, Trial, Verdict
 
 __all__ = [
     "endpoint_failed",
@@ -147,20 +144,20 @@ def served_verdict(
     return None
 
 
-def verdicts(rollouts: Rollouts) -> list[Verdict]:
-    """One verdict per trial, in plan order. When the run attached records to the
-    rollouts, each trial is judged with its own records and its harness's turn count."""
-    if rollouts.records is None:
-        return [verdict(Path(trial)) for trial in rollouts.trials]
-    asked, failed = rollouts.asked or {}, rollouts.failed or set()
+def verdicts(job: Job) -> list[Verdict]:
+    """One verdict per trial, in plan order. With records on the job, each trial is judged
+    with its own records and its harness's turn count."""
+    if job.records is None:
+        return [verdict(one.dir) for one in job.trials]
+    asked, failed = job.asked or {}, job.failed or set()
     return [
         verdict(
-            Path(trial),
-            list(rollouts.records.get(Path(trial).name) or []),
-            asked=asked.get(Path(trial).name),
-            failed=Path(trial).name in failed,
+            one.dir,
+            list(job.records.get(one.name) or []),
+            asked=asked.get(one.name),
+            failed=one.name in failed,
         )
-        for trial in rollouts.trials
+        for one in job.trials
     ]
 
 
@@ -204,13 +201,13 @@ def harness_log(trial: Path, harness: str) -> str | None:
         return None
 
 
-def results(rollouts: Rollouts) -> Iterator[tuple[Path, dict[str, Any]]]:
+def results(job: Job) -> Iterator[tuple[Path, dict[str, Any]]]:
     """Each trial that left a readable `result.json`, with its payload, in plan order.
     Every reader of a job's results uses this walk, so none skips a trial another counts."""
-    for trial in rollouts.trials:
-        payload = result_of(trial)
+    for one in job.trials:
+        payload = result_of(one.dir)
         if payload is not None:
-            yield Path(trial), payload
+            yield one.dir, payload
 
 
 def result_of(trial: Path) -> dict[str, Any] | None:
