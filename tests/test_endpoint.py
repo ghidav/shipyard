@@ -19,11 +19,12 @@ from shipyard.sampling.endpoint import (
     ProxyGone,
     answered_by_ours,
     backend,
+    endpoint_for,
     endpoint_settings,
     placement,
     tinker_base_url,
 )
-from shipyard.types import Connection, Trial, harness
+from shipyard.types import Connection, Policy, Trial, harness
 from tests.records import FakeProxy, made, served
 from tests.trials import BLUEPRINTS, write_result
 
@@ -406,23 +407,22 @@ async def test_a_providers_client_dials_the_model_alone_and_records_nothing(tmp_
 # --------------------------------------------------------------------- the run
 
 
-def test_a_served_run_notes_the_backend_and_stops_its_proxy_on_exit(
+def test_a_served_run_notes_the_backend_its_proxy_bills(
     fake: FakeProxy, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("TINKER_BASE_URL", "https://api.fireworks.ai/inference/v1")
     with Run.open(DAPO, root=tmp_path) as opened:
-        assert isinstance(opened.endpoint, ProxyEndpoint)
-        assert opened.endpoint.party == "tinker@api.fireworks.ai"
+        endpoint = endpoint_for(opened.config, opened.directory)
+        assert isinstance(endpoint, ProxyEndpoint)
+        assert endpoint.party == "tinker@api.fireworks.ai"
         note = Run.read(opened.directory)
         assert note["tinker_base_url"] == "https://api.fireworks.ai/inference/v1"
-        assert fake.closed == 0
-    assert fake.closed == 0, "nothing was started, so nothing was stopped"
 
 
-async def test_a_started_proxy_is_stopped_when_the_run_closes(
+async def test_a_started_proxy_is_stopped_when_its_policy_closes(
     fake: FakeProxy, tmp_path: Path
 ) -> None:
     with Run.open(DAPO, root=tmp_path) as opened:
-        await opened.endpoint.open()
-        assert fake.placed and fake.closed == 0
-    assert fake.closed == 1
+        async with Policy(endpoint_for(opened.config, opened.directory)):
+            assert fake.placed and fake.closed == 0
+        assert fake.closed == 1

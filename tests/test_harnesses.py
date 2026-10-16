@@ -116,3 +116,4 @@ def test_pi_says_its_last_call_failed_only_when_its_last_assistant_message_did()
     assert last_assistant_failed(_ended("toolUse", "stop")) is False
     assert last_assistant_failed(_ended("toolUse", "length")) is False
     assert last_assistant_failed("") is False and last_assistant_failed("not json") is False
+    assert last_assistant_failed('"message_end"') is False, "a line that is not an object"

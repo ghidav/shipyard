@@ -11,8 +11,10 @@ import pytest
 from shipyard import record
 from shipyard.run import Run
 from shipyard.sampling.endpoint import ProviderEndpoint
+from shipyard.sampling.engine import HarborEngine
+from shipyard.training.trainer import Trainer
 from shipyard.types import Agent, Settings, Trial
-from tests.trials import BLUEPRINTS, FakeTrials, fixture_tasks, job, job_of, trials_of
+from tests.trials import BLUEPRINTS, FakeTrials, Harbor, fixture_tasks, job, job_of, trials_of
 
 EVALUATE = BLUEPRINTS / "evaluate"
 
@@ -35,7 +37,13 @@ async def test_jobs_are_named_in_turn_and_reserved_by_directory_first(
     seen: list[tuple[str, bool, int, Agent]] = []
 
     async def fake_run(
-        job: str, tasks: list[Path], attempts: int, *, agent: Agent, settings: Any = None
+        engine: HarborEngine,
+        job: str,
+        tasks: list[Path],
+        attempts: int,
+        *,
+        agent: Agent,
+        settings: Any = None,
     ) -> list[Trial]:
         seen.append((job, (tmp_path / "jobs" / job).is_dir(), attempts, agent))
         return [
@@ -44,7 +52,7 @@ async def test_jobs_are_named_in_turn_and_reserved_by_directory_first(
             for n in range(attempts)
         ]
 
-    monkeypatch.setattr(opened.engine, "run", fake_run)
+    monkeypatch.setattr(HarborEngine, "run", fake_run)
     first = await job(opened, _batch(tmp_path, "alpha", "beta"), rollouts=2, step=0)
     second = await job(opened, _batch(tmp_path, "alpha"), rollouts=1, step=1)
     assert job_of(first) == f"{opened.id}-0000" and job_of(second) == f"{opened.id}-0001"
@@ -56,7 +64,7 @@ async def test_jobs_are_named_in_turn_and_reserved_by_directory_first(
     assert attempts == 2 and agent.modules is None
     assert [one.agent for one in agent.harness] == ["pi@0.85.1"]
     assert agent.policy.endpoint == ProviderEndpoint("some-hosted-model")
-    engine = opened.engine
+    engine = Trainer(opened).engine
     assert engine.sandbox == "modal" and engine.jobs_dir == Path("jobs")
     assert engine.settings == Settings() and engine.progress is opened.progress
     assert engine.run_trial is None
@@ -81,28 +89,32 @@ def test_the_job_counter_is_seeded_from_the_record_and_the_disk(
     assert Run(opened.directory, opened.config).reserve_job() == f"{opened.id}-0007"
 
 
-async def test_a_job_name_already_taken_on_disk_is_refused(opened: Run, tmp_path: Path) -> None:
+async def test_a_job_name_already_taken_on_disk_is_refused(
+    opened: Run, tmp_path: Path, harbor: Harbor
+) -> None:
     taken = tmp_path / "jobs" / f"{opened.id}-0000"
     taken.mkdir(parents=True)
-    opened.engine.run_trial = FakeTrials()
+    harbor(FakeTrials())
     with pytest.raises(FileExistsError, match=f"{opened.id}-0000 is taken"):
         await job(opened, _batch(tmp_path, "alpha"), rollouts=1, step=0)
     assert not (opened.directory / record.JOBS).exists() and not any(taken.iterdir())
 
 
 async def test_the_job_row_counts_verdicts_endings_tokens_and_seconds(
-    opened: Run, tmp_path: Path
+    opened: Run, tmp_path: Path, harbor: Harbor
 ) -> None:
-    opened.engine.run_trial = FakeTrials(
-        outcomes={
-            "alpha": {
-                "reward": 1.0,
-                "tokens": (100, 20, 10),
-                "provider": "OpenRouter",
-                "seconds": 30.0,
-            },
-            "beta": {"reward": 0.0, "exception": "AgentTimeoutError", "seconds": 10.0},
-        }
+    harbor(
+        FakeTrials(
+            outcomes={
+                "alpha": {
+                    "reward": 1.0,
+                    "tokens": (100, 20, 10),
+                    "provider": "OpenRouter",
+                    "seconds": 30.0,
+                },
+                "beta": {"reward": 0.0, "exception": "AgentTimeoutError", "seconds": 10.0},
+            }
+        )
     )
     rolled = await job(opened, _batch(tmp_path, "alpha", "beta"), rollouts=2, step=0)
     assert len(trials_of(rolled)) == 4
@@ -142,13 +154,13 @@ async def test_the_job_row_counts_verdicts_endings_tokens_and_seconds(
 
 
 async def test_empty_maps_are_left_off_and_costs_add_up_across_jobs(
-    opened: Run, tmp_path: Path
+    opened: Run,
+    tmp_path: Path,
+    harbor: Harbor,
 ) -> None:
-    opened.engine.run_trial = FakeTrials(
-        outcomes={"alpha": {"reward": 0.5}, "beta": {"reward": 1.0}}
-    )
+    harbor(FakeTrials(outcomes={"alpha": {"reward": 0.5}, "beta": {"reward": 1.0}}))
     await job(opened, _batch(tmp_path, "alpha", "beta"), rollouts=1, step=0)
-    opened.engine.run_trial = FakeTrials(breaks=("alpha",), outcomes={"beta": {"reward": 0.0}})
+    harbor(FakeTrials(breaks=("alpha",), outcomes={"beta": {"reward": 0.0}}))
     await job(opened, _batch(tmp_path, "alpha", "beta"), rollouts=1, step=1)
     first, second = list(record.read(opened.directory / record.JOBS))
     assert "masked" not in first and "ended" not in first and first["graded"] == 2
@@ -166,7 +178,9 @@ async def test_empty_maps_are_left_off_and_costs_add_up_across_jobs(
 
 
 async def test_jobs_dir_comes_from_the_blueprint(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    harbor: Harbor,
 ) -> None:
     fixture_tasks(tmp_path)
     monkeypatch.chdir(tmp_path)
@@ -179,7 +193,7 @@ async def test_jobs_dir_comes_from_the_blueprint(
     )
     (home / "run.toml").write_text(text)
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.engine.run_trial = FakeTrials()
+    harbor(FakeTrials())
     rolled = await job(opened, _batch(tmp_path, "alpha"), rollouts=1, step=0)
     assert trials_of(rolled)[0].parent == Path("elsewhere/jobs") / job_of(rolled)
     assert (tmp_path / "elsewhere" / "jobs" / job_of(rolled)).is_dir()

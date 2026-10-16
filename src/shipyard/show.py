@@ -176,14 +176,15 @@ def _print_metrics(metrics: dict[str, Any]) -> None:
     """The row count, the last row's fields, then the last evaluation's when it is another row."""
     last = metrics["last"] or {}
     console.print(f"[bold]metrics[/bold]  {_rows(metrics['count'])}", highlight=False)
-    _fields(last)
+    print_fields(last)
     evaluation = metrics.get("evaluation")
     if evaluation and evaluation != last:
         console.print("[bold]evaluation[/bold]", highlight=False)
-        _fields(evaluation)
+        print_fields(evaluation)
 
 
-def _fields(row: dict[str, Any]) -> None:
+def print_fields(row: dict[str, Any]) -> None:
+    """Each `key  value` of a row on its own line, the values aligned."""
     width = max((len(key) for key in row), default=0) + 2
     for key, value in row.items():
         _pair(key, escape(_text(value)), width)

@@ -26,7 +26,7 @@ from shipyard.data import Generator, tasks
 from shipyard.modules import seed
 from shipyard.recipes import resolution, trainer_for
 from shipyard.recipes.cispo import CISPOTrainer
-from shipyard.recipes.fst import ADAM, BUDGET_PASSES, fst_trainer, slow_recipe
+from shipyard.recipes.fst import ADAM, BUDGET_PASSES, fst_trainer, merged, slow_recipe
 from shipyard.run import Run
 from shipyard.runner import Runner
 from shipyard.sampling.endpoint import ProviderEndpoint
@@ -35,6 +35,7 @@ from tests.trials import (
     BLUEPRINTS,
     VALID,
     Fakes,
+    Harbor,
     Stopped,
     check,
     dataset,
@@ -134,18 +135,18 @@ async def test_the_jobs_of_a_step_merge_into_one_group_per_task(tmp_path: Path) 
         [_group("a", "j1", 1.0), _group("b", "j1", 0.0)],
         [_group("a", "j2", 0.0), _group("b", "j2", 0.0)],
     ]
-    found = trainer.merged(parts)
+    found = trainer.credited(merged(parts))
     assert [group.task.name for group in found] == ["a", "b"]
     assert [[one.trial.job for one in group.members] for group in found] == [["j1", "j2"]] * 2
     assert found[0].shaped == [1.0, 0.0] and found[0].reward_variance == 0.25
     assert found[1].shaped == [0.0, 0.0] and found[1].reward_variance == 0.0
     assert found[0].advantages == pytest.approx([1.0, -1.0], abs=1e-5), "credited as one group"
     with pytest.raises(ValueError, match="different numbers of groups"):
-        trainer.merged([parts[0], parts[1][:1]])
+        merged([parts[0], parts[1][:1]])
 
 
 @pytest.mark.usefixtures("fakes")
-async def test_the_slow_steps_run_the_slow_classs_own_train(tmp_path: Path) -> None:
+async def test_the_slow_steps_run_the_slow_classs_own_train(tmp_path: Path, harbor: Harbor) -> None:
     passes: list[int] = []
 
     class Marked(CISPOTrainer):
@@ -159,7 +160,7 @@ async def test_the_slow_steps_run_the_slow_classs_own_train(tmp_path: Path) -> N
     )
     shutil.copytree(VALID, home / "modules")
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.engine.run_trial = Fakes()
+    harbor(Fakes())
     started = Runner.from_run(opened, fst_trainer(Marked))
     with opened:
         await started.run()
@@ -172,6 +173,7 @@ async def test_the_slow_steps_run_the_slow_classs_own_train(tmp_path: Path) -> N
 @pytest.mark.usefixtures("fakes")
 async def test_a_cycle_evolves_two_texts_then_splits_every_group_across_them(
     tmp_path: Path,
+    harbor: Harbor,
 ) -> None:
     dataset(tmp_path / "tasks", "four", *"abcd")
     home = write_blueprint(
@@ -179,7 +181,7 @@ async def test_a_cycle_evolves_two_texts_then_splits_every_group_across_them(
     )
     shutil.copytree(VALID, home / "modules")
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.engine.run_trial = Fakes()
+    harbor(Fakes())
     with opened:
         await Runner.from_run(opened).run()
     rows = list(record.read(opened.directory / record.METRICS))
@@ -208,6 +210,7 @@ async def test_a_cycle_evolves_two_texts_then_splits_every_group_across_them(
 @pytest.mark.usefixtures("fakes")
 async def test_the_fast_phase_scores_each_cell_with_one_rollout_on_five_passes(
     tmp_path: Path,
+    harbor: Harbor,
 ) -> None:
     """FST App. D: 960 metric calls over 192 examples, one rollout each, at any share of
     the group a text takes in the slow steps (here two of four)."""
@@ -215,7 +218,7 @@ async def test_the_fast_phase_scores_each_cell_with_one_rollout_on_five_passes(
     home = write_blueprint(tmp_path, _text(**{'"aime-train"': '"four"'}))
     shutil.copytree(VALID, home / "modules")
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.engine.run_trial = Fakes()
+    harbor(Fakes())
     with opened:
         await Runner.from_run(opened).run()
     rows = list(record.read(opened.directory / record.METRICS))
@@ -232,7 +235,7 @@ async def test_the_fast_phase_scores_each_cell_with_one_rollout_on_five_passes(
 
 
 @pytest.mark.usefixtures("fakes")
-async def test_patience_ends_a_fast_phase_as_it_ends_gepa(tmp_path: Path) -> None:
+async def test_patience_ends_a_fast_phase_as_it_ends_gepa(tmp_path: Path, harbor: Harbor) -> None:
     """`patience = 1` under a budget that would run on: the fast phase stops at its first
     round that does not raise the best anchor-set mean. Each text here names one task, so
     the first child's rise is the only one."""
@@ -241,7 +244,7 @@ async def test_patience_ends_a_fast_phase_as_it_ends_gepa(tmp_path: Path) -> Non
     home = write_blueprint(tmp_path, _text(**changes))
     shutil.copytree(VALID, home / "modules")
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.engine.run_trial = Fakes()
+    harbor(Fakes())
     with opened:
         await Runner.from_run(opened).run()
     rows = list(record.read(opened.directory / record.METRICS))
@@ -252,7 +255,9 @@ async def test_patience_ends_a_fast_phase_as_it_ends_gepa(tmp_path: Path) -> Non
 
 
 @pytest.mark.usefixtures("fakes")
-async def test_cycle_c_draws_its_minibatches_with_data_seed_plus_c(tmp_path: Path) -> None:
+async def test_cycle_c_draws_its_minibatches_with_data_seed_plus_c(
+    tmp_path: Path, harbor: Harbor
+) -> None:
     """Two cycles over two epochs of four tasks: each fast phase's parents run on the
     minibatches `[data] seed + cycle` predicts over that cycle's tasks."""
     dataset(tmp_path / "tasks", "four", *"abcd")
@@ -263,7 +268,7 @@ async def test_cycle_c_draws_its_minibatches_with_data_seed_plus_c(tmp_path: Pat
     home = write_blueprint(tmp_path, _text(**changes))
     shutil.copytree(VALID, home / "modules")
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.engine.run_trial = trials = Fakes()
+    trials = harbor(Fakes())
     with opened:
         await Runner.from_run(opened).run()
     names = [Path(str(config.task.path)).name for config in trials.configs]
@@ -318,6 +323,7 @@ class AlternatingFakes(Fakes):
 @pytest.mark.usefixtures("fakes")
 async def test_a_cycle_interrupted_after_a_slow_step_resumes_without_another_fast_phase(
     tmp_path: Path,
+    harbor: Harbor,
 ) -> None:
     dataset(tmp_path / "tasks", "four", *"abcd")
     home = write_blueprint(
@@ -325,7 +331,7 @@ async def test_a_cycle_interrupted_after_a_slow_step_resumes_without_another_fas
     )
     shutil.copytree(VALID, home / "modules")
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.engine.run_trial = AlternatingFakes()
+    harbor(AlternatingFakes())
     started = Runner.from_run(opened)
     trainer = started.trainer
     checkpointed, job = trainer.checkpoint, trainer.job
@@ -356,7 +362,7 @@ async def test_a_cycle_interrupted_after_a_slow_step_resumes_without_another_fas
     population = [one.digest for one in resumed.trainer.population]
     assert len(population) == 2 and resumed.modules is not None
     assert resumed.modules.digest == population[0]
-    resumed.trainer.run.engine.run_trial = AlternatingFakes()
+    harbor(AlternatingFakes())
     with resumed.trainer.run:
         await resumed.run()
     after = list(record.read(resumed.trainer.run.directory / record.JOBS))[len(before) :]

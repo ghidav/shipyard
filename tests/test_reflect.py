@@ -30,8 +30,8 @@ from shipyard.recipes.gepa.reflect import (
 )
 from shipyard.rollout import Rollouts
 from shipyard.run import Run
-from shipyard.sampling.endpoint import ProviderEndpoint
-from tests.trials import write_blueprint, write_result
+from shipyard.sampling.engine import HarborEngine
+from tests.trials import Harbor, write_blueprint, write_result
 
 SKILL = "---\nname: solving\ndescription: how to solve.\n---\n\nset up the algebra first\n"
 REWRITTEN = "---\nname: solving\ndescription: how to solve.\n---\n\ncheck the constraints\n"
@@ -283,18 +283,26 @@ class Reflector:
 
 def _run(tmp_path: Path, text: str = BLUEPRINT) -> Run:
     opened = Run.open(write_blueprint(tmp_path, text), root=tmp_path / "runs")
-    assert isinstance(opened.endpoint, ProviderEndpoint), "no proxy to point a reflection at"
+    assert not opened.config.model.served, "no proxy to point a reflection at"
     return opened
 
 
 async def test_the_reflector_runs_the_trial_our_way_and_records_it_as_a_reflection(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    harbor: Harbor,
 ) -> None:
     monkeypatch.chdir(tmp_path)
     runner = Reflector()
     with _run(tmp_path) as opened:
-        opened.engine.run_trial = runner
-        write = reflect(opened, harness="claude-code", model="anthropic/claude-sonnet-5", image="i")
+        harbor(runner)
+        write = reflect(
+            opened,
+            HarborEngine(opened.config.rollout),
+            harness="claude-code",
+            model="anthropic/claude-sonnet-5",
+            image="i",
+        )
         found = await write(_reflection())
     assert found is not None and found.text == REWRITTEN and found.name == "solving"
     (config,) = runner.configs
@@ -335,18 +343,26 @@ async def test_the_reflector_runs_the_trial_our_way_and_records_it_as_a_reflecti
 
 
 async def test_a_reflection_that_published_nothing_or_crashed_is_a_decline(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    harbor: Harbor,
 ) -> None:
     monkeypatch.chdir(tmp_path)
     with _run(tmp_path) as opened:
-        opened.engine.run_trial = Reflector(answer=None)
-        write = reflect(opened, harness="claude-code", model=None, image="i")
+        harbor(Reflector(answer=None))
+        write = reflect(
+            opened,
+            HarborEngine(opened.config.rollout),
+            harness="claude-code",
+            model=None,
+            image="i",
+        )
         assert await write(_reflection()) is None
 
         async def crashes(config: TrialConfig) -> None:
             raise RuntimeError("the daemon went away")
 
-        opened.engine.run_trial = crashes
+        harbor(crashes)
         assert await write(_reflection()) is None
     rows = list(record.read(opened.directory / record.JOBS))
     assert [row["purpose"] for row in rows] == ["reflection", "reflection"]
@@ -355,7 +371,9 @@ async def test_a_reflection_that_published_nothing_or_crashed_is_a_decline(
 
 
 async def test_the_party_falls_back_to_the_models_prefix(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    harbor: Harbor,
 ) -> None:
     monkeypatch.chdir(tmp_path)
 
@@ -363,8 +381,14 @@ async def test_the_party_falls_back_to_the_models_prefix(
         _published(Path(config.trials_dir) / config.trial_name, SKILL_FILE).write_text(REWRITTEN)
 
     with _run(tmp_path) as opened:
-        opened.engine.run_trial = wrote_no_result
-        write = reflect(opened, harness="pi", model="openai/gpt-5", image="i")
+        harbor(wrote_no_result)
+        write = reflect(
+            opened,
+            HarborEngine(opened.config.rollout),
+            harness="pi",
+            model="openai/gpt-5",
+            image="i",
+        )
         assert (await write(_reflection())) is not None
     (row,) = record.read(opened.directory / record.JOBS)
     assert row["party"] == "openai" and row["trials"] == 1
@@ -372,4 +396,4 @@ async def test_the_party_falls_back_to_the_models_prefix(
 
 def test_a_reflector_without_a_harness_is_refused() -> None:
     with pytest.raises(ValueError, match="needs a harness"):
-        reflect(object(), harness=" ", model=None, image="i")  # type: ignore[arg-type]
+        reflect(object(), object(), harness=" ", model=None, image="i")  # type: ignore[arg-type]

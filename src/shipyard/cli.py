@@ -25,7 +25,7 @@ from shipyard.proxy.client import Unreachable
 from shipyard.run import Run, RunRefused, runs_root
 from shipyard.runner import Runner, runner_in
 from shipyard.sampling.endpoint import NothingServed, ProxyGone
-from shipyard.show import print_run, print_runs, sections, state_of, styled
+from shipyard.show import print_fields, print_run, print_runs, sections, state_of, styled
 from shipyard.smoke import SmokeFailed
 from shipyard.smoke import smoke as smoke_job
 
@@ -172,8 +172,7 @@ def evaluate(
         started.trainer.run, lambda: found.append(asyncio.run(started.evaluate(tasks)))
     )
     if found and found[0] is not None:
-        for key, value in vars(found[0]).items():
-            console.print(f"  {key:<10}{value}", highlight=False)
+        print_fields(vars(found[0]))
     raise typer.Exit(code)
 
 

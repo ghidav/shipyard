@@ -16,6 +16,7 @@ from shipyard.data import Generator
 from shipyard.modules import Candidate
 from shipyard.recipes import trainer_for
 from shipyard.run import Run
+from shipyard.sampling.endpoint import endpoint_for
 from shipyard.training.client import TinkerClient
 from shipyard.training.trainer import Trainer
 from shipyard.types import Agent, Batches, Evaluation, Policy, harness
@@ -92,7 +93,7 @@ class Runner:
         row = self.checkpoint or {}
         client = TinkerClient.from_run(run) if cfg.trains else None
         policy = Policy(
-            run.endpoint,
+            endpoint_for(cfg, run.directory),
             client,
             start=row.get("sampler_path"),
             state=row.get("state_path"),
@@ -125,7 +126,9 @@ class Runner:
         if self.checkpoint is None:
             raise ValueError("an evaluation needs a run reopened at a checkpoint")
         run = self.trainer.run
-        policy = Policy(run.endpoint, start=self.checkpoint["sampler_path"])
+        policy = Policy(
+            endpoint_for(run.config, run.directory), start=self.checkpoint["sampler_path"]
+        )
         agent = Agent(policy, [harness(run.config.rollout.harness)], self.modules)
         async with agent.policy:
             return await self.trainer.evaluate(

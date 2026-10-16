@@ -45,6 +45,7 @@ from tests.trials import (
     BLUEPRINTS,
     VALID,
     FakeTrials,
+    Harbor,
     check,
     fixture_tasks,
     job,
@@ -411,7 +412,9 @@ def _rows(opened: Run) -> list[dict[str, Any]]:
 
 
 async def test_open_keeps_the_carried_modules_once_and_each_job_delivers_them(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    harbor: Harbor,
 ) -> None:
     monkeypatch.chdir(tmp_path)
     home = _carrying(tmp_path)
@@ -423,7 +426,7 @@ async def test_open_keeps_the_carried_modules_once_and_each_job_delivers_them(
     carried = opened.directory / record.MODULES / CARRIED
     assert kept == [carried] and _files(carried) == _files(VALID)
     assert seed(carried).digest == opened.carried.digest
-    opened.engine.run_trial = runner = FakeTrials()
+    runner = harbor(FakeTrials())
     first = await job(opened, _batch(tmp_path, "alpha", "beta"), rollouts=2, step=0)
     second = await job(opened, _batch(tmp_path, "alpha"), rollouts=1, step=1)
     assert kept == [carried], "the carried copy is written once, at open"
@@ -451,12 +454,14 @@ async def test_open_keeps_the_carried_modules_once_and_each_job_delivers_them(
 
 
 async def test_a_job_delivers_the_candidate_it_is_handed_and_nothing_otherwise(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    harbor: Harbor,
 ) -> None:
     monkeypatch.chdir(tmp_path)
     opened = Run.open(BLUEPRINTS / "evaluate", root=tmp_path / "runs")
     assert opened.carried is None and not (opened.directory / record.MODULES).exists()
-    opened.engine.run_trial = runner = FakeTrials()
+    runner = harbor(FakeTrials())
     bare = await job(opened, _batch(tmp_path, "alpha"), rollouts=1, step=0)
     assert runner.configs[0].agent.skills == []
     assert sorted(p.name for p in (tmp_path / "jobs" / job_of(bare)).iterdir()) == [
@@ -472,11 +477,13 @@ async def test_a_job_delivers_the_candidate_it_is_handed_and_nothing_otherwise(
 
 
 async def test_a_handed_candidate_wins_over_the_carried_one(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    harbor: Harbor,
 ) -> None:
     monkeypatch.chdir(tmp_path)
     opened = Run.open(_carrying(tmp_path), root=tmp_path / "runs")
-    opened.engine.run_trial = runner = FakeTrials()
+    runner = harbor(FakeTrials())
     planning = _module(_skill("plan first", name="planning"))
     other = Candidate({}).with_component("planning", planning)
     assert other.components["planning"].name == "planning", "named by its component"
@@ -488,11 +495,13 @@ async def test_a_handed_candidate_wins_over_the_carried_one(
 
 
 async def test_a_job_hands_a_prompt_to_harbor_as_the_agents_prompt_template(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    harbor: Harbor,
 ) -> None:
     monkeypatch.chdir(tmp_path)
     opened = Run.open(_carrying(tmp_path), root=tmp_path / "runs")
-    opened.engine.run_trial = runner = FakeTrials()
+    runner = harbor(FakeTrials())
     prompted = Candidate({}).with_component("guidance", _prompt("Run the tests.\n"))
     rolled = await job(opened, _batch(tmp_path, "alpha"), rollouts=1, step=0, modules=prompted)
     kwargs = runner.configs[0].agent.kwargs

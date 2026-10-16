@@ -69,10 +69,11 @@ def last_assistant_failed(text: str) -> bool:
             event = json.loads(line)
         except ValueError:
             continue
-        message = event.get("message") if isinstance(event, dict) else None
-        if event.get("type") == "message_end" and isinstance(message, dict):
-            if message.get("role") == "assistant":
-                stop = message.get("stopReason")
+        if not isinstance(event, dict) or event.get("type") != "message_end":
+            continue
+        message = event.get("message")
+        if isinstance(message, dict) and message.get("role") == "assistant":
+            stop = message.get("stopReason")
     return stop == "error"
 
 

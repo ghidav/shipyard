@@ -42,6 +42,7 @@ class GEPATrainer(Trainer):
         self.score_group_size = run.config.data.group_size
         self.reflect = reflect(
             run,
+            self.engine,
             harness=search.reflection_harness,
             model=search.reflection_model,
             image=search.reflection_image,

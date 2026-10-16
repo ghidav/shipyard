@@ -16,9 +16,9 @@ from shipyard.config import Blueprint
 from shipyard.data import Generator
 from shipyard.harnesses import PROFILES, bare_name, profile_for
 from shipyard.run import seeded
-from shipyard.sampling.endpoint import NothingServed, ProxyEndpoint
+from shipyard.sampling.endpoint import NothingServed, ProxyEndpoint, endpoint_for
 from shipyard.training.trainer import Trainer
-from shipyard.types import Agent, Policy, Verdict, harness
+from shipyard.types import Agent, Endpoint, Policy, Verdict, harness
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -109,23 +109,28 @@ async def smoke(run: Run) -> Smoked:
     recorded with `purpose = "smoke"`. A job the proxy served nothing for is still reported,
     and its stop is kept for `verify`."""
     cfg = run.config
-    agent = Agent(Policy(run.endpoint), [harness(cfg.rollout.harness)], seeded(cfg))
-    await run.endpoint.open()
-    try:
-        found = await Trainer(run).job(agent, planned(cfg), 1, purpose=PURPOSE)
-    except NothingServed as dead:
-        if dead.rolled is None:
-            raise
-        return replace(report(run, dead.rolled.trials, verdicts(dead.rolled)), dead=dead)
+    endpoint = endpoint_for(cfg, run.directory)
+    agent = Agent(Policy(endpoint), [harness(cfg.rollout.harness)], seeded(cfg))
+    async with agent.policy:
+        try:
+            found = await Trainer(run).job(agent, planned(cfg), 1, purpose=PURPOSE)
+        except NothingServed as dead:
+            if dead.rolled is None:
+                raise
+            judged = verdicts(dead.rolled)
+            return replace(report(run, endpoint, dead.rolled.trials, judged), dead=dead)
     members = [one for group in found for one in group.members]
-    return report(run, [one.trial.dir for one in members], [one.verdict for one in members])
+    trials = [one.trial.dir for one in members]
+    return report(run, endpoint, trials, [one.verdict for one in members])
 
 
-def report(run: Run, trials: Sequence[Path], judged: Sequence[Verdict]) -> Smoked:
+def report(
+    run: Run, endpoint: Endpoint, trials: Sequence[Path], judged: Sequence[Verdict]
+) -> Smoked:
     """The smoke report: where the proxy stood, how the harness was wired, each trial's
     records, weights and verdict off the record, and the job row's seconds and tokens."""
     cfg = run.config
-    serving = run.endpoint if isinstance(run.endpoint, ProxyEndpoint) else None
+    serving = endpoint if isinstance(endpoint, ProxyEndpoint) else None
     *_, row = record.read(run.directory / record.JOBS)
     requests = [
         one for one in record.read(run.directory / record.REQUESTS) if one["job"] == row["job"]
@@ -144,8 +149,8 @@ def report(run: Run, trials: Sequence[Path], judged: Sequence[Verdict]) -> Smoke
         said = f"masked {verdict.mask}" if verdict.reward is None else str(verdict.reward)
         found.append(Trial(name, records, served, said, verdict.mask is None))
     cached, prompt = int(row["cache_tokens"]), int(row["input_tokens"])
-    if serving is not None:  # the proxy's `input_tokens` leave the cached ones out
-        proxy, prompt = f"{serving.origin}  ({serving.placement})", prompt + cached
+    if serving is not None:
+        proxy = f"{serving.origin}  ({serving.placement})"
     else:
         proxy = f"none (the harness calls {cfg.model.provider} directly)"
     return Smoked(

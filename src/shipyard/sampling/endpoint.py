@@ -111,9 +111,14 @@ class ProviderEndpoint(Endpoint):
         return None
 
 
+def endpoint_for(cfg: Blueprint, directory: Path) -> Endpoint:
+    """The proxy over the run's weights, or the provider the harness dials itself."""
+    return ProxyEndpoint(cfg, directory) if cfg.model.served else ProviderEndpoint(cfg.model.name)
+
+
 @dataclass
 class ProxyEndpoint(Endpoint):
-    """The proxy over a Tinker sampler: started when the policy opens, stopped by the run."""
+    """The proxy over a Tinker sampler: started when the policy opens, stopped when it closes."""
 
     config: Blueprint
     directory: Path

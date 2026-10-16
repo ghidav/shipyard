@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -22,6 +21,7 @@ from tests.trials import (
     SEQUENCE_TOKENS,
     START,
     Alternating,
+    Harbor,
     Interrupting,
     Stopped,
     blueprint,
@@ -31,9 +31,8 @@ from tests.trials import (
 )
 
 
-async def _run(home: Path, tmp_path: Path, runner: Any) -> tuple[Run, Runner]:
+async def _run(home: Path, tmp_path: Path) -> tuple[Run, Runner]:
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.engine.run_trial = runner
     started = Runner.from_run(opened)
     with opened:
         await started.run()
@@ -41,11 +40,14 @@ async def _run(home: Path, tmp_path: Path, runner: Any) -> tuple[Run, Runner]:
 
 
 async def test_a_two_step_dapo_run_opens_a_client_serves_samples_steps_andcheckpoints(
-    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
 ) -> None:
     proxy, service = fakes
     client = service.client
-    opened, started = await _run(blueprint(tmp_path), tmp_path, Alternating())
+    harbor(Alternating())
+    opened, started = await _run(blueprint(tmp_path), tmp_path)
     # The client: a LoRA at the blueprint's rank, named after the run, no anchor, the
     # session finished.
     assert service.calls == [("lora", MODEL, 32)]
@@ -111,11 +113,14 @@ async def test_a_two_step_dapo_run_opens_a_client_serves_samples_steps_andcheckp
 
 
 async def test_each_epoch_is_one_pass_over_the_train_set_and_the_steps_count_through(
-    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
 ) -> None:
     home = blueprint(tmp_path, **{"batch_size = 2": "batch_size = 2\nepochs = 2"})
     trials = Alternating()
-    opened, started = await _run(home, tmp_path, trials)
+    harbor(trials)
+    opened, started = await _run(home, tmp_path)
     made = Generator(tasks("four", root=tmp_path / "tasks"), 2, 0)
     planned = [*made.batches(0), *made.batches(1)]
     ran = [Path(str(c.task.path)).name for c in trials.configs]
@@ -134,14 +139,17 @@ async def test_each_epoch_is_one_pass_over_the_train_set_and_the_steps_count_thr
 
 
 async def test_a_run_that_names_a_test_set_evaluates_on_the_cadence(
-    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
 ) -> None:
     dataset(tmp_path / "tasks", "two", "x", "y")
     home = blueprint(
         tmp_path,
         **{"batch_size = 2": 'batch_size = 2\ntest = "two"\nevaluate_every = 1\nepochs = 2'},
     )
-    opened, started = await _run(home, tmp_path, Alternating())
+    harbor(Alternating())
+    opened, started = await _run(home, tmp_path)
     logged = rows(opened)
     assert ["evaluation" if row.get("evaluation") else "step" for row in logged] == [
         "step",
@@ -170,13 +178,16 @@ async def test_a_run_that_names_a_test_set_evaluates_on_the_cadence(
 
 
 async def test_a_run_that_names_a_test_set_ends_with_an_evaluation(
-    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
 ) -> None:
     dataset(tmp_path / "tasks", "two", "x", "y")
     home = blueprint(
         tmp_path, **{"batch_size = 2": 'batch_size = 2\ntest = "two"\ntest_group_size = 1'}
     )
-    opened, started = await _run(home, tmp_path, Alternating())
+    harbor(Alternating())
+    opened, started = await _run(home, tmp_path)
     *steps, evaluation = rows(opened)
     assert len(steps) == 2 and not any(row.get("evaluation") for row in steps)
     assert (evaluation["step"], evaluation["epoch"], evaluation["rollouts"]) == (2, 0, 2)
@@ -198,20 +209,24 @@ async def test_each_kind_reaches_its_trainer_class(
     kind: str,
     loss: str,
     bounds: dict[str, float],
+    harbor: Harbor,
 ) -> None:
     _, service = fakes
     home = blueprint(tmp_path, kind, **{"batch_size = 2": "batch_size = 4"})
-    opened, started = await _run(home, tmp_path, Alternating())
+    harbor(Alternating())
+    opened, started = await _run(home, tmp_path)
     sent = [c for c in service.client.calls if c[0] == "forward_backward"]
     assert sent and all(c[2:] == (loss, bounds) for c in sent)
     assert [row["loss_fn"] for row in rows(opened)] == [loss]
 
 
 async def test_a_trainer_class_of_ones_own_replaces_the_kinds(
-    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
 ) -> None:
     opened = Run.open(blueprint(tmp_path), root=tmp_path / "runs")
-    opened.engine.run_trial = Alternating()
+    harbor(Alternating())
     started = Runner.from_run(opened, Trainer)
     with opened:
         agent = await started.run()
@@ -220,11 +235,14 @@ async def test_a_trainer_class_of_ones_own_replaces_the_kinds(
 
 
 async def test_a_kl_anchor_is_a_sampling_client_on_the_starting_weights(
-    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
 ) -> None:
     _, service = fakes
     home = blueprint(tmp_path, **{"batch_size = 2": "batch_size = 4", **ANCHORED})
-    opened, started = await _run(home, tmp_path, Alternating())
+    harbor(Alternating())
+    opened, started = await _run(home, tmp_path)
     assert service.calls == [("lora", MODEL, 32), ("sampling", MODEL, None)]
     assert len(service.anchor.asked) == 8
     (row,) = rows(opened)
@@ -235,7 +253,9 @@ async def test_a_kl_anchor_is_a_sampling_client_on_the_starting_weights(
 
 
 async def test_a_kl_anchor_from_a_checkpoint_samples_weights_published_from_its_state(
-    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
 ) -> None:
     proxy, service = fakes
     state = "tinker://run:train:0/weights/final"
@@ -247,7 +267,8 @@ async def test_a_kl_anchor_from_a_checkpoint_samples_weights_published_from_its_
             **ANCHORED,
         },
     )
-    await _run(home, tmp_path, Alternating())
+    harbor(Alternating())
+    await _run(home, tmp_path)
     published = "tinker://fake/sampler_weights/anchor"
     assert service.calls == [("from_state", state), ("sampling", MODEL, published)]
     assert ("save_weights_for_sampler", "anchor", SERVE_TTL) in service.client.calls
@@ -255,7 +276,9 @@ async def test_a_kl_anchor_from_a_checkpoint_samples_weights_published_from_its_
 
 
 async def test_a_resumed_run_anchors_kl_to_its_start_before_loading_the_checkpoint(
-    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
 ) -> None:
     _, service = fakes
     state = "tinker://run:train:0/weights/final"
@@ -263,11 +286,11 @@ async def test_a_resumed_run_anchors_kl_to_its_start_before_loading_the_checkpoi
         tmp_path, **{"[model]\n": f'[model]\nfrom_checkpoint = "{state}"\n', **ANCHORED}
     )
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.engine.run_trial = Interrupting(after=5)
+    harbor(Interrupting(after=5))
     with pytest.raises(Stopped), opened:
         await Runner.from_run(opened).run()
     resumed = Runner.from_checkpoint(opened.directory)
-    resumed.trainer.run.engine.run_trial = Alternating()
+    harbor(Alternating())
     with resumed.trainer.run:
         await resumed.run()
     published = "tinker://fake/sampler_weights/anchor"
@@ -280,15 +303,17 @@ async def test_a_resumed_run_anchors_kl_to_its_start_before_loading_the_checkpoi
 
 
 async def test_a_resumed_run_continues_its_warm_up(
-    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
 ) -> None:
     home = blueprint(tmp_path, **{"learning_rate = 2e-5": "learning_rate = 2e-5\nwarmup = 20"})
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.engine.run_trial = Interrupting(after=5)
+    harbor(Interrupting(after=5))
     with pytest.raises(Stopped), opened:
         await Runner.from_run(opened).run()
     resumed = Runner.from_checkpoint(opened.directory)
-    resumed.trainer.run.engine.run_trial = Alternating()
+    harbor(Alternating())
     with resumed.trainer.run:
         await resumed.run()
     rates = [row["learning_rate"] for row in rows(resumed.trainer.run)]
@@ -296,7 +321,9 @@ async def test_a_resumed_run_continues_its_warm_up(
 
 
 async def test_a_run_continuing_an_optimizer_state_skips_the_warm_up(
-    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
 ) -> None:
     state = "tinker://run:train:0/weights/final"
     home = blueprint(
@@ -306,18 +333,21 @@ async def test_a_run_continuing_an_optimizer_state_skips_the_warm_up(
             "learning_rate = 2e-5": "learning_rate = 2e-5\nwarmup = 20",
         },
     )
-    opened, _ = await _run(home, tmp_path, Alternating())
+    harbor(Alternating())
+    opened, _ = await _run(home, tmp_path)
     assert [row["learning_rate"] for row in rows(opened)] == pytest.approx([2e-5, 2e-5])
 
 
 async def test_a_step_that_fails_closes_the_session_as_errored_and_the_run_as_failed(
-    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
 ) -> None:
     proxy, service = fakes
     service.client.failing = RuntimeError("the backend went away")
     home = blueprint(tmp_path, **{"batch_size = 2": "batch_size = 4"})
     opened = Run.open(home, root=tmp_path / "runs")
-    opened.engine.run_trial = Alternating()
+    harbor(Alternating())
     with pytest.raises(RuntimeError, match="went away"), opened:
         await Runner.from_run(opened).run()
     assert service.closed == [("errored", "RuntimeError: the backend went away")]
@@ -327,11 +357,13 @@ async def test_a_step_that_fails_closes_the_session_as_errored_and_the_run_as_fa
 
 
 async def test_a_run_killed_mid_epoch_resumes_from_its_last_checkpoint(
-    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
 ) -> None:
     proxy, service = fakes
     opened = Run.open(blueprint(tmp_path), root=tmp_path / "runs")
-    opened.engine.run_trial = Interrupting(after=5)  # the second batch's first trial
+    harbor(Interrupting(after=5))  # the second batch's first trial
     started = Runner.from_run(opened)
     with pytest.raises(Stopped), opened:
         await started.run()
@@ -345,7 +377,7 @@ async def test_a_run_killed_mid_epoch_resumes_from_its_last_checkpoint(
     trainer = resumed.trainer
     assert (trainer.steps, trainer.updates, trainer.epoch) == (1, 1, 0)
     again = resumed.trainer.run
-    again.engine.run_trial = trials = Alternating()
+    trials = harbor(Alternating())
     with again:
         await resumed.run()
     planned = list(Generator(tasks("four", root=tmp_path / "tasks"), 2, 0).batches(0))
@@ -380,13 +412,16 @@ async def test_a_run_killed_mid_epoch_resumes_from_its_last_checkpoint(
 
 
 async def test_a_run_is_evaluated_at_a_checkpoint_as_one_more_row(
-    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
 ) -> None:
     proxy, service = fakes
-    opened, _ = await _run(blueprint(tmp_path), tmp_path, Alternating())
+    harbor(Alternating())
+    opened, _ = await _run(blueprint(tmp_path), tmp_path)
     dataset(tmp_path / "tasks", "two", "x", "y")
     reopened = Runner.from_checkpoint(opened.directory, tag="step-1")
-    reopened.trainer.run.engine.run_trial = Alternating()
+    harbor(Alternating())
     calls = len(service.calls)
     with reopened.trainer.run:
         result = await reopened.evaluate(tasks("two", root=tmp_path / "tasks"))
@@ -441,12 +476,14 @@ def test_a_runner_file_defines_one_runner_subclass(tmp_path: Path) -> None:
 
 
 async def test_a_run_under_a_runner_file_trains_under_its_trainer_and_resumes_under_the_copy(
-    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
 ) -> None:
     file = _file(tmp_path / "run.py", RUNNER_FILE)
     opened = Run.open(blueprint(tmp_path), root=tmp_path / "runs", runner=file)
     assert (opened.directory / record.RUNNER).read_bytes() == file.read_bytes()
-    opened.engine.run_trial = Alternating()
+    harbor(Alternating())
     started = runner_in(file).from_run(opened)
     with opened:
         await started.run()

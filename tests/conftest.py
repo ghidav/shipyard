@@ -1,11 +1,12 @@
 """Fixtures every test runs under. They restore the Modal builder default a rollout sets,
 remove the shell's Tinker and proxy variables so no test reaches a backend, and pin the
 machine facts `check` reads (Harbor's extras, logins, docker, Modal), so no finding depends on
-this machine. `fakes` is for the tests that ask for it."""
+this machine. `fakes` and `harbor` are for the tests that ask for them."""
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -13,6 +14,7 @@ from shipyard.sampling.engine import MODAL_IMAGE_BUILDER
 from tests.proxies import MODEL
 from tests.records import FakeProxy
 from tests.trainers import FakeService, capable
+from tests.trials import Harbor
 
 SHELL_VARS = (
     "TINKER_API_KEY",
@@ -46,6 +48,17 @@ def _machine_pinned(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(preflight, "modal_finding", lambda environ: None)
     monkeypatch.setattr(preflight, "docker_running", lambda: True)
     monkeypatch.setattr(preflight, "leftover_networks", lambda: 0)
+
+
+@pytest.fixture
+def harbor(monkeypatch: pytest.MonkeyPatch) -> Harbor:
+    """Stand a fake in for Harbor's trial in every engine the test builds; returns the fake."""
+
+    def standing(fake: Any) -> Any:
+        monkeypatch.setattr("shipyard.sampling.engine._run_trial", fake)
+        return fake
+
+    return standing
 
 
 @pytest.fixture

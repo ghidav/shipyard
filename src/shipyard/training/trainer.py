@@ -16,6 +16,8 @@ from shipyard import record
 from shipyard.credit import advantages, anchor_logprobs, sampler_logprobs
 from shipyard.modules import Candidate
 from shipyard.pack import datum, groups
+from shipyard.sampling.endpoint import NothingServed
+from shipyard.sampling.engine import HarborEngine
 from shipyard.types import (
     Adam,
     Agent,
@@ -148,6 +150,8 @@ class Trainer:
     def __init__(self, run: Run) -> None:
         self.run = run
         self.recipe = run.config.recipe
+        #: One engine, so every job in flight shares its `[rollout] concurrency`.
+        self.engine = HarborEngine(run.config.rollout, progress=run.progress)
         self.steps = 0
         self.updates = 0
         self.epoch = 0
@@ -156,6 +160,8 @@ class Trainer:
         """One epoch: a step per yield of `sample`, the weights served after each update."""
         every = self.run.config.checkpoints.every
         async for found in self.sample(agent, tasks):
+            if any(len(group.shaped) != len(group.members) for group in found):
+                raise ValueError(f"{type(self).__name__}.sample yielded groups it never credited")
             update = await self.step(agent, found)
             self.log(found, update)
             self.steps += 1
@@ -170,7 +176,7 @@ class Trainer:
     async def sample(self, agent: Agent, tasks: Batches) -> AsyncIterator[list[Group]]:
         """How a step's groups are composed out of jobs: one job per batch."""
         for batch in tasks:
-            yield await self.job(agent, batch)
+            yield self.credited(await self.job(agent, batch))
 
     async def job(
         self,
@@ -181,29 +187,35 @@ class Trainer:
         purpose: str = "training",
         **about: Any,
     ) -> list[Group]:
-        """The one place a policy is sampled: run, record, group, shape, advantage."""
-        run = self.run
+        """The one place a policy is sampled: run, record, group. The groups carry no
+        advantages; `credited` sets them where a step trains on them."""
+        run, endpoint = self.run, agent.policy.endpoint
         attempts = run.config.data.group_size if attempts is None else attempts
         job = run.reserve_job()
         run.progress.started(
             job, trials=len(tasks) * len(agent.harness) * attempts, step=self.steps
         )
-        trials = await run.engine.run(job, tasks, attempts, agent=agent)
+        trials = await self.engine.run(job, tasks, attempts, agent=agent)
         run.progress.done(job)
-        rolled = await run.recorded(
+        records = await endpoint.record(job, trials)
+        rolled = run.recorded(
             job,
             trials,
+            records,
+            party=endpoint.party,
             step=self.steps,
             modules=agent.modules,
             purpose=purpose,
             epoch=self.epoch,
             **about,
         )
-        found = groups(trials, rolled, agent)
-        for group in found:
-            group.shaped = self.shape(group)
-            group.advantages = self.advantage(group)
-        return found
+        if records is not None:  # once the job is on record, stop if the endpoint is dead
+            try:
+                endpoint.check(job, records)
+            except NothingServed as dead:
+                dead.rolled = rolled
+                raise
+        return groups(trials, rolled, agent)
 
     async def evaluate(self, agent: Agent, tasks: Values[Task], **more: Any) -> Evaluation | None:
         """One job per batch of `tasks` at `[data] test_group_size`, then one row with the mean."""
@@ -230,6 +242,13 @@ class Trainer:
         )
         self.run.log(evaluation=True, **vars(result), **more)
         return result
+
+    def credited(self, found: list[Group]) -> list[Group]:
+        """`found`, each group's shaped rewards and advantages set by this class's rules."""
+        for group in found:
+            group.shaped = self.shape(group)
+            group.advantages = self.advantage(group)
+        return found
 
     def shape(self, group: Group) -> list[float | None]:
         """The rewards as the verifier scored them; None on an unmeasured member."""

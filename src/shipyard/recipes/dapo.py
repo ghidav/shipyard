@@ -75,7 +75,7 @@ class DAPOTrainer(Trainer):
         target = self.run.config.data.batch_size * len(agent.harness)
         held: list[Group] = []
         for batch in tasks:
-            held += await self.job(agent, batch)
+            held += self.credited(await self.job(agent, batch))
             if sum(group.reward_variance > 0 for group in held) >= target:
                 yield held
                 held = []

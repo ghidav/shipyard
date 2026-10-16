@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
@@ -15,10 +16,10 @@ from shipyard.recipes.cispo import CISPOTrainer
 from shipyard.recipes.dapo import DAPOTrainer
 from shipyard.recipes.dr_grpo import DrGRPOTrainer
 from shipyard.run import Run
-from shipyard.sampling.endpoint import ProviderEndpoint
+from shipyard.sampling.endpoint import ProviderEndpoint, endpoint_for
 from shipyard.training.client import TinkerClient
 from shipyard.training.trainer import ROW, Trainer
-from shipyard.types import SERVE_TTL, Agent, Policy, harness
+from shipyard.types import SERVE_TTL, Agent, Batches, Group, Policy, harness
 from tests.records import FakeProxy
 from tests.trainers import FakeService
 from tests.trials import (
@@ -28,6 +29,7 @@ from tests.trials import (
     START,
     Alternating,
     FakeTrials,
+    Harbor,
     blueprint,
     checkpoints,
     rows,
@@ -51,7 +53,7 @@ class Spread:
 
 def _agent(run: Run, service: FakeService | None, *, anchored: bool = False) -> Agent:
     client = None if service is None else TinkerClient(service, run.config.model)
-    policy = Policy(run.endpoint, client, anchored=anchored)
+    policy = Policy(endpoint_for(run.config, run.directory), client, anchored=anchored)
     return Agent(policy, [harness(run.config.rollout.harness)])
 
 
@@ -67,11 +69,13 @@ async def _train(run: Run, trainer: Trainer, agent: Agent) -> None:
 
 
 async def test_an_epoch_serves_the_start_samples_steps_syncs_andcheckpoints(
-    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
 ) -> None:
     proxy, service = fakes
     run = Run.open(blueprint(tmp_path), root=tmp_path / "runs")
-    run.engine.run_trial = Alternating()
+    harbor(Alternating())
     agent = _agent(run, service)
     trainer = DAPOTrainer(run)
     await _train(run, trainer, agent)
@@ -155,11 +159,13 @@ async def test_an_epoch_serves_the_start_samples_steps_syncs_andcheckpoints(
 
 
 async def test_a_step_with_every_group_flat_logs_untrained_and_takes_no_gradient(
-    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
 ) -> None:
     proxy, service = fakes
     run = Run.open(blueprint(tmp_path, **{"batch_size = 2": "batch_size = 4"}), root=tmp_path)
-    run.engine.run_trial = FakeTrials()
+    harbor(FakeTrials())
     trainer = DAPOTrainer(run)
     await _train(run, trainer, _agent(run, service))
     calls = [c[0] for c in service.client.calls]
@@ -175,13 +181,34 @@ async def test_a_step_with_every_group_flat_logs_untrained_and_takes_no_gradient
     assert "train_tokens" not in record.read_json(run.directory / record.COSTS)["parties"]["tinker"]
 
 
+async def test_groups_a_sample_left_uncredited_are_refused_before_the_step(
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
+) -> None:
+    _, service = fakes
+    run = Run.open(blueprint(tmp_path), root=tmp_path / "runs")
+    harbor(Alternating())
+
+    class Uncredited(Trainer):
+        async def sample(self, agent: Agent, tasks: Batches) -> AsyncIterator[list[Group]]:
+            for batch in tasks:
+                yield await self.job(agent, batch)
+
+    with pytest.raises(ValueError, match="Uncredited.sample yielded groups it never credited"):
+        await _train(run, Uncredited(run), _agent(run, service))
+    assert [c[0] for c in service.client.calls] == ["save_weights_for_sampler"], "no step"
+
+
 async def test_dapo_holds_jobs_until_a_batchs_worth_of_groups_have_spread(
-    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
 ) -> None:
     _, service = fakes
     run = Run.open(blueprint(tmp_path), root=tmp_path / "runs")
     first, second = _plan(tmp_path)
-    run.engine.run_trial = Spread({first[0], *second})
+    harbor(Spread({first[0], *second}))
     trainer = DAPOTrainer(run)
     await _train(run, trainer, _agent(run, service))
     (row,) = rows(run)
@@ -202,11 +229,13 @@ async def test_dapo_holds_jobs_until_a_batchs_worth_of_groups_have_spread(
 
 
 async def test_the_epochs_last_step_takes_what_it_holds(
-    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
 ) -> None:
     _, service = fakes
     run = Run.open(blueprint(tmp_path, tasks=6), root=tmp_path / "runs")
-    run.engine.run_trial = FakeTrials()
+    harbor(FakeTrials())
     trainer = DAPOTrainer(run)
     await _train(run, trainer, _agent(run, service))
     (row,) = rows(run)
@@ -215,12 +244,14 @@ async def test_the_epochs_last_step_takes_what_it_holds(
 
 
 async def test_dr_grpo_keeps_the_base_sample_and_steps_once_per_batch(
-    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
 ) -> None:
     _, service = fakes
     run = Run.open(blueprint(tmp_path, "dr-grpo"), root=tmp_path / "runs")
     first, second = _plan(tmp_path)
-    run.engine.run_trial = Spread({first[0], *second})
+    harbor(Spread({first[0], *second}))
     trainer = DrGRPOTrainer(run)
     await _train(run, trainer, _agent(run, service))
     logged = rows(run)
@@ -236,11 +267,13 @@ async def test_dr_grpo_keeps_the_base_sample_and_steps_once_per_batch(
 
 
 async def test_the_base_trainer_is_the_plain_policy_gradient(
-    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
 ) -> None:
     _, service = fakes
     run = Run.open(blueprint(tmp_path), root=tmp_path / "runs")
-    run.engine.run_trial = Alternating()
+    harbor(Alternating())
     await _train(run, Trainer(run), _agent(run, service))
     client = service.client
     sent = [c for c in client.calls if c[0] == "forward_backward"]
@@ -263,13 +296,15 @@ async def test_the_base_trainer_is_the_plain_policy_gradient(
 
 
 async def test_cispo_reads_the_samplers_logprobs_and_makes_no_forward(
-    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
 ) -> None:
     _, service = fakes
     run = Run.open(
         blueprint(tmp_path, "cispo", **{"batch_size = 2": "batch_size = 4"}), root=tmp_path
     )
-    run.engine.run_trial = Alternating()
+    harbor(Alternating())
     await _train(run, CISPOTrainer(run), _agent(run, service))
     client = service.client
     assert not any(c[0] == "forward" for c in client.calls)
@@ -296,12 +331,14 @@ def test_a_run_recorded_with_the_older_job_keys_still_resumes(tmp_path: Path) ->
 
 
 async def test_the_kl_anchor_is_subtracted_per_token_billed_and_reported(
-    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
 ) -> None:
     _, service = fakes
     home = blueprint(tmp_path, **{"batch_size = 2": "batch_size = 4", **ANCHORED})
     run = Run.open(home, root=tmp_path)
-    run.engine.run_trial = Alternating()
+    harbor(Alternating())
     trainer = DAPOTrainer(run)
     await _train(run, trainer, _agent(run, service, anchored=True))
     assert len(service.anchor.asked) == 8
@@ -315,11 +352,13 @@ async def test_the_kl_anchor_is_subtracted_per_token_billed_and_reported(
 
 
 async def test_a_kl_term_without_an_anchor_is_refused_at_the_step(
-    tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
 ) -> None:
     _, service = fakes
     run = Run.open(blueprint(tmp_path, **ANCHORED), root=tmp_path / "runs")
-    run.engine.run_trial = Alternating()
+    harbor(Alternating())
     with pytest.raises(ValueError, match="needs the starting weights to anchor to"):
         await _train(run, DAPOTrainer(run), _agent(run, service))
     assert service.closed == [
@@ -328,12 +367,15 @@ async def test_a_kl_term_without_an_anchor_is_refused_at_the_step(
 
 
 async def test_the_overlong_term_docks_against_the_budget_or_warns_once_that_it_is_off(
-    tmp_path: Path, fakes: tuple[FakeProxy, FakeService], caplog: pytest.LogCaptureFixture
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    caplog: pytest.LogCaptureFixture,
+    harbor: Harbor,
 ) -> None:
     proxy, service = fakes
     home = blueprint(tmp_path)
     run = Run.open(home, root=tmp_path / "runs")
-    run.engine.run_trial = Alternating()
+    harbor(Alternating())
     with caplog.at_level(logging.WARNING):
         await _train(run, DAPOTrainer(run), _agent(run, service))
     logged = rows(run)
@@ -347,7 +389,7 @@ async def test_the_overlong_term_docks_against_the_budget_or_warns_once_that_it_
     proxy.budget = 2
     caplog.clear()
     run = Run.open(home, root=tmp_path / "runs")
-    run.engine.run_trial = Alternating()
+    harbor(Alternating())
     with caplog.at_level(logging.WARNING):
         await _train(run, DAPOTrainer(run), _agent(run, service))
     assert [row["overlong"] for row in rows(run)] == [4, 4]
@@ -356,19 +398,22 @@ async def test_the_overlong_term_docks_against_the_budget_or_warns_once_that_it_
 
 
 async def test_a_job_on_a_provider_agent_groups_the_verdicts_and_the_step_takes_nothing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    harbor: Harbor,
 ) -> None:
     monkeypatch.chdir(tmp_path)
     home = blueprint(tmp_path, **{"lora_rank = 32": 'lora_rank = 32\nprovider = "openrouter"'})
     run = Run.open(home, root=tmp_path / "runs")
-    run.engine.run_trial = Alternating()
+    harbor(Alternating())
     trainer = DAPOTrainer(run)
-    agent = Agent(Policy(run.endpoint), [harness("pi@0.85.1"), harness("claude-code")])
-    assert isinstance(run.endpoint, ProviderEndpoint)
+    endpoint = endpoint_for(run.config, run.directory)
+    agent = Agent(Policy(endpoint), [harness("pi@0.85.1"), harness("claude-code")])
+    assert isinstance(endpoint, ProviderEndpoint)
     tasks = [tmp_path / "tasks" / "four" / name for name in ("a", "b")]
     with run:
         async with agent.policy:
-            found = await trainer.job(agent, tasks, purpose="evaluation")
+            found = trainer.credited(await trainer.job(agent, tasks, purpose="evaluation"))
             assert await trainer.step(agent, found) is None
     assert [(group.task.name, group.harness.name) for group in found] == [
         ("a", "pi"),

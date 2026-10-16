@@ -18,6 +18,7 @@ from shipyard.cli import app
 from shipyard.run import Run
 from shipyard.runner import Runner
 from shipyard.show import state_of
+from tests.records import FakeProxy, made
 from tests.trials import BLUEPRINTS, FakeTrials, fixture_tasks
 
 DAPO = BLUEPRINTS / "dapo"
@@ -439,23 +440,59 @@ def test_an_evaluate_run_shows_its_jobs_and_costs(
     assert "total" not in json.dumps(as_json["costs"])
 
 
+#: A checkpoint row as a finished run leaves it, for the commands that reopen one.
+FINAL = {
+    "tag": "final",
+    "state_path": "s",
+    "sampler_path": "p",
+    "step": 1,
+    "updates": 1,
+    "epoch": 0,
+}
+
+
+async def _checkpointed(self: Runner) -> None:
+    """`Runner.run` standing in: the run finishes with its `final` checkpoint and nothing else."""
+    record.append(self.trainer.run.directory / record.CHECKPOINTS, FINAL)
+
+
+def test_evaluate_measures_a_checkpoint_and_prints_its_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "served"
+    home.mkdir()
+    text = (EVALUATE / "run.toml").read_text(encoding="utf-8")
+    text = text.replace('provider = "openrouter"', 'provider = "tinker"')
+    (home / "run.toml").write_text(text, encoding="utf-8")
+    monkeypatch.setattr(Runner, "run", _checkpointed)
+    root = tmp_path / "r"
+    assert runner.invoke(app, ["run", str(home), "--root", str(root)]).exit_code == 0
+    directory = _only_run(root)
+    proxy = FakeProxy(default=[made()])
+    monkeypatch.setattr("shipyard.sampling.endpoint.Proxy", proxy)
+    monkeypatch.setattr(
+        "shipyard.sampling.engine._run_trial", FakeTrials(outcomes={"beta": {"reward": 0.0}})
+    )
+    result = runner.invoke(app, ["evaluate", directory.name, "--root", str(root)])
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines()[-7:] == [
+        "  step         1",
+        "  epoch        0",
+        "  tasks        2",
+        "  rollouts     4",
+        "  graded       4",
+        "  masked       0",
+        "  reward_mean  0.5",
+    ]
+    (row,) = record.read(directory / record.METRICS)
+    assert row["evaluation"] is True and row["checkpoint"] == "final"
+    assert proxy.swapped == ["p"], "the checkpoint's sampler weights are served"
+
+
 def test_a_refused_evaluate_leaves_a_finished_runs_note_as_it_was(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def checkpoints(self: Runner) -> None:
-        record.append(
-            self.trainer.run.directory / record.CHECKPOINTS,
-            {
-                "tag": "final",
-                "state_path": "s",
-                "sampler_path": "p",
-                "step": 1,
-                "updates": 1,
-                "epoch": 0,
-            },
-        )
-
-    monkeypatch.setattr(Runner, "run", checkpoints)
+    monkeypatch.setattr(Runner, "run", _checkpointed)
     root = tmp_path / "r"
     assert runner.invoke(app, ["run", str(EVALUATE), "--root", str(root)]).exit_code == 0
     directory = _only_run(root)
@@ -517,17 +554,7 @@ def test_run_under_a_runner_file_keeps_a_copy_and_resumes_under_it(
 ) -> None:
     async def marks(self: Runner) -> None:
         self.trainer.run.note(ran=type(self).__name__, under=type(self.trainer).__name__)
-        record.append(
-            self.trainer.run.directory / record.CHECKPOINTS,
-            {
-                "tag": "final",
-                "state_path": "s",
-                "sampler_path": "p",
-                "step": 1,
-                "updates": 1,
-                "epoch": 0,
-            },
-        )
+        record.append(self.trainer.run.directory / record.CHECKPOINTS, FINAL)
 
     monkeypatch.setattr(Runner, "run", marks)
     root, file = tmp_path / "r", _runner_file(tmp_path / "bp" / "run.py")
