@@ -1,14 +1,14 @@
-"""System-role messages inside the message list become user turns where they stand.
+"""System-role messages inside the message list are read as user turns where they stand.
 
 Claude Code's wire puts system-role messages inside `messages`: one block of agent text
-after the first user message, and on every call a new block at the end with the tokens
+after the first user message and, on every call, a new block at the end with the tokens
 left and any note about a file that changed on disk. The cookbook's Anthropic parser folds
 them all into the system prompt, so a block appended at the end of the conversation lands
-at the front of the prompt, the previous prompt is no longer its prefix, and the bridge
-declines. Its OpenAI parser refuses such a block outright when the request carries tools.
-Read as user turns in place, as prime-rl's Anthropic dialect reads them, each call extends
-the previous one. One system prompt stays: the request's own `system` on the Anthropic
-wire, and the system messages that open the list on the OpenAI wire."""
+at the front of the prompt, the previous prompt is no longer a prefix, and the bridge
+declines. The cookbook's OpenAI parser refuses such a block outright when the request
+carries tools. Read as user turns in place, as prime-rl's Anthropic dialect reads them,
+each call extends the previous one. One system prompt remains: the request's own `system`
+on the Anthropic wire, and the system messages that open the list on the OpenAI wire."""
 
 from __future__ import annotations
 
@@ -39,10 +39,11 @@ def install() -> None:
 
 
 def as_user_turns(body: dict[str, Any], *, keep_opening: bool = False) -> dict[str, Any]:
-    """The body with every system-role message of its list given the user role, or the
-    body itself when it has none. With `keep_opening`, the system messages that open the
-    list stay as they are: on the OpenAI wire they are the system prompt. The top-level
-    `system` is untouched."""
+    """Return the body with every system-role message in its list given the user role.
+
+    The body is returned unchanged when it has no such message. With `keep_opening`, the
+    system messages at the start of the list are kept, since on the OpenAI wire they are
+    the system prompt. The top-level `system` is untouched."""
     messages = body.get("messages")
     if not isinstance(messages, list):
         return body

@@ -1,4 +1,4 @@
-"""The proxy over a model this run serves, and the provider case, which records nothing."""
+"""Rollout endpoints: a proxy over the weights this run serves, or a provider's model."""
 
 from __future__ import annotations
 
@@ -25,18 +25,20 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: Sandboxes on this machine, whose containers reach a proxy here by its Docker name.
+#: Sandboxes that run on this machine, whose containers reach a local proxy by its Docker name.
 LOCAL_SANDBOXES = frozenset({"docker", "podman", "apple-container"})
 PROXY_LOG = "proxy.log"
 TUNNEL_LOG = "tunnel.log"
 
 
 class ProxyGone(RuntimeError):
-    """The proxy this run started has exited."""
+    """Raised when the proxy this run uses is no longer reachable."""
 
 
 class NothingServed(RuntimeError):
-    """The proxy served a job nothing: it is dead, or its sampler refuses every request."""
+    """Raised when the proxy served a job nothing.
+
+    Either no trial reached the proxy, or its sampler refused every request."""
 
     def __init__(self, message: str, job: Job | None = None) -> None:
         super().__init__(message)
@@ -44,14 +46,16 @@ class NothingServed(RuntimeError):
 
 
 def placement(rollout: Rollout) -> str:
-    """`remote` for a named `endpoint_url`, `local` for a sandbox on this machine, else `tunnel`."""
+    """Return where the proxy runs: `remote`, `local` or `tunnel`.
+
+    `remote` when `endpoint_url` is set, `local` for a sandbox on this machine, else `tunnel`."""
     if rollout.endpoint_url.strip():
         return "remote"
     return "local" if rollout.sandbox in LOCAL_SANDBOXES else "tunnel"
 
 
 def backend(environ: Mapping[str, str] | None = None) -> str:
-    """The party sampling is billed to: `tinker`, or `tinker@<host>` under a `TINKER_BASE_URL`."""
+    """Return the billing party: `tinker`, or `tinker@<host>` when `TINKER_BASE_URL` is set."""
     environ = os.environ if environ is None else environ
     host = urlsplit(environ.get("TINKER_BASE_URL") or "").hostname
     return f"{TINKER}@{host}" if host else TINKER
@@ -65,12 +69,17 @@ def tinker_base_url(environ: Mapping[str, str] | None = None) -> str:
 
 
 def start_weights(cfg: Blueprint) -> str | None:
-    """The sampler path the proxy starts on; None for a state path, which cannot be sampled."""
+    """Return the sampler path the proxy starts on, or None for the base model.
+
+    A training run starts on None: its `from_checkpoint` is a state path, which cannot be
+    sampled."""
     return None if cfg.trains else (cfg.agent.from_checkpoint or None)
 
 
 def endpoint_settings(cfg: Blueprint, *, run: str | None = None) -> dict[str, Any]:
-    """The settings passed to `shipyard serve`; with `run`, its Tinker session is tagged."""
+    """Return the settings passed to `shipyard serve`.
+
+    With `run`, the Tinker session is tagged with the run name and recipe."""
     rollout = cfg.rollout
     tagged = {"metadata": {"shipyard_run": run, "shipyard_recipe": cfg.recipe.kind}} if run else {}
     return {
@@ -91,7 +100,9 @@ def endpoint_settings(cfg: Blueprint, *, run: str | None = None) -> dict[str, An
 
 @dataclass(frozen=True)
 class ProviderEndpoint(Endpoint):
-    """A model served elsewhere: the harness dials it with its own credentials."""
+    """A model hosted by its provider, which the harness calls with its own credentials.
+
+    No calls are recorded."""
 
     model: str | None
 
@@ -112,13 +123,13 @@ class ProviderEndpoint(Endpoint):
 
 
 def endpoint_for(cfg: Blueprint, directory: Path) -> Endpoint:
-    """The proxy over the run's weights, or the provider the harness dials itself."""
+    """Return a `ProxyEndpoint` when the run serves its own model, else a `ProviderEndpoint`."""
     return ProxyEndpoint(cfg, directory) if cfg.agent.served else ProviderEndpoint(cfg.agent.model)
 
 
 @dataclass
 class ProxyEndpoint(Endpoint):
-    """The proxy over a Tinker sampler: started when the policy opens, stopped when it closes."""
+    """The proxy in front of a Tinker sampler, opened and closed with the policy."""
 
     config: Blueprint
     directory: Path
@@ -138,7 +149,10 @@ class ProxyEndpoint(Endpoint):
         return backend(self.environ)
 
     async def open(self) -> None:
-        """Start the proxy once and wait for `/healthz`; after that, check it is still up."""
+        """Start or connect to the proxy and wait for its `/healthz`.
+
+        Later calls only check that the proxy is still reachable. Raise `RuntimeError` if the
+        run starts on a checkpoint and a remote proxy offers no control route to point it."""
         if self.proxy is not None:
             self.alive()
             return
@@ -181,7 +195,7 @@ class ProxyEndpoint(Endpoint):
         logger.info("the proxy at %s answers (%s), serving %s", self.origin, where, served)
 
     def _note(self) -> None:
-        """Note the proxy's placement and origin on the run's process note."""
+        """Record the proxy's placement and origin in the run's `process.json`."""
         path = self.directory / record.PROCESS
         note = record.read_json(path)
         note["proxy"] = {"placement": self.placement, "origin": self.origin}
@@ -193,7 +207,9 @@ class ProxyEndpoint(Endpoint):
             raise ProxyGone(f"the proxy is no longer reachable: {why}")
 
     async def serve(self, path: str | None) -> None:
-        """Point the proxy at `path`, None for the base model, and note it as this run's."""
+        """Point the proxy at the sampler weights at `path`, or at the base model for None.
+
+        The path is remembered so `record` can check that every record was served from it."""
         if self.proxy is None:
             raise RuntimeError("the proxy is not started; there is nothing to point")
         self.alive()
@@ -223,7 +239,10 @@ class ProxyEndpoint(Endpoint):
         )
 
     async def record(self, job: str, trials: Sequence[Trial]) -> Records:
-        """Drain the trials' records, a `requests.jsonl` row each; refuse a path not this run's."""
+        """Drain the trials' records from the proxy and append one `requests.jsonl` row each.
+
+        Raise `ValueError` if any record was served from weights other than the ones this run
+        pointed the proxy at."""
         proxy = self.proxy
         if proxy is None:
             raise RuntimeError("nothing was served; there are no records to take")
@@ -240,7 +259,9 @@ class ProxyEndpoint(Endpoint):
         return taken
 
     def check(self, job: str, records: Records) -> None:
-        """`ProxyGone` if the proxy died under the batch, `NothingServed` if it served nothing."""
+        """Check that the proxy is still up and served this job.
+
+        Raise `ProxyGone` if it died during the job, or `NothingServed` if it served nothing."""
         self.alive()
         why = served_nothing(records)
         if why:
@@ -261,7 +282,10 @@ class ProxyEndpoint(Endpoint):
 
 
 def served_nothing(taken: Mapping[str, Sequence[Record]]) -> str | None:
-    """Why the proxy served a job nothing, or None when one request was answered or refused."""
+    """Return why the proxy served a job nothing, or None if it served the job.
+
+    A job was served nothing when no trial reached the proxy or every request failed at the
+    sampler. A request the proxy itself refused counts as served."""
     if not taken:
         return None
     made = [item for records in taken.values() for item in records]
@@ -294,7 +318,9 @@ def _row(job: str, trial: str, item: Record) -> dict[str, Any]:
 
 
 def answered_by_ours(job: str, taken: Mapping[str, Sequence[Record]], told: str | None) -> None:
-    """Raise unless every record of `job` was served from the path this run pointed at."""
+    """Raise `ValueError` unless every record of `job` was served from `told`.
+
+    `told` is the path this run pointed the proxy at."""
     answered = {item.served for records in taken.values() for item in records if item.served}
     if answered - {told}:
         raise ValueError(

@@ -1,5 +1,4 @@
-"""The run's client against a real server on this loop: the records fetch with its retry
-and `again=1`, the readiness probe, and the swap through the control route."""
+"""Tests for the proxy client against a real server: records, readiness, and weight swaps."""
 
 from __future__ import annotations
 
@@ -17,7 +16,7 @@ from tests.proxies import FakeSampler, ask, by_path, ids, root, server
 
 
 def of(started: Any, **named: Any) -> Proxy:
-    """The run's client for a real server on this loop."""
+    """Build a `Proxy` client for a server started in this event loop."""
     fields = {
         "origin": root(started),
         "token": started.token,
@@ -51,7 +50,6 @@ async def test_records_come_back_as_records_with_their_ids_and_the_counters() ->
 
 @pytest.mark.parametrize("trial", ["a b#c?d__x", "50%__y", "a%2Fb__z"])
 async def test_a_trial_name_with_reserved_characters_comes_back_whole(trial: str) -> None:
-    """The client escapes the name into the records route and aiohttp decodes it back."""
     async with server(FakeSampler("ok")) as started:
         token = exchange.set(Exchange(trial=trial))
         try:
@@ -68,7 +66,7 @@ async def test_a_trial_name_with_reserved_characters_comes_back_whole(trial: str
 
 
 class LosingFirst(httpx.AsyncBaseTransport):
-    """The proxy answers, and the first answer is lost on the way back."""
+    """HTTP transport that drops the first response after the server has sent it."""
 
     def __init__(self) -> None:
         self.inner = httpx.AsyncHTTPTransport()

@@ -1,6 +1,4 @@
-"""Modules: what a directory of them seeds, how a candidate is kept and delivered, what is
-refused and why, and the carrying path: `Run.open` keeps the blueprint's modules once,
-`Trainer.job` delivers them into the job and names them on Harbor's agent config."""
+"""Tests for agent modules: seeding, keeping, refusals, delivery to Harbor, and `check` findings."""
 
 from __future__ import annotations
 
@@ -57,7 +55,7 @@ from tests.trials import (
 
 FIXTURES = Path(__file__).parent / "modules"
 
-#: An evaluate blueprint over the fixture dataset, carrying `modules/` beside it.
+#: Evaluate blueprint over the fixture dataset whose `[agent] modules` names `modules/` beside it.
 CARRYING = """
 [agent]
 model = "m"
@@ -155,7 +153,8 @@ def test_a_missing_or_empty_directory_is_refused(tmp_path: Path) -> None:
     ],
 )
 def test_an_entry_outside_the_layout_is_refused(tmp_path: Path, entry: str, why: str) -> None:
-    """A skill directly under modules/, the layout before skills/, is refused, not guessed."""
+    """Covers the layout used before `skills/` existed: a skill directly under `modules/` is
+    refused rather than guessed at."""
     shutil.copytree(VALID, tmp_path / "modules")
     write({entry: _skill("x")}, into=tmp_path / "modules")
     with pytest.raises(Inadmissible, match=re.escape(why) + ": a modules directory holds"):
@@ -257,8 +256,8 @@ def test_a_skill_may_not_take_the_prompts_name(tmp_path: Path) -> None:
 
 
 def test_a_prompt_is_delivered_as_harbors_prompt_template(tmp_path: Path) -> None:
-    """Harbor renders the instruction through the template: the text exactly, a blank line,
-    then the instruction. Jinja syntax in the text stays text."""
+    """Harbor renders the instruction through the template, which yields the prompt text, a
+    blank line, then the instruction. Jinja syntax in the prompt text is not evaluated."""
     text = "Use {{ python }} and {% if x %}this{% endif %}.\n\n"
     fields = deliver(Candidate({PROMPT: _prompt(text)}), tmp_path / "into")
     template = Path(fields["kwargs"]["prompt_template_path"])
@@ -330,8 +329,9 @@ def test_deliver_names_the_skills_root_harbor_takes_and_writes_every_file(
 async def test_a_kinds_fields_land_on_the_agent_config_beside_the_rollouts_own(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The seam a harness or tool kind would use: fields the rollout sets itself merge,
-    so such a kind is a class and a table row and needs no rollout edit."""
+    """Fields a kind's `deliver` returns merge with the ones the rollout sets. A future
+    harness or tool kind can then be added as a class and a `KINDS` entry, with no change
+    to the rollout."""
     monkeypatch.setattr(
         "shipyard.sampling.engine.deliver",
         lambda candidate, into: {
@@ -389,7 +389,7 @@ def test_read_skips_the_incidental_and_write_refuses_an_escape(tmp_path: Path) -
 
 
 def _carrying(tmp_path: Path, text: str = CARRYING, modules: Path | None = VALID) -> Path:
-    """A blueprint carrying a copy of `modules` beside it, in a workspace of fixture tasks."""
+    """Write a blueprint with a copy of `modules` beside it, in a workspace of fixture tasks."""
     fixture_tasks(tmp_path)
     home = write_blueprint(tmp_path, text)
     if modules is not None:

@@ -1,6 +1,4 @@
-"""Test the secrets a trial holds: a pool leased one identity per trial in flight, its value in
-the trial's environment and verifier, scrubbed from what the trial leaves, handed back however
-the trial ends; a trainer's own; and what `check` says of them."""
+"""Tests for per-trial secrets: leasing, injection, scrubbing, release, and `check` findings."""
 
 from __future__ import annotations
 
@@ -25,21 +23,21 @@ from shipyard.types import Agent, Policy, Settings, Trial, harness
 from tests.trials import blueprint, check, fixture_tasks, write_blueprint
 
 NAME = "BAUPLAN_API_KEY"
-#: Longer than eight characters, so Harbor's redacted form of each is its own.
+#: Pool keys longer than eight characters, so Harbor's redacted form of each is distinct.
 KEYS = ("key-0000-aaaaaaaa", "key-0001-bbbbbbbb")
 
 
 @pytest.fixture(autouse=True)
 def _placeholder() -> Iterator[None]:
-    """The engine sets the pooled name in this process; each test starts and ends without it."""
+    """Unset the pooled variable around each test, since the engine sets it in this process."""
     os.environ.pop(NAME, None)
     yield
     os.environ.pop(NAME, None)
 
 
 class Holding:
-    """Stands in for Harbor's trial: notes what each trial holds and how many hold at once,
-    writes the value as Harbor's saved config and an agent's log would, and raises when told."""
+    """Fake Harbor trial runner that tracks held secrets and concurrency, and writes the
+    secret where Harbor and an agent's log would. Each trial ends by raising `raises`, if set."""
 
     def __init__(self, raises: BaseException | None = None) -> None:
         self.configs: list[TrialConfig] = []
@@ -65,7 +63,7 @@ class Holding:
 
 
 class Minted(Secrets):
-    """A key made for each trial and revoked after it."""
+    """Fake `Secrets` that mints a key for each trial and records each release."""
 
     def __init__(self) -> None:
         self.acquired: list[Trial] = []
@@ -140,8 +138,8 @@ def test_the_scrub_leaves_binary_files_and_harbors_bare_redaction_alone(tmp_path
 async def test_an_identity_comes_back_however_its_trial_ended(
     tmp_path: Path, raises: BaseException
 ) -> None:
-    """A trial that raised, or met a cancellation not the run's, frees its identity: with one
-    identity, a second job would otherwise wait forever."""
+    """A trial that raises, or is cancelled by something other than the run, still releases
+    its identity. With a single identity, the second job would otherwise hang."""
     pool = Pool([{NAME: KEYS[0]}])
     await _engine(tmp_path, Holding(raises), pool).run(
         "job-0000", _batch(tmp_path, 2), 1, agent=AGENT

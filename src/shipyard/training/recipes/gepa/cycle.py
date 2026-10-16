@@ -1,7 +1,7 @@
-"""The search (GEPA, Agrawal et al., arXiv 2507.19457, Alg. 1).
+"""The GEPA search loop (Agrawal et al., arXiv 2507.19457, Alg. 1).
 
-The seeds are scored on the Pareto tasks. Each round then draws a parent off the frontier,
-with weight proportional to the tasks it leads, and runs it on a minibatch sampled from the
+The seeds are scored on the Pareto tasks. Each round then draws a parent from the frontier,
+weighted by the number of tasks it leads, and runs it on a minibatch sampled from the
 feedback tasks. Unless the parent is perfect on every task of the minibatch, a reflector
 rewrites one component from those traces. The child runs on the same minibatch and is scored
 on the Pareto tasks only if it beat its parent on the minibatch."""
@@ -21,25 +21,24 @@ from shipyard.training.recipes.gepa.propose import Proposer, component_for, prop
 
 logger = logging.getLogger(__name__)
 
-#: Called once per round with `round`, `parent`, `component` (None when skipped),
-#: `skipped` (why no rewrite was asked for, or None), `child` (None when no child was
-#: scored), `parent_mean` and `child_mean` over the minibatch, `accepted`, `pool`,
-#: `frontier` and `spent`. A run's `log` accepts these keys.
+#: Per-round callback, called with the keyword arguments `round`, `parent`, `component` (None
+#: when skipped), `skipped` (why no rewrite was asked for, or None), `child` (None when no
+#: child was scored), `parent_mean` and `child_mean` over the minibatch, `accepted`, `pool`,
+#: `frontier` and `spent`. A trainer's `logs.log` accepts these keys.
 Log = Callable[..., Any]
 
-#: Harbor's maximum reward. A round whose parent reaches it on every task of the minibatch
-#: asks for no rewrite, since a child must score strictly above its parent. GEPA's released
-#: code skips such rounds by default (gepa 0.1.4, api.py: skip_perfect_score = True,
-#: perfect_score = 1.0).
+#: Harbor's maximum reward. A round whose parent reaches it on every minibatch task asks for
+#: no rewrite, since a child must score strictly above its parent. GEPA's released code skips
+#: such rounds by default (gepa 0.1.4, api.py: skip_perfect_score = True, perfect_score = 1.0).
 PERFECT = 1.0
-#: What a skipped round's row says in `skipped`.
+#: Value of `skipped` in the row of a round skipped for a perfect parent.
 SKIPPED_PERFECT = "perfect"
 
 
 @dataclass(frozen=True)
 class Evolution:
-    """The result of one search: the best of the pool, the pool by digest, the fitness over
-    the Pareto tasks, the rounds it ran and the rollouts it spent."""
+    """Result of one search: the best candidate, the pool keyed by digest, the fitness on the
+    Pareto tasks, the number of rounds run and the rollouts spent."""
 
     best: Candidate
     pool: dict[str, Candidate]
@@ -48,8 +47,8 @@ class Evolution:
     spent: int
 
     def top(self, k: int) -> list[Candidate]:
-        """The k candidates to carry on: the frontier ranked as `best` ranks it, then the
-        rest of the pool. The ranking repeats when the pool holds fewer than k."""
+        """Return `k` candidates to carry forward: the frontier ranked as `best` ranks it,
+        then the rest of the pool. The ranking repeats when the pool holds fewer than `k`."""
         ranked = _ranked(self.pool, self.fitness)
         return [ranked[at % len(ranked)] for at in range(k)]
 
@@ -68,22 +67,23 @@ async def evolve(
     rng: random.Random | None = None,
     log: Log | None = None,
 ) -> Evolution:
-    """The loop over GEPA's two task lists.
+    """Run the GEPA search over its two task sets and return the result.
 
     Minibatches are drawn from `tasks` (D_feedback). Every seed and accepted child is scored
-    on `pareto` (D_pareto), and the frontier and the winner are read from those scores.
-    `pareto=None` reuses `tasks` (GEPA 6, FST's anchor set).
+    on `pareto` (D_pareto), and the frontier and the winner are taken from those scores.
+    `pareto=None` reuses `tasks` (GEPA section 6; FST's anchor set).
 
-    `budget` counts rollouts: `rollouts` per task scored, every scoring included. Every round
-    spends the parent's, so the budget ends the search.
+    `budget` is counted in rollouts: `rollouts` per task scored, across every scoring. Every
+    round spends at least the parent's minibatch rollouts, so the budget always ends the search.
 
-    `patience`, when set, ends the search after that many consecutive rounds, skipped ones
-    included, in which the best Pareto mean of the pool did not rise. This is GEPA's
-    `NoImprovementStopper` (gepa 0.1.4, utils/stop_condition.py), which its code adds only
-    when asked.
+    `patience`, when set, ends the search after that many consecutive rounds (skipped rounds
+    included) in which the best Pareto mean in the pool did not rise. This is GEPA's
+    `NoImprovementStopper` (gepa 0.1.4, utils/stop_condition.py), which its code adds only on
+    request.
 
     `seed` is one candidate or a population. `rng` draws the parents and shuffles the
-    minibatches. An exception from the scorer propagates."""
+    minibatches. Exceptions from the scorer propagate. Raise `ValueError` when there are no
+    tasks or components, or when `rollouts` is below 1."""
     chosen = random.Random() if rng is None else rng
     told = log if log is not None else _silent
     feedback = tuple(dict.fromkeys(Path(task) for task in tasks))
@@ -104,7 +104,7 @@ async def evolve(
     spent = rounds = asked = stale = 0
 
     async def measure(candidate: Candidate, over: Sequence[Path]) -> list[Outcome]:
-        """Score `candidate` over `over` in the current round. `spent` grows by the rollouts
+        """Score `candidate` on `over` in the current round. `spent` grows by the rollouts
         requested, even if fewer outcomes come back."""
         nonlocal spent
         spent += len(over) * rollouts
@@ -168,10 +168,11 @@ async def evolve(
 
 
 def perfect(batch: Sequence[Path], outcomes: Sequence[Outcome]) -> bool:
-    """Whether every task of the minibatch scored `PERFECT` or above. Tasks are compared one
-    by one, as GEPA's code compares each example's score, not by their mean. A task's score
-    is the mean over its measured rollouts. A task with no measured rollout, or no outcome,
-    is not perfect."""
+    """Return whether every task in the minibatch scored at least `PERFECT`.
+
+    Each task is checked on its own rather than by the minibatch mean, as GEPA's code checks
+    each example's score. A task's score is the mean over its measured rollouts; a task with
+    no measured rollout or no outcome is not perfect."""
     reached = {
         outcome.task
         for outcome in outcomes
@@ -181,16 +182,18 @@ def perfect(batch: Sequence[Path], outcomes: Sequence[Outcome]) -> bool:
 
 
 def peak(fitness: Fitness) -> float:
-    """The best Pareto mean in the pool, which `patience` watches. GEPA's stopper reads the
-    highest of `program_full_scores_val_set`. -inf while nothing is measured."""
+    """Return the best Pareto mean in the pool, the value `patience` watches, or -inf when
+    nothing is measured. GEPA's stopper reads the highest of `program_full_scores_val_set`."""
     found = [fitness.aggregate(digest) for digest in fitness.scores]
     return max((value for value in found if value is not None), default=float("-inf"))
 
 
 def best(pool: dict[str, Candidate], fitness: Fitness) -> Candidate:
-    """The candidate of the whole pool measured on the most tasks, then with the highest
-    aggregate, ties broken by digest. GEPA picks the best aggregate. The frontier serves
-    only to draw parents. The first of the pool when nothing was measured."""
+    """Return the pool candidate measured on the most tasks, then with the highest aggregate,
+    with ties broken by digest; the first candidate when nothing was measured.
+
+    As in GEPA, the winner is picked by aggregate from the whole pool; the frontier is used
+    only to draw parents."""
     measured = [digest for digest in pool if fitness.coverage(digest)]
     if not measured:
         return next(iter(pool.values()))
@@ -199,8 +202,8 @@ def best(pool: dict[str, Candidate], fitness: Fitness) -> Candidate:
 
 
 def _ranked(pool: dict[str, Candidate], fitness: Fitness) -> list[Candidate]:
-    """The frontier by (coverage, aggregate, digest), best first, then the rest of the pool
-    by (coverage, aggregate), ties in the order they joined."""
+    """Return the frontier sorted by (coverage, aggregate, digest), best first, then the rest
+    of the pool sorted by (coverage, aggregate), with ties in the order they joined."""
 
     def key(digest: str) -> tuple[int, float]:
         return fitness.coverage(digest), fitness.aggregate(digest) or 0.0
@@ -211,10 +214,11 @@ def _ranked(pool: dict[str, Candidate], fitness: Fitness) -> list[Candidate]:
 
 
 def minibatches(tasks: Sequence[Path], size: int, rng: random.Random) -> Iterator[list[Path]]:
-    """GEPA's minibatches (Alg. 1 line 9) of `size` tasks. Tasks are sampled without
-    replacement in passes, each pass a fresh shuffle, as the authors' sampler does. A pass's
-    short last minibatch is filled from the start of that pass, so no minibatch repeats a
-    task."""
+    """Yield GEPA's minibatches (Alg. 1, line 9) of `size` tasks, without end.
+
+    Tasks are sampled without replacement in passes, each pass a fresh shuffle, as the
+    authors' sampler does. A pass's short last minibatch is filled from the start of that
+    pass, so no minibatch repeats a task."""
     width = max(1, min(size, len(tasks)))
     while True:
         order = list(tasks)
@@ -225,8 +229,8 @@ def minibatches(tasks: Sequence[Path], size: int, rng: random.Random) -> Iterato
 
 
 def _beats(parent: Sequence[Outcome], child: Sequence[Outcome]) -> bool:
-    """Whether the child's mean is strictly above the parent's over the tasks both measured.
-    A tie does not count, since accepting it costs a full evaluation for no gain."""
+    """Return whether the child's mean is strictly above the parent's over the tasks both
+    measured. A tie is rejected, since accepting it costs a full evaluation for no gain."""
     shared = {outcome.task for outcome in parent if outcome.measured} & {
         outcome.task for outcome in child if outcome.measured
     }
@@ -238,4 +242,4 @@ def _beats(parent: Sequence[Outcome], child: Sequence[Outcome]) -> bool:
 
 
 def _silent(**row: Any) -> None:
-    """The log used when none is given."""
+    """Discard a round's row; the default when no `log` is given."""

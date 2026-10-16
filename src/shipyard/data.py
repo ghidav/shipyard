@@ -1,4 +1,4 @@
-"""Datasets as directories of Harbor tasks under `tasks/`, and how a run cuts them up."""
+"""Datasets of Harbor tasks under `tasks/`: listing, batching and held-out splits."""
 
 from __future__ import annotations
 
@@ -13,23 +13,25 @@ from harbor.models.task.task import Task
 if TYPE_CHECKING:
     from shipyard.config import Blueprint
 
-#: Where datasets live, relative to the working directory, the way Harbor takes `tasks/`.
+#: Directory holding the datasets, relative to the working directory, as Harbor uses `tasks/`.
 TASKS_DIR = "tasks"
 
 
 class NoSuchDataset(FileNotFoundError):
-    """A dataset named in a blueprint is absent on disk. Raised so a run cannot finish over
-    zero batches and report success."""
+    """Raised when a dataset named in a blueprint is missing on disk, so that a run cannot
+    report success after zero batches."""
 
 
 def home_of(dataset: str, *, root: Path | None = None) -> Path:
-    """`tasks/<dataset>`, under `root` or the working directory."""
+    """Return `<root>/<dataset>`, where `root` defaults to `tasks/` in the working
+    directory."""
     return (root if root is not None else Path(TASKS_DIR)) / dataset
 
 
 def tasks(dataset: str, *, root: Path | None = None) -> list[Path]:
-    """Every task directory under `tasks/<dataset>/` that Harbor accepts, by name.
-    Raises `NoSuchDataset` naming the path when there is none."""
+    """List the dataset's task directories that Harbor accepts, sorted by name.
+
+    Raises `NoSuchDataset` when there are none."""
     home = home_of(dataset, root=root)
     listed = _task_dirs(home)
     if listed:
@@ -41,9 +43,10 @@ def tasks(dataset: str, *, root: Path | None = None) -> list[Path]:
 
 
 def held_out(listed: Sequence[Path], count: int, *, seed: int) -> tuple[list[Path], list[Path]]:
-    """Split `listed` in two, each part in list order: the tasks to learn from, and
-    `count` tasks drawn with `seed` to hold out and measure on. The same seed gives the
-    same split."""
+    """Split `listed` into kept and held-out tasks.
+
+    `count` tasks are drawn at random with `seed` and held out. Both parts keep list order,
+    and the same seed gives the same split."""
     if not 0 <= count <= len(listed):
         raise ValueError(f"cannot hold out {count} of {len(listed)} task(s)")
     drawn = set(random.Random(seed).sample(range(len(listed)), count))
@@ -53,7 +56,7 @@ def held_out(listed: Sequence[Path], count: int, *, seed: int) -> tuple[list[Pat
 
 @dataclass(frozen=True)
 class Generator:
-    """How tasks are fed to the trainer: batches of task references and nothing else."""
+    """The trainer's source of tasks: batches of task paths, and nothing else."""
 
     train: list[Path]
     batch_size: int
@@ -62,7 +65,8 @@ class Generator:
 
     @classmethod
     def of(cls, config: Blueprint) -> Generator:
-        """Over the blueprint's `[data]` table: each set's tasks in list order."""
+        """Build a generator from the blueprint's `[data]` table, with each dataset's tasks
+        in list order."""
         data = config.data
 
         def listed(names: Sequence[str]) -> list[Path]:
@@ -72,13 +76,15 @@ class Generator:
 
     @property
     def per_pass(self) -> int:
-        """The batches in one pass over the train tasks, the short last one counted."""
+        """Number of batches in one pass over the training tasks, counting a short last one."""
         return -(-len(self.train) // self.batch_size)
 
     def batches(self, start: int = 0) -> Iterator[list[Path]]:
-        """Batches without end from the `start`-th: pass n over the train tasks shuffles them
-        under `seed + n` and cuts them `batch_size` at a time, its short last batch kept.
-        Nothing when there are no train tasks."""
+        """Yield batches without end, starting from batch index `start`.
+
+        Pass `n` over the training tasks shuffles them with seed `seed + n` and cuts them
+        into batches of `batch_size`, keeping a short last batch. Yields nothing when there
+        are no training tasks."""
         if self.batch_size < 1:
             raise ValueError(f"batch_size must be at least 1; got {self.batch_size}")
         if not self.train:
@@ -93,7 +99,6 @@ class Generator:
 
 
 def _task_dirs(home: Path) -> list[Path]:
-    """The valid task directories under a dataset directory, sorted by name."""
     if not home.is_dir():
         return []
     return sorted(
@@ -103,23 +108,25 @@ def _task_dirs(home: Path) -> list[Path]:
     )
 
 
-#: The share of a run's tasks gepa holds out to select on when `[recipe] pareto` is unset,
-#: rounded down, as in three of GEPA's four benchmarks: GEPA §4.1 (split sizes) and §4.3
-#: (the validation set is D_pareto). HotpotQA, IFBench and HoVer hold 300 validation tasks
-#: beside 150 training ones (PUPA alone splits 111 and 111), and the one split the paper
-#: draws itself, IFBench's, is one of those.
+#: Fraction of the run's tasks `gepa` holds out for selection when `[recipe] pareto` is
+#: unset, rounded down, as in three of GEPA's four benchmarks: GEPA §4.1 (split sizes) and
+#: §4.3 (the validation set is D_pareto). HotpotQA, IFBench and HoVer have 300 validation
+#: tasks beside 150 training ones (only PUPA splits 111 and 111), and IFBench's, the one
+#: split the paper draws itself, is among them.
 PAPER_PARETO = (2, 3)
 
 
 def search_sets(
     found: Iterable[Path], pareto: int | str | None, *, seed: int
 ) -> tuple[list[Path], list[Path]]:
-    """gepa's two task lists, GEPA's D_feedback and D_pareto (Alg. 1 line 1), out of the tasks
-    `found`, each once in path order. Minibatches are drawn from the first. Every candidate
-    the search keeps is scored on the second. `pareto` as a dataset name is D_pareto, and the
-    tasks are D_feedback. A count holds that many of them out, drawn with `seed`. 0 keeps
-    every task in both (GEPA 6). None holds out two thirds, as in three of GEPA's four
-    benchmarks. Raises ValueError when either list would be empty."""
+    """Split the tasks `found` into GEPA's D_feedback and D_pareto (Alg. 1 line 1).
+
+    Minibatches are drawn from D_feedback, and every candidate the search keeps is scored
+    on D_pareto. Each list holds each task once, in path order. `pareto` selects the split:
+    a dataset name is used as D_pareto, with all of `found` as D_feedback; a count holds
+    that many tasks out, drawn with `seed`; 0 puts every task in both (GEPA 6); None holds
+    out two thirds, as in three of GEPA's four benchmarks. Raises `ValueError` when either
+    list would be empty."""
     listed = sorted(set(found))
     if isinstance(pareto, str):
         return listed, tasks(pareto)

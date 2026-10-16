@@ -1,4 +1,4 @@
-"""Test the vocabulary: what it defines and re-exports, the group's rule, no loop imported."""
+"""Tests for `shipyard.types`: its definitions, re-exports, and import boundary."""
 
 from __future__ import annotations
 

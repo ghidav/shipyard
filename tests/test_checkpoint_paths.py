@@ -1,6 +1,4 @@
-"""`[agent] from_checkpoint` is a state path for a training run and a sampler path for
-anything that only samples. `check` names the other column, the proxy of a training run
-starts on the base model, and the KL anchor samples weights published from the state."""
+"""Tests for `[agent] from_checkpoint`: a state path for training runs, a sampler path otherwise."""
 
 from __future__ import annotations
 

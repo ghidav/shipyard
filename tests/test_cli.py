@@ -1,4 +1,4 @@
-"""The commands, through typer's runner: check, run, runs, show, and where runs go."""
+"""Tests for the CLI commands, run through typer's `CliRunner`."""
 
 from __future__ import annotations
 
@@ -30,8 +30,8 @@ runner = CliRunner()
 
 @pytest.fixture(autouse=True)
 def isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every test runs from a directory holding only the fixture tasks, with no root from
-    the shell and a terminal wide enough that rich never folds a run id across lines."""
+    """Run each test from a directory holding only the fixture tasks, with `SHIPYARD_RUNS`
+    unset and a terminal wide enough that rich never wraps a run id."""
     fixture_tasks(tmp_path)
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("SHIPYARD_RUNS", raising=False)
@@ -48,7 +48,7 @@ def _only_run(root: Path) -> Path:
 
 
 def _fixture_dapo(tmp_path: Path, *, provider: str | None = None) -> Path:
-    """The dapo fixture over the fixture dataset, its model served by `provider` when given."""
+    """Write the dapo fixture blueprint over the fixture dataset, served by `provider` if set."""
     home = tmp_path / "blueprints" / "dapo"
     home.mkdir(parents=True)
     text = (DAPO / "run.toml").read_text(encoding="utf-8")
@@ -67,7 +67,7 @@ COSTS = {
 
 
 def _headings(output: str) -> list[str]:
-    """The section names printed at column 0, in order."""
+    """Return the section names printed at column 0, in order."""
     return [
         line.split()[0]
         for line in output.splitlines()
@@ -76,7 +76,7 @@ def _headings(output: str) -> list[str]:
 
 
 def _recorded(root: Path) -> Path:
-    """A finished run with two metrics, twelve jobs, two checkpoints and a costs document."""
+    """Create a finished run with two metric rows, thirteen jobs, two checkpoints, and costs."""
     with Run.open(DAPO, root=root) as run:
         logs = Folder(run.directory)
         logs.log("train", reward=0.5)
@@ -91,7 +91,7 @@ def _recorded(root: Path) -> Path:
 
 
 def test_check_ok() -> None:
-    """The resolved config, then nothing: the ok lines are hidden unless asked for."""
+    """`check` prints the resolved config and hides the ok lines unless `--verbose` is set."""
     result = runner.invoke(app, ["check", str(EVALUATE)])
     assert result.exit_code == 0, result.output
     assert result.output.startswith("[agent]\n")
@@ -106,9 +106,8 @@ def test_check_ok() -> None:
 
 
 def test_check_prints_the_resolution_line_for_a_gradient_recipe(tmp_path: Path) -> None:
-    """The acceptance check: the dapo fixture over the fixture dataset, served on this
-    machine, prints the resolved config with its comment line, no ok lines, and exits 0
-    with the probe's warning as its only finding."""
+    """Acceptance check: the dapo fixture served on this machine passes, with the Tinker probe
+    warning as its only finding."""
     home = tmp_path / "dapo"
     home.mkdir()
     text = (DAPO / "run.toml").read_text(encoding="utf-8")
@@ -144,8 +143,8 @@ def test_check_blocks_a_missing_dataset_directory(tmp_path: Path) -> None:
 
 
 def test_check_reports_a_served_model_on_loopback_for_a_docker_sandbox(tmp_path: Path) -> None:
-    """The acceptance check: a served evaluate blueprint over the fixture dataset with a
-    docker sandbox is ok but for the probe, which cannot ask without a key."""
+    """Acceptance check: a served evaluate blueprint with a docker sandbox passes, except for
+    the Tinker probe, which cannot run without a key."""
     home = tmp_path / "served"
     home.mkdir()
     text = (EVALUATE / "run.toml").read_text(encoding="utf-8")
@@ -395,8 +394,6 @@ def test_show_json_has_the_five_sections_with_every_row(tmp_path: Path) -> None:
 def test_an_evaluate_run_shows_its_jobs_and_costs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`run` on the evaluate fixture with Harbor's trial replaced: `show` renders the job
-    rows with the new columns and the costs document as it was written."""
     monkeypatch.setenv("COLUMNS", "400")  # sixteen columns, none cut to an ellipsis
     monkeypatch.setattr(
         "shipyard.sampling.engine._run_trial",
@@ -444,7 +441,7 @@ def test_an_evaluate_run_shows_its_jobs_and_costs(
     assert "total" not in json.dumps(as_json["costs"])
 
 
-#: A checkpoint row as a finished run leaves it, for the commands that reopen one.
+#: Checkpoint row left by a finished run, for tests of the commands that reopen a run.
 FINAL = {
     "tag": "final",
     "state_path": "s",
@@ -456,7 +453,7 @@ FINAL = {
 
 
 async def _checkpointed(self: Trainer) -> None:
-    """`Trainer.train` standing in: the run ends with its `final` checkpoint and nothing else."""
+    """Replacement for `Trainer.train` that only records the `final` checkpoint."""
     record.append(self.directory / record.CHECKPOINTS, FINAL)
 
 

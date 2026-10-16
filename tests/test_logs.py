@@ -1,4 +1,4 @@
-"""Where a trainer writes: its directory, wandb beside it, and both closed with the trainer."""
+"""Tests for trainer logging to the run directory and to wandb."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ WANDB = '\n[logging.wandb]\nproject = "shipyard"\nentity = "team"\n'
 
 
 class FakeWandbRun:
-    """What the trainer asked of its wandb run."""
+    """Fake wandb run that records the trainer's calls."""
 
     def __init__(self, **init: Any) -> None:
         self.init = init
@@ -46,13 +46,13 @@ class FakeWandbRun:
 
 @pytest.fixture(autouse=True)
 def _here(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Datasets are looked up under the working directory's `tasks/`."""
+    """Change into `tmp_path`, since datasets are looked up under `tasks/` there."""
     monkeypatch.chdir(tmp_path)
 
 
 @pytest.fixture
 def wandb(monkeypatch: pytest.MonkeyPatch) -> list[FakeWandbRun]:
-    """A stand-in `wandb` module; the list holds every run it started."""
+    """Install a fake `wandb` module and return the list of runs it starts."""
     started: list[FakeWandbRun] = []
 
     def init(**kwargs: Any) -> FakeWandbRun:
@@ -67,7 +67,7 @@ def wandb(monkeypatch: pytest.MonkeyPatch) -> list[FakeWandbRun]:
 
 
 def _wandb_home(tmp_path: Path, **replacements: str) -> Path:
-    """The dapo fixture with a `[logging.wandb]` table."""
+    """Write the dapo fixture blueprint with a `[logging.wandb]` table."""
     home = blueprint(tmp_path, **replacements)
     (home / "run.toml").write_text((home / "run.toml").read_text() + WANDB)
     return home

@@ -1,4 +1,4 @@
-"""Test the credit arithmetic that the trainer calls."""
+"""Tests for the credit arithmetic used by the trainer."""
 
 from __future__ import annotations
 

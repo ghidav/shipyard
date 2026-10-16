@@ -1,4 +1,4 @@
-"""Inkling's effort levels as renderer names: `tml_v0_effort_<e>` builds every prompt at `e`."""
+"""Tests for `renderer_for`, including Inkling effort names of the form `tml_v0_effort_<e>`."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from shipyard.proxy import cookbook
 
 
 class Inner:
-    """A renderer that records what each prompt was built with."""
+    """Fake renderer that records the keyword arguments of each prompt it builds."""
 
     strip_thinking_from_history = False
 
@@ -67,14 +67,14 @@ def test_an_effort_outside_the_renderers_range_is_refused(made: list[str], name:
 
 
 class Stripping(Inner):
-    """A renderer that drops the history's thinking by default, as the cookbook's Qwen3
-    and Qwen3.5 renderers do."""
+    """Fake renderer that strips thinking from the history by default, as the cookbook's
+    Qwen3 and Qwen3.5 renderers do."""
 
     strip_thinking_from_history = True
 
 
 class Plain:
-    """A renderer with no such setting."""
+    """Fake renderer with no `strip_thinking_from_history` attribute."""
 
     def build_generation_prompt(self, messages: Any, **kwargs: Any) -> str:
         return "prompt"

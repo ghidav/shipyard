@@ -1,5 +1,4 @@
-"""The blueprint schema: every fixture loads, every mistake is named as `[table] key`,
-and `check` resolves the config it prints. Its findings are `test_preflight`'s."""
+"""Tests for the blueprint schema and the config that `check` resolves."""
 
 from __future__ import annotations
 
@@ -15,7 +14,7 @@ from shipyard.cli.preflight import Finding
 from shipyard.config import Blueprint, ConfigError, load
 from tests.trials import BLUEPRINTS, check, fixture_tasks, write_blueprint
 
-#: The kinds whose recipe is a `Gradient`: the three the loop trains.
+#: Recipe kinds implemented as a `Gradient` recipe.
 GRADIENT = ("dapo", "dr-grpo", "cispo", "fst")
 
 MINIMAL = """
@@ -136,8 +135,8 @@ def _cap_warnings(home: Path) -> list[str]:
 def test_the_length_cap_is_a_dr_grpo_knob_that_takes_infinity_and_warns_from_one(
     tmp_path: Path,
 ) -> None:
-    """The warning applies only while the length rule is on. With `length_penalty = 0` the
-    cap docks nothing."""
+    """The warning applies only while the length penalty is on; with `length_penalty = 0`
+    the cap has no effect."""
     assert load(BLUEPRINTS / "dr-grpo").recipe.length_cap == 0.5
     assert _cap_warnings(BLUEPRINTS / "dr-grpo") == []
     dr = (BLUEPRINTS / "dr-grpo" / "run.toml").read_text(encoding="utf-8")

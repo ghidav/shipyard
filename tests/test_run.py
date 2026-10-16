@@ -1,4 +1,4 @@
-"""Opening a run writes its definition and process note. Closing it records how it ended."""
+"""Tests for opening and closing a `Run`, its recorded state, and where runs are kept."""
 
 from __future__ import annotations
 

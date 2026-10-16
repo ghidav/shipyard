@@ -1,4 +1,4 @@
-"""What a run spent, as counts: tokens per party and seconds per sandbox."""
+"""Token and sandbox-time accounting for a run."""
 
 from __future__ import annotations
 
@@ -19,9 +19,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: The counts a party's entry holds. No price can be added to it.
+#: Counts kept for each party. Only counts are stored, never prices.
 COUNTS = ("trials", "input_tokens", "cache_tokens", "output_tokens")
-#: What training adds to the Tinker party, present only once a run has spent them.
+#: Counts training adds to the Tinker party. Each appears only once the run has spent some.
 TRAINING_COUNTS = ("train_tokens", "reference_tokens", "anchor_tokens")
 #: The phases Harbor times on a trial, in the order they run.
 PHASES = ("environment_setup", "agent_setup", "agent_execution", "verifier")
@@ -29,15 +29,17 @@ PHASES = ("environment_setup", "agent_setup", "agent_execution", "verifier")
 
 @dataclass
 class Costs:
-    """One entry per party and per sandbox, each a sum of counts. `to_dict` produces
-    `costs.json`."""
+    """Running totals per party (trials and tokens) and per sandbox (trials and seconds).
+    `to_dict` gives the contents of `costs.json`."""
 
     parties: dict[str, dict[str, int]] = field(default_factory=dict)
     sandboxes: dict[str, dict[str, float]] = field(default_factory=dict)
 
     def add_party(self, name: str, **counts: int) -> None:
-        """Add to a party's counts. Raises `ValueError` for a key outside `COUNTS` and
-        `TRAINING_COUNTS`, so no price gets in."""
+        """Add counts to a party's totals.
+
+        Raises `ValueError` for a key outside `COUNTS` and `TRAINING_COUNTS`, so that no
+        price can be recorded."""
         unknown = set(counts) - set(COUNTS) - set(TRAINING_COUNTS)
         if unknown:
             named = ", ".join(COUNTS + TRAINING_COUNTS)
@@ -59,7 +61,7 @@ class Costs:
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> Costs:
-        """Read back what `to_dict` wrote; a missing table is empty."""
+        """Rebuild costs from the output of `to_dict`. A missing table is read as empty."""
         costs = cls()
         for name, held in (payload.get("parties") or {}).items():
             base = {key: held.get(key, 0) for key in COUNTS}
@@ -72,9 +74,11 @@ class Costs:
 
 
 def reported(job: Job) -> dict[str, int]:
-    """Sum, over the trials with a result, the trial count (`trials`) and the
-    `n_input_tokens` (cache included), `n_cache_tokens` and `n_output_tokens` their agents
-    reported. A trial that reported nothing adds no tokens."""
+    """Sum the token counts the agents reported in a job's trial results.
+
+    Counts the trials that have a result, and totals their `n_input_tokens` (which include
+    cached tokens), `n_cache_tokens` and `n_output_tokens`. A trial that reported nothing
+    adds no tokens."""
     totals = dict.fromkeys(COUNTS, 0)
     for trial, payload in results(job):
         totals["trials"] += 1
@@ -95,7 +99,10 @@ def reported(job: Job) -> dict[str, int]:
 
 
 def sampled(job: Job) -> tuple[dict[str, int], dict[str, int]]:
-    """A served job's bill off its records: counts, graded trials, refused and bridged calls."""
+    """Count a served job's tokens and trials from the proxy's records.
+
+    Also returns how many calls the proxy refused for budget or context (`turned_away`) and
+    how many prompts the bridge built (`bridged`)."""
     calls = [item for found in (job.records or {}).values() for item in found]
     counted = {
         "trials": sum(1 for _ in results(job)),
@@ -111,13 +118,16 @@ def sampled(job: Job) -> tuple[dict[str, int], dict[str, int]]:
 
 
 def cached(item: Record) -> int:
-    """The prompt tokens a record says were served from cache, at most the prompt."""
+    """Return the record's cached prompt tokens, capped at the prompt length."""
     return min(int(item.cached_tokens or 0), len(item.prompt_token_ids))
 
 
 def billed_by(job: Job) -> str | None:
-    """`agent_info.model_info.provider`, lower-cased, when every trial that recorded one
-    agrees; None when none did or they differ, and the blueprint's provider stands."""
+    """Return the provider the job's trials report in `agent_info.model_info.provider`,
+    lower-cased.
+
+    Returns None when no trial reports one or they disagree, in which case the blueprint's
+    provider is billed."""
     providers: set[str] = set()
     for _, payload in results(job):
         info = payload.get("agent_info")
@@ -129,8 +139,8 @@ def billed_by(job: Job) -> str | None:
 
 
 def sandbox_seconds(job: Job) -> tuple[int, float]:
-    """How many trials left a result, and their summed container seconds. A trial with
-    no result has no time on it."""
+    """Return the number of trials with a result and their total container seconds.
+    Trials without a result are not counted."""
     trials, seconds = 0, 0.0
     for _, payload in results(job):
         trials += 1
@@ -139,7 +149,8 @@ def sandbox_seconds(job: Job) -> tuple[int, float]:
 
 
 def _container_seconds(payload: Mapping[str, Any]) -> float:
-    """From the first timed phase starting to the last one finishing; zero if none was."""
+    """Return the seconds from the first phase start to the last phase end, or 0.0 if no
+    phase was timed."""
     phases = [payload[phase] for phase in PHASES if isinstance(payload.get(phase), dict)]
     started = [when for phase in phases if (when := _at(phase.get("started_at"))) is not None]
     finished = [when for phase in phases if (when := _at(phase.get("finished_at"))) is not None]

@@ -1,6 +1,4 @@
-"""The model's thinking on the wire: sent to the harness in the wire's form, read back from
-what the harness kept, and bridged only when kept as written. The tests use the real app on
-both wires with a fake renderer and sampler. One test runs the real Qwen3 renderer."""
+"""Tests for model thinking on both wires: how it is sent, read back, and bridged."""
 
 from __future__ import annotations
 
@@ -34,8 +32,8 @@ def _events(body: str) -> list[tuple[str, dict[str, Any]]]:
 
 
 async def _anthropic_turns(sent_back: Any) -> list[Any]:
-    """Two turns of a tool loop: the first reply's blocks, rewritten by `sent_back`, then
-    a tool result. Returns the trial's records."""
+    """Run a two-turn Anthropic tool loop and return the trial's records. The second request
+    sends back the first reply's blocks as rewritten by `sent_back`, then a tool result."""
     sampler = FakeSampler(["{look}CALL ls {}", "{done}two files"])
     async with server(sampler, renderer=BridgeRenderer()) as started:
         body = {"system": "be brief", "tools": TOOLS_ANTHROPIC}

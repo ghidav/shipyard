@@ -1,4 +1,4 @@
-"""A fake Tinker training side: a service, a recording training client, instant futures."""
+"""Fakes for the Tinker training side: a service client, a training client, and futures."""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ from tinker.types import GetServerCapabilitiesResponse, SupportedModel
 
 @dataclass
 class FakeFuture:
-    """The SDK's future for a save, a forward or an optimizer step. `result_async` records
-    a "consumed" call on the client, so the pipeline's order shows in `calls`."""
+    """Fake SDK future for a save, a forward pass, or an optimizer step. `result_async`
+    appends a "consumed" entry to the client's `calls`, so tests can check pipelining order."""
 
     value: Any
     client: FakeTrainingClient | None = None
@@ -37,17 +37,17 @@ class FakeOptimStep:
 
 @dataclass
 class FakeForwardBackward:
-    """`loss_fn_outputs[i]["logprobs"]`, a TensorData per datum, is all the trainer reads."""
+    """Fake forward or forward-backward result. The trainer reads only
+    `loss_fn_outputs[i]["logprobs"]`."""
 
     loss_fn_outputs: list[dict[str, Any]]
 
 
 @dataclass
 class FakeTrainingClient:
-    """`tinker.TrainingClient` without the network. `forward` scores every position
-    `logprob` (the reference mu), or, when `positional` is set, minus the token it predicts.
-    `forward_backward` scores `trained` (pi), or raises `failing`. Every call is appended to
-    `calls` in order and the datums sent to `sent`."""
+    """Fake `tinker.TrainingClient`. `forward` scores every position `logprob` (the reference
+    mu), or the negated target token id when `positional` is set; `forward_backward` scores
+    `trained` (pi) or raises `failing`. Calls are appended to `calls` and datums to `sent`."""
 
     logprob: float = -0.5
     trained: float = -0.5
@@ -108,8 +108,8 @@ class FakeTrainingClient:
 
 
 class FlatAnchor:
-    """A sampling client on the starting weights, scoring every token `logprob`. The first
-    position is unscored, as `compute_logprobs` leaves it."""
+    """Fake sampling client on the starting weights that scores every token `logprob`. The
+    first position is unscored, as in `compute_logprobs`."""
 
     def __init__(self, logprob: float = -0.1) -> None:
         self.logprob = logprob
@@ -121,8 +121,8 @@ class FlatAnchor:
 
 
 def chunk_ids(prompt: Any) -> list[int]:
-    """The prompt's ids, an image chunk as a run of -1 of its length: what a fake read,
-    without `to_ints`, which refuses images."""
+    """Return a prompt's token ids with each image chunk as a run of -1 of its length. This
+    avoids `to_ints`, which rejects images."""
     out: list[int] = []
     for chunk in prompt.chunks:
         tokens = getattr(chunk, "tokens", None)
@@ -131,7 +131,7 @@ def chunk_ids(prompt: Any) -> list[int]:
 
 
 def capable(*models: tuple[str, bool]) -> GetServerCapabilitiesResponse:
-    """`get_server_capabilities` answering these `(name, trainable)` pairs."""
+    """Build a `get_server_capabilities` response listing these `(name, trainable)` pairs."""
     return GetServerCapabilitiesResponse(
         supported_models=[SupportedModel(model_name=n, trainable=t) for n, t in models]
     )
@@ -139,9 +139,10 @@ def capable(*models: tuple[str, bool]) -> GetServerCapabilitiesResponse:
 
 @dataclass
 class FakeService:
-    """`tinker.ServiceClient` as far as a run uses it: the three training factories (the
-    `user_metadata` each received is kept on `metadata`), the anchor's sampling client, the
-    capabilities (`None` raises, which a run must survive), and `close` with its status."""
+    """Fake `tinker.ServiceClient` covering what a run uses: the three training client
+    factories (each `user_metadata` is kept in `metadata`), the anchor sampling client, the
+    server capabilities (None makes the call raise, which a run must survive), and `close`,
+    which records its status."""
 
     client: FakeTrainingClient = field(default_factory=FakeTrainingClient)
     capabilities: GetServerCapabilitiesResponse | None = None

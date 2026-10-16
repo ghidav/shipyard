@@ -1,8 +1,4 @@
-"""`check`'s sandbox findings: Harbor's extra, the credentials for a provider elsewhere
-(the table is confirmed against the installed Harbor), Modal's verdict on its token, a short
-setup time, a run secret in `[agent] env`, a key `.env` assigns twice, docker for a docker
-sandbox or the tunnel image, and the trial networks that hard-killed runs left behind. The
-conftest pins this machine's facts. Each test removes the pin for the fact it tests."""
+"""Tests for `check` sandbox findings. Each test undoes the conftest pin for the fact it checks."""
 
 from __future__ import annotations
 
@@ -60,7 +56,7 @@ kind = "evaluate"
 
 @pytest.fixture
 def here(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A working directory with the fixtures, a home with no logins, no provider variables."""
+    """Working directory with the fixture tasks, an empty home, and no provider variables."""
     fixture_tasks(tmp_path)
     monkeypatch.chdir(tmp_path)
     home = tmp_path / "home"
@@ -86,7 +82,7 @@ def blueprint(
     rollout: str = "",
     agent: str = "",
 ) -> Path:
-    """An evaluate blueprint over the fixture dataset, in a directory of its own."""
+    """Write an evaluate blueprint over the fixture dataset into a fresh directory."""
     text = BLUEPRINT.format(provider=provider, sandbox=sandbox, rollout=rollout, agent=agent)
     return write_blueprint(tmp_path / "made" / str(next(MADE)), text)
 
@@ -151,7 +147,7 @@ def test_a_login_harbor_takes_stands_in_for_the_variables(
 def test_check_on_modal_without_credentials_blocks_each_variable(
     here: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The acceptance check, through the CLI: no login file, no variables."""
+    """Runs the acceptance check through the CLI, with no login file and no variables."""
     monkeypatch.setattr(preflight, "logged_in", logged_in)
     monkeypatch.setenv("COLUMNS", "200")
     result = runner.invoke(app, ["check", str(blueprint(here, "modal"))])
@@ -316,9 +312,8 @@ def test_docker_running_asks_the_daemon(tmp_path: Path, monkeypatch: pytest.Monk
 
 
 class FakeModal(ModuleType):
-    """Stands in for the `modal` module. `App.lookup` raises the error `failure` names, or
-    waits until `answer` is set when `failure` is "hangs". It records each call and provides
-    the two exception types."""
+    """Fake `modal` module that records each `App.lookup` call. The lookup raises the error
+    named by `failure`, or blocks until `answer` is set when `failure` is "hangs"."""
 
     def __init__(self, failure: str | None = None) -> None:
         super().__init__("modal")
@@ -356,7 +351,7 @@ class FakeModal(ModuleType):
 
 @pytest.fixture
 def asked(here: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """The real Modal lookup, with no profile file and no Modal variables."""
+    """Restore the real `modal_finding`, with no profile file and no Modal variables."""
     monkeypatch.setattr(preflight, "modal_finding", modal_finding)
     for name in ("MODAL_CONFIG_PATH", "MODAL_PROFILE"):
         monkeypatch.delenv(name, raising=False)
@@ -404,8 +399,8 @@ def test_a_refused_token_from_the_environment_names_dotenv_and_the_profile_it_sh
 def test_the_profiles_own_token_id_in_the_environment_shadows_nothing(
     asked: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Only ids are compared and no secret is read. An environment with the profile's own
-    token id, or with no token id, shadows no profile."""
+    """Only token ids are compared, so no secret is read. An environment holding the
+    profile's own token id, or no token id at all, does not shadow the profile."""
     (Path.home() / ".modal.toml").write_text('[default]\ntoken_id = "ak-good"\n', "utf-8")
     monkeypatch.setenv("MODAL_TOKEN_ID", "ak-good")
     monkeypatch.setenv("MODAL_TOKEN_SECRET", "as-other")
@@ -443,7 +438,7 @@ def test_a_refused_profile_is_named_in_the_file_modal_config_path_names(
 def test_modal_that_does_not_answer_is_given_up_on_as_a_warning(
     asked: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A lookup that hangs delays `check` by the 15 s bound, shortened here."""
+    """A hanging lookup delays `check` by the 15-second bound, which this test shortens."""
     assert preflight.MODAL_SECONDS == 15
     monkeypatch.setattr(preflight, "MODAL_SECONDS", 0.5)
     fake = faked(monkeypatch, "hangs")

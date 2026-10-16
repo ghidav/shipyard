@@ -1,7 +1,4 @@
-"""Images and documents on the wire, carried to the model as image parts. The tests wrap the
-cookbook's real parsers as the server does and check that parts and pages stay in order,
-the page cut is stated, text-only bodies are unchanged, and a model that takes no images
-refuses cleanly."""
+"""Tests for images and PDF pages on both wires, passed to the model as image parts."""
 
 from __future__ import annotations
 
@@ -37,8 +34,7 @@ def _pdf(pages: int = 2) -> str:
 
 @pytest.fixture
 def parsers():
-    """The cookbook's parsers wrapped for the test and restored afterwards to the state
-    they had on entry."""
+    """Install the wrapped cookbook parsers for the test and restore their prior state after."""
     saved = {name: cookbook.private(name) for name in cookbook.PATCHABLE}
     vision.install()
     yield SimpleNamespace(
@@ -86,7 +82,7 @@ def test_an_anthropic_image_block_reaches_the_renderer_as_an_image_part(parsers)
 
 
 def test_a_pdf_in_a_tool_result_becomes_one_image_per_page(parsers) -> None:
-    """Claude Code's read of a PDF arrives inside a tool_result block."""
+    """Claude Code's `Read` of a PDF arrives inside a `tool_result` block."""
     body = {
         "model": "m",
         "max_tokens": 10,
@@ -238,8 +234,8 @@ def test_install_is_once_and_the_adapter_refuses_a_symbol_it_does_not_wrap() -> 
 
 
 def test_images_restored_into_parts_another_wrap_already_split() -> None:
-    """Thinking's wrap splits a message into parts before vision's restore sees it. The
-    image sentinel inside a text part still comes back as an image part."""
+    """The thinking wrapper splits a message into parts before `vision.restore` sees it.
+    An image sentinel inside a text part must still become an image part."""
     bank = vision.Bank()
     sentinel = bank.add(Image.new("RGB", (2, 2), "red"))
     parsed = SimpleNamespace(
@@ -277,7 +273,7 @@ def test_takes_images_reads_the_renderers_flag() -> None:
 
 
 async def test_a_text_only_model_refuses_an_image_with_a_400_on_both_wires() -> None:
-    """The fake renderer has no image processor, like a text-only model's."""
+    """The fake renderer has no image processor, as with a text-only model."""
     sampler = FakeSampler("ok")
     async with server(sampler) as started:
         openai = await ask(

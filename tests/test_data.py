@@ -1,4 +1,4 @@
-"""Datasets are directories of Harbor tasks; batches stream over them, shuffled once a pass."""
+"""Tests for datasets of Harbor tasks and the shuffled batches drawn from them."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ def _names(found: list[list[Path]]) -> list[str]:
 
 
 def _pass(made: Generator, turn: int = 0) -> list[list[Path]]:
-    """The batches of pass `turn` over the train tasks."""
+    """Return the batches of pass `turn` over the train tasks."""
     return list(islice(made.batches(turn * made.per_pass), made.per_pass))
 
 

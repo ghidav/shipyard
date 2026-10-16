@@ -1,6 +1,4 @@
-"""The run's side of the proxy, placed: `shipyard serve` started as a subprocess and read
-off its first line (a stub stands in for it), a tunnel in front of it (a stub cloudflared),
-and a remote one by URL. The fetch, the probe and the swap are in test_client_records."""
+"""Tests for how a run places its proxy: a local subprocess, a tunnel, or a remote URL."""
 
 from __future__ import annotations
 
@@ -59,7 +57,8 @@ SETTINGS = {"model": "Qwen/Qwen3-8B", "weights": None, "bind": "127.0.0.1", "bin
 
 @pytest.fixture
 def stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """`shipyard serve` replaced by a script printing the banner and waiting for SIGTERM."""
+    """Replace `shipyard serve` with a script that prints its banner and waits for SIGTERM.
+    Returns the path where the script writes its arguments and environment."""
     script = tmp_path / "serve_stub.py"
     script.write_text(SERVE_STUB, encoding="utf-8")
     monkeypatch.setattr(client, "SERVE", [sys.executable, str(script)])
@@ -69,7 +68,7 @@ def stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture
 def cloudflared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A `cloudflared` on PATH that prints a quick tunnel's origin the way the real one does."""
+    """Put a fake `cloudflared` on `PATH` that prints a quick tunnel URL like the real one."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     script = bin_dir / "cloudflared"

@@ -1,6 +1,5 @@
-"""Fakes for the two ends of the proxy: a sampling client answering scripted replies and a
-renderer of one character per token, so the reply to a request says which client served it.
-The server between them is real: aiohttp, the cookbook's app, and a kernel-assigned port."""
+"""Fake sampling clients and renderers for the proxy server, plus HTTP helpers for tests that
+run a real server. The fake renderers map one character to one token."""
 
 from __future__ import annotations
 
@@ -34,8 +33,9 @@ class FakeResponse:
 
 @dataclass
 class FakeSampler:
-    """`tinker.SamplingClient` as the proxy uses it: `answer` is every reply, or the replies in
-    turn with the last repeating; a text comes back as its code points, ids as themselves."""
+    """Fake `tinker.SamplingClient` that returns scripted replies. `answer` is either one reply
+    for every request or a list of replies used in turn, the last one repeating; a string
+    reply is returned as its code points and a sequence of ids as is."""
 
     answer: str | Sequence[str | Sequence[int]]
     asked: list[Any] = field(default_factory=list)
@@ -56,7 +56,7 @@ class FakeSampler:
 
 @dataclass
 class Echo:
-    """A sampling client that answers with the prompt's own tokens, cut to `max_tokens`."""
+    """Fake sampling client that replies with the prompt tokens, truncated to `max_tokens`."""
 
     path: str | None = None
 
@@ -70,8 +70,8 @@ class Echo:
 
 
 class FakeRenderer:
-    """The renderer methods the cookbook's proxy calls: a message renders to its text's
-    code points and a completion decodes back the same way."""
+    """Fake renderer implementing the methods the cookbook proxy calls. A message renders to
+    the code points of its text, and a completion decodes back the same way."""
 
     def get_stop_sequences(self) -> list[int]:
         return []
@@ -86,7 +86,7 @@ class FakeRenderer:
 
 
 def text_of(content: Any) -> str:
-    """A message's text: the string itself, or its text parts joined."""
+    """Return the text of a message's content, joining the text parts of a list."""
     if isinstance(content, list):
         return "".join(
             str(part.get("text", ""))
@@ -99,9 +99,9 @@ def text_of(content: Any) -> str:
 def server(
     sampler: Any = None, *, by_path: Callable[[str | None], Any] | None = None, **overrides: Any
 ) -> Server:
-    """A server on loopback whose clients are fakes: `sampler` serves every path, or
-    `by_path(path)` picks one per path so a swap is observable. Loopback keeps outside hosts
-    away and avoids the macOS firewall prompt."""
+    """Build a proxy `Server` on loopback with fake sampling clients. `sampler` serves every
+    weights path unless `by_path(path)` picks a client per path, which makes swaps
+    observable. Loopback keeps outside hosts away and avoids the macOS firewall prompt."""
     fixed = sampler if sampler is not None else FakeSampler("hi")
 
     async def factory(path: str | None) -> Any:
@@ -118,12 +118,12 @@ def server(
 
 
 def by_path(path: str | None) -> FakeSampler:
-    """A sampler answering the last part of its weights' path, or "base" on none."""
+    """Return a fake sampler that answers with the last part of `path`, or "base" if None."""
     return FakeSampler("base" if path is None else path.rsplit("/", 1)[-1])
 
 
 def ids(text: str) -> tuple[int, ...]:
-    """What the fake renderer renders this text to."""
+    """Return the token ids the fake renderer produces for `text`."""
     return tuple(ord(character) for character in text)
 
 
@@ -132,7 +132,7 @@ def root(started: Server) -> str:
 
 
 def address(started: Server, trial: str) -> str:
-    """The trial's base URL on a started server, as the run's `Proxy.address_for` builds it."""
+    """Return the base URL for `trial` on a started server, matching `Proxy.address_for`."""
     return f"{root(started)}/r/trial/{trial}/v1"
 
 
@@ -144,7 +144,7 @@ async def ask(
     headers: dict[str, str] | None = None,
     **body: Any,
 ) -> httpx.Response:
-    """One chat completion, as a harness on the OpenAI wire sends it."""
+    """Send one OpenAI chat completion request for `trial`, as a harness would."""
     sent = {"Authorization": f"Bearer {started.token if key is None else key}", **(headers or {})}
     async with httpx.AsyncClient() as client:
         return await client.post(
@@ -155,7 +155,8 @@ async def ask(
 
 
 async def ask_anthropic(started: Server, trial: str, **body: Any) -> httpx.Response:
-    """One messages request, as Claude Code sends it: `x-api-key`, `/v1/messages`."""
+    """Send one Anthropic messages request for `trial`, authenticated with `x-api-key` as
+    Claude Code does."""
     async with httpx.AsyncClient() as client:
         return await client.post(
             f"{address(started, trial)}/messages",
@@ -172,7 +173,8 @@ async def ask_anthropic(started: Server, trial: str, **body: Any) -> httpx.Respo
 async def fetch(
     started: Server, trial: str, headers: dict[str, str] | None = None, **params: str
 ) -> httpx.Response:
-    """The records fetch a run makes, with the server's own token unless told otherwise."""
+    """Fetch the records for `trial`, authenticated with the server token unless `headers`
+    is given."""
     if headers is None:
         headers = {"Authorization": f"Bearer {started.token}"}
     async with httpx.AsyncClient() as client:
@@ -184,7 +186,8 @@ async def fetch(
 async def control(
     started: Server, model_path: Any, *, token: str | None = None, raw: Any = None
 ) -> httpx.Response:
-    """A swap over the control route, with the control token unless told otherwise."""
+    """Request a weights swap on the control route, authenticated with the control token
+    unless `token` is given."""
     bearer = started.control_token if token is None else token
     async with httpx.AsyncClient() as client:
         return await client.post(
@@ -206,9 +209,10 @@ TOOLS_ANTHROPIC = [{"name": "ls", "description": "list", "input_schema": {"type"
 
 
 class BridgeRenderer(FakeRenderer):
-    """Thinking as `{...}` ahead of the text, a tool call as `CALL name {json}`, a tool
-    result as `tool[<id>]:text`. An assistant message re-renders UPPER-CASED behind `>` and
-    closed by the stop token, so a fresh render never equals the sampled tokens."""
+    """Fake renderer that encodes thinking and tool calls as plain text. Thinking renders as
+    `{...}` before the text, a tool call as `CALL name {json}`, and a tool result as
+    `tool[<id>]:text`. An assistant message re-renders upper-cased after `>` and ends with the
+    stop token, so a fresh render never equals the sampled tokens."""
 
     STOP = 0
 
@@ -261,5 +265,5 @@ class BridgeRenderer(FakeRenderer):
 
 
 def chars(tokens: Any) -> str:
-    """What the fake renderer's ids read as; the stop token shows as a NUL."""
+    """Decode fake renderer ids back to text; the stop token decodes as NUL."""
     return "".join(chr(int(token)) for token in tokens)

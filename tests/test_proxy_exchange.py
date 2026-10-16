@@ -1,5 +1,4 @@
-"""One request through the app: the SDK's headers on the record, and a retry or idempotent
-request replayed from the stored reply even after a budget cut."""
+"""Tests for proxy request handling: SDK headers on records, and replay of retried requests."""
 
 from __future__ import annotations
 
@@ -37,8 +36,8 @@ async def test_an_idempotency_key_replays_without_a_retry_header() -> None:
 
 
 async def test_a_retry_after_a_budget_cut_still_replays() -> None:
-    """With 95 of a 100-token budget spent, the retry's max_tokens would be cut from 10 to 5.
-    The key uses the params before the cut, so the stored reply is found."""
+    """With 95 of a 100-token budget spent, the retry's `max_tokens` would be cut from 10 to
+    5. The replay key uses the parameters before the cut, so the stored reply is found."""
     sampler = FakeSampler("x" * 95)
     async with server(sampler, max_context=100) as started:
         first = await ask(started, "t", max_tokens=10)

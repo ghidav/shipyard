@@ -1,6 +1,4 @@
-"""The reflector as a Harbor trial: a task that Harbor loads, the traces and the component
-as files, an instruction that names the artifact, the artifact read back and checked, and
-the job recorded as a reflection under the provider's party."""
+"""Tests for the GEPA reflector, which rewrites one module in a Harbor trial."""
 
 from __future__ import annotations
 
@@ -187,8 +185,8 @@ def test_the_rewrite_is_read_back_as_a_module_of_the_same_name_and_kind(tmp_path
 
 
 def test_a_prompts_rewrite_is_its_marker_alone(tmp_path: Path) -> None:
-    """A prompt is delivered as its text and nothing else, so the reflector is told so, and
-    anything it writes beside `PROMPT.md` is left behind rather than refused."""
+    """Only a prompt's text is delivered, so the instruction says so, and any other file
+    the reflector writes beside `PROMPT.md` is ignored rather than refused."""
     prompt = Module(PROMPT, "prompt", {PROMPT_FILE: "Run the tests.\n"})
     task = task_for(_reflection(prompt), tmp_path / "task", image="i", incremental=True)
     text = (task / "instruction.md").read_text()
@@ -267,8 +265,8 @@ def test_a_trial_that_wrote_nothing_declines_and_one_that_died_says_so(
 
 
 class Reflector:
-    """Stands in for Harbor's trial: records the config, publishes `answer` as the artifact,
-    and writes a result with the provider and the token counts."""
+    """Fake Harbor trial runner that records each config, publishes `answer` as the
+    rewritten skill, and writes a result with the provider and token counts."""
 
     def __init__(self, answer: str | None = REWRITTEN) -> None:
         self.configs: list[TrialConfig] = []

@@ -1,5 +1,7 @@
-"""The blueprint as `check` prints it: every table with its defaults filled in, as TOML,
-and what a gradient recipe's name resolves to, on one comment line after it."""
+"""The report `check` prints: the blueprint as TOML with defaults filled in, and its findings.
+
+For a gradient recipe, a comment line after the TOML says what the recipe name resolves to.
+"""
 
 from __future__ import annotations
 
@@ -14,14 +16,17 @@ from typing import Any
 from shipyard.cli.preflight import Finding, findings
 from shipyard.config import Blueprint, ConfigError, load
 
-#: What TOML accepts as a bare key; any other key is quoted.
+#: Keys TOML accepts unquoted; any other key is written as a quoted string.
 BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
 
 
 @dataclass(frozen=True)
 class Report:
-    """What `check` reports: the resolved config (None when it did not load), the recipe's
-    resolution line (None unless the recipe is a gradient recipe), and the findings."""
+    """Result of `check` on a blueprint.
+
+    `config` is None when the blueprint did not load. `resolution` is the comment line saying
+    what a gradient recipe resolves to, and None for any other recipe.
+    """
 
     config: dict[str, Any] | None
     resolution: str | None
@@ -32,7 +37,7 @@ class Report:
         return any(found.level == "blocked" for found in self.findings)
 
     def text(self) -> str:
-        """The resolved TOML followed by the resolution line; "" when nothing loaded."""
+        """Return the resolved TOML followed by the resolution line, or "" if nothing loaded."""
         if self.config is None:
             return ""
         toml = as_toml(self.config)
@@ -40,9 +45,12 @@ class Report:
 
 
 def report(blueprint: Path, trainer: Any = None) -> Report:
-    """Run `check` on a blueprint path, the resolution line under `trainer` when given, and
-    a line naming its secrets when it gives its own. A blueprint that does not load yields
-    only its problems."""
+    """Load a blueprint and report its resolved config, resolution line and findings.
+
+    When `trainer` is given, the resolution line is computed for it, and an `ok` finding notes
+    when it defines its own `secrets`. A blueprint that does not load yields only its load
+    errors, as blocking findings.
+    """
     from shipyard.training.recipes import resolution
     from shipyard.training.trainer import Trainer
 
@@ -57,9 +65,11 @@ def report(blueprint: Path, trainer: Any = None) -> Report:
 
 
 def resolved(loaded: Blueprint) -> dict[str, Any]:
-    """Every table as plain data with defaults filled in, in the schema's order, an optional
-    one left out when unset. `kind` leads the recipe table as it does in the file. For a
-    served model, `renderer` is the one the proxy will load."""
+    """Return every blueprint table as plain data with defaults filled in, in schema order.
+
+    Optional tables that are unset are left out. `kind` comes first in the recipe table, as in
+    the file. For a served model, `renderer` is the renderer the proxy will load.
+    """
     dumped = {
         key: value
         for key, value in loaded.model_dump(mode="json").items()
@@ -73,13 +83,15 @@ def resolved(loaded: Blueprint) -> dict[str, Any]:
 
 
 def served_renderer(loaded: Blueprint) -> str:
-    """The renderer the proxy will load: `[rollout] renderer`, else the model's own."""
+    """Return the renderer the proxy will load: `[rollout] renderer`, else the model's own."""
     return loaded.rollout.renderer or recommended_renderer(loaded.agent.model)
 
 
 def recommended_renderer(model: str) -> str:
-    """The cookbook's renderer for `model`, read from its model table without the network.
-    "" for a model the table does not know; the proxy refuses it at start."""
+    """Return the Tinker cookbook's renderer for `model`, read from its model table offline.
+
+    Returns "" for a model the table does not know; the proxy refuses such a model at start.
+    """
     from tinker_cookbook.model_info import get_recommended_renderer_name
 
     try:
@@ -89,8 +101,11 @@ def recommended_renderer(model: str) -> str:
 
 
 def as_toml(config: Mapping[str, Any]) -> str:
-    """The resolved config as TOML: one table per top-level key, a nested table per dict
-    value after its table's keys, and no line for a None (TOML has no null)."""
+    """Render a resolved config as TOML.
+
+    Each top-level key becomes a table, and each dict value a nested table after its parent's
+    keys. None values are left out, since TOML has no null.
+    """
     lines: list[str] = []
     for name, body in config.items():
         _table(lines, name, body)
@@ -114,14 +129,13 @@ def _table(lines: list[str], name: str, body: Mapping[str, Any]) -> None:
 
 
 def _key(key: str) -> str:
-    """A key as TOML spells it: bare when it may be, else a basic string, as a model name
-    such as `Qwen/Qwen3-8B` must be."""
+    """Return `key` bare if TOML allows it, else quoted, as in `"Qwen/Qwen3-8B"`."""
     return key if BARE_KEY.fullmatch(key) else json.dumps(key)
 
 
 def _value(value: Any) -> str:
-    """One TOML value: booleans lower-cased, floats with their point or exponent kept,
-    inf and nan as TOML spells them, strings as basic strings, lists inline."""
+    """Render one value as TOML: lowercase booleans, floats that keep their point or exponent,
+    `inf` and `nan`, basic strings, and inline lists."""
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, int):
