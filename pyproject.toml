@@ -54,6 +54,7 @@ shipyard = "shipyard.cli:app"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.8"]
+wandb = ["wandb>=0.21"]
 
 [build-system]
 requires = ["hatchling"]

@@ -19,7 +19,7 @@ from shipyard.recipes.gepa import GEPATrainer
 from shipyard.run import Run
 from shipyard.training.trainer import Trainer
 
-__all__ = ["TRAINERS", "reopened", "resolution", "trainer_for", "trainer_in"]
+__all__ = ["TRAINERS", "reopened", "resolution", "trainer_for", "trainer_in", "trainer_of"]
 
 #: The trainer class of each `[recipe] kind`.
 TRAINERS: dict[str, type[Trainer]] = {
@@ -66,9 +66,16 @@ def trainer_in(path: Path) -> type[Trainer]:
     return found[0]
 
 
+def trainer_of(run: Run) -> type[Trainer]:
+    """The trainer class a run goes under: the one its kept trainer file defines, else its
+    kind's."""
+    kept = run.directory / record.TRAINER
+    return trainer_in(kept) if kept.is_file() else trainer_for(run.config.recipe)
+
+
 def reopened(directory: Path, *, tag: str = "last") -> Trainer:
-    """The trainer over a run reopened at one of its checkpoints, standing where it stood:
-    the class of the trainer file the run was opened with, else the kind's."""
+    """The trainer over a run reopened at one of its checkpoints, standing where it stood,
+    under `trainer_of` the run."""
     directory = Path(directory)
     if not (directory / record.CONFIG).is_file():
         raise ValueError(f"no run at {directory}")
@@ -79,10 +86,8 @@ def reopened(directory: Path, *, tag: str = "last") -> Trainer:
     if row is None:
         tags = ", ".join(r["tag"] for r in rows)
         raise ValueError(f"{directory.name} has no checkpoint tagged {tag!r}; it has {tags}")
-    kept = directory / record.TRAINER
     run = Run.reopen(directory, resumed=row["tag"])
-    chosen = trainer_in(kept) if kept.is_file() else trainer_for(run.config.recipe)
-    trainer = chosen(run)
+    trainer = trainer_of(run)(run)
     trainer.restore(row)
     return trainer
 

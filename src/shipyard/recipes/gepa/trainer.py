@@ -41,8 +41,7 @@ class GEPATrainer(Trainer):
         search = run.config.recipe
         self.score_group_size = run.config.data.group_size
         self.reflect = reflect(
-            run,
-            self.engine,
+            self,
             harness=search.reflection_harness,
             model=search.reflection_model,
             image=search.reflection_image,
@@ -74,7 +73,7 @@ class GEPATrainer(Trainer):
             patience=patience,
             rollouts=self.score_group_size,
             rng=rng,
-            log=self.run.log if log is None else log,
+            log=partial(self.logs.log, "search") if log is None else log,
         )
 
     async def score(
@@ -116,7 +115,8 @@ class GEPATrainer(Trainer):
             rng=random.Random(data.seed),
         )
         keep(result.best, kept / BEST)
-        self.run.log(
+        self.logs.log(
+            "search",
             evolution=True,
             rounds=result.rounds,
             spent=result.spent,

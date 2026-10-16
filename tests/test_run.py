@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-from shipyard import record
 from shipyard.config import KINDS, ConfigError
 from shipyard.data import NoSuchDataset
 from shipyard.recipes import trainer_for
@@ -39,13 +38,27 @@ def test_open_from_the_file_names_its_directory(tmp_path: Path) -> None:
     assert Run.read(run.directory)["blueprint"] == str(DAPO.resolve())
 
 
-def test_log_numbers_rows_from_one(tmp_path: Path) -> None:
+def test_closing_calls_back_last_first_with_why_it_stopped(tmp_path: Path) -> None:
+    told: list[tuple[str, str | None]] = []
+
+    def broken(error: str | None) -> None:
+        raise OSError("the disk went away")
+
     run = Run.open(DAPO, root=tmp_path)
-    assert run.log(reward=0.5)["seq"] == 1
-    assert run.log(reward=0.7)["seq"] == 2
-    rows = list(record.read(run.directory / record.METRICS))
-    assert [row["seq"] for row in rows] == [1, 2]
-    assert all("at" in row for row in rows)
+    run.closing(lambda error: told.append(("first", error)))
+    run.closing(broken)
+    run.closing(lambda error: told.append(("last", error)))
+    with pytest.raises(RuntimeError), run:
+        raise RuntimeError("the loop broke")
+    assert told == [
+        ("last", "RuntimeError: the loop broke"),
+        ("first", "RuntimeError: the loop broke"),
+    ]
+    note = Run.read(run.directory)
+    assert note["error"] == "RuntimeError: the loop broke", "a closer that raised keeps no end off"
+    with run:
+        pass
+    assert len(told) == 2, "each is called once"
 
 
 def test_exit_records_finished(tmp_path: Path) -> None:

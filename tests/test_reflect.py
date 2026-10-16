@@ -29,9 +29,9 @@ from shipyard.recipes.gepa.reflect import (
     written,
 )
 from shipyard.run import Run
-from shipyard.sampling.engine import HarborEngine
+from shipyard.training.trainer import Trainer
 from shipyard.types import Job
-from tests.trials import Harbor, trial, write_blueprint, write_result
+from tests.trials import Harbor, fixture_tasks, trial, write_blueprint, write_result
 
 SKILL = "---\nname: solving\ndescription: how to solve.\n---\n\nset up the algebra first\n"
 REWRITTEN = "---\nname: solving\ndescription: how to solve.\n---\n\ncheck the constraints\n"
@@ -282,6 +282,7 @@ class Reflector:
 
 
 def _run(tmp_path: Path, text: str = BLUEPRINT) -> Run:
+    fixture_tasks(tmp_path)
     opened = Run.open(write_blueprint(tmp_path, text), root=tmp_path / "runs")
     assert not opened.config.model.served, "no proxy to point a reflection at"
     return opened
@@ -297,8 +298,7 @@ async def test_the_reflector_runs_the_trial_our_way_and_records_it_as_a_reflecti
     with _run(tmp_path) as opened:
         harbor(runner)
         write = reflect(
-            opened,
-            HarborEngine(opened.config.rollout),
+            Trainer(opened),
             harness="claude-code",
             model="anthropic/claude-sonnet-5",
             image="i",
@@ -321,8 +321,10 @@ async def test_the_reflector_runs_the_trial_our_way_and_records_it_as_a_reflecti
         "job",
         "purpose",
         "trials",
+        "tasks",
         "component",
         "candidate",
+        "served",
         "party",
         "input_tokens",
         "cache_tokens",
@@ -351,8 +353,7 @@ async def test_a_reflection_that_published_nothing_or_crashed_is_a_decline(
     with _run(tmp_path) as opened:
         harbor(Reflector(answer=None))
         write = reflect(
-            opened,
-            HarborEngine(opened.config.rollout),
+            Trainer(opened),
             harness="claude-code",
             model=None,
             image="i",
@@ -383,8 +384,7 @@ async def test_the_party_falls_back_to_the_models_prefix(
     with _run(tmp_path) as opened:
         harbor(wrote_no_result)
         write = reflect(
-            opened,
-            HarborEngine(opened.config.rollout),
+            Trainer(opened),
             harness="pi",
             model="openai/gpt-5",
             image="i",
@@ -396,4 +396,4 @@ async def test_the_party_falls_back_to_the_models_prefix(
 
 def test_a_reflector_without_a_harness_is_refused() -> None:
     with pytest.raises(ValueError, match="needs a harness"):
-        reflect(object(), object(), harness=" ", model=None, image="i")  # type: ignore[arg-type]
+        reflect(object(), harness=" ", model=None, image="i")  # type: ignore[arg-type]

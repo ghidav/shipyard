@@ -31,6 +31,11 @@ runs/02-eval-tinker-docker__eTNXY25/
 | `costs.json` | counts per party and per sandbox | after each job and each step |
 | `modules/` | the text the run carried or searched | see below |
 | `proxy.log` | the proxy's output | while the proxy runs |
+| `wandb/` | wandb's own files, with [`[wandb]`](../reference/configuration.md#wandb) | while the run writes rows |
+
+The run itself writes `run.toml`, `process.json` and `modules/carried/`. The trainer writes
+`metrics.jsonl`, `jobs.jsonl`, `checkpoints.jsonl` and `costs.json` through its loggers. The
+run directory is always one of them, and wandb is another with `[wandb]`.
 
 A file the run had no reason to write is absent. An `evaluate` run has no `checkpoints.jsonl`.
 A run whose model is not served (any `[model] provider` but `"tinker"`) has no

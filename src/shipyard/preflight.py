@@ -6,6 +6,7 @@ the backend lists the model."""
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import io
 import os
 import re
@@ -30,6 +31,7 @@ from shipyard.config import (
     GepaRecipe,
     Gradient,
     Search,
+    Wandb,
     modules_dir,
 )
 from shipyard.data import NoSuchDataset, home_of, search_sets, tasks
@@ -121,6 +123,8 @@ def findings(loaded: Blueprint, environ: Mapping[str, str] | None = None) -> lis
         if names:
             found.append(Finding("ok", f"{label} {', '.join(names)}"))
     found.append(Finding("ok", f"harness {rollout.harness}, sandbox {rollout.sandbox}"))
+    if loaded.wandb is not None:
+        found.append(_wandb_finding(loaded.wandb))
     found += [_dataset_finding(name) for name in [*loaded.datasets, *loaded.test_sets]]
     found += _data_findings(loaded)
     for finding in (_provider_finding(loaded), _checkpoint_finding(loaded)):
@@ -215,6 +219,15 @@ def _length_cap(recipe: Any) -> float | None:
     else:
         return None
     return cap if penalty > 0 else None
+
+
+def _wandb_finding(table: Wandb) -> Finding:
+    """Where `[wandb]` sends the trainer's rows; `blocked` when wandb is not installed."""
+    if importlib.util.find_spec("wandb") is None:
+        return Finding("blocked", "[wandb]: wandb is not installed; install shipyard[wandb]")
+    return Finding(
+        "ok", f"wandb {table.entity}/{table.project}" if table.entity else f"wandb {table.project}"
+    )
 
 
 def _provider_finding(loaded: Blueprint) -> Finding | None:

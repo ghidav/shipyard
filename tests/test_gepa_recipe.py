@@ -87,7 +87,7 @@ async def test_the_recipe_runs_end_to_end_on_fakes(
         "search",
     ]
     assert [job.get("round") for job in jobs] == [0, 1, None, 1, 1]
-    assert [job.get("tasks") for job in jobs] == [2, 1, None, 1, 2]
+    assert [job["tasks"] for job in jobs] == [2, 1, 1, 1, 2]
     assert [job["modules"] for job in jobs if "modules" in job] == [
         seeded.digest,
         seeded.digest,

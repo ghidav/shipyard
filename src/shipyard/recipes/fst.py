@@ -128,12 +128,13 @@ class FSTTrainer(GEPATrainer):
             minibatch=fst.minibatch,
             patience=fst.patience,
             rng=random.Random(self.run.config.data.seed + cycle),
-            log=partial(self.run.log, cycle=cycle),
+            log=partial(self.logs.log, "search", cycle=cycle),
         )
         self.population = result.top(fst.population)
         for rank, text in enumerate(self.population):
             keep(text, self.run.directory / record.MODULES / f"cycle-{cycle}" / str(rank))
-        self.run.log(
+        self.logs.log(
+            "search",
             cycle=cycle,
             evolution=True,
             rounds=result.rounds,

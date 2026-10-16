@@ -74,9 +74,10 @@ async def test_jobs_are_named_in_turn_and_reserved_by_directory_first(
     assert attempts == 2 and agent.modules is None
     assert [one.agent for one in agent.harness] == ["pi@0.85.1"]
     assert agent.policy.endpoint == ProviderEndpoint("some-hosted-model")
-    engine = Trainer(opened).engine
+    trainer = Trainer(opened)
+    engine = trainer.engine
     assert engine.sandbox == "modal" and engine.jobs_dir == Path("jobs")
-    assert engine.settings == Settings() and engine.progress is opened.progress
+    assert engine.settings == Settings() and engine.progress is trainer.progress
     assert engine.run_trial is None
     rows = list(record.read(opened.directory / record.JOBS))
     assert [row["job"] for row in rows] == [job_of(first), job_of(second)]
@@ -159,7 +160,7 @@ async def test_the_job_row_counts_verdicts_endings_tokens_and_seconds(
         },
         "sandboxes": {"modal": {"trials": 4, "seconds": 80.0}},
     }
-    assert opened.costs.to_dict() == costs
+    assert Trainer(opened).costs.to_dict() == costs, "a trainer goes on from what was spent"
 
 
 async def test_empty_maps_are_left_off_and_costs_add_up_across_jobs(

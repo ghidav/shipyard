@@ -171,6 +171,22 @@ Optional. Only the gradient recipes save checkpoints.
 | `every` | integer ≥ 1 | `1` | Save a checkpoint after every this many steps. A step that trained nothing saves none. A `final` checkpoint is saved after the last step, regardless of `every`. |
 | `ttl_hours` | float ≥ 1 | `168.0` | How long the backend keeps each `step-<n>` checkpoint, in hours. The backend keeps one for an hour at least. `final` is kept with no expiry. |
 
+## `[wandb]`
+
+Optional. With it, the trainer writes every row to a wandb run as well as to the run directory.
+It needs the `shipyard[wandb]` extra, and `check` blocks without it.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `project` | string | required | The wandb project. |
+| `entity` | string | unset | The wandb team or user; unset, wandb's default. |
+
+The wandb run takes the run's id as its id and its name, so `run --resume` and `evaluate` go
+on with the same wandb run. Its config is the resolved blueprint. A row's numbers are logged
+under its section: `train/` for a step, `eval/` for an evaluation, `search/` for a search's
+round and its end. Each section is plotted against its own `step`, or `round` for `search`.
+The costs are in the run's summary. wandb keeps its files under `wandb/` in the run directory.
+
 ## Not in the file
 
 - `TINKER_API_KEY`: the Tinker-API backend's key, for a served model.
@@ -179,6 +195,7 @@ Optional. Only the gradient recipes save checkpoints.
 - `SHIPYARD_QUIET=1`: no progress bars on a terminal.
 - `SHIPYARD_PROXY_TOKEN`: the harness's key to the proxy; required with `endpoint_url`.
 - `SHIPYARD_CONTROL_TOKEN`: the run's key to point the proxy at weights.
+- `WANDB_API_KEY`, `WANDB_MODE` and wandb's other variables, read by wandb itself with `[wandb]`.
 
 [Commands](cli.md#environment) says which command reads each.
 

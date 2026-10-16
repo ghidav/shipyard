@@ -24,6 +24,14 @@ uv add "harbor[modal]"     # or harbor[daytona], harbor[e2b], harbor[runloop], .
 
 A run whose model is served from Tinker, the default `[model] provider`, starts a **proxy**: the process that serves the weights to the harness. A remote sandbox reaches it through a tunnel the run starts. The tunnel uses the `cloudflared` binary when it is on your `PATH` (`brew install cloudflared`), else the `cloudflare/cloudflared` image through Docker. With neither, `check` blocks: install one, or name a proxy you started yourself in `[rollout] endpoint_url` ([CLI](../reference/cli.md#shipyard-serve)).
 
+## wandb
+
+A blueprint with a [`[wandb]`](../reference/configuration.md#wandb) table also sends the trainer's rows to wandb, which comes as an extra:
+
+```sh
+uv add "shipyard[wandb]"
+```
+
 ## Keys
 
 shipyard reads `.env` from the working directory at every command. A variable already set in the shell wins over the file. Harbor reads its keys from the same environment.
@@ -60,6 +68,9 @@ Start from this file, which the repository also ships as `docs/.env.example`, an
 
 # Where runs live; unset: ./runs
 # SHIPYARD_RUNS=
+
+# A blueprint with [wandb]: its key, unless `wandb login` holds one
+# WANDB_API_KEY=
 ```
 
 `TINKER_BASE_URL` points shipyard at another backend that implements the Tinker API, such as Fireworks or Baseten. Set it to the URL that backend gives you, and `TINKER_API_KEY` to that backend's key. The run notes the URL in its `process.json`, and its costs go under `tinker@<host>` instead of `tinker`.

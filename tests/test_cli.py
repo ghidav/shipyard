@@ -15,6 +15,7 @@ from typer.testing import CliRunner
 
 from shipyard import record
 from shipyard.cli import app
+from shipyard.logs import Folder
 from shipyard.run import Run
 from shipyard.show import state_of
 from shipyard.training.trainer import Trainer
@@ -38,7 +39,7 @@ def isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 async def _finishes(self: Trainer) -> None:
-    self.run.log(reward=1.0)
+    self.logs.log("train", reward=1.0)
     self.run.note(hello="world")
 
 
@@ -78,8 +79,9 @@ def _headings(output: str) -> list[str]:
 def _recorded(root: Path) -> Path:
     """A finished run with two metrics, twelve jobs, two checkpoints and a costs document."""
     with Run.open(DAPO, root=root) as run:
-        run.log(reward=0.5)
-        run.log(reward=0.7, step=2)
+        logs = Folder(run.directory)
+        logs.log("train", reward=0.5)
+        logs.log("train", reward=0.7, step=2)
         for n in range(1, 13):
             record.append(run.directory / record.JOBS, {"name": f"job-{n:02d}", "reward": n / 12})
         record.append(run.directory / record.JOBS, {"name": "job-13", "reward": 1.0, "extra": [1]})
@@ -304,8 +306,9 @@ def test_root_flag_env_and_default_are_honored_alike(
 
 def test_show_process_and_metrics_and_skips_absent_sections(tmp_path: Path) -> None:
     with Run.open(DAPO, root=tmp_path / "r") as run:
-        run.log(reward=0.5)
-        run.log(reward=0.7, step=2)
+        logs = Folder(run.directory)
+        logs.log("train", reward=0.5)
+        logs.log("train", reward=0.7, step=2)
     shown = runner.invoke(app, ["show", run.id, "--root", str(tmp_path / "r")])
     assert shown.exit_code == 0, shown.output
     assert _headings(shown.output) == ["process", "metrics"]

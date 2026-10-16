@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING
 
 from shipyard import types
 from shipyard.admit import verdict
-from shipyard.cost import billed_by
 from shipyard.modules import KINDS, Module, read, write
 from shipyard.recipes.gepa.fitness import Outcome
 from shipyard.recipes.gepa.propose import Proposer, Reflection
@@ -20,8 +19,7 @@ from shipyard.sampling.endpoint import ProviderEndpoint
 from shipyard.types import Agent, Job, Policy, Settings
 
 if TYPE_CHECKING:
-    from shipyard.run import Run
-    from shipyard.sampling.engine import HarborEngine
+    from shipyard.training.trainer import Trainer
 
 logger = logging.getLogger(__name__)
 
@@ -47,15 +45,14 @@ CLOSING_TAGS = ("</content>", "</file>", "</document>")
 
 
 def reflect(
-    run: Run,
-    engine: HarborEngine,
+    trainer: Trainer,
     *,
     harness: str,
     model: str | None,
     image: str,
     incremental: bool = False,
 ) -> Proposer:
-    """A `Proposer` that runs one trial per proposal on `engine`, recorded under `run`. The
+    """A `Proposer` that runs one trial per proposal on the trainer's engine, recorded by it. The
     trial runs `harness` with `model` in `image` and asks for the smallest change when
     `incremental`. Every failure is a decline, so one failed container cannot end a search."""
     if not harness.strip():
@@ -68,7 +65,7 @@ def reflect(
         home = Path(tempfile.mkdtemp(prefix="shipyard-reflection-"))
         try:
             task = task_for(reflection, home, image=image, incremental=incremental)
-            rolled = await _job(run, engine, task, harness=harness, model=model, about=reflection)
+            rolled = await _job(trainer, task, harness=harness, model=model, about=reflection)
             return written(rolled, reflection.module)
         except Exception:
             logger.exception("the reflection trial for %r failed", reflection.component)
@@ -80,8 +77,7 @@ def reflect(
 
 
 async def _job(
-    run: Run,
-    engine: HarborEngine,
+    trainer: Trainer,
     task: Path,
     *,
     harness: str,
@@ -90,13 +86,13 @@ async def _job(
 ) -> Job:
     """A job that is no rollout: its own agent on a provider endpoint, recorded as a reflection."""
     job = Job.reserve(
-        run,
+        trainer.run,
         purpose="reflection",
         about={"component": about.component, "candidate": about.candidate.digest},
     )
     reflector = Agent(Policy(ProviderEndpoint(model)), [types.harness(harness)])
-    job.trials = await engine.run(job.name, [task], 1, agent=reflector, settings=REFLECTION)
-    run.record_job(job, party=billed_by(job) or party_of(model), **job.about)
+    job.trials = await trainer.engine.run(job.name, [task], 1, agent=reflector, settings=REFLECTION)
+    trainer.record_job(job, party=party_of(model))
     return job
 
 

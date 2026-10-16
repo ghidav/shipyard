@@ -271,12 +271,20 @@ class Checkpoints(_Table):
     ttl_hours: float = Field(default=168.0, ge=MIN_TTL_HOURS)
 
 
+class Wandb(_Table):
+    """The wandb project the trainer's rows go to, beside the run's own folder."""
+
+    project: str
+    entity: str | None = None
+
+
 class Blueprint(_Table):
     model: Model
     data: Data
     rollout: Rollout
     recipe: Recipe = Field(discriminator="kind")
     checkpoints: Checkpoints = Field(default_factory=Checkpoints)
+    wandb: Wandb | None = None
     _raw: dict[str, Any] = PrivateAttr(default_factory=dict)
     _home: Path = PrivateAttr(default_factory=Path)
 

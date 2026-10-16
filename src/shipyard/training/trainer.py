@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import Counter
 from collections.abc import Awaitable, Iterator, Mapping
 from collections.abc import Sequence as Values
 from dataclasses import dataclass
@@ -13,9 +14,13 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 from shipyard import record
+from shipyard.admit import judge
+from shipyard.cost import Costs, billed_by, reported, sampled, sandbox_seconds
 from shipyard.credit import advantages, anchor_logprobs, sampler_logprobs
 from shipyard.data import Generator
+from shipyard.logs import Folder, Logger, Loggers, Wandb
 from shipyard.pack import datum, groups
+from shipyard.progress import reporter
 from shipyard.sampling.endpoint import NothingServed, endpoint_for
 from shipyard.sampling.engine import HarborEngine
 from shipyard.training.client import TinkerClient
@@ -154,11 +159,20 @@ class Trainer:
     def __init__(self, run: Run) -> None:
         self.run = run
         self.recipe = run.config.recipe
-        #: One engine, so every job in flight shares its `[rollout] concurrency`.
-        self.engine = HarborEngine(run.config.rollout, progress=run.progress)
-        #: The blueprint's tasks, read when the trainer is made so a missing dataset stops it
-        #: before anything opens: the train set as a stream of batches, and the test set.
+        #: The blueprint's tasks, read first so a missing dataset stops the trainer before
+        #: anything opens: the train set as a stream of batches, and the test set.
         self.generator = Generator.of(run.config)
+        #: The jobs' bars on a terminal.
+        self.progress = reporter()
+        #: One engine, so every job in flight shares its `[rollout] concurrency`.
+        self.engine = HarborEngine(run.config.rollout, progress=self.progress)
+        #: Where every row goes.
+        self.logs = Loggers(self.loggers())
+        # Closed with the run, the bars first so nothing a logger prints lands under them.
+        run.closing(self.logs.close)
+        run.closing(lambda _: self.progress.close())
+        #: What the run has spent, going on from what it had spent before a resume.
+        self.costs = Costs.from_dict(record.read_json(run.directory / record.COSTS))
         #: What the agent carries: the run's own modules, or the ones a checkpoint restores.
         self.modules = run.carried
         #: The checkpoint row the run reopened at; None on a fresh run.
@@ -170,6 +184,14 @@ class Trainer:
         #: The step the test set was last measured after; None before it was.
         self.evaluated: int | None = None
         self._stream: Iterator[list[Task]] | None = None
+
+    def loggers(self) -> list[Logger]:
+        """Where this trainer writes: the run's folder, and wandb when `[wandb]` names a
+        project. A subclass adds its own."""
+        found: list[Logger] = [Folder(self.run.directory)]
+        if self.run.config.wandb is not None:
+            found.append(Wandb(self.run))
+        return found
 
     def agent(self) -> Agent:
         """The agent the run samples: the policy over the run's endpoint, with the training
@@ -246,24 +268,33 @@ class Trainer:
         purpose: str = "training",
         **about: Any,
     ) -> list[Group]:
-        """The one place a policy is sampled: run, record, group. The groups carry no
+        """The one place a policy is sampled: run, judge, record, group. The groups carry no
         advantages; `credited` sets them where a step trains on them."""
-        run, endpoint = self.run, agent.policy.endpoint
-        attempts = run.config.data.group_size if attempts is None else attempts
+        cfg, endpoint = self.run.config, agent.policy.endpoint
+        attempts = cfg.data.group_size if attempts is None else attempts
         job = Job.reserve(
-            run,
+            self.run,
             purpose=purpose,
             step=self.steps,
             modules=agent.modules,
             about=about,
         )
-        run.progress.started(
+        self.progress.started(
             job.name, trials=len(tasks) * len(agent.harness) * attempts, step=self.steps
         )
         job.trials = await self.engine.run(job.name, tasks, attempts, agent=agent)
-        run.progress.done(job.name)
+        self.progress.done(job.name)
         job.records = await endpoint.record(job.name, job.trials)
-        run.recorded(job, party=endpoint.party)
+        judge(job, check_turns=cfg.rollout.check_turns)
+        masked = Counter(one.mask for one in job.verdicts if one.mask is not None)
+        ended = Counter(one.ended for one in job.verdicts if one.ended is not None)
+        self.record_job(
+            job,
+            party=endpoint.party or cfg.model.provider,
+            graded=sum(one.reward is not None for one in job.verdicts),
+            **({"masked": dict(masked)} if masked else {}),
+            **({"ended": dict(ended)} if ended else {}),
+        )
         if job.records is not None:  # once the job is on record, stop if the endpoint is dead
             try:
                 endpoint.check(job.name, job.records)
@@ -271,6 +302,48 @@ class Trainer:
                 dead.job = job
                 raise
         return groups(job, agent)
+
+    def record_job(self, job: Job, *, party: str, **facts: Any) -> None:
+        """The job's row with `facts`, and its bill: a served job's tokens counted off its
+        records under `party`; else the tokens its harness reported, under the provider its
+        trials name or else `party`. A job's sandbox seconds go to its sandbox."""
+        served = job.records is not None
+        if served:
+            counted, noted = sampled(job)
+        else:
+            counted, party, noted = reported(job), billed_by(job) or party, {}
+        sandbox = self.run.config.rollout.sandbox
+        timed, seconds = sandbox_seconds(job)
+        self.logs.job(
+            {
+                "job": job.name,
+                "purpose": job.purpose,
+                "trials": len(job.trials),
+                **({"step": job.step} if job.step is not None else {}),
+                "tasks": len({one.task for one in job.trials}),
+                **job.about,
+                **({"modules": job.modules.digest} if job.modules is not None else {}),
+                **facts,
+                "served": "tinker" if served else "provider",
+                **{key: value for key, value in noted.items() if value},
+                "party": party,
+                "input_tokens": counted["input_tokens"],
+                "cache_tokens": counted["cache_tokens"],
+                "output_tokens": counted["output_tokens"],
+                "sandbox": sandbox,
+                "sandbox_seconds": seconds,
+            }
+        )
+        self.costs.add_party(party, **counted)
+        self.costs.add_sandbox(sandbox, timed, seconds)
+        self.logs.costs(self.costs)
+
+    def spent(self, party: str, **counts: int) -> None:
+        """Training counts added to a party; zero counts are skipped."""
+        counted = {key: int(value) for key, value in counts.items() if value}
+        if counted:
+            self.costs.add_party(party, **counted)
+            self.logs.costs(self.costs)
 
     async def evaluate(self, agent: Agent, tasks: Values[Task], **more: Any) -> Evaluation | None:
         """One job per batch of `tasks` at `[data] test_group_size`, then one row with the mean."""
@@ -294,7 +367,7 @@ class Trainer:
             if measured
             else None,
         )
-        self.run.log(evaluation=True, **vars(result), **more)
+        self.logs.log("eval", evaluation=True, **vars(result), **more)
         self.evaluated = self.steps
         return result
 
@@ -412,14 +485,14 @@ class Trainer:
         datums."""
         # Reproduces `train_step` of tinker_cookbook/rl/train.py (Thinking Machines Lab,
         # Apache-2.0).
-        recipe, run = self.recipe, self.run
+        recipe = self.recipe
         client = agent.policy.client
         if client is None:
             return TrainingStep(self.steps, list(found))
         began = time.monotonic()
-        party = agent.policy.endpoint.party or run.config.model.provider
+        party = agent.policy.endpoint.party or self.run.config.model.provider
         credit = await self.credit(agent.policy, found)
-        run.spent(
+        self.spent(
             party, reference_tokens=credit.reference_tokens, anchor_tokens=credit.anchor_tokens
         )
         parts = [one for one in credit.datums if one]
@@ -448,7 +521,7 @@ class Trainer:
             await optim
             if following is not None:
                 forward, optim = following
-        run.spent(party, train_tokens=train_tokens)
+        self.spent(party, train_tokens=train_tokens)
         seen = observed(datums, trained)
         update = Update(
             train_tokens=train_tokens,
@@ -507,7 +580,7 @@ class Trainer:
         row.update(more)
         kept = {key: value for key in ROW if (value := row.get(key)) is not None}
         rest = {key: value for key, value in more.items() if key not in ROW}
-        self.run.log(**kept, **rest)
+        self.logs.log("train", **kept, **rest)
 
     async def checkpoint(self, agent: Agent, tag: str, *, keep: bool = False, **more: Any) -> None:
         """Save state and sampler weights under `tag`, and the agent written down to the record."""
@@ -518,8 +591,7 @@ class Trainer:
         ttl = None if hours is None else int(hours * SECONDS_PER_HOUR)
         state = await client.save_state(tag, ttl_seconds=ttl)
         sampler = await client.save_weights_for_sampler(tag, ttl_seconds=ttl)
-        record.append(
-            self.run.directory / record.CHECKPOINTS,
+        self.logs.checkpoint(
             {
                 "tag": tag,
                 "state_path": state,
