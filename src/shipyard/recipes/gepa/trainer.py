@@ -90,33 +90,38 @@ class GEPATrainer(Trainer):
         return outcomes(found)
 
     async def train(self, agent: Agent, tasks: Batches) -> Agent:
-        """One search over the train list as `search_sets` splits it; the batches go unused."""
-        cfg = self.run.config
-        recipe, data = cfg.recipe, cfg.data
+        """One search over the pass's tasks, from the modules the agent carries; a first pass
+        starts from `[recipe] modules`, kept under `seed`."""
+        recipe, data = self.recipe, self.run.config.data
         kept = self.run.directory / record.MODULES
-        seeded = seed(cfg.home / recipe.modules)
-        keep(seeded, kept / SEED)
-        feedback, pareto = search_sets(cfg)
+        start = agent.modules
+        if start is None:
+            start = seed(self.run.config.home / recipe.modules)
+            keep(start, kept / SEED)
+        feedback, pareto = search_sets(
+            (task for batch in tasks for task in batch), recipe.pareto, seed=data.seed
+        )
         budget = recipe.budget or DEFAULT_PASSES * len({*feedback, *pareto}) * data.group_size
         result = await self.evolve(
             agent,
             feedback,
-            [seeded],
+            [start],
             pareto=pareto,
             budget=budget,
             minibatch=recipe.minibatch,
             patience=recipe.patience,
-            rng=random.Random(data.seed),
+            rng=random.Random(data.seed + self.epoch),
         )
         keep(result.best, kept / BEST)
         self.run.log(
             evolution=True,
+            epoch=self.epoch,
             rounds=result.rounds,
             spent=result.spent,
             best=result.best.digest,
             best_mean=result.fitness.aggregate(result.best.digest),
             frontier=len(result.fitness.frontier()),
             pool=len(result.pool),
-            moved=result.best.digest != seeded.digest,
+            moved=result.best.digest != start.digest,
         )
         return replace(agent, modules=result.best)

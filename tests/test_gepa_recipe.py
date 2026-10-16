@@ -19,7 +19,7 @@ from shipyard.config import (
     ConfigError,
     load,
 )
-from shipyard.data import held_out, search_sets
+from shipyard.data import Generator, held_out, search_sets, tasks
 from shipyard.modules import SKILL_FILE, seed
 from shipyard.preflight import NO_REFLECTOR, Finding
 from shipyard.recipes.gepa import BEST, SEED, GEPATrainer
@@ -126,10 +126,9 @@ async def test_by_default_two_thirds_are_held_out_and_the_winner_is_scored_on_th
     wins its minibatch task, and its Pareto score is the held-out task's alone."""
     monkeypatch.chdir(tmp_path)
     home = _blueprint(tmp_path)
-    feedback, pareto = search_sets(load(home))
-    assert (feedback, pareto) == held_out(
-        [Path("tasks/fixture") / n for n in ("alpha", "beta")], 1, seed=0
-    )
+    listed = [Path("tasks/fixture") / n for n in ("alpha", "beta")]
+    feedback, pareto = search_sets(listed, None, seed=0)
+    assert (feedback, pareto) == held_out(listed, 1, seed=0)
     opened = Run.open(home, root=tmp_path / "runs")
     opened.engine.run_trial = fakes = Fakes()
     with opened:
@@ -163,12 +162,37 @@ async def test_data_seed_draws_the_minibatches(
             await Runner.from_run(opened).run()
         names = _names(fakes.configs)
         runs = [names[at - 2 : at] for at, name in enumerate(names) if name == "reflection"]
-        feedback, _ = search_sets(opened.config)
+        feedback, _ = search_sets(tasks("six"), 0, seed=value)
         assert runs == drawn(feedback, 2, random.Random(value), 3), (
             "three rounds, ten rollouts each"
         )
         found[value] = runs
     assert found[0] != found[7]
+
+
+async def test_a_second_pass_searches_again_from_the_first_passs_best(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    text = GEPA.replace("batch_size = 1", "batch_size = 1\nepochs = 2") + "pareto = 0\n"
+    home = _blueprint(tmp_path, text)
+    opened = Run.open(home, root=tmp_path / "runs")
+    opened.engine.run_trial = Fakes()
+    with opened:
+        agent = await Runner.from_run(opened).run()
+    seeded = seed(home / "modules")
+    kept = opened.directory / record.MODULES
+    assert seed(kept / SEED) == seeded, "kept once, by the first pass"
+    rows = [row for row in record.read(opened.directory / record.METRICS) if "evolution" in row]
+    first, second = rows
+    assert (first["epoch"], second["epoch"]) == (0, 1)
+    jobs = list(record.read(opened.directory / record.JOBS))
+    scored = [job for job in jobs if job["purpose"] == "search" and job.get("round") == 0]
+    assert [job["modules"] for job in scored] == [seeded.digest, first["best"]], (
+        "the second pass starts from the first pass's best"
+    )
+    assert agent.modules is not None
+    assert seed(kept / BEST).digest == second["best"] == agent.modules.digest
 
 
 async def test_a_quiet_reflector_leaves_the_seed_as_the_winner(
@@ -325,7 +349,8 @@ def test_the_sets_follow_pareto_and_check_says_how_they_split(
     dataset(tmp_path / "tasks", "six", *"abcdef")
 
     def sets(text: str) -> tuple[list[str], list[str]]:
-        found = search_sets(load(write_blueprint(tmp_path / str(len(made)), text)))
+        cfg = load(write_blueprint(tmp_path / str(len(made)), text))
+        found = search_sets(Generator.of(cfg).train, cfg.recipe.pareto, seed=cfg.data.seed)
         made.append(text)
         return [task.name for task in found[0]], [task.name for task in found[1]]
 

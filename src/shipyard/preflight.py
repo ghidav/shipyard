@@ -294,7 +294,8 @@ def _pareto_findings(loaded: Blueprint) -> list[Finding]:
     named = loaded.recipe.pareto
     found = [_dataset_finding(named)] if isinstance(named, str) else []
     try:
-        feedback, pareto = search_sets(loaded)
+        listed = [task for name in loaded.datasets for task in tasks(name)]
+        feedback, pareto = search_sets(listed, named, seed=loaded.data.seed)
     except NoSuchDataset:
         return found
     except ValueError as refused:
