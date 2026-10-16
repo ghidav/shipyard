@@ -1,7 +1,8 @@
-"""Finished trials as the search reads them: one `Outcome` per task, judged by the same
-`admit.verdicts` that training uses. Each carries what the grader printed, what the task
-asked and the tail of the worst rollout's transcript, so a reflector sees why a rollout
-scored as it did."""
+"""Conversion of finished trials into search outcomes.
+
+Each task becomes one `Outcome`, judged by the same `admit.verdicts` that training uses. It
+carries the grader's output, the task's instruction and the tail of the worst rollout's
+transcript, so the reflector can see why a rollout scored as it did."""
 
 from __future__ import annotations
 
@@ -9,34 +10,34 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from shipyard.recipes.gepa.fitness import Outcome
+from shipyard.training.recipes.gepa.fitness import Outcome
 from shipyard.types import Verdict
 
 if TYPE_CHECKING:
     from shipyard.types import Group
 
-#: Characters of verifier output kept per task for the reflector: the tail, since a test
-#: script prints a long preamble and says what went wrong at the end.
+#: Characters of verifier output kept per task for the reflector. The tail is kept, since a
+#: test script prints a long preamble and reports what went wrong at the end.
 MAX_FEEDBACK = 2000
-#: Characters of the instruction kept per task: the head, since a task states its problem
-#: first and where to write the answer last. Smaller than the feedback limit because the
-#: instruction is the most redundant.
+#: Characters of the instruction kept per task. The head is kept, since a task states its
+#: problem first and where to write the answer last. Smaller than `MAX_FEEDBACK` because the
+#: instruction is the most redundant input.
 MAX_INPUTS = 1500
-#: Characters of the worst rollout's transcript kept per task: the tail, where the attempt
-#: ended.
+#: Characters of the worst rollout's transcript kept per task, taken from the tail, where the
+#: attempt ended.
 MAX_TRANSCRIPT = 3000
-#: Where Harbor's verifier leaves what it printed. Read as plain text.
+#: Path of the verifier's printed output within a Harbor trial, read as plain text.
 VERIFIER_STDOUT = ("verifier", "test-stdout.txt")
-#: Where Harbor's agents keep their transcript: `agent/<harness>.txt` under the trial.
+#: Directory of the agent's transcript in a Harbor trial (`agent/<harness>.txt`).
 AGENT_LOGS = "agent"
-#: Files in that directory that are not the transcript: some harnesses write the
-#: instruction there again.
+#: Text files in `AGENT_LOGS` that are not the transcript; some harnesses copy the
+#: instruction there.
 NOT_TRANSCRIPTS = ("instruction.txt",)
 INSTRUCTION = "instruction.md"
 
 
 def outcomes(groups: Sequence[Group]) -> list[Outcome]:
-    """One outcome per group, judged by its members' verdicts."""
+    """Return one outcome per group, built from its members' verdicts."""
     return [
         _outcome(group.task, [(one.trial.dir, one.verdict) for one in group.members])
         for group in groups
@@ -44,7 +45,8 @@ def outcomes(groups: Sequence[Group]) -> list[Outcome]:
 
 
 def _outcome(task: Path, judged: Sequence[tuple[Path, Verdict]]) -> Outcome:
-    """The mean over the measured verdicts; feedback and transcript off the worst."""
+    """Build a task's outcome: the mean over the measured verdicts, with the feedback and
+    transcript of the worst-scoring rollout."""
     measured = [(trial, found.reward) for trial, found in judged if found.reward is not None]
     if not measured:
         return Outcome(
@@ -67,8 +69,7 @@ def _outcome(task: Path, judged: Sequence[tuple[Path, Verdict]]) -> Outcome:
 
 
 def _inputs(task: Path) -> str:
-    """The head of the task's `instruction.md`; "" when it cannot be read, so the reflector
-    sees less."""
+    """Return the head of the task's `instruction.md`, or "" when it cannot be read."""
     try:
         text = (task / INSTRUCTION).read_text(encoding="utf-8", errors="replace").strip()
     except OSError:
@@ -79,8 +80,8 @@ def _inputs(task: Path) -> str:
 
 
 def _transcript(trial: Path) -> str:
-    """The tail of the agent's transcript, `agent/<harness>.txt`: the first text file there
-    that is not the instruction. "" when there is none."""
+    """Return the tail of the agent's transcript: the first text file under `agent/` that is
+    not a copy of the instruction, or "" when there is none."""
     home = trial / AGENT_LOGS
     if not home.is_dir():
         return ""
@@ -91,7 +92,8 @@ def _transcript(trial: Path) -> str:
 
 
 def _tail(path: Path, limit: int) -> str:
-    """A file's text; when longer than `limit`, its last `limit` characters preceded by a marker."""
+    """Return a file's text, or "" when it cannot be read. Text longer than `limit` is cut to
+    its last `limit` characters, behind a marker."""
     try:
         text = path.read_text(encoding="utf-8", errors="replace").strip()
     except OSError:
@@ -102,8 +104,8 @@ def _tail(path: Path, limit: int) -> str:
 
 
 def _why_nothing(judged: Sequence[Verdict]) -> str:
-    """The feedback for a task with no measurement: the masks' names and Harbor's ending
-    names, so the reflector can see an environment error."""
+    """Return the feedback for a task with no measured rollout. It names the masks and how
+    Harbor reported each trial ended, so the reflector can recognize an environment error."""
     masks = sorted({found.mask for found in judged if found.mask})
     ended = sorted({found.ended for found in judged if found.ended})
     said = ", ".join(masks + ended)

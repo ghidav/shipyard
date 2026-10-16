@@ -1,7 +1,5 @@
-"""Fixtures every test runs under. They restore the Modal builder default a rollout sets,
-remove the shell's Tinker and proxy variables so no test reaches a backend, and pin the
-machine facts `check` reads (Harbor's extras, logins, docker, Modal), so no finding depends on
-this machine. `fakes` and `harbor` are for the tests that ask for them."""
+"""Shared fixtures. The autouse fixtures unset Tinker and proxy environment variables and pin
+the host checks that `check` reads, so no test reaches a backend or depends on this machine."""
 
 from __future__ import annotations
 
@@ -26,7 +24,7 @@ SHELL_VARS = (
 
 @pytest.fixture(autouse=True)
 def _modal_builder_unset(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Restore the builder version that a rollout on `modal` sets in the process environment."""
+    """Unset the Modal image builder version, which a `modal` rollout sets in the environment."""
     monkeypatch.delenv(MODAL_IMAGE_BUILDER, raising=False)
 
 
@@ -38,8 +36,9 @@ def _shell_vars_unset(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _machine_pinned(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pin the machine: every provider's extra installed and logged in, Modal not asked,
-    docker running with no leftover networks. The tests of those findings undo the pins."""
+    """Patch the host checks in `preflight` to report a ready machine: every provider extra
+    installed and logged in, no Modal finding, and docker running with no leftover networks.
+    Tests of those checks undo the patches."""
     from shipyard.cli import preflight
 
     monkeypatch.setattr(preflight, "extra_installed", lambda name: True)
@@ -52,7 +51,7 @@ def _machine_pinned(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def harbor(monkeypatch: pytest.MonkeyPatch) -> Harbor:
-    """Stand a fake in for Harbor's trial in every engine the test builds; returns the fake."""
+    """Return a function that installs a fake Harbor trial runner and returns that fake."""
 
     def standing(fake: Any) -> Any:
         monkeypatch.setattr("shipyard.sampling.engine._run_trial", fake)
@@ -63,7 +62,7 @@ def harbor(monkeypatch: pytest.MonkeyPatch) -> Harbor:
 
 @pytest.fixture
 def fakes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[FakeProxy, FakeService]:
-    """The proxy and the Tinker service, faked; the working directory is `tmp_path`."""
+    """Install a fake proxy and a fake Tinker service, and change into `tmp_path`."""
     monkeypatch.chdir(tmp_path)
     proxy = FakeProxy()
     monkeypatch.setattr("shipyard.sampling.endpoint.Proxy", proxy)

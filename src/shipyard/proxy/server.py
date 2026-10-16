@@ -1,6 +1,8 @@
-"""The server a harness dials: the cookbook's app on a Tinker sampling client, with the records
-route, the control route, the Exchange middleware and keepalives on streams. Every route
-except `/healthz` requires a token, because sampling spends Tinker credit."""
+"""HTTP server that harnesses call: the cookbook's proxy app on a Tinker sampling client.
+
+It adds the records route, the control route, the `Exchange` middleware and keepalives on
+streams. Every route except `/healthz` requires a token, because sampling spends Tinker
+credit."""
 
 from __future__ import annotations
 
@@ -31,22 +33,25 @@ from shipyard.proxy.wire import (
 
 logger = logging.getLogger(__name__)
 
-#: Seconds the last records payload of a trial is kept for `again=1`. A fetch drains the
-#: records, so a lost answer cannot be rebuilt.
+#: Seconds a trial's last records payload is kept for `again=1`. A fetch drains the
+#: records, so a lost answer cannot be rebuilt otherwise.
 SERVED_KEPT_SECONDS = 1800.0
-#: `max_tokens` for a request that names none. The cookbook's 1024 cuts off a coding turn.
+#: `max_tokens` for a request that sets none. The cookbook's default of 1024 cuts off a
+#: coding turn.
 DEFAULT_MAX_TOKENS = 8192
-#: The largest request body the proxy reads. aiohttp's default is 1 MiB.
+#: Largest request body the proxy reads, in bytes. aiohttp's default is 1 MiB.
 MAX_BODY_BYTES = 256 * 1024**2
 
-#: Makes a sampling client for a `tinker://` path, or for the base model when None.
+#: Makes a sampling client on a `tinker://` path, or on the base model for None.
 ClientFactory = Callable[[str | None], Awaitable[Any]]
 
 
 @dataclass
 class Server:
-    """A local server that stands in for a model provider. `host` is the name a sandbox
-    resolves this machine by. The token gates access regardless of `bind`."""
+    """Local server that stands in for a model provider.
+
+    `host` is the hostname a sandbox uses to reach this machine. The token is required
+    regardless of `bind`."""
 
     base_model: str
     model_path: str | None = None
@@ -61,15 +66,15 @@ class Server:
     max_tokens: int = DEFAULT_MAX_TOKENS
     max_context: int | None = None
     fill_context: bool = False
-    #: Seconds a stream may stay silent before it gets SSE comment frames, one per
-    #: `keepalive_every` seconds, until its reply. None turns them off.
+    #: Seconds a stream may stay silent before SSE keepalive frames start, one every
+    #: `keepalive_every` seconds until the reply. None turns them off.
     keepalive_grace: float | None = KEEPALIVE_GRACE
     keepalive_every: float = KEEPALIVE_EVERY
     token: str = field(default_factory=new_token, repr=False)
     control_token: str | None = field(default=None, repr=False)
-    #: The Tinker session's `user_metadata`: the run and recipe it samples for.
+    #: `user_metadata` of the Tinker session, naming the run and recipe it samples for.
     metadata: dict[str, str] | None = None
-    #: Makes sampling clients in tests. None uses Tinker's service client.
+    #: Sampling client factory for tests. None uses Tinker's service client.
     client_factory: ClientFactory | None = field(default=None, repr=False)
 
     _service: Any = field(default=None, repr=False)
@@ -80,8 +85,10 @@ class Server:
     _served_last: dict[str, tuple[float, dict[str, Any]]] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
-        """Replace an empty token. The cookbook installs auth only for a truthy token, and
-        an unset env var arrives here empty."""
+        """Generate a token if it is empty.
+
+        The cookbook installs auth only for a non-empty token, and an unset env var arrives here
+        empty."""
         if not self.token:
             self.token = new_token()
 
@@ -99,9 +106,10 @@ class Server:
         return self.recorder.records_for(trial)
 
     async def start(self) -> None:
-        """Build the renderer, a sampling client on `model_path` or the base model, the
-        context length (from Tinker when unknown), the app and its routes, then bind the
-        socket."""
+        """Build the renderer, the sampling client, the app and its routes, then bind the socket.
+
+        The sampling client is on `model_path`, or on the base model when it is None. The context
+        length is read from Tinker when not set."""
         # Wrap the cookbook's parsers for images, thinking and in-list system turns on both
         # wires, once per process. Thinking wraps after vision, so no thinking block reaches
         # a parser. thinking.install also installs the keepalive's stream wrap beneath its own.
@@ -157,8 +165,9 @@ class Server:
         logger.info("serving %s on port %s as %s", self._deps.model_label, self._port, self.host)
 
     async def swap(self, model_path: str | None) -> None:
-        """Switch to a sampling client on the path, or on the base model for None. The
-        server stays up, so addresses already handed to running trials keep answering."""
+        """Switch to a sampling client on `model_path`, or on the base model for None.
+
+        The server stays up, so addresses already given to running trials keep answering."""
         client = await self._make(model_path)
         self.model_path = model_path
         if self._recorder is not None:
@@ -193,9 +202,10 @@ class Server:
         await self.stop()
 
     async def _serve_records(self, request: Any) -> Any:
-        """Return the trial's records in request order and drain them. `delta=1` sends each
-        prompt as an extension of an earlier record. `again=1` re-sends the last payload
-        built."""
+        """Return the trial's records in request order and drain them.
+
+        With `delta=1`, each prompt is sent as an extension of an earlier record where possible.
+        With `again=1`, the last payload built for the trial is re-sent."""
         trial = request.match_info["trial"]
         now = time.monotonic()
         for name, (at, _payload) in list(self._served_last.items()):
@@ -212,17 +222,20 @@ class Server:
         return response
 
     def _records_payload(self, trial: str, delta: bool) -> dict[str, Any]:
-        """An unknown trial gets an empty list and a 200. A rollout whose container never
-        reached the proxy made no requests."""
+        """Take the trial's records and build the response payload.
+
+        An unknown trial gets an empty list and a 200: a rollout whose container never reached the
+        proxy made no requests."""
         records = self.recorder.take(trial)
         return {"records": delta_encoded(records) if delta else [asdict(r) for r in records]}
 
     def _control_middleware(self) -> Any:
-        """Handle two routes ahead of the cookbook. `POST /control/weights` requires the
-        control token: the harness token is in every sandbox, and the model under training
-        must not re-point its own proxy. `GET /healthz` returns the cookbook's answer plus
-        `serving` (what is served) and `budget` (the tokens each trial may sample, null
-        when none is enforced)."""
+        """Return middleware that handles two routes before the cookbook does.
+
+        `POST /control/weights` requires the control token: the harness token is in every
+        sandbox, and the model under training must not re-point its own proxy. `GET /healthz`
+        is answered here, in the cookbook's shape (`status`, `model`), plus `serving` (the served
+        model) and `budget` (the tokens each trial may sample, null when none is enforced)."""
 
         @web.middleware
         async def control(request: Any, handler: Any) -> Any:
@@ -244,8 +257,9 @@ class Server:
         return control
 
     async def _serve_control(self, request: Any) -> Any:
-        """Point this endpoint at the body's `model_path` (a `tinker://` path or null). A
-        failure to resolve it returns a 400 to the caller."""
+        """Switch to the body's `model_path` (a `tinker://` path or null).
+
+        A malformed body, or a path that cannot be served, gets a 400."""
         try:
             body = await request.json()
         except Exception:
@@ -271,8 +285,9 @@ def _bound_port(runner: Any) -> int:
 
 
 async def context_of(service: Any, base_model: str) -> int | None:
-    """The model's context length from `get_server_capabilities`, or None on any error.
-    Without a number nothing is refused, so a lost answer does not fail a run."""
+    """Return the model's context length from `get_server_capabilities`, or None on any error.
+
+    Without a context length nothing is refused, so a failed lookup does not fail a run."""
     try:
         caps = await service.get_server_capabilities_async()
         for model in getattr(caps, "supported_models", None) or []:

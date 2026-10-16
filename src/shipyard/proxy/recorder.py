@@ -1,5 +1,7 @@
-"""Records every model call as token ids per trial. Applies the run's sampling pins,
-enforces the budget and the context fit, and replays SDK retries."""
+"""Sampling client wrapper that records every model call as token ids, per trial.
+
+It also applies the run's pinned sampling parameters, enforces the token budget and the
+context length, and replays SDK retries."""
 
 from __future__ import annotations
 
@@ -25,8 +27,9 @@ from shipyard.proxy.wire import (
 
 
 class Recorder:
-    """The sampling client the cookbook app calls. Holds every trial's records. A request
-    with no trial in its address is served and recorded under the trial name ""."""
+    """Sampling client given to the cookbook app, holding the records of every trial.
+
+    A request with no trial in its address is served and recorded under the trial name ""."""
 
     def __init__(
         self,
@@ -44,29 +47,33 @@ class Recorder:
         self.client = client
         self.served = served
         self.temperature, self.top_p, self.top_k = temperature, top_p, top_k
-        #: Most tokens a turn may sample. A request asking for more is cut to this.
+        #: Maximum tokens a turn may sample. A request asking for more is capped to this.
         self.max_tokens = max_tokens
         self.max_context = max_context
-        #: Total sampled tokens a trial may write. None for no limit.
+        #: Total tokens a trial may sample. None for no limit.
         self.budget = budget
-        #: Whether a turn that would overrun the context gets the remaining context as its limit.
+        #: Whether a turn that would overrun the context gets the remaining context as its
+        #: limit instead of being refused.
         self.fill_context = fill_context
         self.records: dict[str, list[Record]] = {}
-        #: Per trial, the tokens sampled.
+        #: Tokens sampled so far, per trial.
         self.spoke: dict[str, int] = {}
         self._seq: dict[str, int] = {}
         self._replies: dict[tuple[Any, ...], asyncio.Future[Any]] = {}
-        #: Per trial, the sampled replies the bridge may extend.
+        #: Sampled replies the bridge may extend, per trial.
         self.indexes: dict[str, Index] = {}
-        #: Trials whose records were taken. No later fetch reads them.
+        #: Trials whose records were taken. No later fetch reads them, so records of
+        #: calls that finish afterwards are dropped.
         self.taken: set[str] = set()
 
     def index_for(self, trial: str) -> Index:
         return self.indexes.setdefault(trial, Index())
 
     def pin(self, sampling_params: Any) -> Any:
-        """Apply the run's sampling parameters over the harness's. `max_tokens` is only
-        capped, because it bounds a turn's length and does not change which token is drawn."""
+        """Override the harness's sampling parameters with the run's.
+
+        `max_tokens` is only capped, because it bounds a turn's length and does not change which
+        token is drawn."""
         update: dict[str, Any] = {}
         if self.temperature is not None:
             update["temperature"] = float(self.temperature)
@@ -159,10 +166,12 @@ class Recorder:
     def _fitting(
         self, trial: str, prompt: Any, prompt_ids: tuple[int, ...], pinned: Any, num_samples: int
     ) -> Any:
-        """Return the params to serve the request with, or raise a refusal. A trial past its
-        budget gets the cookbook's 400. A turn beyond the budget is cut to its share of what
-        is left per sample. A prompt with no room for its reply is refused as a context
-        overflow."""
+        """Return the sampling params to serve the request with, or raise a refusal.
+
+        A trial that has spent its budget gets the cookbook's 400. A turn that would exceed the
+        budget has `max_tokens` cut to its per-sample share of what is left. A prompt with no room
+        for its reply is refused as a context overflow, unless `fill_context` lets the turn use
+        the remaining context."""
         if self.budget:
             spent = self.spoke.get(trial, 0)
             share = (self.budget - spent) // max(1, num_samples)
@@ -205,8 +214,10 @@ class Recorder:
         error: str | None = None,
         images: tuple[Picture, ...] = (),
     ) -> Record:
-        """Append the trial's next record, numbered from 1 per trial. Refused and failed
-        calls get records too, so the sequence shows everything the harness asked for."""
+        """Append the next record of `trial`, numbered from 1 within the trial.
+
+        Refused and failed calls are recorded too, so the records show every call the harness
+        made."""
         found = exchange.get()
         self._seq[trial] = seq = self._seq.get(trial, 0) + 1
         record = Record(
@@ -243,9 +254,10 @@ class Recorder:
         rendered: tuple[int, ...] | None = None,
         call_ids: tuple[str, ...] = (),
     ) -> None:
-        """Set the parsed reply's digest on record `seq` of the trial and index the reply,
-        with its calls' ids, for the bridge. A prompt with an image the record did not keep
-        is not indexed, because nothing rebuilds it."""
+        """Set the parsed reply's digest on record `seq` and index the reply for the bridge.
+
+        The reply is indexed with the ids of its tool calls. A reply whose prompt has an image the
+        record did not keep is not indexed, because nothing can rebuild that prompt."""
         records = self.records.get(trial, [])
         for at in range(len(records) - 1, -1, -1):
             if records[at].seq != seq:
@@ -266,8 +278,9 @@ class Recorder:
         return list(self.records.get(trial, []))
 
     def take(self, trial: str) -> list[Record]:
-        """Remove and return this trial's records, with its counters and replies. A trial
-        is read once, so the proxy does not keep every token of a long run."""
+        """Remove and return the trial's records, and drop its counters and stored replies.
+
+        Each trial is read once, so the proxy does not keep every token of a long run."""
         if trial:
             self.taken.add(trial)
         return self._forget(trial)

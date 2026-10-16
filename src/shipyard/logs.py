@@ -1,5 +1,4 @@
-"""Where a trainer writes what happened: the run's own folder, and wandb when `[logging.wandb]`
-names a project. A trainer writes every row to each of its loggers."""
+"""Trainer loggers: the run directory, and wandb when `[logging.wandb]` is set."""
 
 from __future__ import annotations
 
@@ -15,35 +14,40 @@ if TYPE_CHECKING:
 
 
 class Logger:
-    """Receives a trainer's rows. This base drops them; a subclass writes them somewhere."""
+    """Destination for a trainer's rows. This base class discards them; subclasses write
+    them somewhere."""
 
     def log(self, section: str, /, **row: Any) -> None:
-        """A row of metrics: a step's (`train`), an evaluation's (`eval`), or a search's
-        round or end (`search`)."""
+        """Record a row of metrics under `section`: `train` for a step, `eval` for an
+        evaluation, or `search` for a search round or its end."""
 
     def job(self, row: Mapping[str, Any]) -> None:
-        """A job's row: what it sampled, the tokens it took and the party billed for them."""
+        """Record a job's row: what it sampled, its token counts and the party billed."""
 
     def costs(self, costs: Costs) -> None:
-        """Everything the run has spent so far, after it spent more."""
+        """Record the run's total costs so far. Called each time they grow."""
 
     def checkpoint(self, row: Mapping[str, Any]) -> None:
-        """A checkpoint's row: where its weights are, and where the run stood."""
+        """Record a checkpoint's row: where its weights are saved and the trainer's counters
+        at that point."""
 
     def close(self, error: BaseException | None) -> None:
-        """The trainer is done: `error` is what stopped it, None when it finished."""
+        """Finish logging. `error` is the exception that stopped the trainer, or None if it
+        completed."""
 
 
 class Folder(Logger):
-    """The run's directory: `metrics.jsonl` numbered from one past the rows already there,
-    `jobs.jsonl`, `checkpoints.jsonl` and `costs.json`. A resume reads them back."""
+    """Logger that writes to the run directory: `metrics.jsonl`, `jobs.jsonl`,
+    `checkpoints.jsonl` and `costs.json`. A resumed run reads them back.
+
+    Metric rows are numbered continuing from the rows already in `metrics.jsonl`."""
 
     def __init__(self, directory: Path) -> None:
         self.directory = directory
         self._seq = sum(1 for _ in record.read(directory / record.METRICS))
 
     def log(self, section: str, /, **row: Any) -> None:
-        """Append the row with a sequence number from 1: timestamps collide."""
+        """Append the row with a sequence number, since timestamps can collide."""
         self._seq += 1
         record.append(self.directory / record.METRICS, {"seq": self._seq, **row})
 
@@ -58,11 +62,14 @@ class Folder(Logger):
 
 
 class Wandb(Logger):
-    """A wandb run with the directory's name as its id, so a resume goes on with it. A row's
-    numbers go under its section, plotted against the section's axis; the costs go to the
-    summary. Its own files go under `wandb/` in the directory."""
+    """Logger that writes to a wandb run.
 
-    #: What each section's rows are plotted against.
+    The wandb run id is the run directory's name, so a resumed run continues the same wandb
+    run. A row's numeric values are logged under `<section>/` and plotted against that
+    section's axis; costs go to the run summary. wandb keeps its files under `wandb/` in
+    the run directory."""
+
+    #: The metric each section's rows are plotted against.
     AXES = {"train": "step", "eval": "step", "search": "round"}
 
     def __init__(self, config: Blueprint, directory: Path) -> None:
@@ -107,7 +114,7 @@ class Wandb(Logger):
 
 
 class Loggers(Logger):
-    """Several loggers as one: each row to every one of them, in order."""
+    """Several loggers as one: each call is forwarded to every logger, in order."""
 
     def __init__(self, each: Sequence[Logger]) -> None:
         self.each = list(each)

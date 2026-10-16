@@ -1,7 +1,4 @@
-"""`shipyard run --smoke` on fakes: the overrides (one task, the first of the first batch,
-one rollout, one job, no gradient, checkpoint or reflection), the report's lines, the run
-directory it leaves, and the exit codes. The exit code is 0 only when a trial came back with
-a record (served) or a verdict (provider-served)."""
+"""Tests for `shipyard run --smoke`: its overrides, report, run directory, and exit codes."""
 
 from __future__ import annotations
 
@@ -14,11 +11,11 @@ from typer.testing import CliRunner
 
 from shipyard import record
 from shipyard.cli.main import app
+from shipyard.cli.run import Run
 from shipyard.cli.smoke import Smoked, Trial, planned, wiring
 from shipyard.config import load
 from shipyard.data import Generator
 from shipyard.modules import seed
-from shipyard.run import Run
 from tests.records import FakeProxy, made
 from tests.trials import BLUEPRINTS, GEPA, VALID, FakeTrials, dataset, write_blueprint
 
@@ -27,7 +24,7 @@ runner = CliRunner()
 
 @pytest.fixture
 def here(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A four-task dataset, no Tinker session, a wide terminal."""
+    """Working directory with a four-task dataset, no Tinker session, and a wide terminal."""
     dataset(tmp_path / "tasks", "four", *"abcd")
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("SHIPYARD_RUNS", raising=False)

@@ -1,14 +1,17 @@
-"""Finished trials as the search reads them: one outcome per task, judged by admission,
-with the grader's words off the worst rollout, the task's own instruction, and the tail
-of the transcript Harbor kept."""
+"""Tests for GEPA outcomes: per-task rewards, feedback, inputs, and transcripts from trials."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from shipyard.admit import BUDGET, verdict
-from shipyard.recipes.gepa.outcomes import MAX_FEEDBACK, MAX_INPUTS, MAX_TRANSCRIPT, outcomes
+from shipyard.sampling.admit import BUDGET, verdict
 from shipyard.sampling.endpoint import ProviderEndpoint
+from shipyard.training.recipes.gepa.outcomes import (
+    MAX_FEEDBACK,
+    MAX_INPUTS,
+    MAX_TRANSCRIPT,
+    outcomes,
+)
 from shipyard.types import Agent, Group, Member, Policy, Trial, harness
 from tests.records import made
 from tests.trials import write_result
@@ -28,7 +31,7 @@ AGENT = Agent(Policy(ProviderEndpoint("m")), [harness("pi")])
 def _groups(
     trials: list[Path], tasks: list[Path], size: int, records: dict | None = None
 ) -> list[Group]:
-    """One group per task over `size` trials each, judged as `pack.groups` judges them."""
+    """Build one group of `size` trials per task, each judged by `verdict` as in `pack.groups`."""
     found = []
     for index, task in enumerate(tasks):
         members = []
@@ -77,8 +80,8 @@ def test_a_masked_rollout_is_absent_from_the_mean_and_a_task_nobody_measured_say
 
 
 def test_a_budget_cut_rollout_scores_zero_through_admission(tmp_path: Path) -> None:
-    """The same reader training uses: a served rollout the proxy cut on its budget is a
-    real 0 that overrides the verifier, and one with no records is masked."""
+    """Outcomes use the same admission as training: a served rollout the proxy cut on its
+    token budget scores 0 whatever the verifier said, and one with no records is masked."""
     cut = _trial(tmp_path / "cut__1", reward=1.0, stdout="passed")
     silent = _trial(tmp_path / "silent__1", reward=1.0)
     records = {cut.name: [made(seq=1), made(seq=2, error=BUDGET)], silent.name: []}

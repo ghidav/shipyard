@@ -1,4 +1,4 @@
-"""Live progress on a terminal: one bar per job, counting its trials; silent anywhere else."""
+"""Live progress bars on a terminal, one per job, counting its trials; silent elsewhere."""
 
 from __future__ import annotations
 
@@ -17,13 +17,13 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 
-#: Set to `1` to keep a terminal run from drawing.
+#: Environment variable; set it to `1` to turn off progress bars on a terminal.
 QUIET = "SHIPYARD_QUIET"
 
 
 def reporter(console: Console | None = None) -> Reporter:
-    """Bars on a terminal, a silent reporter elsewhere or under `SHIPYARD_QUIET=1`, so logs
-    and pipes get no redrawn frames."""
+    """Return progress bars on a terminal, or a silent reporter elsewhere or under
+    `SHIPYARD_QUIET=1`, so that logs and pipes get no redrawn frames."""
     console = console if console is not None else Console()
     if os.environ.get(QUIET) == "1" or not console.is_terminal:
         return Reporter()
@@ -31,24 +31,25 @@ def reporter(console: Console | None = None) -> Reporter:
 
 
 class Reporter:
-    """Receives a run's job events. This base class ignores them; `Bars` draws them."""
+    """Receiver of a run's job events. This base class ignores them; `Bars` draws them."""
 
     def started(self, job: str, *, trials: int, step: int | None = None) -> None:
-        """A job of `trials` planned trials has begun, for step `step`."""
+        """Report that a job with `trials` planned trials has started, for `step` if given."""
 
     def finished(self, trial: Path, *, masked: bool) -> None:
-        """One trial of a started job is back; `masked` says admission left it out."""
+        """Report that one trial of a started job has finished. `masked` is true when
+        admission left it out."""
 
     def done(self, job: str) -> None:
-        """Every trial of the job is back."""
+        """Report that every trial of the job has finished."""
 
     def close(self) -> None:
         """Stop drawing. Idempotent."""
 
 
 class Bars(Reporter):
-    """One bar per job: trials finished out of planned, trials masked, the step and
-    the elapsed time. Redrawn in place, as Harbor draws a job."""
+    """Progress bars, one per job, redrawn in place as Harbor draws a job. Each shows the
+    step, trials finished out of planned, trials masked and the elapsed time."""
 
     def __init__(self, console: Console) -> None:
         self.console = console
@@ -74,7 +75,8 @@ class Bars(Reporter):
         self._tasks[job] = self.bars.add_task(label, total=trials, masked=0)
 
     def finished(self, trial: Path, *, masked: bool) -> None:
-        """The job is the trial directory's parent in `jobs/<job>/`."""
+        """Advance the bar of the trial's job, which is the trial directory's parent in
+        `jobs/<job>/`."""
         job = Path(trial).parent.name
         task = self._tasks.get(job)
         if task is None:

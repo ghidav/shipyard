@@ -1,5 +1,4 @@
-"""The run's side of the proxy, faked: records, a `Proxy` that notes what it was asked, and a
-blueprint to open an endpoint on."""
+"""Fake proxy client, record builder, and served blueprint for endpoint tests."""
 
 from __future__ import annotations
 
@@ -15,8 +14,8 @@ from tests.proxies import MODEL, ids
 
 
 def served(**rollout: Any) -> Blueprint:
-    """A served evaluate blueprint: `from_checkpoint` and `harness` go to `[agent]`, the rest
-    to `[rollout]`."""
+    """Build a served `evaluate` blueprint. `harness` and `from_checkpoint` go to `[agent]`,
+    and the remaining keywords go to `[rollout]`."""
     agent = {"model": MODEL, "harness": rollout.pop("harness", "pi@0.85.1")}
     if "from_checkpoint" in rollout:
         agent["from_checkpoint"] = rollout.pop("from_checkpoint")
@@ -42,7 +41,7 @@ def made(
     request_id: str | None = None,
     images: tuple[Picture, ...] = (),
 ) -> Record:
-    """A record as the proxy would have kept it, with text rendered by character."""
+    """Build a `Record` as the proxy would store it, rendering text one character per token."""
     prompt_ids = ids(prompt) if isinstance(prompt, str) else tuple(prompt)
     completion_ids = (
         () if error else (ids(completion) if isinstance(completion, str) else tuple(completion))
@@ -70,7 +69,7 @@ def made(
 
 @dataclass
 class FakeProxy:
-    """`Proxy` as `ProxyEndpoint` drives it; answers each trial's records by its task name."""
+    """Fake `Proxy` driven by `ProxyEndpoint` that logs each call and answers by task name."""
 
     origin: str = "http://host.docker.internal:8000"
     token: str = "harness-token"
@@ -82,11 +81,12 @@ class FakeProxy:
     addressed: list[str] = field(default_factory=list)
     fetched: list[str] = field(default_factory=list)
     swapped: list[str | None] = field(default_factory=list)
-    #: The token budget `/healthz` reports; None: the proxy enforces none.
+    #: Token budget reported by `/healthz`; None means no budget is enforced.
     budget: int | None = None
     closed: int = 0
-    #: How often `/healthz` was probed, and why it is gone (None: alive).
+    #: Number of times `/healthz` was probed.
     probed: int = 0
+    #: Reason the proxy exited, or None while it is alive.
     exited: str | None = None
 
     @property

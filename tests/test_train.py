@@ -1,5 +1,4 @@
-"""Test the run a trainer takes on fakes: a dapo run, steps past a pass, the evaluation
-cadence, the anchor, each kind's class, the resume, and the trainer file."""
+"""Tests for trainer runs on fakes: steps, evaluation, the KL anchor, resume, and trainer files."""
 
 from __future__ import annotations
 
@@ -9,9 +8,9 @@ from pathlib import Path
 import pytest
 
 from shipyard import record
+from shipyard.cli.run import Run, reopened
 from shipyard.data import Generator, tasks
-from shipyard.recipes import reopened, trainer_for, trainer_in
-from shipyard.run import Run
+from shipyard.training.recipes import trainer_for, trainer_in
 from shipyard.training.trainer import ROW, Trainer
 from shipyard.types import SERVE_TTL
 from tests.proxies import MODEL
@@ -431,7 +430,7 @@ async def test_a_run_is_evaluated_at_a_checkpoint_as_one_more_row(
 
 
 TRAINER_FILE = """\
-from shipyard.recipes.dapo import DAPOTrainer
+from shipyard.training import DAPOTrainer
 
 
 class Marked(DAPOTrainer):

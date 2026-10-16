@@ -1,5 +1,6 @@
-"""`shipyard serve` runs the proxy as its own process, for a run whose sandbox is not on
-this machine. It prints one line a run parses, then serves until SIGTERM or SIGINT."""
+"""`shipyard serve`: the proxy as a standalone process, for a run whose sandbox is elsewhere.
+
+It prints one line that the run parses, then serves until SIGTERM or SIGINT."""
 
 from __future__ import annotations
 
@@ -18,9 +19,9 @@ from typing import Any, TextIO
 from shipyard.proxy.server import Server
 from shipyard.proxy.wire import CONTROL_TOKEN_ENV, PROXY_TOKEN_ENV, new_token
 
-#: Bind values that mean every interface. Fine to listen on, but not an address to dial.
+#: Bind addresses that mean every interface: valid to listen on, but not to dial.
 WILDCARD_BINDS = frozenset({"0.0.0.0", "::", "*", ""})
-#: Server fields set by flags. `--settings` may not name them.
+#: Server fields set by flags, which `--settings` may not name.
 SET_HERE = frozenset(
     {"base_model", "model_path", "renderer", "host", "bind", "bind_port", "token"}
     | {"control_token", "client_factory"}
@@ -28,8 +29,10 @@ SET_HERE = frozenset(
 
 
 def advertised(bind: str, advertise: str | None) -> str:
-    """The name a sandbox resolves this proxy by. A wildcard bind with no `--advertise`
-    raises, because a URL with 0.0.0.0 reaches nothing and every harness request fails."""
+    """Return the hostname a sandbox uses to reach this proxy.
+
+    Raise ValueError for a wildcard bind without `--advertise`, because a URL with 0.0.0.0
+    reaches nothing and every harness request would fail."""
     if advertise:
         return advertise
     if bind in WILDCARD_BINDS:
@@ -53,9 +56,10 @@ def server_for(
     token: str | None,
     control_token: str | None,
 ) -> Server:
-    """Build the server the flags describe. `--settings` carries the run's other
-    `[rollout]` keys. A key that is not an Server field, or that a flag already sets,
-    raises ValueError."""
+    """Build the server the command-line flags describe.
+
+    `settings` carries the run's other `[rollout]` keys. Raise ValueError for a key that is
+    not a `Server` field or that a flag already sets."""
     named: dict[str, Any] = {
         "base_model": model,
         "model_path": weights or None,
@@ -80,9 +84,10 @@ def server_for(
 
 
 def configure_logging(stream: TextIO = sys.stderr) -> None:
-    """Shipyard's lines at INFO on `stream`, which a run keeps as `proxy.log`, unless logging
-    is configured already, as under the CLI's verb; aiohttp's access line per request stays
-    off."""
+    """Log shipyard's messages at INFO to `stream`, which a run keeps as `proxy.log`.
+
+    Do nothing if logging is already configured, as it is under the CLI. aiohttp's
+    per-request access log stays off."""
     if logging.getLogger().handlers:
         return
     handler = logging.StreamHandler(stream)
@@ -93,22 +98,25 @@ def configure_logging(stream: TextIO = sys.stderr) -> None:
 
 
 def banner(server: Server) -> str:
-    """The first line serve prints, which a run parses: what is served, where, and
-    whether control is on."""
+    """Return the first line serve prints, which the run parses.
+
+    It names the served model, the address, and whether the control route is on."""
     served = server.model_path or server.base_model
     control = "on" if server.control_token else "off"
     return f"serving {served} at http://{server.host}:{server.port} (control: {control})"
 
 
 def say(line: str) -> None:
-    """Print to stdout and flush, because a pipe is block-buffered."""
+    """Print `line` to stdout and flush, because a pipe is block-buffered."""
     print(line, flush=True)
 
 
 @contextlib.contextmanager
 def stopping_on_signals(stop: asyncio.Event) -> Iterator[None]:
-    """Set `stop` on SIGINT or SIGTERM while entered. The handlers go through the event
-    loop so the wait wakes, and are removed on exit for a caller that keeps running."""
+    """Set `stop` on SIGINT or SIGTERM while the context is active.
+
+    The handlers are installed on the event loop so the wait wakes up, and are removed on exit
+    for a caller that keeps running."""
     loop = asyncio.get_running_loop()
     installed = []
     try:
@@ -128,8 +136,9 @@ async def serve(
     stop: asyncio.Event | None = None,
     generated: Mapping[str, str] | None = None,
 ) -> None:
-    """Start the server, print the banner and then each token generated here, wait for
-    `stop`, and close the server (socket and Tinker session) on exit or error."""
+    """Start the server, print the banner and any tokens generated here, and wait for `stop`.
+
+    The server (socket and Tinker session) is closed on exit or error."""
     stop = asyncio.Event() if stop is None else stop
     await server.start()
     try:
@@ -142,9 +151,10 @@ async def serve(
 
 
 def tokens_from_env(environ: Mapping[str, str] = os.environ) -> tuple[str, str, dict[str, str]]:
-    """Return `(token, control, generated)`. A token comes from the env, else it is
-    generated here and listed in `generated` for the caller to print, so the launcher can
-    read it."""
+    """Return `(token, control, generated)` for the harness and control tokens.
+
+    A token missing from the environment is generated here and also listed in `generated`,
+    so the caller can print it for the launcher to read."""
     generated: dict[str, str] = {}
     token = environ.get(PROXY_TOKEN_ENV) or ""
     if not token:
@@ -179,7 +189,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Build the server and serve until signalled. Returns 2 when it cannot be built."""
+    """Build the server and serve until signalled. Return 2 if the server cannot be built."""
     configure_logging()
     args = parser().parse_args(argv)
     token, control, generated = tokens_from_env()

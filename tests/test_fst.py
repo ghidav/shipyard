@@ -1,5 +1,4 @@
-"""Fast-slow training: the paper's defaults, the slow recipe fst resolves to, the jobs of a
-slow step merged into one group per task, and one cycle end to end on fakes."""
+"""Tests for the fast-slow training (FST) recipe."""
 
 from __future__ import annotations
 
@@ -13,6 +12,7 @@ import pytest
 from harbor.models.trial.config import TrialConfig
 
 from shipyard import record
+from shipyard.cli.run import Run, reopened
 from shipyard.config import (
     SLOW_KNOBS,
     CispoRecipe,
@@ -25,9 +25,10 @@ from shipyard.config import (
 )
 from shipyard.data import Generator, tasks
 from shipyard.modules import seed
-from shipyard.recipes import reopened, resolution, trainer_for
-from shipyard.recipes.cispo import CISPOTrainer
-from shipyard.recipes.fst import (
+from shipyard.sampling.endpoint import ProviderEndpoint
+from shipyard.training.recipes import resolution, trainer_for
+from shipyard.training.recipes.cispo import CISPOTrainer
+from shipyard.training.recipes.fst import (
     ADAM,
     BUDGET_PASSES,
     FSTTrainer,
@@ -35,8 +36,6 @@ from shipyard.recipes.fst import (
     merged,
     slow_recipe,
 )
-from shipyard.run import Run
-from shipyard.sampling.endpoint import ProviderEndpoint
 from shipyard.types import Agent, Group, Member, Policy, Sequence, Trial, Verdict, harness
 from tests.trials import (
     BLUEPRINTS,
@@ -57,7 +56,7 @@ AGENT = Agent(Policy(ProviderEndpoint("m")), [harness("pi")])
 
 @pytest.fixture(autouse=True)
 def _tasks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The fixture's `aime-train` under the working directory, for a trainer to read."""
+    """Change into `tmp_path` and create a two-task `aime-train` dataset there."""
     monkeypatch.chdir(tmp_path)
     dataset(tmp_path / "tasks", "aime-train", "a", "b")
 
@@ -110,8 +109,9 @@ def test_another_slow_recipe_takes_its_own_knobs(tmp_path: Path) -> None:
     ("slow", "recipe"), [("dapo", DapoRecipe), ("dr-grpo", DrGrpoRecipe), ("cispo", CispoRecipe)]
 )
 def test_slow_knobs_are_each_slow_recipes_own_fields_and_fsts(slow: str, recipe: type) -> None:
-    """A knob a slow recipe gains must reach fst's list and its fields, or fst cannot set
-    it. The overlong term stays out: a slow step trains on the batch it sampled."""
+    """Every knob a slow recipe adds must appear in `SLOW_KNOBS` and in fst's fields, or fst
+    cannot set it. The overlong term is excluded because a slow step trains on the batch it
+    sampled."""
     outside = {"overlong_penalty", "overlong_buffer"}
     own = set(recipe.model_fields) - set(Gradient.model_fields) - {"kind"} - outside
     assert own == set(SLOW_KNOBS[slow])
@@ -227,8 +227,8 @@ async def test_the_fast_phase_scores_each_cell_with_one_rollout_on_five_passes(
     tmp_path: Path,
     harbor: Harbor,
 ) -> None:
-    """FST App. D: 960 metric calls over 192 examples, one rollout each, at any share of
-    the group a text takes in the slow steps (here two of four)."""
+    """FST Appendix D: 960 metric calls over 192 examples, one rollout each, whatever share
+    of the group each text takes in the slow steps (here two of four)."""
     dataset(tmp_path / "tasks", "four", *"abcd")
     home = write_blueprint(tmp_path, _text(**{'"aime-train"': '"four"'}))
     shutil.copytree(VALID, home / "modules")
@@ -251,9 +251,9 @@ async def test_the_fast_phase_scores_each_cell_with_one_rollout_on_five_passes(
 
 @pytest.mark.usefixtures("fakes")
 async def test_patience_ends_a_fast_phase_as_it_ends_gepa(tmp_path: Path, harbor: Harbor) -> None:
-    """`patience = 1` under a budget that would run on: the fast phase stops at its first
-    round that does not raise the best anchor-set mean. Each text here names one task, so
-    the first child's rise is the only one."""
+    """With `patience = 1` and a budget that would allow more rounds, the fast phase stops at
+    the first round that does not raise the best anchor-set mean. Each text here names one
+    task, so only the first child raises it."""
     dataset(tmp_path / "tasks", "four", *"abcd")
     changes = {'"aime-train"': '"four"', 'kind = "fst"': 'kind = "fst"\npatience = 1\nbudget = 100'}
     home = write_blueprint(tmp_path, _text(**changes))
@@ -273,8 +273,6 @@ async def test_patience_ends_a_fast_phase_as_it_ends_gepa(tmp_path: Path, harbor
 async def test_cycle_c_draws_its_minibatches_with_data_seed_plus_c(
     tmp_path: Path, harbor: Harbor
 ) -> None:
-    """Two cycles over two passes of four tasks: each fast phase's parents run on the
-    minibatches `[data] seed + cycle` predicts over that cycle's tasks."""
     dataset(tmp_path / "tasks", "four", *"abcd")
     changes = {
         '"aime-train"': '"four"',
@@ -302,7 +300,7 @@ async def test_cycle_c_draws_its_minibatches_with_data_seed_plus_c(
 
 
 def test_fst_averages_per_prompt_whatever_its_slow_loss(tmp_path: Path) -> None:
-    """FST aggregates at the prompt level (Eq. 4); a dr-grpo step on its own sums."""
+    """FST aggregates at the prompt level (Eq. 4), whereas a standalone dr-grpo step sums."""
     text = _text(**{'kind = "fst"': 'kind = "fst"\nslow = "dr-grpo"'})
     home = write_blueprint(tmp_path, text)
     recipe = load(home).recipe
@@ -325,7 +323,8 @@ def test_fsts_warmup_key_reaches_its_slow_step(tmp_path: Path) -> None:
 
 
 class AlternatingFakes(Fakes):
-    """A reflection as `Fakes` does it; a policy trial scores its job's parity."""
+    """Fake trial runner that handles reflections like `Fakes` and scores a policy trial by
+    the parity of its job number."""
 
     async def __call__(self, config: TrialConfig) -> None:
         if Path(str(config.task.path)).name == "reflection":

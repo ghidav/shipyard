@@ -1,4 +1,4 @@
-"""The command line: check, run, resume, evaluate, list, show, serve."""
+"""The `shipyard` command line: `check`, `run`, `evaluate`, `serve`, `runs` and `show`."""
 
 from __future__ import annotations
 
@@ -21,14 +21,14 @@ from rich.markup import escape
 from shipyard import data, record
 from shipyard.cli import resolved
 from shipyard.cli.preflight import Finding
+from shipyard.cli.run import Run, RunRefused, reopened, runs_root, trainer_of
 from shipyard.cli.show import print_fields, print_run, print_runs, sections, state_of, styled
 from shipyard.cli.smoke import SmokeFailed
 from shipyard.cli.smoke import smoke as smoke_job
 from shipyard.data import NoSuchDataset
 from shipyard.proxy.client import Unreachable
-from shipyard.recipes import reopened, trainer_in, trainer_of
-from shipyard.run import Run, RunRefused, runs_root
 from shipyard.sampling.endpoint import NothingServed, ProxyGone
+from shipyard.training.recipes import trainer_in
 from shipyard.training.trainer import Trainer
 
 app = typer.Typer(
@@ -78,7 +78,7 @@ TestOption = Annotated[
     ),
 ]
 
-#: The columns of `runs`, with their styles.
+#: Console markup for each finding level.
 MARKS = {
     "ok": "[green]ok[/green]",
     "warning": "[yellow]warning[/yellow]",
@@ -88,7 +88,7 @@ MARKS = {
 
 @app.callback()
 def main() -> None:
-    """Post-training on Harbor jobs, configured by a blueprint and recorded as a run."""
+    """Post-train models on Harbor jobs, configured by a blueprint and recorded as a run."""
     load_dotenv(Path.cwd() / ".env", override=False)  # the shell wins over the file
     logging.basicConfig(
         level=logging.INFO,
@@ -104,8 +104,11 @@ def check(
     as_json: JsonOption = False,
     verbose: VerboseOption = False,
 ) -> None:
-    """Check whether a blueprint can run, before anything is spent. Prints the resolved
-    config, then every problem at once. The `ok` lines print only under --verbose."""
+    """Check whether a blueprint can run, without starting anything.
+
+    Prints the resolved config, then every problem found. Passing checks are listed only with
+    --verbose. Exits with status 1 if any check blocks the run.
+    """
     chosen, about = _trainer(trainer)
     found = resolved.report(blueprint, chosen)
     found.findings.extend(about)
@@ -127,10 +130,13 @@ def run(
     smoke: SmokeOption = False,
     resume: ResumeOption = False,
 ) -> None:
-    """Check the blueprint, open a run, train it under the trainer file when one is given,
-    else the kind's trainer (with --smoke, sample one trial and report it), and record how it
-    ended. With --resume, go on with a run from its last checkpoint, under the trainer it was
-    opened with."""
+    """Check a blueprint, then open a run and train it.
+
+    Trains with the Trainer subclass in the trainer file when one is given, otherwise with the
+    default trainer for the recipe kind, and records how the run ended. With --smoke, samples
+    one trial and reports it instead of training. With --resume, the argument is a run id, and
+    the run continues from its last checkpoint under the trainer it was opened with.
+    """
     if resume:
         ongoing, resumed = _reopened(runs_root(root) / blueprint.name)
         raise typer.Exit(_executed(ongoing, lambda: _trained(resumed)))
@@ -161,7 +167,10 @@ def evaluate(
     checkpoint: CheckpointOption = "last",
     test: TestOption = None,
 ) -> None:
-    """Measure one of a run's checkpoints on a test set, as one more row of its metrics."""
+    """Evaluate one of a run's checkpoints on a test set.
+
+    Prints the result and adds it as a row to the run's metrics.
+    """
     ongoing, trainer = _reopened(runs_root(root) / run_id, checkpoint=checkpoint)
     try:
         tasks = data.tasks(test) if test else trainer.generator.test
@@ -184,7 +193,7 @@ def evaluate(
 
 
 def _reopened(directory: Path, *, checkpoint: str = "last") -> tuple[Run, Trainer]:
-    """A run reopened at a checkpoint and its trainer, or exit 1 saying why not."""
+    """Reopen a run at a checkpoint with its trainer, or print why not and exit with status 1."""
     try:
         return reopened(directory, tag=checkpoint)
     except (ValueError, NoSuchDataset) as refused:
@@ -193,14 +202,17 @@ def _reopened(directory: Path, *, checkpoint: str = "last") -> tuple[Run, Traine
 
 
 def _trained(trainer: Trainer) -> None:
-    """Train, the trainer's bars and loggers closed however it ends."""
+    """Train, closing the trainer's progress bars and loggers however training ends."""
     with trainer:
         asyncio.run(trainer.train())
 
 
 def _trainer(path: Path | None) -> tuple[type[Trainer] | None, list[Finding]]:
-    """The trainer class of the file given, None for the kind's, with the finding `check`
-    prints about it."""
+    """Load the trainer class from `path` and return it with a finding for `check` to print.
+
+    The class is None when no path is given, meaning the recipe kind's default trainer, or when
+    loading fails, in which case the finding blocks the run.
+    """
     if path is None:
         return None, []
     try:
@@ -212,7 +224,11 @@ def _trainer(path: Path | None) -> tuple[type[Trainer] | None, list[Finding]]:
 
 
 def _executed(opened: Run, work: Callable[[], Any]) -> int:
-    """Run `work` inside the run, stopping on signals, and print how it ended."""
+    """Run `work` inside `opened`, print how the run ended, and return the exit code.
+
+    SIGTERM and SIGHUP interrupt the work as Ctrl-C does, giving exit code 130. Any other
+    failure gives 1.
+    """
     console.print(
         f"[bold cyan]{opened.id}[/bold cyan]  [dim]{escape(str(opened.directory))}[/dim]",
         highlight=False,
@@ -241,7 +257,7 @@ def _executed(opened: Run, work: Callable[[], Any]) -> int:
 
 
 def _smoke(opened: Run) -> None:
-    """Run the smoke job and print its report. Raises if no trial came back."""
+    """Run the smoke job and print its report, raising if no usable trial came back."""
     smoked = asyncio.run(smoke_job(opened))
     for line in smoked.lines():
         console.print(line, markup=False, highlight=False, soft_wrap=True)
@@ -253,9 +269,11 @@ def _smoke(opened: Run) -> None:
     add_help_option=False,
 )
 def serve(ctx: typer.Context) -> None:
-    """Serve a Tinker model to a harness in a sandbox. `shipyard serve --help` lists the
-    flags. `shipyard.proxy.serve` defines them with argparse, so a container entrypoint and this
-    command parse the same flags."""
+    """Serve a Tinker model to a harness in a sandbox. `shipyard serve --help` lists the flags.
+
+    The flags are defined with argparse in `shipyard.proxy.serve`, so a container entrypoint
+    and this command parse the same flags.
+    """
     from shipyard.proxy.serve import main as serve_main
 
     raise typer.Exit(serve_main(list(ctx.args)))
@@ -263,8 +281,10 @@ def serve(ctx: typer.Context) -> None:
 
 @app.command()
 def runs(root: RootOption = None) -> None:
-    """List every run under the root, newest first, as a table, or as a block per run when
-    the table is wider than the console."""
+    """List the runs under the runs directory, newest first.
+
+    Shows a table, or one block per run when the table is wider than the terminal.
+    """
     print_runs(runs_root(root))
 
 
@@ -275,7 +295,7 @@ def show(
     full: FullOption = False,
     as_json: SectionsOption = False,
 ) -> None:
-    """Show one run, section by section: process, metrics, jobs, checkpoints, costs."""
+    """Show a run's process, metrics, jobs, checkpoints and costs."""
     directory = runs_root(root) / run_id
     if not (directory / record.CONFIG).is_file():
         console.print(
@@ -297,9 +317,11 @@ def _print_findings(findings: list[Finding]) -> None:
 
 
 def _stop_on_signals() -> Callable[[], None]:
-    """Make SIGTERM and SIGHUP raise `KeyboardInterrupt(<name>)` in the main thread, as
-    Ctrl-C does, so the recipe unwinds and `Run.__exit__` records the stop. Returns a
-    function that restores the previous handlers."""
+    """Make SIGTERM and SIGHUP raise `KeyboardInterrupt(<signal name>)` in the main thread.
+
+    The recipe then unwinds as it does on Ctrl-C, and `Run.__exit__` records the stop. Returns
+    a function that restores the previous handlers.
+    """
 
     def stop(signum: int, _frame: Any) -> None:
         raise KeyboardInterrupt(signal.Signals(signum).name)

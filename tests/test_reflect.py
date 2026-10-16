@@ -1,6 +1,4 @@
-"""The reflector as a Harbor trial: a task that Harbor loads, the traces and the component
-as files, an instruction that names the artifact, the artifact read back and checked, and
-the job recorded as a reflection under the provider's party."""
+"""Tests for the GEPA reflector, which rewrites one module in a Harbor trial."""
 
 from __future__ import annotations
 
@@ -14,10 +12,11 @@ from harbor.models.task.task import Task
 from harbor.models.trial.config import TrialConfig
 
 from shipyard import record
+from shipyard.cli.run import Run
 from shipyard.modules import KINDS, PROMPT, PROMPT_FILE, SKILL_FILE, Candidate, Module
-from shipyard.recipes.gepa.fitness import Outcome
-from shipyard.recipes.gepa.propose import Reflection
-from shipyard.recipes.gepa.reflect import (
+from shipyard.training.recipes.gepa.fitness import Outcome
+from shipyard.training.recipes.gepa.propose import Reflection
+from shipyard.training.recipes.gepa.reflect import (
     COLLECTED,
     PUBLISH,
     REFERENCE,
@@ -28,7 +27,6 @@ from shipyard.recipes.gepa.reflect import (
     unwrapped,
     written,
 )
-from shipyard.run import Run
 from shipyard.training.trainer import Trainer
 from shipyard.types import Job
 from tests.trials import Harbor, fixture_tasks, trial, write_blueprint, write_result
@@ -187,8 +185,8 @@ def test_the_rewrite_is_read_back_as_a_module_of_the_same_name_and_kind(tmp_path
 
 
 def test_a_prompts_rewrite_is_its_marker_alone(tmp_path: Path) -> None:
-    """A prompt is delivered as its text and nothing else, so the reflector is told so, and
-    anything it writes beside `PROMPT.md` is left behind rather than refused."""
+    """Only a prompt's text is delivered, so the instruction says so, and any other file
+    the reflector writes beside `PROMPT.md` is ignored rather than refused."""
     prompt = Module(PROMPT, "prompt", {PROMPT_FILE: "Run the tests.\n"})
     task = task_for(_reflection(prompt), tmp_path / "task", image="i", incremental=True)
     text = (task / "instruction.md").read_text()
@@ -208,7 +206,7 @@ def test_a_rewrite_that_fails_the_kinds_check_is_declined_and_said(
 ) -> None:
     trial = tmp_path / "reflection__abc"
     _published(trial, SKILL_FILE).write_text("# Solving\n\nno frontmatter any more\n")
-    with caplog.at_level(logging.WARNING, logger="shipyard.recipes.gepa.reflect"):
+    with caplog.at_level(logging.WARNING, logger="shipyard.training.recipes.gepa.reflect"):
         assert written(_job(trial), _module()) is None
     assert "rewrite of 'solving' declined" in caplog.text
     assert "does not open with a `---` frontmatter block" in caplog.text
@@ -246,19 +244,19 @@ def test_a_trial_that_wrote_nothing_declines_and_one_that_died_says_so(
     quiet = tmp_path / "quiet"
     _published(quiet, "x")  # the directory, and nothing in it
     write_result(quiet)
-    with caplog.at_level(logging.INFO, logger="shipyard.recipes.gepa.reflect"):
+    with caplog.at_level(logging.INFO, logger="shipyard.training.recipes.gepa.reflect"):
         assert written(_job(quiet), _module()) is None
     assert "WARNING" not in caplog.text and "wrote no 'SKILL.md'" in caplog.text
     caplog.clear()
     wrong = tmp_path / "wrong"
     _published(wrong, "notes.md").write_text("prose instead of the file")
-    with caplog.at_level(logging.WARNING, logger="shipyard.recipes.gepa.reflect"):
+    with caplog.at_level(logging.WARNING, logger="shipyard.training.recipes.gepa.reflect"):
         assert written(_job(wrong), _module()) is None
     assert "it left ['notes.md']" in caplog.text
     caplog.clear()
     dead = tmp_path / "dead"
     write_result(dead, exception="AgentSetupTimeoutError")
-    with caplog.at_level(logging.WARNING, logger="shipyard.recipes.gepa.reflect"):
+    with caplog.at_level(logging.WARNING, logger="shipyard.training.recipes.gepa.reflect"):
         assert written(_job(dead), _module()) is None
     assert "the reflection trial failed: AgentSetupTimeoutError" in caplog.text
 
@@ -267,8 +265,8 @@ def test_a_trial_that_wrote_nothing_declines_and_one_that_died_says_so(
 
 
 class Reflector:
-    """Stands in for Harbor's trial: records the config, publishes `answer` as the artifact,
-    and writes a result with the provider and the token counts."""
+    """Fake Harbor trial runner that records each config, publishes `answer` as the
+    rewritten skill, and writes a result with the provider and token counts."""
 
     def __init__(self, answer: str | None = REWRITTEN) -> None:
         self.configs: list[TrialConfig] = []

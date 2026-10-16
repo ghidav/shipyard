@@ -1,5 +1,4 @@
-"""The trainer's `job` reserves the job name and directory before anything runs, appends a
-row for each job, and adds the job's counts to `costs.json`."""
+"""Tests for `Trainer.job`: job naming, job rows, and cost accounting."""
 
 from __future__ import annotations
 
@@ -9,10 +8,10 @@ from typing import Any
 import pytest
 
 from shipyard import record
-from shipyard.pack import groups
-from shipyard.run import Run
+from shipyard.cli.run import Run
 from shipyard.sampling.endpoint import ProviderEndpoint
 from shipyard.sampling.engine import HarborEngine
+from shipyard.training.pack import groups
 from shipyard.training.trainer import Trainer
 from shipyard.types import Agent, Job, Policy, Settings, Trial, Verdict, harness
 from tests.trials import (
@@ -32,7 +31,7 @@ EVALUATE = BLUEPRINTS / "evaluate"
 
 @pytest.fixture
 def opened(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Run:
-    """An open evaluate run in a working directory holding the fixture tasks."""
+    """Open an evaluate run from a working directory holding the fixture tasks."""
     fixture_tasks(tmp_path)
     monkeypatch.chdir(tmp_path)
     return Run.open(EVALUATE, root=tmp_path / "runs")

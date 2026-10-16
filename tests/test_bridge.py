@@ -1,6 +1,4 @@
-"""The digest and the narrow bridge: what identifies a message, which replies the index
-finds, and the five reasons a prompt is rendered afresh instead, through the real app on
-a renderer whose fresh render never equals the sampled tokens."""
+"""Tests for message digests, the reply index, and the bridge that reuses sampled tokens."""
 
 from __future__ import annotations
 
@@ -131,9 +129,9 @@ def test_two_different_replies_under_one_history_leave_it_ambiguous() -> None:
 
 
 def test_two_different_replies_to_one_history_sharing_a_call_id_are_both_passed_over() -> None:
-    """A model that writes its own ids gives two samples of one history the same id. If
-    the harness trims the one it kept (drops its thinking, or a call), the echo can digest
-    as the other: both are passed over."""
+    """A model that writes its own call ids gives two samples of one history the same id.
+    If the harness trims the reply it kept (dropping its thinking or a call), its echo can
+    match the other reply's digest, so the index returns neither."""
     user = digests_of([{"role": "user", "content": "look"}])
     kept, other = Reply((1,), (2,), True, (1,)), Reply((1,), (3,), True, (1,))
     index = Index()
@@ -161,7 +159,7 @@ def test_only_tool_results_and_one_closing_user_message_extend() -> None:
 def _indexed(
     renderer: Any, history: list[dict[str, Any]], completion: str, *, ended: bool
 ) -> Index:
-    """An index holding one reply: `history[:-1]` was its prompt, rendered afresh."""
+    """Build an index holding one reply whose prompt was `history[:-1]`, rendered fresh."""
     prompt = tuple(renderer.build_generation_prompt(history[:-1]).to_ints())
     index = Index()
     index.add(
@@ -238,8 +236,8 @@ def test_a_record_whose_image_was_not_kept_is_never_indexed_and_a_kept_one_is() 
 
 
 class PicturingRenderer(BridgeRenderer):
-    """The bridge renderer with an image chunk of three tokens for each image part, built
-    from the image's bytes (a PIL image or a string)."""
+    """Bridge renderer that renders each image part as a three-token image chunk built from
+    the image bytes (a PIL image or a string)."""
 
     _has_image_processor = True
     WIDTH = 3
@@ -320,8 +318,9 @@ def test_an_image_in_the_head_and_one_in_the_tail_bridge_with_their_pictures() -
 
 
 async def _tool_loop(answers: list[str], *, retitle: Any = None) -> tuple[Any, Any]:
-    """Three turns on the OpenAI wire: a tool call, its result, a reply with thinking, a
-    closing user message. `retitle` may edit the history before the third request."""
+    """Run three requests on the OpenAI wire and return the records and the sampler. The
+    conversation is a tool call, its result, a reply with thinking, and a closing user
+    message; `retitle` may edit the history before the third request."""
     sampler = FakeSampler(answers)
     async with server(sampler, renderer=BridgeRenderer()) as started:
         history: list[dict[str, Any]] = [{"role": "user", "content": "look"}]
@@ -388,8 +387,9 @@ async def test_a_user_message_after_a_non_tool_tail_does_not_bridge() -> None:
 
 
 async def test_a_head_that_re_renders_differently_does_not_bridge() -> None:
-    """The digest does not see a tool result's call id; this renderer renders it. A history
-    whose result's id changed matches by digest and renders another head, so it forks."""
+    """The digest ignores a tool result's call id, but this renderer renders it. A history
+    whose result id changed matches by digest yet renders a different head, so it is not
+    bridged."""
 
     def renumber(history: list[dict[str, Any]]) -> None:
         history[2] = {**history[2], "tool_call_id": "call_other"}
@@ -512,8 +512,9 @@ async def _reply(started: Any, history: list[dict[str, Any]], **headers: str) ->
 
 
 def _echo(said: dict[str, Any], arguments: str, result: str) -> list[dict[str, Any]]:
-    """The reply's call as a harness sends it back with its arguments rewritten, and its
-    result: Claude Code echoes the input it normalized, not the one the model wrote."""
+    """Return the reply's tool call with rewritten arguments, followed by its result. This
+    mirrors Claude Code, which echoes the input it normalized rather than the one the model
+    wrote."""
     (sent,) = said["tool_calls"]
     rewritten = {**sent, "function": {**sent["function"], "arguments": arguments}}
     return [
@@ -540,8 +541,8 @@ async def test_an_echo_whose_arguments_the_harness_rewrote_still_bridges() -> No
 
 
 async def test_of_two_replies_to_one_history_the_one_the_harness_kept_is_bridged() -> None:
-    """Two samples of one history call the same tool on different files. The harness kept
-    the first and rewrote its arguments; its ids say which it was."""
+    """Two samples of one history call the same tool on different files. The harness keeps
+    the first and rewrites its arguments; the call ids identify which one it kept."""
     answers = ['CALL ls {"p": "a"}', 'CALL ls {"p": "b"}', "done"]
     async with server(FakeSampler(answers), renderer=BridgeRenderer()) as started:
         history: list[dict[str, Any]] = [{"role": "user", "content": "look"}]
@@ -555,8 +556,8 @@ async def test_of_two_replies_to_one_history_the_one_the_harness_kept_is_bridged
 
 
 class ModelNamedCalls(BridgeRenderer):
-    """A renderer whose model writes its own call ids, numbered as Kimi numbers them: two
-    samples of one history give their calls the same id."""
+    """Bridge renderer whose model writes its own call ids, numbered the way Kimi does. Two
+    samples of one history therefore give their calls the same id."""
 
     def parse_response(self, response: list[int]) -> tuple[dict[str, Any], Any]:
         message, termination = super().parse_response(response)
@@ -597,8 +598,9 @@ async def test_a_replayed_retry_carries_the_ids_its_first_answer_did() -> None:
 
 
 async def test_a_sibling_the_trimmed_echo_of_a_kept_reply_digests_as_is_not_spliced() -> None:
-    """Kimi-like ids: the kept reply had thinking, its sibling had none. The harness echoes
-    the kept one without its thinking, which digests as the sibling; the shared id forks."""
+    """With Kimi-style ids, the kept reply has thinking and its sibling has none. The harness
+    echoes the kept reply without its thinking, which matches the sibling's digest, and the
+    shared id leaves the request unbridged."""
     answers = ['{plan}CALL ls {"p": "a"}', 'CALL ls {"p": "b"}', "done"]
     async with server(FakeSampler(answers), renderer=ModelNamedCalls()) as started:
         history: list[dict[str, Any]] = [{"role": "user", "content": "look"}]
@@ -620,7 +622,7 @@ async def test_two_turns_that_sample_the_same_call_get_their_own_ids() -> None:
 
 
 async def test_an_anthropic_echo_that_drops_a_whitespace_only_block_bridges() -> None:
-    """Claude Code drops a text block holding only whitespace when it echoes a reply."""
+    """Claude Code drops whitespace-only text blocks when it echoes a reply."""
     sampler = FakeSampler(["\n\nCALL ls {}", "done"])
     async with server(sampler, renderer=BridgeRenderer()) as started:
         messages: list[dict[str, Any]] = [{"role": "user", "content": "look"}]

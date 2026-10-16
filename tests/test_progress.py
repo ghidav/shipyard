@@ -1,4 +1,4 @@
-"""Bars on a terminal count each job's trials. Nothing is drawn off a terminal or under quiet."""
+"""Tests for progress reporting: per-job trial bars on a terminal, and silence otherwise."""
 
 from __future__ import annotations
 

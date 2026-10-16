@@ -1,7 +1,9 @@
-"""Every finding `check` reports: the blueprint's, then the environment's. For the sandbox:
-Harbor's extra, its credentials, docker, leftover networks, and secrets that must not enter
-it. For a served model: where its proxy will stand, how its harness is wired, and whether
-the backend lists the model."""
+"""The checks behind `check`: findings about a blueprint, then about the environment.
+
+For the sandbox, the environment checks cover Harbor's extra, credentials, docker, leftover
+networks, and secrets that must not enter it. For a served model, they cover where the proxy
+will run, how the harness is wired, and whether the backend lists the model.
+"""
 
 from __future__ import annotations
 
@@ -40,10 +42,11 @@ from shipyard.modules import Inadmissible, seed
 from shipyard.proxy import tunnel
 from shipyard.proxy.wire import CONTROL_TOKEN_ENV, PROXY_TOKEN_ENV
 from shipyard.sampling.endpoint import LOCAL_SANDBOXES, backend, placement
+from shipyard.sampling.secrets import pooled
 
-#: Harbor's environments, the values `[rollout] sandbox` takes.
+#: Harbor's environment names, the valid values of `[rollout] sandbox`.
 SANDBOXES = tuple(kind.value for kind in EnvironmentType)
-#: What `check` says of a blueprint that cannot run yet.
+#: Finding for a blueprint that names no `[agent] harness`.
 NO_HARNESS = (
     "[agent] harness: name the harness; Harbor reads an unnamed agent as its oracle, "
     "which runs the task's reference solution"
@@ -52,10 +55,11 @@ NO_REFLECTOR = (
     "[recipe] reflection_harness: name the harness the reflector runs as; Harbor reads an "
     "unnamed agent as its oracle, and the reflection task has no reference solution"
 )
-#: Over this, a reply to a sandbox elsewhere takes long enough for a harness to give up on it.
-#: The reflector's container when a gepa blueprint names none: a shell and a Python.
+#: Largest safe `max_tokens` for a remote sandbox; a longer reply reaches it slowly enough for a
+#: harness to give up on it.
 REMOTE_MAX_TOKENS = 16384
-#: Under this, a sandbox elsewhere can spend the harness's whole setup pulling its image.
+#: Smallest safe `setup_timeout` for a remote sandbox; with less, pulling the image can use up
+#: the harness's whole setup time.
 REMOTE_SETUP_SECONDS = 600.0
 DOCKER_SECONDS = 15.0
 NOT_KEPT_ALIVE = (
@@ -63,11 +67,12 @@ NOT_KEPT_ALIVE = (
     "after ~100 s"
 )
 
-#: Harbor's module per provider and the variables its `preflight` reads, the same paths in
-#: 0.23 and 0.24. Each module imports without the SDK and says in `_HAS_<PROVIDER>` whether
-#: it found it (0.24: modal.py:88-97, daytona/environment.py:85-106, e2b.py:30-60,
-#: runloop.py:38-56, beam.py:88, blaxel.py:62-75). The variables: modal.py:876-877,
-#: daytona/environment.py:150, e2b.py:74, runloop.py:65, beam.py:807, blaxel.py:131-136.
+#: Harbor's environment module for each provider and the variables its `preflight` reads
+#: (same paths in Harbor 0.23 and 0.24). Each module imports without the SDK and sets
+#: `_HAS_<PROVIDER>` to whether it found it (0.24: modal.py:88-97,
+#: daytona/environment.py:85-106, e2b.py:30-60, runloop.py:38-56, beam.py:88,
+#: blaxel.py:62-75). The variables: modal.py:876-877, daytona/environment.py:150, e2b.py:74,
+#: runloop.py:65, beam.py:807, blaxel.py:131-136.
 PROVIDERS: dict[str, tuple[str, tuple[str, ...]]] = {
     "modal": ("harbor.environments.modal", ("MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET")),
     "daytona": ("harbor.environments.daytona.environment", ("DAYTONA_API_KEY",)),
@@ -76,27 +81,28 @@ PROVIDERS: dict[str, tuple[str, tuple[str, ...]]] = {
     "beam": ("harbor.environments.beam", ("BEAM_TOKEN",)),
     "blaxel": ("harbor.environments.blaxel", ("BL_WORKSPACE", "BL_API_KEY")),
 }
-#: What those checks take in place of the variables: a login file under the home directory
-#: (modal.py:875, beam.py:141, blaxel.py:134-135), or daytona's other pair (:151-154).
+#: Login files under the home directory that Harbor's checks accept in place of the variables
+#: (modal.py:875, beam.py:141, blaxel.py:134-135).
 LOGINS = {"modal": ".modal.toml", "beam": ".beam/config.ini", "blaxel": ".blaxel/config.yaml"}
-#: A variable that moves the login file elsewhere: beam's `CONFIG_PATH` (beam.py:139-140).
+#: Variables that move a provider's login file: beam's `CONFIG_PATH` (beam.py:139-140).
 LOGIN_PATHS = {"beam": "CONFIG_PATH"}
+#: Variables Harbor's checks accept in place of the usual ones: daytona's other pair
+#: (daytona/environment.py:151-154).
 INSTEAD = {"daytona": ("DAYTONA_JWT_TOKEN", "DAYTONA_ORGANIZATION_ID")}
-#: A value Harbor replaces with the host's variable before the agent sees it, as
-#: `${VAR}` or `${VAR:-default}` (harbor/utils/env.py:4, resolved at agents/factory.py:147).
+#: An env value Harbor replaces with the host's variable before the agent sees it: `${VAR}` or
+#: `${VAR:-default}` (harbor/utils/env.py:4, resolved at agents/factory.py:147).
 TEMPLATE = re.compile(r"\$\{([^}:]+)(?::-(.*))?\}")
-#: The app `check` looks up to learn whether Modal takes the token: a lookup without
+#: App that `check` looks up to learn whether Modal accepts the token. A lookup without
 #: `create_if_missing` creates nothing (modal/app.py, `App.lookup`).
 MODAL_APP = "shipyard"
-#: Modal reads each half from the environment before its profile file (modal/config.py).
-#: How long `check` waits for Modal to answer that lookup before it gives up and warns.
+#: Seconds `check` waits for Modal to answer that lookup before it gives up and warns.
 MODAL_SECONDS = 15.0
-#: At this many leftover trial networks `check` warns: Docker's default address pools hold
-#: about 30 user networks, and past them no trial's containers start.
+#: Number of leftover trial networks at which `check` warns. Docker's default address pools
+#: hold about 30 user networks, and past that no trial's containers start.
 LEFTOVER_NETWORKS = 20
-#: Removes the leftover trial networks only. Harbor names a trial's Compose projects
-#: `<trial>__env` and `<trial>__verifier__<key>` (harbor/trial/trial.py), and a network with
-#: a container on it is not dangling.
+#: Shell command that removes only the leftover trial networks. Harbor names a trial's Compose
+#: projects `<trial>__env` and `<trial>__verifier__<key>` (harbor/trial/trial.py), and a network
+#: with a container on it is not dangling.
 REMOVE_NETWORKS = (
     "docker network ls -q --filter dangling=true --filter name=__env_default "
     "--filter name=__verifier__ | xargs docker network rm"
@@ -110,8 +116,10 @@ class Finding:
 
 
 def findings(loaded: Blueprint, environ: Mapping[str, str] | None = None) -> list[Finding]:
-    """The findings of a blueprint that loaded: one ok line per fact, then every problem.
-    Datasets are looked up under `tasks/` in the working directory, as `run` does."""
+    """Return the findings for a loaded blueprint: an `ok` line per fact, then every problem.
+
+    Datasets are looked up under `tasks/` in the working directory, as `run` does.
+    """
     environ = os.environ if environ is None else environ
     agent, rollout = loaded.agent, loaded.rollout
     served = " (served by this run)" if agent.served else ""
@@ -165,10 +173,12 @@ def findings(loaded: Blueprint, environ: Mapping[str, str] | None = None) -> lis
 
 
 def environment_findings(cfg: Blueprint, environ: Mapping[str, str]) -> list[Finding]:
-    """The sandbox findings, then the served-model findings. Sandbox findings are problems
-    only, plus Modal's verdict on its token, because the blueprint findings state the
-    sandbox facts."""
-    found = sandbox_findings(cfg, environ)
+    """Return the findings about the environment: sandbox, secrets, reflector key, served model.
+
+    Sandbox findings report only problems, plus Modal's verdict on its token, because the
+    blueprint findings already state the sandbox facts.
+    """
+    found = sandbox_findings(cfg, environ) + secrets_findings(cfg, environ)
     if (reflector := getattr(cfg.recipe, "reflection_harness", "").strip()) and (
         unkeyed := key_finding(reflector, cfg.recipe.reflection_model, environ)
     ) is not None:
@@ -177,7 +187,8 @@ def environment_findings(cfg: Blueprint, environ: Mapping[str, str]) -> list[Fin
 
 
 def _data_findings(loaded: Blueprint) -> list[Finding]:
-    """The older spelling, a task in both sets, an evaluation cadence past the steps."""
+    """Warn about the older `[data] dataset` spelling, tasks in both train and test, and an
+    `evaluate_every` past the last step."""
     found: list[Finding] = []
     if "dataset" in loaded.raw.get("data", {}):
         key = "test" if loaded.recipe.kind == "evaluate" else "train"
@@ -209,8 +220,10 @@ def _data_findings(loaded: Blueprint) -> list[Finding]:
 
 
 def _length_cap(recipe: Any) -> float | None:
-    """The cap on dr-grpo's length rule, as set or defaulted. None for a recipe without the
-    rule or with `length_penalty` at 0."""
+    """Return the cap on dr-grpo's length penalty, as set or defaulted.
+
+    Returns None for a recipe without the penalty or with `length_penalty` at 0.
+    """
     if isinstance(recipe, DrGrpoRecipe):
         penalty, cap = recipe.length_penalty, recipe.length_cap
     elif isinstance(recipe, FstRecipe) and recipe.slow == "dr-grpo":
@@ -222,8 +235,7 @@ def _length_cap(recipe: Any) -> float | None:
 
 
 def _wandb_finding(table: Wandb) -> Finding:
-    """Where `[logging.wandb]` sends the trainer's rows; `blocked` when wandb is not
-    installed."""
+    """Report where `[logging.wandb]` sends the trainer's rows; block if wandb is missing."""
     if importlib.util.find_spec("wandb") is None:
         return Finding(
             "blocked", "[logging.wandb]: wandb is not installed; install shipyard[wandb]"
@@ -234,7 +246,7 @@ def _wandb_finding(table: Wandb) -> Finding:
 
 
 def _provider_finding(loaded: Blueprint) -> Finding | None:
-    """`blocked` when the recipe trains weights this run does not serve."""
+    """Block a recipe that trains weights this run does not serve."""
     if loaded.trains and not loaded.agent.served:
         return Finding(
             "blocked",
@@ -245,8 +257,10 @@ def _provider_finding(loaded: Blueprint) -> Finding | None:
 
 
 def _checkpoint_finding(loaded: Blueprint) -> Finding | None:
-    """`blocked` when `from_checkpoint` names the wrong column of `checkpoints.jsonl`. A
-    training run resumes from a `state_path`. A run that only samples needs a `sampler_path`."""
+    """Block a `from_checkpoint` that names the wrong column of `checkpoints.jsonl`.
+
+    A training run resumes from a `state_path`; a run that only samples needs a `sampler_path`.
+    """
     named = loaded.agent.from_checkpoint or ""
     if loaded.trains and "/sampler_weights/" in named:
         return Finding(
@@ -264,7 +278,7 @@ def _checkpoint_finding(loaded: Blueprint) -> Finding | None:
 
 
 def _modules_finding(directory: Path) -> Finding:
-    """`ok` with the component count and digest, or `blocked` with why `seed` refused."""
+    """Report the modules' component count and digest, or block with why `seed` refused them."""
     try:
         candidate = seed(directory)
     except Inadmissible as refused:
@@ -275,8 +289,11 @@ def _modules_finding(directory: Path) -> Finding:
 
 
 def _template_finding(loaded: Blueprint, directory: Path) -> Finding | None:
-    """`warning` when the modules hold a prompt and `[agent.kwargs]` names a prompt
-    template: the prompt's template replaces it in every rollout that carries the prompt."""
+    """Warn when the modules hold a prompt and `[agent.kwargs]` also names a prompt template.
+
+    The modules' prompt is delivered as the prompt template, replacing the configured one in
+    every rollout that carries the prompt.
+    """
     if "prompt_template_path" not in loaded.agent.kwargs:
         return None
     try:
@@ -293,8 +310,10 @@ def _template_finding(loaded: Blueprint, directory: Path) -> Finding | None:
 
 
 def _reflector_finding(recipe: Search) -> Finding:
-    """`ok` naming the reflector's harness, model and image, or `blocked` for a blank
-    harness. The image is not checked: Harbor pulls it at the first round."""
+    """Report the reflector's harness, model and image, or block a blank harness.
+
+    The image is not checked, since Harbor pulls it at the first round.
+    """
     if not recipe.reflection_harness.strip():
         return Finding("blocked", NO_REFLECTOR)
     model = recipe.reflection_model or "the harness's own default"
@@ -305,9 +324,11 @@ def _reflector_finding(recipe: Search) -> Finding:
 
 
 def _pareto_findings(loaded: Blueprint) -> list[Finding]:
-    """The finding for a named held-out dataset, then `ok` with how the tasks split or
-    `blocked` with why they cannot. No split line when a dataset is missing, which that
-    dataset's finding already says."""
+    """Report how the tasks split into reflection and Pareto sets, or block with why they cannot.
+
+    A named held-out dataset gets its own dataset finding first. There is no split line when a
+    dataset is missing, since that dataset's finding already says so.
+    """
     named = loaded.recipe.pareto
     found = [_dataset_finding(named)] if isinstance(named, str) else []
     try:
@@ -333,7 +354,7 @@ def _tasks(count: int) -> str:
 
 
 def _dataset_finding(name: str) -> Finding:
-    """`ok` with the task count under `tasks/<name>`, or `blocked` with the path."""
+    """Report the task count under `tasks/<name>`, or block with the missing path."""
     try:
         listed = tasks(name)
     except NoSuchDataset as missing:
@@ -343,9 +364,11 @@ def _dataset_finding(name: str) -> Finding:
 
 
 def key_finding(harness: str, model: str | None, environ: Mapping[str, str]) -> Finding | None:
-    """A warning when none of the keys Harbor passes `harness` for `model` is set: the names
-    in the harness's `MODEL_CONNECTION`, then the provider's. None for a harness Harbor does
-    not name or one that declares no connection or no key."""
+    """Warn when none of the API keys Harbor passes to `harness` for `model` is set.
+
+    The keys are those named in the harness's `MODEL_CONNECTION`, then the provider's. Returns
+    None for a harness Harbor does not know, or one that declares no connection or no key.
+    """
     try:
         from harbor.agents.factory import AgentFactory
         from harbor.agents.model_connection import PROVIDERS, resolve_model_connection
@@ -373,9 +396,12 @@ def key_finding(harness: str, model: str | None, environ: Mapping[str, str]) -> 
 
 
 def sandbox_findings(cfg: Blueprint, environ: Mapping[str, str]) -> list[Finding]:
-    """For a sandbox elsewhere: Harbor's extra, the credentials and the setup time. For a
-    docker sandbox: docker and leftover networks. Also a run secret in `[agent] env` and a
-    key the working directory's `.env` assigns twice."""
+    """Return the problems with the sandbox.
+
+    For a remote sandbox, these cover Harbor's extra, the credentials and the setup timeout;
+    for a docker sandbox, the daemon and leftover networks. Also blocks a run secret in
+    `[agent] env` and warns about a key the working directory's `.env` assigns twice.
+    """
     rollout, found = cfg.rollout, []
     name = rollout.sandbox
     if name in PROVIDERS:
@@ -399,10 +425,74 @@ def sandbox_findings(cfg: Blueprint, environ: Mapping[str, str]) -> list[Finding
     return found + twice_in(Path.cwd() / ".env")
 
 
+def secrets_findings(cfg: Blueprint, environ: Mapping[str, str]) -> list[Finding]:
+    """Return the findings for `[rollout.secrets]`.
+
+    Blocks an empty pool, pools of different sizes, a name `[agent] env` also gives every
+    trial, and a run secret. Warns when more trials may run at once than there are identities.
+    Otherwise reports the pool size.
+    """
+    table = cfg.rollout.secrets
+    if not table:
+        return []
+    found = [
+        Finding("blocked", f"[rollout.secrets] carries {carried}, which must never enter a sandbox")
+        for name, source in table.items()
+        for carried in secrets_in(name, f"${{{source}}}")
+    ]
+    found += [
+        Finding(
+            "blocked",
+            f"[rollout.secrets] {name} is also in [agent] env, which gives every trial the "
+            "same value",
+        )
+        for name in table
+        if name in cfg.agent.env
+    ]
+    sizes = {name: len(pooled(environ, source)) for name, source in table.items()}
+    found += [
+        Finding(
+            "blocked",
+            f"[rollout.secrets] {name}: {table[name]} is unset or empty; it holds the values, "
+            "separated by commas, one per trial in flight",
+        )
+        for name, size in sizes.items()
+        if not size
+    ]
+    if any(not size for size in sizes.values()):
+        return found
+    if len(set(sizes.values())) > 1:
+        held = ", ".join(f"{table[name]} {size}" for name, size in sizes.items())
+        return found + [
+            Finding(
+                "blocked",
+                f"[rollout.secrets]: the pools differ in size ({held}); an identity pairs "
+                "their values by position",
+            )
+        ]
+    size = next(iter(sizes.values()))
+    found.append(
+        Finding(
+            "ok", f"secrets {', '.join(table)}: {size} identities from {', '.join(table.values())}"
+        )
+    )
+    if cfg.rollout.concurrency > size:
+        found.append(
+            Finding(
+                "warning",
+                f"[rollout] concurrency = {cfg.rollout.concurrency} with {size} identities in "
+                f"[rollout.secrets]: at most {size} trials run at once",
+            )
+        )
+    return found
+
+
 def secrets_in(key: str, value: str) -> list[str]:
-    """The run secrets an env entry passes to a sandbox, by name: its key, or the variable
-    its value references as a template that Harbor resolves from this process's
-    environment."""
+    """Return the names of the run secrets an env entry would pass to a sandbox.
+
+    These are its key, and the variable its value references as a template, which Harbor
+    resolves from this process's environment.
+    """
     named = TEMPLATE.fullmatch(value)
     variable = named.group(1).strip() if named else None
     said = [key] if secret(key) else []
@@ -416,9 +506,11 @@ def secret(name: str) -> bool:
 
 
 def provider_findings(name: str, environ: Mapping[str, str]) -> list[Finding]:
-    """Findings for a provider sandbox: Harbor's extra, each unset credential variable
-    (unless a login that Harbor accepts instead is there), and, for Modal with credentials,
-    its verdict on the token."""
+    """Return the findings for a provider sandbox.
+
+    These cover Harbor's extra, each unset credential variable (unless there is a login that
+    Harbor accepts instead), and, for Modal with credentials, Modal's verdict on the token.
+    """
     found = []
     missing = extra_missing(name)
     if missing or not extra_installed(name):
@@ -438,10 +530,12 @@ def provider_findings(name: str, environ: Mapping[str, str]) -> list[Finding]:
 
 
 def modal_finding(environ: Mapping[str, str]) -> Finding | None:
-    """Look up an app by name, a read against Modal that creates nothing. A good token gets
-    a found or not-found answer. A refused token blocks and names where it came from. Any
-    other failure, or no answer in `MODAL_SECONDS`, is a warning. None when the SDK does not
-    import."""
+    """Ask Modal whether it accepts the token by looking up an app, a read that creates nothing.
+
+    A valid token gets a found or not-found answer and an `ok` finding. A refused token blocks,
+    naming where the token came from. Any other failure, or no answer within `MODAL_SECONDS`,
+    is a warning. Returns None when the Modal SDK does not import.
+    """
     source, shadowed = modal_source(environ)
     try:
         modal = importlib.import_module("modal")
@@ -468,8 +562,11 @@ def modal_finding(environ: Mapping[str, str]) -> Finding | None:
 
 
 def within(seconds: float, call: Callable[[], object]) -> None:
-    """Run `call` on a daemon thread and raise here what it raised. Raises TimeoutError if
-    it has not returned after `seconds`; its thread ends with the process."""
+    """Run `call` on a daemon thread and re-raise here whatever it raised.
+
+    Raises `TimeoutError` if it has not returned after `seconds`; the thread is then left to
+    end with the process.
+    """
     raised: list[BaseException] = []
 
     def run() -> None:
@@ -488,11 +585,14 @@ def within(seconds: float, call: Callable[[], object]) -> None:
 
 
 def modal_source(environ: Mapping[str, str]) -> tuple[str, str]:
-    """Where Modal takes its token from, as its config reads it. Each half comes from the
-    environment first, then from the profile file (`MODAL_CONFIG_PATH`, else
-    ~/.modal.toml). The profile is `MODAL_PROFILE`, else the active one, else `default`.
-    When `MODAL_TOKEN_ID` differs from that profile's token id, the second value says the
-    environment shadows the profile. Only ids are read, no secret."""
+    """Return where Modal takes its token from, and a note when the environment shadows it.
+
+    As Modal's config reads it (modal/config.py), each half of the token comes from the
+    environment first, then from the profile file (`MODAL_CONFIG_PATH`, else ~/.modal.toml).
+    The profile is `MODAL_PROFILE`, else the active one, else `default`. The second value is
+    non-empty when `MODAL_TOKEN_ID` differs from that profile's token id. Only ids are read,
+    never secrets.
+    """
     moved = environ.get("MODAL_CONFIG_PATH")
     path = Path(moved).expanduser() if moved else Path.home() / ".modal.toml"
     try:
@@ -520,8 +620,10 @@ def modal_source(environ: Mapping[str, str]) -> tuple[str, str]:
 
 
 def extra_installed(name: str) -> bool:
-    """Whether Harbor found the provider's SDK, as the module's `_HAS_<PROVIDER>` says. The
-    module imports without the SDK, so a successful import proves nothing."""
+    """Return whether Harbor found the provider's SDK, as its module's `_HAS_<PROVIDER>` says.
+
+    The module imports without the SDK, so a successful import proves nothing.
+    """
     try:
         module = importlib.import_module(PROVIDERS[name][0])
     except ImportError:
@@ -530,9 +632,12 @@ def extra_installed(name: str) -> bool:
 
 
 def extra_missing(name: str) -> list[str]:
-    """The packages Harbor's `name` extra requires that are not installed, read from Harbor's
-    metadata. The SDK is not the whole extra: Harbor's environment imports the rest (modal's
-    `dockerfile-parse`) only when the first sandbox opens."""
+    """Return the packages Harbor's `name` extra requires that are not installed.
+
+    The requirements are read from Harbor's metadata. The SDK is not the whole extra: Harbor's
+    environment imports the rest (such as modal's `dockerfile-parse`) only when the first
+    sandbox opens.
+    """
     try:
         listed = metadata.requires("harbor") or []
     except metadata.PackageNotFoundError:
@@ -552,8 +657,11 @@ def extra_missing(name: str) -> list[str]:
 
 
 def logged_in(name: str, environ: Mapping[str, str]) -> bool:
-    """Whether the provider's check passes without its variables, through a login file under
-    the home directory or daytona's other pair of variables."""
+    """Return whether the provider's check passes without its variables.
+
+    It does with a login file under the home directory, or with daytona's other pair of
+    variables.
+    """
     login, moved = LOGINS.get(name), environ.get(LOGIN_PATHS.get(name) or "")
     path = Path(moved).expanduser() if moved else Path.home() / login if login else None
     if path is not None and path.is_file():
@@ -569,7 +677,7 @@ def docker_findings(needed_for: str) -> list[Finding]:
 
 
 def network_findings() -> list[Finding]:
-    """A warning when killed runs left enough trial networks to approach Docker's pool limit."""
+    """Warn when killed runs left enough trial networks to approach Docker's pool limit."""
     left = leftover_networks()
     if left < LEFTOVER_NETWORKS:
         return []
@@ -584,21 +692,23 @@ def network_findings() -> list[Finding]:
 
 
 def leftover_networks() -> int:
-    """How many of Harbor's trial networks have no container on them. These are the
-    `<trial>__env` and `<trial>__verifier__<key>` Compose projects that a run killed hard
-    did not take down."""
+    """Count Harbor's trial networks that have no container on them.
+
+    These belong to the `<trial>__env` and `<trial>__verifier__<key>` Compose projects that a
+    run killed hard did not take down.
+    """
     listed = _docker("network", "ls", "--filter", "dangling=true", "--format", "{{.Name}}")
     names = (listed or "").split()
     return sum(1 for name in names if name.endswith("__env_default") or "__verifier__" in name)
 
 
 def docker_running() -> bool:
-    """Whether a docker daemon answers `docker info` within `DOCKER_SECONDS`."""
+    """Return whether a docker daemon answers `docker info` within `DOCKER_SECONDS`."""
     return bool((_docker("info", "--format", "{{.ServerVersion}}") or "").strip())
 
 
 def _docker(*args: str) -> str | None:
-    """`docker <args>`'s stdout, or None when there is no docker, it fails, or it hangs."""
+    """Run `docker <args>` and return its stdout, or None if docker is missing, fails or hangs."""
     binary = shutil.which("docker")
     if binary is None:
         return None
@@ -612,8 +722,10 @@ def _docker(*args: str) -> str | None:
 
 
 def twice_in(dotenv: Path) -> list[Finding]:
-    """A warning for each key `.env` assigns more than once. python-dotenv keeps the last
-    one (dotenv/main.py:75-84)."""
+    """Warn about each key `.env` assigns more than once.
+
+    python-dotenv keeps the last assignment (dotenv/main.py:75-84).
+    """
     counts: dict[str, int] = {}
     for key in assigned(dotenv):
         counts[key] = counts.get(key, 0) + 1
@@ -625,7 +737,7 @@ def twice_in(dotenv: Path) -> list[Finding]:
 
 
 def assigned(dotenv: Path) -> list[str]:
-    """Every key `.env` assigns, once per assignment. Returns keys only, no values."""
+    """Return every key `.env` assigns, once per assignment. Values are not returned."""
     try:
         text = dotenv.read_text(encoding="utf-8")
     except OSError:
@@ -634,8 +746,11 @@ def assigned(dotenv: Path) -> list[str]:
 
 
 def served_findings(cfg: Blueprint, environ: Mapping[str, str]) -> list[Finding]:
-    """Findings for a served model: where its proxy will stand and whether that works here,
-    the harness's wiring, and whether the backend serves the model."""
+    """Return the findings for a served model.
+
+    These cover where the proxy will run and whether that works on this machine, the harness
+    wiring, and whether the backend serves the model.
+    """
     agent, rollout = cfg.agent, cfg.rollout
     if not agent.served:
         return []
@@ -703,7 +818,10 @@ def served_findings(cfg: Blueprint, environ: Mapping[str, str]) -> list[Finding]
 
 
 def probe(model: str, environ: Mapping[str, str]) -> Finding:
-    """Whether the backend lists the model. This is a network call, made only with a key."""
+    """Check whether the backend lists the model.
+
+    This makes a network call, and only when `TINKER_API_KEY` is set.
+    """
     name = backend(environ)
     if not environ.get("TINKER_API_KEY"):
         return Finding(
@@ -719,8 +837,10 @@ def probe(model: str, environ: Mapping[str, str]) -> Finding:
 
 
 def supported_models() -> list[str]:
-    """The backend's model names from `get_server_capabilities`. This is the only Tinker
-    call `check` makes. Tests replace it."""
+    """Return the backend's model names from `get_server_capabilities`.
+
+    This is the only Tinker call `check` makes, and tests replace it.
+    """
     import tinker
 
     service = tinker.ServiceClient()

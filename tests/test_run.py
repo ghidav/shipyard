@@ -1,4 +1,4 @@
-"""Opening a run writes its definition and process note. Closing it records how it ended."""
+"""Tests for opening and closing a `Run`, its recorded state, and where runs are kept."""
 
 from __future__ import annotations
 
@@ -8,11 +8,11 @@ from pathlib import Path
 
 import pytest
 
+from shipyard.cli.run import Run, RunRefused, runs_root, version
 from shipyard.cli.show import alive, state_of
 from shipyard.config import KINDS, ConfigError
 from shipyard.data import NoSuchDataset
-from shipyard.recipes import trainer_for
-from shipyard.run import Run, RunRefused, runs_root, version
+from shipyard.training.recipes import trainer_for
 from tests.trials import BLUEPRINTS
 
 DAPO = BLUEPRINTS / "dapo"
@@ -90,7 +90,7 @@ async def test_a_runner_dispatches_to_the_kinds_trainer(tmp_path: Path, monkeypa
 
 
 def test_open_refuses_an_existing_directory(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr("shipyard.run._run_id", lambda name: f"{name}__fixed00")
+    monkeypatch.setattr("shipyard.cli.run._run_id", lambda name: f"{name}__fixed00")
     Run.open(DAPO, root=tmp_path)
     with pytest.raises(RunRefused):
         Run.open(DAPO, root=tmp_path)

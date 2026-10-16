@@ -1,7 +1,4 @@
-"""Keepalives on streamed replies: a sampler slower than the grace gets SSE comment frames
-ahead of the first data frame on both wires, the record is what it would have been, thinking
-still reaches a kept-alive stream, an error after the frames is an error frame, and a reply
-that is not streamed, or comes in time, is left alone."""
+"""Tests for the SSE keepalive frames the proxy sends ahead of slow streamed replies."""
 
 from __future__ import annotations
 
@@ -25,13 +22,14 @@ from tests.proxies import (
     server,
 )
 
-#: Small enough to keep the tests fast: two or more frames inside the sampler's sleep.
+#: Keepalive timings, short enough to keep the tests fast while fitting at least two frames
+#: into the slow sampler's delay.
 GRACE, EVERY, SLOW = 0.12, 0.08, 0.4
 
 
 @dataclass
 class SlowSampler(FakeSampler):
-    """A sampler that thinks for `delay` seconds before it answers, or raises after it."""
+    """Fake sampler that waits `delay` seconds before answering, or before raising if `fails`."""
 
     delay: float = SLOW
     fails: bool = False
@@ -48,7 +46,7 @@ def kept(sampler: Any, **overrides: Any) -> Any:
 
 
 def frames_before(text: str, first: str) -> int:
-    """How many keepalive frames came before the first real event `first` begins."""
+    """Count the keepalive frames sent before the first occurrence of `first`."""
     return text[: text.index(first)].count(FRAME.decode())
 
 

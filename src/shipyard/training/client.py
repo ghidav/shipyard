@@ -1,4 +1,4 @@
-"""Tinker's service and training clients, reduced to what a run needs."""
+"""Tinker service and training clients, wrapped to expose only what a run needs."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import tinker
 import torch
 from tinker import TensorData
 
-from shipyard.pack import shifted
+from shipyard.training.pack import shifted
 from shipyard.types import SERVE_TTL, Adam, Datum, Forward, Sequence, TrainingClient
 
 if TYPE_CHECKING:
@@ -19,14 +19,15 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: Tinker's default rank, used when the blueprint names none.
+#: LoRA rank used when the blueprint sets none (Tinker's default).
 DEFAULT_LORA_RANK = 32
 
 
 def service_client(metadata: dict[str, str] | None = None) -> Any:
-    """A `tinker.ServiceClient`, which reads `TINKER_API_KEY` and `TINKER_BASE_URL` from the
-    environment. `metadata` becomes the session's `user_metadata`, naming the run on
-    Tinker's side."""
+    """Return a `tinker.ServiceClient` configured from the environment.
+
+    The client reads `TINKER_API_KEY` and `TINKER_BASE_URL`. `metadata` becomes the session's
+    `user_metadata`, which identifies the run on Tinker's side."""
     # The transport is the SDK's own. tinker 0.32 takes no `http_client`: `ServiceClient`
     # warns and drops unknown kwargs (lib/public_interfaces/service_client.py), and
     # `InternalClientHolder` builds every `AsyncTinker` from its own kwargs on its own
@@ -36,8 +37,10 @@ def service_client(metadata: dict[str, str] | None = None) -> Any:
 
 
 class TinkerClient(TrainingClient):
-    """Over a service's SDK training client, made on `open`: a LoRA on `model`, or the weights
-    at `from_checkpoint`, with its optimizer state when `restore_optimizer`."""
+    """`TrainingClient` backed by a Tinker SDK training client.
+
+    The SDK client is created on `open`: a new LoRA on `model`, or the weights at
+    `from_checkpoint`, with their optimizer state when `restore_optimizer` is set."""
 
     def __init__(
         self,
@@ -59,7 +62,7 @@ class TinkerClient(TrainingClient):
 
     @classmethod
     def of(cls, cfg: Blueprint, *, name: str) -> TinkerClient:
-        """On the blueprint's model and recipe, with the session named `name`."""
+        """Create a client from the blueprint, tagging the Tinker session with run `name`."""
         metadata = {"shipyard_run": name, "shipyard_recipe": cfg.recipe.kind}
         recipe = cfg.recipe
         return cls(
@@ -72,7 +75,10 @@ class TinkerClient(TrainingClient):
         )
 
     async def open(self) -> None:
-        """A LoRA on the model, or the weights at its checkpoint; the server is checked."""
+        """Create the SDK training client: a new LoRA on the model, or the checkpoint's weights.
+
+        First check that the server lists the model and can train it. On any failure, close
+        the session as errored and re-raise."""
         metadata, service = self.metadata, self.service
         try:
             await _server_has(service, self.model)
@@ -94,7 +100,9 @@ class TinkerClient(TrainingClient):
             raise
 
     async def anchor(self) -> Any:
-        """A sampling client on the weights as opened, published first when they are a state."""
+        """Return a sampling client on the weights as opened, for the KL anchor.
+
+        Weights loaded from a checkpoint are first saved for sampling."""
         start = (
             await self.save_weights_for_sampler("anchor", ttl_seconds=SERVE_TTL)
             if self.from_checkpoint
@@ -126,7 +134,10 @@ class TinkerClient(TrainingClient):
         return _done(await self.client.optim_step_async(params))
 
     async def compute_logprobs(self, sequences: Values[Sequence]) -> list[list[float]]:
-        """One `cross_entropy` forward; target `p` reads position `p - 1`, 0.0 where unscored."""
+        """Return each sequence's logprobs at its targets, from one `cross_entropy` forward pass.
+
+        The target at position `p` is scored at output position `p - 1`. A target at
+        position 0, or one without a score, gets 0.0."""
         if not sequences:
             return []
         data: list[tinker.Datum] = []
@@ -152,12 +163,14 @@ class TinkerClient(TrainingClient):
         return str((await future.result_async()).path)
 
     async def load_state(self, path: str) -> None:
-        """The weights and the optimizer state at `path`."""
+        """Load the weights and the optimizer state saved at `path`."""
         future = await self.client.load_state_with_optimizer_async(path)
         await future.result_async()
 
     async def close(self, status: str = "success", detail: str | None = None) -> None:
-        """Finish the session; idempotent, and quiet when the server already finished it."""
+        """Finish the Tinker session with `status`; later calls do nothing.
+
+        A failure to finish is logged as a warning, not raised."""
         service, self.service = self.service, None
         if service is None:
             return
@@ -183,7 +196,7 @@ def _floats(scored: Any) -> list[float]:
 
 
 def _unmasked(datum: Datum) -> tinker.Datum:
-    """The datum without `mask`, which only this side uses."""
+    """Return the datum without `mask`, which is used locally and not sent to Tinker."""
     return tinker.Datum(
         model_input=datum.model_input,
         loss_fn_inputs={key: value for key, value in datum.loss_fn_inputs.items() if key != "mask"},
@@ -191,8 +204,10 @@ def _unmasked(datum: Datum) -> tinker.Datum:
 
 
 async def _server_has(service: Any, base_model: str) -> None:
-    """Raise `ValueError` for a model the backend does not list or cannot train, before a
-    session spends. Returns silently when the capabilities cannot be read."""
+    """Raise `ValueError` if the backend does not list `base_model` or cannot train it.
+
+    This runs before a session spends anything. If the server's capabilities cannot be read,
+    return without checking."""
     try:
         caps = await service.get_server_capabilities_async()
         models = list(caps.supported_models or [])
@@ -213,8 +228,9 @@ async def _server_has(service: Any, base_model: str) -> None:
 
 
 async def _quietly_closed(service: Any, why: BaseException) -> None:
-    """Finish a session that never became a trainer. A failure to close is logged, not
-    raised, so it cannot hide the caller's own failure."""
+    """Close a session as errored after its training client failed to open.
+
+    A failure to close is logged, not raised, so it cannot hide the caller's own error."""
     try:
         await service.close("errored", f"{type(why).__name__}: {why}")
     except Exception:  # noqa: BLE001 - the failure being reported is the caller's

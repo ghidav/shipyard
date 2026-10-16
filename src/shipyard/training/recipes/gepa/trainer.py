@@ -1,4 +1,4 @@
-"""GEPA (Agrawal et al., arXiv 2507.19457): a search over the modules, no gradient."""
+"""GEPA trainer (Agrawal et al., arXiv 2507.19457), which searches modules, not weights."""
 
 from __future__ import annotations
 
@@ -12,25 +12,28 @@ from shipyard import record
 from shipyard.config import Blueprint, modules_dir
 from shipyard.data import search_sets
 from shipyard.modules import Candidate, keep, seed
-from shipyard.recipes.gepa.cycle import Evolution, Log, evolve
-from shipyard.recipes.gepa.fitness import Outcome
-from shipyard.recipes.gepa.outcomes import outcomes
-from shipyard.recipes.gepa.reflect import reflect
+from shipyard.training.recipes.gepa.cycle import Evolution, Log, evolve
+from shipyard.training.recipes.gepa.fitness import Outcome
+from shipyard.training.recipes.gepa.outcomes import outcomes
+from shipyard.training.recipes.gepa.reflect import reflect
 from shipyard.training.trainer import Trainer
 from shipyard.types import Agent
 
-#: Directory names under `runs/<id>/modules/` for the starting text and the winner.
+#: Directory names under `runs/<id>/modules/` for the seed candidate and the best one.
 SEED = "seed"
 BEST = "best"
-#: The budget when the blueprint names none, as a multiple of one pass over every task the
-#: search may score.
+#: Default search budget when the blueprint sets none, in passes over every task the search
+#: may score.
 DEFAULT_PASSES = 2
 
 
 class GEPATrainer(Trainer):
-    """The search over the modules: candidates scored through `job`, rewritten by a reflector."""
+    """Trainer for GEPA (Agrawal et al., arXiv 2507.19457): a search over the agent's modules.
 
-    #: Rollouts per candidate per task when the search scores it.
+    It takes no gradient steps. Candidates are scored through `job` and rewritten by a
+    reflector."""
+
+    #: Rollouts per task when the search scores a candidate.
     score_group_size: int
 
     def __init__(self, config: Blueprint, directory: Path) -> None:
@@ -58,7 +61,8 @@ class GEPATrainer(Trainer):
         rng: random.Random,
         log: Log | None = None,
     ) -> Evolution:
-        """GEPA's rounds over `tasks`, each candidate scored on `pareto` when given."""
+        """Run the GEPA search from `seed` (see `cycle.evolve`), drawing minibatches from
+        `tasks` and scoring candidates on `pareto` when given."""
         return await evolve(
             seed,
             tasks,
@@ -76,7 +80,7 @@ class GEPATrainer(Trainer):
     async def score(
         self, agent: Agent, candidate: Candidate, tasks: Values[Path], round: int
     ) -> list[Outcome]:
-        """One job of `candidate` over `tasks`, `score_group_size` attempts each."""
+        """Score `candidate` with one job over `tasks`, `score_group_size` attempts per task."""
         found = await self.job(
             replace(agent, modules=candidate),
             list(tasks),
@@ -87,14 +91,15 @@ class GEPATrainer(Trainer):
         return outcomes(found)
 
     async def train(self) -> Agent:
-        """One search within the budget over the generator's tasks, then `finish`."""
+        """Run one search over the train tasks within the budget, then `finish`."""
         agent = self.agent()
         async with agent.policy:
             return await self.finish(await self.search(agent))
 
     async def search(self, agent: Agent) -> Agent:
-        """GEPA over the train tasks from `[agent] modules`, kept under `seed`; the agent
-        carries the best candidate, kept under `best`."""
+        """Run GEPA over the train tasks, starting from `[agent] modules`, and return the agent
+        carrying the best candidate. The seed and the best candidate are saved under
+        `modules/seed/` and `modules/best/`."""
         recipe, data = self.recipe, self.config.data
         kept = self.directory / record.MODULES
         start = seed(modules_dir(self.config))

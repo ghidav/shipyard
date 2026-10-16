@@ -1,5 +1,7 @@
-"""Fast-slow training (Tiwari, Sareen, Agrawal et al., arXiv 2605.12484): the weights and a
-population of K texts co-evolve in cycles."""
+"""Fast-slow training recipe (Tiwari, Sareen, Agrawal et al., arXiv 2605.12484).
+
+The weights and a population of K texts co-evolve in cycles: a fast phase evolves the texts
+with GEPA, then a slow phase takes gradient steps with an RL recipe."""
 
 from __future__ import annotations
 
@@ -20,27 +22,30 @@ from shipyard.config import (
     DrGrpoRecipe,
     modules_dir,
 )
-from shipyard.credit import weights
 from shipyard.modules import Candidate, keep, seed
-from shipyard.recipes.gepa import BEST, SEED, GEPATrainer
+from shipyard.training.credit import weights
+from shipyard.training.recipes.gepa import BEST, SEED, GEPATrainer
 from shipyard.training.trainer import Trainer
 from shipyard.types import Adam, Agent, Group, Task, TrainingStep
 
-#: The config model of the slow recipe each `slow` value names; its trainer is the kind's.
+#: Config model for each `[recipe] slow` kind. The slow trainer is that kind's usual class.
 SLOW: dict[str, type] = {"dapo": DapoRecipe, "dr-grpo": DrGrpoRecipe, "cispo": CispoRecipe}
-#: Gepa's budget per cycle, in passes over the anchor tasks with one rollout per (task, text)
-#: cell. App. D uses 960 metric calls over 192 examples, a metric call being one rollout.
+#: GEPA budget per cycle, in passes over the anchor tasks, and rollouts per (task, text) cell.
+#: Appendix D uses 960 metric calls over 192 examples, one rollout per metric call.
 BUDGET_PASSES = 5
 CELL_ROLLOUTS = 1
-#: App. D: AdamW at PyTorch's betas 0.9 / 0.999, weight decay 0. Eps is unstated, and 1e-8 is
-#: PyTorch's default and the cookbook's. No gradient clipping is stated, so none is used.
-#: The `warmup` key sets the 10-step warm-up, which is off by default.
+#: Appendix D: AdamW with PyTorch's betas 0.9 / 0.999 and weight decay 0. Eps is unstated;
+#: 1e-8 is the PyTorch and cookbook default. No gradient clipping is stated, so none is used.
+#: The paper's 10-step warm-up is off by default and is set with the `warmup` key.
 ADAM = Adam(beta1=0.9, beta2=0.999, eps=1e-8)
 PAPER_WARMUP = 10
 
 
 def slow_recipe(recipe: Any) -> Any:
-    """The slow recipe's config: the shared knobs, its own that are set, no overlong term."""
+    """Build the slow recipe's config from an fst recipe.
+
+    It takes the shared training settings and the slow kind's own knobs that are set, and
+    turns the overlong penalty off."""
     model = SLOW[recipe.slow]
     knobs = {knob: getattr(recipe, knob) for knob in SLOW_KNOBS[recipe.slow]}
     knobs = {knob: value for knob, value in knobs.items() if value is not None}
@@ -63,7 +68,8 @@ def slow_recipe(recipe: Any) -> Any:
 
 
 def merged(parts: Values[list[Group]]) -> list[Group]:
-    """The jobs of one step as one group per task, each text's share in turn."""
+    """Merge one step's per-text jobs into one group per task, with each text's members in
+    turn. Raise `ValueError` if the jobs planned different numbers of groups."""
     first = parts[0]
     if any(len(part) != len(first) for part in parts):
         raise ValueError("the jobs of one step planned different numbers of groups")
@@ -75,7 +81,9 @@ def merged(parts: Values[list[Group]]) -> list[Group]:
 
 
 class FSTTrainer(GEPATrainer):
-    """The fast-slow pass: the search, then the slow trainer it is mixed with."""
+    """Trainer for fast-slow training: a GEPA search over texts, then slow-recipe steps.
+
+    `fst_trainer` mixes this class with the trainer class of the slow kind."""
 
     ADAM = ADAM
     PAPER_WARMUP = PAPER_WARMUP
@@ -100,12 +108,14 @@ class FSTTrainer(GEPATrainer):
         self.score_group_size = CELL_ROLLOUTS
         self.population: list[Candidate] = []
         self.cycles = 0
-        #: The batches the cycle in progress drew for its fast phase and has yet to step.
+        #: Batches drawn for the current cycle that have not been stepped on yet.
         self.pending: list[list[Task]] = []
 
     async def train(self) -> Agent:
-        """Cycles until `[recipe] steps`: a fast phase over the next `cycle` batches, then a
-        slow step on each; then `finish`."""
+        """Run cycles until `[recipe] steps` steps are taken, then `finish`.
+
+        Each cycle draws the next `cycle` batches, runs a fast phase over their tasks, then
+        takes one slow step per batch."""
         kept = self.directory / record.MODULES
         if not self.population:
             seeded = seed(modules_dir(self.config))
@@ -126,8 +136,10 @@ class FSTTrainer(GEPATrainer):
             return await self.finish(agent)
 
     async def fast(self, agent: Agent) -> Agent:
-        """The fast phase over the pending batches' tasks: gepa evolves the population, kept
-        under its cycle; the agent carries its head."""
+        """Run the fast phase: evolve the population with GEPA on the pending batches' tasks.
+
+        The new population is saved under `modules/cycle-<n>/`, and the returned agent carries
+        its top-ranked text."""
         fst, cycle = self.fst, self.cycles
         anchor = list(dict.fromkeys(task for batch in self.pending for task in batch))
         anchor = anchor[: fst.anchor] if fst.anchor else anchor
@@ -160,8 +172,8 @@ class FSTTrainer(GEPATrainer):
         return replace(agent, modules=self.population[0])
 
     async def sample(self, agent: Agent) -> list[Group]:
-        """The cycle's next batch, one job per text at its share of the group, merged into one
-        group per task and credited as one."""
+        """Sample the cycle's next batch with one job per text, each at its share of the group
+        size, and credit the results merged into one group per task."""
         batch = self.pending.pop(0)
         share = self.config.data.group_size // self.fst.population
         parts = [
@@ -175,8 +187,8 @@ class FSTTrainer(GEPATrainer):
         )
 
     def restore(self, row: Mapping[str, Any]) -> None:
-        """The population of the checkpoint's cycle, and the batches of it left to step, drawn
-        again; a finished cycle leaves none, and the next starts with its fast phase."""
+        """Restore the checkpoint's cycle: reload its population and redraw the batches it had
+        not stepped on. After a finished cycle, the next one starts with its fast phase."""
         super().restore(row)
         kept = self.directory / record.MODULES / f"cycle-{row['cycle']}"
         self.population = [seed(kept / str(rank)) for rank in range(self.fst.population)]
@@ -186,7 +198,7 @@ class FSTTrainer(GEPATrainer):
         self.cycles = row["cycle"] if self.pending else row["cycle"] + 1
 
     def weights(self, sizes: Values[int]) -> list[float]:
-        """Each prompt weighs the same (Eq. 4), whatever the slow recipe does."""
+        """Weight every prompt equally (Eq. 4), whatever the slow recipe does."""
         return weights(sizes)
 
     def log(self, done: TrainingStep, **more: Any) -> None:
@@ -194,5 +206,5 @@ class FSTTrainer(GEPATrainer):
 
 
 def fst_trainer(slow: type[Trainer]) -> type[Trainer]:
-    """The fst kind over the slow class `[recipe] slow` names."""
+    """Return the fst trainer class: `FSTTrainer` mixed with `slow`, the `[recipe] slow` class."""
     return type(f"FST{slow.__name__}", (FSTTrainer, slow), {})

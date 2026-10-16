@@ -1,9 +1,4 @@
-"""The dead-endpoint stop, implemented once in `Run.recorded` via `Trainer.job` for every
-recipe. A served job is recorded and then stops the run with `NothingServed` when none of its
-trials reached the proxy, or when every request failed at the sampler (the weights expired
-under the run). A job where some trials were answered is masked trial by trial. A
-provider-served job never stops the run this way. A step whose groups are all degenerate is
-an untrained step and does not stop the run."""
+"""Tests for stopping a run with `NothingServed` when a served job gets no answer at all."""
 
 from __future__ import annotations
 
@@ -14,9 +9,9 @@ from pathlib import Path
 import pytest
 
 from shipyard import record
-from shipyard.recipes import trainer_for
-from shipyard.run import Run
+from shipyard.cli.run import Run
 from shipyard.sampling.endpoint import NothingServed, served_nothing
+from shipyard.training.recipes import trainer_for
 from tests.proxies import MODEL
 from tests.records import FakeProxy, made
 from tests.trainers import FakeService, capable
@@ -36,14 +31,14 @@ POISONED = "every request failed at the sampler (sampler: BadRequestError)"
 
 
 def _four(tmp_path: Path, kind: str, **replacements: str) -> Path:
-    """The kind's fixture over a four-task dataset, two tasks per batch, groups of two."""
+    """Write the `kind` fixture blueprint over the four-task dataset, two tasks per batch."""
     replacements = {'"fixture"': '"four"', "batch_size = 1": "batch_size = 2", **replacements}
     return blueprint(tmp_path, kind, **replacements)
 
 
 @pytest.fixture
 def proxy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeProxy:
-    """A proxy nothing reaches: every trial's records come back empty."""
+    """Fake proxy that no trial reaches, so every trial's records come back empty."""
     monkeypatch.chdir(tmp_path)
     fake = FakeProxy(default=[])
     monkeypatch.setattr("shipyard.sampling.endpoint.Proxy", fake)
@@ -80,7 +75,8 @@ async def test_a_job_where_some_trials_reached_the_proxy_masks_the_rest_and_goes
     proxy: FakeProxy,
     harbor: Harbor,
 ) -> None:
-    """`a`'s two rollouts reached nothing; whichever batch it lands in, its partner did."""
+    """Only task `a` gets no records. Whichever batch it lands in, the other task in that
+    batch was served, so no job stops the run."""
     proxy.answers = {"b": [made()], "c": [made()], "d": [made()]}
     opened = Run.open(_four(tmp_path, "evaluate", **SERVED_EVALUATE), root=tmp_path / "runs")
     harbor(FakeTrials())
@@ -111,7 +107,7 @@ async def test_a_job_whose_every_request_failed_at_the_sampler_stops_the_run(
     proxy: FakeProxy,
     harbor: Harbor,
 ) -> None:
-    """The proxy is reached, but expired weights poisoned its client (d2ab39b)."""
+    """The proxy is reached, but expired weights make every sampler request fail (d2ab39b)."""
     proxy.default = [made(error="sampler: BadRequestError", seq=n) for n in (1, 2)]
     opened = Run.open(_four(tmp_path, "evaluate", **SERVED_EVALUATE), root=tmp_path / "runs")
     trials = harbor(FakeTrials())

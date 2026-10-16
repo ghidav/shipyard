@@ -1,5 +1,6 @@
-"""The harnesses: per-harness profiles of which wire a harness speaks and what it needs
-beyond Harbor's model connection. A harness without a profile gets the generic one."""
+"""Per-harness profiles: the API each harness speaks and what else it needs to reach the model.
+
+A harness without a profile gets the generic one."""
 
 from __future__ import annotations
 
@@ -10,33 +11,38 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True)
 class Profile:
-    """One harness: its dialect, the provider it is posed to, the extra agent kwargs and
-    trial env it takes, whether it appends `/v1` itself, its turn counter, and a log reader
-    that reports whether its last model call failed."""
+    """How shipyard connects one harness to the model and reads its log."""
 
+    #: The API the harness speaks: `openai` or `anthropic`.
     dialect: str = "openai"
-    #: A provider id for a harness the dialect's id would route wrongly. It forms the model
-    #: name `<provider>/<model>` and the trial env `<PROVIDER>_BASE_URL` and
+    #: Provider id for a harness that the dialect's default id would route wrongly. It forms
+    #: the model name `<provider>/<model>` and the trial env vars `<PROVIDER>_BASE_URL` and
     #: `<PROVIDER>_API_KEY`.
     provider: str | None = None
+    #: Extra Harbor agent kwargs.
     kwargs: dict = field(default_factory=dict)
-    #: Extra env for the trial. It turns off the harness's compaction, so rollout sets it
-    #: only when `[rollout] fill_context` is on, which gives an overflowing call what is
-    #: left of the context.
+    #: Trial env that turns off the harness's own context compaction. It is set only when
+    #: `[rollout] fill_context` is on, which instead gives a call that would overflow the
+    #: context whatever room is left.
     env: dict = field(default_factory=dict)
+    #: Whether the harness appends `/v1` to its base URL itself, so the proxy address is
+    #: given without it.
     strip_v1: bool = False
+    #: Counts the model calls in the harness's log, for `[rollout] check_turns`.
     turns: Callable[[str], int] | None = None
-    #: Read on every trial, regardless of `check_turns`. A last call that failed where the
-    #: proxy never saw it (in transit, or refused before recording) must not be graded.
+    #: Reports from the harness's log whether its last model call failed. Read on every
+    #: trial, regardless of `check_turns`: a last call that failed where the proxy never saw
+    #: it (in transit, or refused before recording) must not be graded.
     failed_last: Callable[[str], bool] | None = None
 
 
-#: The model name Claude Code gives an assistant message it wrote locally, with no model call.
+#: Model name Claude Code gives an assistant message it wrote locally, without a model call.
 SYNTHETIC_MODEL = "<synthetic>"
 
 
 def distinct_requests(text: str) -> int:
-    """Count the API replies in Claude Code's stream-json log, one per distinct request id.
+    """Count the model calls in Claude Code's stream-json log, one per distinct request id.
+
     Claude Code writes one assistant line per content block, so lines are not counted.
     Synthetic messages are skipped."""
     seen: set[str] = set()
@@ -59,8 +65,9 @@ def distinct_requests(text: str) -> int:
 
 
 def last_assistant_failed(text: str) -> bool:
-    """Whether the last assistant `message_end` in pi's JSON log stopped on `error`. pi
-    writes that when it gives up on a call, and it still exits 0."""
+    """Return whether the last assistant `message_end` in pi's JSON log stopped on `error`.
+
+    pi writes that stop reason when it gives up on a call, and still exits 0."""
     stop = None
     for line in text.splitlines():
         if '"message_end"' not in line:
@@ -78,9 +85,10 @@ def last_assistant_failed(text: str) -> bool:
 
 
 def lines_with(*markers: str) -> Callable[[str], int]:
-    """Count the lines that contain every marker, ignoring whitespace. A harness that
-    starts pretty-printing would otherwise drop the count to zero and silently disable the
-    guard."""
+    """Return a counter of the lines that contain every marker, ignoring spaces.
+
+    Ignoring spaces keeps a harness that starts pretty-printing its log from dropping the
+    count to zero, which would silently disable the turn check."""
 
     def count(text: str) -> int:
         return sum(
@@ -128,19 +136,19 @@ PROFILES: dict[str, Profile] = {
 
 
 def bare_name(harness: str) -> str:
-    """Strip the version: `pi@0.85.1` becomes `pi`. An import path with a colon
-    (`acp:x.y:Z@1`) is returned whole."""
+    """Return the harness name without its version: `pi@0.85.1` becomes `pi`. An import
+    path, which contains a colon (`acp:x.y:Z@1`), is returned whole."""
     return harness if ":" in harness else harness.partition("@")[0]
 
 
 def profile_for(harness: str) -> Profile:
-    """The profile of `harness` by its bare name, or the generic profile if there is none."""
+    """Return the profile for `harness` by its bare name, or the generic profile."""
     return PROFILES.get(bare_name(harness).strip(), Profile())
 
 
 def slug_of(profile: Profile) -> str:
-    """The provider a harness is posed to: the profile's `provider` if set, else
-    `anthropic` for the Anthropic dialect and `openai` otherwise."""
+    """Return the provider id a harness is configured for: the profile's `provider` if set,
+    else `anthropic` for the Anthropic dialect and `openai` otherwise."""
     if profile.provider:
         return profile.provider
     return "anthropic" if profile.dialect == "anthropic" else "openai"

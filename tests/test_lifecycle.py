@@ -1,7 +1,4 @@
-"""The proxy's lifecycle in a run: probed at `/healthz` through the tunnel (or on loopback)
-before the first trial, refused with a message when nothing answers, and a tunnel or serve
-process that exits stops the run before the next job instead of masking a batch. A stub
-cloudflared and a stub `shipyard serve` that answers HTTP stand in for the real ones."""
+"""Tests for the proxy lifecycle during a run: readiness probes, refusals, and early exits."""
 
 from __future__ import annotations
 
@@ -16,10 +13,10 @@ import httpx
 import pytest
 
 from shipyard import record
+from shipyard.cli.run import Run
 from shipyard.proxy import client
 from shipyard.proxy.client import Proxy, Unreachable
 from shipyard.proxy.tunnel import Tunnel
-from shipyard.run import Run
 from shipyard.sampling.endpoint import ProxyEndpoint, ProxyGone
 from shipyard.types import Trial, harness
 from tests.proxies import MODEL, FakeSampler, control, root, server
@@ -91,7 +88,8 @@ kind = "evaluate"
 
 @pytest.fixture
 def stubs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """`shipyard serve` and `cloudflared` replaced, from a directory holding the fixtures."""
+    """Replace `shipyard serve` and `cloudflared` with stubs and change into a directory
+    holding the fixture tasks. The `shipyard serve` stub answers HTTP."""
     script = tmp_path / "serve_stub.py"
     script.write_text(SERVE_STUB, encoding="utf-8")
     monkeypatch.setattr(client, "SERVE", [sys.executable, str(script)])
@@ -108,7 +106,7 @@ def stubs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture(autouse=True)
 def trials(harbor: Harbor) -> FakeTrials:
-    """Harbor's trial, faked for every test here."""
+    """Replace Harbor's trial runner with `FakeTrials` in every test in this module."""
     return harbor(FakeTrials())
 
 
@@ -237,7 +235,8 @@ async def test_healthz_names_the_token_budget_and_the_run_keeps_it() -> None:
 
 
 class LateName(httpx.AsyncBaseTransport):
-    """A quick tunnel's name that resolves only from the `after`-th ask, at its origin."""
+    """HTTP transport on which a quick tunnel's hostname resolves only from the `after`-th
+    request onward."""
 
     def __init__(self, after: int) -> None:
         self.after, self.asked = after, []
@@ -250,7 +249,7 @@ class LateName(httpx.AsyncBaseTransport):
 
 
 class Running:
-    """A process that has not exited, or one that has with `code`."""
+    """Fake process handle whose `poll` returns `code`; None means it is still running."""
 
     def __init__(self, code: int | None = None) -> None:
         self.code = code
@@ -306,7 +305,7 @@ async def test_a_tunnel_that_dies_under_a_batch_stops_the_run_once_the_job_is_re
     monkeypatch: pytest.MonkeyPatch,
     harbor: Harbor,
 ) -> None:
-    from shipyard.recipes import trainer_for
+    from shipyard.training.recipes import trainer_for
 
     fixture_tasks(tmp_path)
     monkeypatch.chdir(tmp_path)

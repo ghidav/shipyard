@@ -1,11 +1,10 @@
-"""What the search selects on: a frontier of column winners with ties kept, means that
-leave the unmeasured out, and a tally over the pool alone."""
+"""Tests for GEPA fitness: the Pareto frontier, means over measured tasks, and the pool tally."""
 
 from __future__ import annotations
 
 import pytest
 
-from shipyard.recipes.gepa.fitness import Fitness, Outcome, mean, tally
+from shipyard.training.recipes.gepa.fitness import Fitness, Outcome, mean, tally
 
 TASKS = ("t1", "t2", "t3", "t4")
 
@@ -15,8 +14,8 @@ def _seen(**rows: list[Outcome]) -> dict[str, dict[str, Outcome]]:
 
 
 def test_the_frontier_keeps_a_candidate_that_wins_one_task() -> None:
-    """`wide` is better on average and on three of four tasks. `narrow` alone solves t4,
-    so a ranking by mean would lose it."""
+    """`wide` is better on average and on three of four tasks, but `narrow` leads on t4, so a
+    ranking by mean alone would drop it."""
     seen = _seen(
         wide=[Outcome(task, 0.9) for task in TASKS[:3]] + [Outcome("t4", 0.0)],
         narrow=[Outcome(task, 0.1) for task in TASKS[:3]] + [Outcome("t4", 0.5)],
@@ -60,8 +59,8 @@ def test_an_aggregate_over_nothing_is_none_and_over_named_tasks_is_trimmed() -> 
 
 
 def test_the_tally_covers_the_pool_alone() -> None:
-    """A child turned down on its minibatch is measured but not pooled: its partial row
-    must not win columns it was never compared on."""
+    """A child rejected on its minibatch is measured but not added to the pool, so its partial
+    row must not win tasks it was never compared on."""
     seen = _seen(seed=[Outcome("t1", 0.5), Outcome("t2", 0.5)], child=[Outcome("t1", 1.0)])
     scores = tally(["seed"], seen)
     assert list(scores.scores) == ["seed"] and scores.frontier() == {"seed"}
@@ -83,7 +82,7 @@ def test_an_outcome_carries_what_the_reflector_is_shown() -> None:
 
 
 def test_a_dominated_candidate_leaves_the_frontier() -> None:
-    """GEPA's selection: b leads only t1, which a leads too, so b is dominated."""
+    """GEPA's selection rule: `b` leads only on t1, where `a` also leads, so `b` is dominated."""
     seen = _seen(a=[Outcome("t1", 0.6), Outcome("t2", 1.0)], b=[Outcome("t1", 0.6)])
     scores = tally(["a", "b"], seen)
     assert scores.fronts() == {"t1": {"a", "b"}, "t2": {"a"}}

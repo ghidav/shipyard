@@ -1,4 +1,4 @@
-"""The record's writers and readers: append-only JSONL, atomic JSON, and the file names."""
+"""Run-directory file names, and readers and writers for append-only JSONL and atomic JSON."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-#: The record's files, so a reader has one place to learn their names.
+#: File names in a run directory, defined in one place for every reader and writer.
 CONFIG = "run.toml"
 PROCESS = "process.json"
 JOBS = "jobs.jsonl"
@@ -16,10 +16,10 @@ METRICS = "metrics.jsonl"
 CHECKPOINTS = "checkpoints.jsonl"
 REQUESTS = "requests.jsonl"
 COSTS = "costs.json"
-#: A copy of the trainer file the run was opened under, when it was.
+#: Copy of the trainer file the run was started with, if one was given.
 TRAINER = "trainer.py"
-#: A directory, not a file: the modules the run carried (`carried/`), and a search's
-#: `seed/` and `best/`.
+#: Directory, not a file: the modules the run carried (`carried/`), and a search's `seed/`
+#: and `best/`.
 MODULES = "modules"
 
 
@@ -28,9 +28,10 @@ def now() -> str:
 
 
 def append(path: Path, row: dict[str, Any]) -> dict[str, Any]:
-    """Append one row as a JSON line, stamped `at`. The file is opened per call and
-    flushed before returning, without fsync. If the last line was cut short, a newline is
-    written first so the new row stays on its own line."""
+    """Append one row as a JSON line stamped with `at`, and return the stamped row.
+
+    The file is opened per call and flushed before returning, without fsync. If the last
+    line was cut short, a newline is written first so the new row stays on its own line."""
     stamped = {"at": now(), **row}
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
@@ -42,7 +43,6 @@ def append(path: Path, row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _ends_cleanly(path: Path) -> bool:
-    """Whether the file ends in a newline, i.e. whether its last line is whole."""
     try:
         with path.open("rb") as handle:
             handle.seek(-1, 2)
@@ -52,7 +52,8 @@ def _ends_cleanly(path: Path) -> bool:
 
 
 def read(path: Path) -> Iterator[dict[str, Any]]:
-    """Every line that parses, in order; blank lines and a truncated last line are skipped."""
+    """Yield each row of a JSONL file in order. Blank lines and lines that do not parse as a
+    JSON object, such as a truncated last line, are skipped."""
     if not path.is_file():
         return
     with path.open(encoding="utf-8") as handle:
@@ -69,8 +70,8 @@ def read(path: Path) -> Iterator[dict[str, Any]]:
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
-    """Write a whole document beside the file and rename it over, so a reader sees either
-    the old document or the new one."""
+    """Write a JSON document atomically: write it to a file beside `path`, then rename it
+    over `path`, so a reader sees either the old document or the new one."""
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".writing")
     temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -78,7 +79,8 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def read_json(path: Path) -> dict[str, Any]:
-    """The document, or `{}` for a file that is missing, unreadable or not an object."""
+    """Read a JSON object, or return `{}` for a file that is missing, unreadable or not an
+    object."""
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):

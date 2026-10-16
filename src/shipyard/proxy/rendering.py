@@ -1,6 +1,8 @@
-"""The renderer wrapper the app uses. Before rendering it refuses images for a model that
-takes none and tries the bridge. After parsing it digests the reply onto its record and
-keeps the reply's thinking for the wire."""
+"""Renderer wrapper the cookbook app uses, linking rendering to the bridge and the recorder.
+
+Before rendering, it refuses images for a model that takes none and tries the bridge.
+After parsing a reply, it sets the reply's digest on its record and keeps the reply's
+thinking for the wire."""
 
 from __future__ import annotations
 
@@ -16,8 +18,9 @@ from shipyard.proxy.wire import model_input
 
 
 class Rendering:
-    """Wraps a renderer. It overrides `build_generation_prompt` and `parse_response`.
-    Every other attribute comes from the inner renderer."""
+    """Renderer wrapper that overrides `build_generation_prompt` and `parse_response`.
+
+    All other attributes are delegated to the inner renderer."""
 
     def __init__(self, inner: Any, recorder: Any) -> None:
         self._inner = inner
@@ -65,11 +68,12 @@ class Rendering:
 
 
 def with_call_ids(message: Any, tokens: Any, found: Exchange | None) -> Any:
-    """Give every tool call that has no id one, in the wire's own form, before the reply
-    is digested. The cookbook keeps an id that is set and the harness echoes it, so the
-    bridge recognises the reply by its ids. The id is derived from the trial, the
-    request's digests and the reply's tokens, so a replayed retry gets the ids its first
-    answer got."""
+    """Give every tool call that has no id one, in the wire's format.
+
+    This runs before the reply is digested. The cookbook keeps an id that is set and the
+    harness echoes it, so the bridge recognises the reply by its call ids. Each id is derived
+    from the trial, the request's message digests and the reply's tokens, so a replayed retry
+    gets the same ids as the first answer."""
     calls = list(message.get("tool_calls") or [])
     if all(_call_id(call) for call in calls):
         return message

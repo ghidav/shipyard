@@ -1,5 +1,4 @@
-"""Read a run directory for `runs` and `show` and print it: a run's state, its whole record
-as plain data, and each section at the console's width."""
+"""Reading and printing run directories for the `runs` and `show` commands."""
 
 from __future__ import annotations
 
@@ -16,11 +15,11 @@ from rich.table import Table
 from shipyard import record
 
 console = Console()
-#: The columns of `runs`, with their styles.
+#: Columns of the `runs` table and their styles.
 RUN_COLUMNS = {"id": "cyan", "kind": None, "state": None, "started": "dim", "finished": "dim"}
 
 STYLES = {"running": "cyan", "finished": "green", "failed": "red", "died": "yellow"}
-#: The process-note fields `show` prints, as `label: key`.
+#: Process-note fields `show` always prints, as `label: key`.
 FACTS = {
     "pid": "pid",
     "started": "started_at",
@@ -30,19 +29,22 @@ FACTS = {
     "blueprint": "blueprint",
     "directory": "directory",
 }
-#: The process-note fields `show` prints only when the run recorded them.
+#: Process-note fields `show` prints only when the run recorded them, as `label: key`.
 NOTED = {"smoke": "smoke", "proxy": "proxy", "backend": "tinker_base_url"}
-#: How many job rows `show` prints without `--full`.
+#: Number of job rows `show` prints without `--full`.
 LAST_JOBS = 10
-#: The columns a table of rows leads with. They are not wrapped.
+#: Columns a table of rows starts with. They are never wrapped.
 PINNED = ("name", "at")
-#: Wide enough to measure a table at its natural width; the console's own clamps it.
+#: Width for measuring a table at its natural width, since the console's own width clamps it.
 UNBOUNDED = 10_000
 
 
 def alive(pid: int | None) -> bool:
-    """Whether the process exists. Signal 0 delivers nothing; a `PermissionError` means the
-    process belongs to another user."""
+    """Return whether a process with this pid exists.
+
+    Sends signal 0, which delivers nothing. A `PermissionError` means the process exists but
+    belongs to another user.
+    """
     if not pid:
         return False
     try:
@@ -57,8 +59,10 @@ def alive(pid: int | None) -> bool:
 
 
 def state_of(note: dict[str, Any]) -> str:
-    """`failed`, `finished`, `running` or `died`. A note with no finish time and no live
-    process is `died`."""
+    """Return a run's state from its process note: `failed`, `finished`, `running` or `died`.
+
+    A run with no finish time and no live process has `died`.
+    """
     if note.get("failed"):
         return "failed"
     if note.get("finished_at"):
@@ -67,9 +71,12 @@ def state_of(note: dict[str, Any]) -> str:
 
 
 def sections(directory: Path) -> dict[str, Any]:
-    """The whole record as plain data, one entry per section `show` prints: the process
-    note with its state, the metrics count and last row, every job and checkpoint row,
-    and the costs document. A section whose file is absent is None."""
+    """Return a run's whole record as plain data, one entry per section `show` prints.
+
+    The sections are the process note with the run's state, the metrics count and last rows,
+    every job and checkpoint row, and the costs document. A section whose file is missing is
+    None.
+    """
     directory = Path(directory)
     note = record.read_json(directory / record.PROCESS)
     costs = directory / record.COSTS
@@ -83,7 +90,7 @@ def sections(directory: Path) -> dict[str, Any]:
 
 
 def _listed(path: Path) -> dict[str, Any] | None:
-    """A JSONL file's rows with their count, or None when there is no such file."""
+    """Return a JSONL file's rows and their count, or None if the file is missing."""
     if not path.is_file():
         return None
     rows = list(record.read(path))
@@ -91,7 +98,7 @@ def _listed(path: Path) -> dict[str, Any] | None:
 
 
 def _tail(path: Path) -> dict[str, Any] | None:
-    """A JSONL file's row count, its last row and its last evaluation row; None if absent."""
+    """Return a JSONL file's row count, last row and last evaluation row, or None if missing."""
     if not path.is_file():
         return None
     count, last, evaluation = 0, None, None
@@ -107,8 +114,10 @@ def styled(state: str) -> str:
 
 
 def print_runs(root: Path) -> None:
-    """Every run under the root, newest first, as a table, or a block per run when the table
-    is wider than the console."""
+    """Print every run under `root`, newest first.
+
+    Prints a table, or one block per run when the table is wider than the console.
+    """
     found = [
         (directory.name, record.read_json(directory / record.PROCESS))
         for directory in _run_dirs(root)
@@ -136,15 +145,18 @@ def print_runs(root: Path) -> None:
 
 
 def _run_dirs(root: Path) -> list[Path]:
-    """Every directory under the root that holds a `run.toml`."""
+    """Return the directories under `root` that hold a `run.toml`."""
     if not root.is_dir():
         return []
     return sorted(found for found in root.iterdir() if (found / record.CONFIG).is_file())
 
 
 def print_run(run_id: str, found: dict[str, Any], *, full: bool) -> None:
-    """Print `sections` as `show` does: the process note, the metrics' last row, the job
-    rows (the last few unless `full`), every checkpoint row, and the costs."""
+    """Print the output of `sections` as `show` does.
+
+    Prints the process note, the last metrics row, the job rows (only the last `LAST_JOBS`
+    unless `full`), every checkpoint row, and the costs.
+    """
     console.print(f"[bold cyan]{escape(run_id)}[/bold cyan]", highlight=False)
     _print_process(found["process"])
     if found["metrics"] is not None:
@@ -173,7 +185,7 @@ def _print_process(process: dict[str, Any]) -> None:
 
 
 def _print_metrics(metrics: dict[str, Any]) -> None:
-    """The row count, the last row's fields, then the last evaluation's when it is another row."""
+    """Print the metrics row count and last row, then the last evaluation row if it differs."""
     last = metrics["last"] or {}
     console.print(f"[bold]metrics[/bold]  {_rows(metrics['count'])}", highlight=False)
     print_fields(last)
@@ -184,15 +196,17 @@ def _print_metrics(metrics: dict[str, Any]) -> None:
 
 
 def print_fields(row: dict[str, Any]) -> None:
-    """Each `key  value` of a row on its own line, the values aligned."""
+    """Print each field of `row` on its own line, with the values aligned."""
     width = max((len(key) for key in row), default=0) + 2
     for key, value in row.items():
         _pair(key, escape(_text(value)), width)
 
 
 def print_rows(name: str, section: dict[str, Any], limit: int | None) -> None:
-    """Print the row count and a table of the rows, only the last `limit` of them when there
-    are more, or each row as a block when the table does not fit."""
+    """Print a section's row count and its rows, as a table or, if that does not fit, as blocks.
+
+    When `limit` is set, only the last `limit` rows are printed.
+    """
     count, rows = section["count"], section["rows"]
     shown = rows if limit is None or count <= limit else rows[-limit:]
     cut = f" (last {len(shown)}; --full for all)" if len(shown) < count else ""
@@ -205,9 +219,11 @@ def print_rows(name: str, section: dict[str, Any], limit: int | None) -> None:
 
 
 def fitted(table: Table, rows: list[dict[str, str]], *, indent: int = 0) -> None:
-    """Print the table if it fits the console, else each row as a block of `key  value`
-    lines. The values must already be marked up or escaped. A table wider than the console
-    folds its cells to "…", which cannot be pasted whole."""
+    """Print `table` if it fits the console, else each row as a block of `key  value` lines.
+
+    The values must already be marked up or escaped. A table wider than the console would
+    truncate its cells to "…", so their values could not be copied whole.
+    """
     natural = console.measure(table, options=console.options.update_width(UNBOUNDED)).maximum
     if natural + indent <= console.width:
         console.print(Padding(table, (0, 0, 0, indent), expand=False))
@@ -221,15 +237,16 @@ def fitted(table: Table, rows: list[dict[str, str]], *, indent: int = 0) -> None
 
 
 def _columns(rows: list[dict[str, Any]]) -> list[str]:
-    """Every key the rows carry: `name`, `at`, then the rest in row order, so keys that
-    later blocks record show up without the CLI listing them."""
+    """Return every key the rows carry: `name` and `at` first, then the rest in row order.
+
+    Taking the keys from the rows means new fields show up without the CLI listing them.
+    """
     seen = list(dict.fromkeys(key for row in rows for key in row))
     pinned = [key for key in PINNED if key in seen]
     return pinned + [key for key in seen if key not in pinned]
 
 
 def _table(rows: list[dict[str, Any]]) -> Table:
-    """One column per key the rows carry, in `_columns`' order."""
     columns = _columns(rows)
     table = Table(show_header=True, header_style="bold")
     for key in columns:
@@ -240,14 +257,14 @@ def _table(rows: list[dict[str, Any]]) -> Table:
 
 
 def _cell(key: str, row: dict[str, Any]) -> str:
-    """A table cell: blank for a key the row lacks; `at` cut to the second, as `runs` does."""
+    """Return the cell for `key`: blank if the row lacks it, `at` cut to the second as in `runs`."""
     if key not in row:
         return ""
     return _text(row[key])[:19] if key == "at" else _text(row[key])
 
 
 def _text(value: Any) -> str:
-    """Strings verbatim, None as a dash, anything else as compact JSON."""
+    """Format a value for display: strings as is, None as a dash, anything else as JSON."""
     if value is None:
         return "—"
     return value if isinstance(value, str) else json.dumps(value)
@@ -258,5 +275,5 @@ def _rows(count: int) -> str:
 
 
 def _pair(key: str, value: str, width: int) -> None:
-    """One `  key  value` line; the value is already marked up or escaped."""
+    """Print one indented `key  value` line. `value` must already be marked up or escaped."""
     console.print(f"  {key:<{width}}{value}", highlight=False, soft_wrap=True)

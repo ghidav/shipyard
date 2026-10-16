@@ -1,4 +1,4 @@
-"""The arithmetic of credit: shaping, the advantage, the weights, the logprobs."""
+"""Credit assignment: reward shaping, advantages, group weights and reference logprobs."""
 
 from __future__ import annotations
 
@@ -10,21 +10,23 @@ from typing import Any
 from shipyard.proxy.wire import model_input
 from shipyard.types import Sequence
 
-#: Harbor's reward for a fully solved task. Only solved rollouts are compared on length.
+#: Harbor's reward for a fully solved task. The length penalty compares solved rollouts only.
 SOLVED = 1.0
-#: Anchor passes in flight at once.
+#: Maximum number of concurrent anchor logprob requests.
 LOGPROB_CONCURRENCY = 16
 
-#: The normaliser's floor against a spread of zero.
+#: Added to the standard deviation when normalizing, to avoid dividing by zero.
 EPSILON = 1e-6
 
 
 def shaped(
     rewards: Values[float], lengths: Values[int], *, penalty: float, floor: int, cap: float
 ) -> list[float]:
-    """The rewards less the length penalty. With the penalty on and at least two rollouts
-    solved, each solved rollout is docked `penalty * max(L - floor, 0) / mean solved L`, at
-    most `cap`. Otherwise the rewards are returned unchanged."""
+    """Return the rewards minus a length penalty.
+
+    When `penalty` is nonzero and at least two rollouts are solved, each solved rollout loses
+    `penalty * max(L - floor, 0) / mean solved L`, capped at `cap`. Otherwise the rewards are
+    returned unchanged."""
     if not penalty:
         return [float(one) for one in rewards]
     solved = [one >= SOLVED for one in rewards]
@@ -44,10 +46,12 @@ def shaped(
 def overlong(
     lengths: Values[int], *, penalty: float, buffer: float, budget: int | None
 ) -> list[float]:
-    """DAPO's soft overlong punishment (Eq. 13) per rollout, with the sampled tokens as the
-    response length and the trial's token budget as L_max. The term is 0 up to the last
-    `buffer` of the budget, falls linearly to `-penalty` at the budget, and stays there.
-    All zeros when the term is off or the budget is unknown."""
+    """Return DAPO's soft overlong punishment (Eq. 13) for each rollout.
+
+    The response length is the number of sampled tokens, and L_max is the trial's token
+    budget. The term is 0 up to the last `buffer` fraction of the budget, falls linearly to
+    `-penalty` at the budget, and stays there. It is all zeros when `penalty` is 0 or the
+    budget is unknown."""
     if not penalty or not budget:
         return [0.0] * len(lengths)
     cache = buffer * budget
@@ -56,8 +60,11 @@ def overlong(
 
 
 def weights(tokens: Values[int]) -> list[float]:
-    """Each group's factor on its tokens' advantages, so each prompt weighs the same: the
-    step's mean group size over the group's own, since Tinker sums token losses."""
+    """Return each group's factor on its tokens' advantages, so every prompt weighs the same.
+
+    `tokens` holds each group's target-token count. Because Tinker sums token losses, the
+    factor is the step's mean count per group divided by the group's own. A group with no
+    tokens gets 1.0."""
     sized = [one for one in tokens if one > 0]
     if not sized:
         return [1.0] * len(tokens)
@@ -66,15 +73,17 @@ def weights(tokens: Values[int]) -> list[float]:
 
 
 def advantages(shaped_rewards: Values[float], *, normalize: bool) -> list[float]:
-    """The rewards centred on the group's mean, divided by the spread under `normalize`."""
+    """Return the rewards minus their mean, divided by their standard deviation if `normalize`."""
     mean, spread = fmean(shaped_rewards), pstdev(shaped_rewards)
     scale = (spread + EPSILON) if normalize else 1.0
     return [(one - mean) / scale for one in shaped_rewards]
 
 
 def sampler_logprobs(sequence: Sequence) -> list[float]:
-    """mu as the sampler reported it. Raises when a record carries none, since a short list
-    would misalign every ratio after it."""
+    """Return mu, the sampler's logprobs at the sequence's targets, as the proxy recorded them.
+
+    Raise `ValueError` when they are missing or incomplete, since a short list would
+    misalign every ratio after it."""
     if sequence.mu is None or len(sequence.mu) != len(sequence.targets):
         raise ValueError(
             '`[recipe] reference = "sampler"` reads the records\' logprobs, and a record '
@@ -84,8 +93,10 @@ def sampler_logprobs(sequence: Sequence) -> list[float]:
 
 
 async def anchor_logprobs(anchor: Any, sequences: Values[Sequence]) -> list[list[float]]:
-    """The starting weights' logprobs at every target, from one `compute_logprobs_async`
-    over the whole sequence. Position `p` scores `tokens[p]` (the cookbook's
+    """Return the starting weights' logprobs at every target of each sequence.
+
+    Each sequence is scored with one `compute_logprobs_async` call, at most
+    `LOGPROB_CONCURRENCY` at once. Position `p` scores `tokens[p]` (the cookbook's
     `incorporate_kl_penalty` alignment, `[1:]` against the targets)."""
     gate = asyncio.Semaphore(LOGPROB_CONCURRENCY)
 

@@ -1,6 +1,4 @@
-"""`show`'s rows and `runs` at the console's width: a table when it fits, otherwise each row
-as an indented `key  value` block. Rich folds every cell of a fifteen-key job row to an
-ellipsis at eighty columns."""
+"""Tests for `show` and `runs` output, which prints indented blocks when a table does not fit."""
 
 from __future__ import annotations
 
@@ -15,12 +13,13 @@ from typer.testing import CliRunner
 from shipyard import record
 from shipyard.cli import show
 from shipyard.cli.main import app
-from shipyard.run import Run
+from shipyard.cli.run import Run
 from tests.trials import BLUEPRINTS
 
 DAPO = BLUEPRINTS / "dapo"
 runner = CliRunner()
-#: A job row as a served run writes it: fifteen keys including `at`.
+#: A job row as a served run writes it, with fifteen keys including `at`. At eighty columns,
+#: Rich would fold every cell of this row to an ellipsis.
 ROW = {
     "at": "2026-10-07T20:57:50.871956+00:00",
     "job": "02-eval-tinker-docker__eTNXY25-0000",

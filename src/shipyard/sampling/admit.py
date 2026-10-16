@@ -1,5 +1,7 @@
-"""Admission: which trials are measured, which are masked, and why, off `result.json`
-and, for a served run, off the proxy's records of what the policy was asked and said."""
+"""Trial admission: decide whether each trial is graded or masked, and why.
+
+Verdicts are read from Harbor's `result.json` and, for a served run, from the proxy's records
+of the policy's model calls."""
 
 from __future__ import annotations
 
@@ -26,7 +28,7 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-#: The masks: a trial left out of every mean and every gradient, by reason.
+#: Mask reasons. A masked trial is excluded from every mean and every gradient.
 ENV_ERROR = "env_error"
 GRADING_ERROR = "grading_error"
 TIMEOUT = "timeout"
@@ -34,12 +36,12 @@ API_ERROR = "api_error"
 CONTEXT_OVERFLOW = "context_overflow"
 MULTIMODAL = "multimodal"
 
-#: What Harbor names on a trial its clock cut.
+#: Harbor's exception type for a trial that hit its timeout.
 TIMED_OUT = "AgentTimeoutError"
-#: Harbor's `ApiError` subclasses that are the endpoint's doing, from
-#: `harbor.agents.installed.base`. The three left out are the policy's own
-#: (`OutputTokenExceededError`, `ContextWindowExceededError`, `AgentSafetyRefusalError`),
-#: and none of them ends in "ApiError", so `endpoint_failed` also takes that suffix.
+#: Harbor's `ApiError` subclasses that indicate an endpoint failure, from
+#: `harbor.agents.installed.base`. The three excluded subclasses are caused by the policy
+#: (`OutputTokenExceededError`, `ContextWindowExceededError`, `AgentSafetyRefusalError`).
+#: None of them ends in "ApiError", so `endpoint_failed` also matches that suffix.
 ENDPOINT_FAILED = frozenset(
     {
         "ApiError",
@@ -53,8 +55,8 @@ ENDPOINT_FAILED = frozenset(
         "ApiProviderResourceNotFoundError",
     }
 )
-#: Harbor's verifier-side endings: the agent finished and the grader did not. A filled
-#: context does not read them as the harness giving up.
+#: Harbor's verifier-side exception types: the agent finished but grading failed. After the
+#: context fills, these are not treated as the harness giving up.
 GRADER_FAILED = frozenset(
     {
         "RewardFileNotFoundError",
@@ -66,14 +68,14 @@ GRADER_FAILED = frozenset(
 
 
 def _ended(payload: dict[str, Any] | None) -> str | None:
-    """Harbor's `exception_info.exception_type` from a result payload, or None."""
+    """Return Harbor's `exception_info.exception_type` from a result payload, or None."""
     found = payload.get("exception_info") if payload else None
     named = found.get("exception_type") if isinstance(found, dict) else None
     return str(named) if named else None
 
 
 def endpoint_failed(why: str | None) -> bool:
-    """Whether the ending Harbor named is an endpoint failure."""
+    """Return whether the Harbor exception type `why` indicates an endpoint failure."""
     return why is not None and (why in ENDPOINT_FAILED or why.endswith("ApiError"))
 
 
@@ -84,7 +86,10 @@ def verdict(
     asked: int | None = None,
     failed: bool = False,
 ) -> Verdict:
-    """The served endings first, then `result.json`: a reward with its numbers, or a mask."""
+    """Judge one trial: return a reward with the verifier's numbers, or a mask.
+
+    When `records` are given, `served_verdict` is checked first, then the trial's
+    `result.json`."""
     payload = result_of(trial)
     why = _ended(payload)
     if records is not None:
@@ -117,12 +122,15 @@ def served_verdict(
     asked: int | None = None,
     failed: bool = False,
 ) -> Verdict | None:
-    """The served endings, decided before the verifier's number is read, or None. No
-    records, or too few, is `env_error`. A first turn that never fit is
-    `context_overflow`. A budget cut or a filled context scores 0. A quit on a failed call
-    is `api_error`. An image the record did not keep is `multimodal`: nothing can train on
-    it. `failed` is the harness's log saying its last call failed. With no failure on the
-    last record, the proxy never saw that call and the trial measured the connection."""
+    """Return the verdict the proxy's records decide before the verifier is read, or None.
+
+    No records, or fewer than the harness asked for, is `env_error`. A first turn that never
+    fit in the context is `context_overflow`. A trial cut by the token budget scores 0, and so
+    does one that ended in an error (other than a timeout or a grading failure) after its
+    context filled. A harness that quit after a failed call is `api_error`. So is a trial
+    whose harness log says its last call failed (`failed`) while the last record shows no
+    failure: the proxy never saw that call, so it failed on the way, not in the model. A call
+    with an image the record did not keep is `multimodal`, since nothing can train on it."""
     if not records:
         return Verdict(None, ENV_ERROR, why)
     if asked is not None and asked > len(records):
@@ -146,16 +154,20 @@ def served_verdict(
 
 
 def judge(job: Job, *, check_turns: bool) -> None:
-    """Fill in the job's verdicts, one per trial. With records on the job, first what its
-    harness logs say: the turns each trial asked for, and the trials whose last call failed."""
+    """Set `job.verdicts`, one per trial.
+
+    For a served job (one with records), first read the harness logs into `job.asked`, the
+    turns each trial asked for, and `job.failed`, the trials whose last model call failed."""
     if job.records is not None:
         job.asked, job.failed = read_logs(job.trials, job.records, check_turns=check_turns)
     job.verdicts = verdicts(job)
 
 
 def verdicts(job: Job) -> list[Verdict]:
-    """One verdict per trial, in plan order. With records on the job, each trial is judged
-    with its own records and its harness's turn count."""
+    """Return one verdict per trial, in plan order.
+
+    For a served job, each trial is judged with its own records and its harness's turn
+    count."""
     if job.records is None:
         return [verdict(one.dir) for one in job.trials]
     asked, failed = job.asked or {}, job.failed or set()
@@ -173,7 +185,10 @@ def verdicts(job: Job) -> list[Verdict]:
 def read_logs(
     trials: Sequence[Trial], records: Mapping[str, Sequence[Record]], *, check_turns: bool
 ) -> tuple[dict[str, int], set[str]]:
-    """By trial name: the turns the harness asked for, and whether its last model call failed."""
+    """Read each trial's harness log for its turn count and its last call's outcome.
+
+    Return the number of turns each harness asked for, by trial name (counted only with
+    `check_turns`), and the names of the trials whose last model call failed."""
     asked: dict[str, int] = {}
     failed: set[str] = set()
     for trial in trials:
@@ -201,7 +216,7 @@ def read_logs(
 
 
 def harness_log(trial: Path, harness: str) -> str | None:
-    """`agent/<harness>.txt` under the trial; None without it."""
+    """Return the text of the trial's `agent/<harness>.txt`, or None if it cannot be read."""
     try:
         return (trial / "agent" / f"{bare_name(harness)}.txt").read_text(
             encoding="utf-8", errors="replace"
@@ -211,8 +226,10 @@ def harness_log(trial: Path, harness: str) -> str | None:
 
 
 def results(job: Job) -> Iterator[tuple[Path, dict[str, Any]]]:
-    """Each trial that left a readable `result.json`, with its payload, in plan order.
-    Every reader of a job's results uses this walk, so none skips a trial another counts."""
+    """Yield each trial directory with a readable `result.json`, and its payload, in plan order.
+
+    Every reader of a job's results uses this function, so they agree on which trials
+    count."""
     for one in job.trials:
         payload = result_of(one.dir)
         if payload is not None:
@@ -220,8 +237,9 @@ def results(job: Job) -> Iterator[tuple[Path, dict[str, Any]]]:
 
 
 def result_of(trial: Path) -> dict[str, Any] | None:
-    """The trial's `result.json` as a dict, or None when missing or unreadable. Every
-    module reads the file through this function, so they agree on its shape."""
+    """Return the trial's `result.json` as a dict, or None if it is missing or unreadable.
+
+    Every module reads the file through this function, so they agree on its shape."""
     try:
         payload = json.loads((Path(trial) / "result.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
