@@ -55,17 +55,21 @@ def resolved(loaded: Blueprint) -> dict[str, Any]:
     """Every table as plain data with defaults filled in, in the schema's order, an optional
     one left out when unset. `kind` leads the recipe table as it does in the file. For a
     served model, `renderer` is the one the proxy will load."""
-    dumped = {key: value for key, value in loaded.model_dump(mode="json").items() if value}
+    dumped = {
+        key: value
+        for key, value in loaded.model_dump(mode="json").items()
+        if value and any(one is not None for one in value.values())
+    }
     recipe = dumped["recipe"]
     dumped["recipe"] = {"kind": recipe["kind"], **{k: v for k, v in recipe.items() if k != "kind"}}
-    if loaded.model.served:
+    if loaded.agent.served:
         dumped["rollout"]["renderer"] = served_renderer(loaded)
     return dumped
 
 
 def served_renderer(loaded: Blueprint) -> str:
     """The renderer the proxy will load: `[rollout] renderer`, else the model's own."""
-    return loaded.rollout.renderer or recommended_renderer(loaded.model.name)
+    return loaded.rollout.renderer or recommended_renderer(loaded.agent.model)
 
 
 def recommended_renderer(model: str) -> str:

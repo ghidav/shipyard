@@ -178,7 +178,9 @@ class Trainer:
         #: The jobs' bars on a terminal.
         self.progress = reporter()
         #: One engine, so every job in flight shares its `[rollout] concurrency`.
-        self.engine = HarborEngine(config.rollout, progress=self.progress)
+        self.engine = HarborEngine(
+            config.rollout, env=config.agent.env, kwargs=config.agent.kwargs, progress=self.progress
+        )
         #: Where every row goes.
         self.logs = Loggers(self.loggers())
         #: What has been spent, going on from what was spent before a resume.
@@ -195,10 +197,10 @@ class Trainer:
         self._stream: Iterator[list[Task]] | None = None
 
     def loggers(self) -> list[Logger]:
-        """Where this trainer writes: its directory, and wandb when `[wandb]` names a
+        """Where this trainer writes: its directory, and wandb when `[logging.wandb]` names a
         project. A subclass adds its own."""
         found: list[Logger] = [Folder(self.directory)]
-        if self.config.wandb is not None:
+        if self.config.logging.wandb is not None:
             found.append(Wandb(self.config, self.directory))
         return found
 
@@ -239,7 +241,7 @@ class Trainer:
             state=row.get("state_path"),
             anchored=cfg.trains and cfg.recipe.kl_coef > 0,
         )
-        return Agent(policy, [harness(cfg.rollout.harness)], self.modules)
+        return Agent(policy, [harness(cfg.agent.harness)], self.modules)
 
     async def train(self) -> Agent:
         """The run: open the agent, take `[recipe] steps` steps (the evaluate kind takes none),
@@ -323,7 +325,7 @@ class Trainer:
         ended = Counter(one.ended for one in job.verdicts if one.ended is not None)
         self.record_job(
             job,
-            party=endpoint.party or cfg.model.provider,
+            party=endpoint.party or cfg.agent.provider,
             graded=sum(one.reward is not None for one in job.verdicts),
             **({"masked": dict(masked)} if masked else {}),
             **({"ended": dict(ended)} if ended else {}),
@@ -410,7 +412,7 @@ class Trainer:
             raise ValueError("an evaluation needs a run reopened at a checkpoint")
         cfg = self.config
         policy = Policy(endpoint_for(cfg, self.directory), start=self.resumed["sampler_path"])
-        agent = Agent(policy, [harness(cfg.rollout.harness)], self.modules)
+        agent = Agent(policy, [harness(cfg.agent.harness)], self.modules)
         async with agent.policy:
             return await self.evaluate(agent, list(tasks), checkpoint=self.resumed["tag"])
 
@@ -523,7 +525,7 @@ class Trainer:
         if client is None:
             return TrainingStep(self.steps, list(found))
         began = time.monotonic()
-        party = agent.policy.endpoint.party or self.config.model.provider
+        party = agent.policy.endpoint.party or self.config.agent.provider
         credit = await self.credit(agent.policy, found)
         self.spent(
             party, reference_tokens=credit.reference_tokens, anchor_tokens=credit.anchor_tokens
@@ -537,10 +539,9 @@ class Trainer:
         datums = [one for piece in pieces for one in piece]
         train_tokens = sum(int(one.model_input.length) for one in datums)
         # An earlier run's optimizer state continues its schedule; a resume stands at `updates`.
-        model = self.config.model
         rate = (
             recipe.learning_rate
-            if model.from_checkpoint and model.restore_optimizer
+            if self.config.agent.from_checkpoint and recipe.restore_optimizer
             else warmed(recipe.learning_rate, recipe.warmup, self.updates)
         )
         trained: list[torch.Tensor] = []
@@ -648,7 +649,7 @@ class Trainer:
 
 
 def carried(config: Blueprint, directory: Path) -> Candidate | None:
-    """The candidate every job carries: the copy kept in `directory`, else the one `[recipe]
+    """The candidate every job carries: the copy kept in `directory`, else the one `[agent]
     modules` seeds, kept there so a resume carries the same text. None when the key is unset
     or the recipe (gepa, fst) searches over its own."""
     if isinstance(config.recipe, Search):
@@ -663,7 +664,7 @@ def carried(config: Blueprint, directory: Path) -> Candidate | None:
 
 
 def seeded(config: Blueprint) -> Candidate | None:
-    """The candidate `[recipe] modules` seeds, for any recipe. None when it is unset."""
+    """The candidate `[agent] modules` seeds, for any recipe. None when it is unset."""
     named = modules_dir(config)
     return None if named is None else seed(named)
 

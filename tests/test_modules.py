@@ -59,17 +59,18 @@ FIXTURES = Path(__file__).parent / "modules"
 
 #: An evaluate blueprint over the fixture dataset, carrying `modules/` beside it.
 CARRYING = """
-[model]
-name = "m"
+[agent]
+model = "m"
 provider = "openrouter"
+harness = "pi@0.85.1"
+modules = "modules"
+
 [data]
 test = "fixture"
 batch_size = 2
 [rollout]
-harness = "pi@0.85.1"
 [recipe]
 kind = "evaluate"
-modules = "modules"
 """
 
 
@@ -341,18 +342,10 @@ async def test_a_kinds_fields_land_on_the_agent_config_beside_the_rollouts_own(
         },
     )
     runner = FakeTrials()
-    table = Rollout(
-        harness="pi@0.85.1",
-        sandbox="docker",
-        concurrency=1,
-        jobs_dir=str(tmp_path / "jobs"),
-        env={"KEEP": "1"},
-        kwargs={"thinking": "high"},
-    )
+    table = Rollout(sandbox="docker", concurrency=1, jobs_dir=str(tmp_path / "jobs"))
     carrying = Agent(Policy(ProviderEndpoint("m")), [harness("pi@0.85.1")], seed(VALID))
-    await HarborEngine(table, run_trial=runner).run(
-        "run-0000", [tmp_path / "tasks" / "alpha"], 1, agent=carrying
-    )
+    engine = HarborEngine(table, env={"KEEP": "1"}, kwargs={"thinking": "high"}, run_trial=runner)
+    await engine.run("run-0000", [tmp_path / "tasks" / "alpha"], 1, agent=carrying)
     agent = runner.configs[0].agent
     assert agent.name == "other" and agent.model_name == "m"
     assert agent.kwargs == {"version": "0.85.1", "thinking": "high", "turns": 3}
@@ -519,11 +512,11 @@ async def test_a_job_hands_a_prompt_to_harbor_as_the_agents_prompt_template(
 
 
 def test_check_warns_when_a_prompt_replaces_the_blueprints_template(tmp_path: Path) -> None:
-    text = CARRYING.replace("[recipe]", '[rollout.kwargs]\nprompt_template_path = "t.j2"\n[recipe]')
+    text = CARRYING.replace("[recipe]", '[agent.kwargs]\nprompt_template_path = "t.j2"\n[recipe]')
     home = write_blueprint(tmp_path, text)
     write({PROMPT_FILE: "Run the tests.\n"}, into=home / "modules")
     found = [one.text for one in check(home) if one.level == "warning"]
-    assert any(one.startswith("[rollout.kwargs] prompt_template_path: the prompt") for one in found)
+    assert any(one.startswith("[agent.kwargs] prompt_template_path: the prompt") for one in found)
     (home / "modules" / PROMPT_FILE).unlink()
     shutil.copytree(VALID, home / "modules", dirs_exist_ok=True)
     found = [one.text for one in check(home) if one.level == "warning"]
@@ -532,14 +525,14 @@ def test_check_warns_when_a_prompt_replaces_the_blueprints_template(tmp_path: Pa
 
 def test_a_gradient_recipe_carries_and_a_gepa_run_seeds_its_own(tmp_path: Path) -> None:
     text = (BLUEPRINTS / "dapo" / "run.toml").read_text(encoding="utf-8")
-    home = _carrying(tmp_path, text.replace("[recipe]", '[recipe]\nmodules = "modules"'))
+    home = _carrying(tmp_path, text.replace("[agent]\n", '[agent]\nmodules = "modules"\n'))
     opened = Run.open(home, root=tmp_path / "runs")
     assert carried(opened.config, opened.directory) == seed(VALID)
     assert (
         opened.directory / record.MODULES / CARRIED / SKILLS_DIR / "solving" / SKILL_FILE
     ).is_file()
     gepa = Run.open(BLUEPRINTS / "gepa", root=tmp_path / "runs")
-    assert gepa.config.recipe.modules == "modules"
+    assert gepa.config.agent.modules == "modules"
     assert carried(gepa.config, gepa.directory) is None
     assert not (gepa.directory / record.MODULES).exists()
 
@@ -586,7 +579,7 @@ def test_check_blocks_a_seed_it_cannot_read(
     monkeypatch.chdir(tmp_path)
     home = _carrying(tmp_path, modules=modules)
     blocked = [f for f in check(home) if f.level == "blocked"]
-    assert len(blocked) == 1 and blocked[0].text.startswith("[recipe] modules: ")
+    assert len(blocked) == 1 and blocked[0].text.startswith("[agent] modules: ")
     assert reason in blocked[0].text
     if modules is None:
         assert str(home / "modules") in blocked[0].text
@@ -600,7 +593,7 @@ def test_check_blocks_a_reserved_kind_by_name(
     write({"lakehouse/server.py": "print('x')\n"}, into=home / "modules" / "tools")
     [blocked] = [f.text for f in check(home) if f.level == "blocked"]
     assert blocked == (
-        "[recipe] modules: 'tools' is for tool modules, and tool modules are not "
+        "[agent] modules: 'tools' is for tool modules, and tool modules are not "
         "supported in this version"
     )
 
@@ -624,4 +617,4 @@ def test_check_prints_the_modules_finding_under_verbose_and_blocks_a_bad_seed(
     assert len(blocked) == 2 and all("no dataset at" in line for line in blocked)
     shutil.rmtree(home / "modules")
     result = runner.invoke(app, ["check", str(home)])
-    assert result.exit_code == 1 and "blocked  [recipe] modules: no modules at" in result.output
+    assert result.exit_code == 1 and "blocked  [agent] modules: no modules at" in result.output

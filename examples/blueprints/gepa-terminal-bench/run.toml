@@ -1,6 +1,7 @@
 # Evolve a skill for Inkling-Small on a Terminal-Bench sample; Claude Code writes the rewrites.
-[model]
-name = "thinkingmachines/Inkling-Small"
+[agent]
+model = "thinkingmachines/Inkling-Small"
+harness = "pi@0.85.1"
 
 [data]
 train = "terminal-bench-sample"
@@ -8,7 +9,6 @@ batch_size = 10
 group_size = 2
 
 [rollout]
-harness = "pi@0.85.1"
 sandbox = "modal"
 concurrency = 16
 setup_timeout = 900

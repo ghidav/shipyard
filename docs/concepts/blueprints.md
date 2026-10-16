@@ -1,7 +1,7 @@
 # Blueprints
 
 A blueprint is a directory holding one file, `run.toml`, and optionally the modules directory
-that `[recipe] modules` names. It says everything a run needs: the model, the tasks, how the
+that `[agent] modules` names. It says everything a run needs: the model, the tasks, how the
 tasks are rolled out, and what the run does with the results.
 
 `shipyard check` reads a blueprint and says whether it could run. `shipyard run` executes
@@ -11,8 +11,9 @@ it and writes the record of what happened, a [run](runs.md).
 
 ```toml
 # blueprints/02-eval-tinker-docker/run.toml
-[model]
-name = "Qwen/Qwen3-8B"
+[agent]
+model = "Qwen/Qwen3-8B"
+harness = "pi@0.85.1"
 
 [data]
 dataset = "hello-world"
@@ -20,7 +21,6 @@ batch_size = 1
 group_size = 2
 
 [rollout]
-harness = "pi@0.85.1"
 sandbox = "docker"
 concurrency = 2
 max_tokens = 4096
@@ -29,20 +29,21 @@ max_tokens = 4096
 kind = "evaluate"
 ```
 
-Five tables, each with one job:
+Six tables, each with one job:
 
 | Table | Says |
 |---|---|
-| `[model]` | which model, and who serves it |
+| `[agent]` | what acts in each trial: the model and who serves it, the harness that drives it, the modules it carries |
 | `[data]` | which [datasets](datasets.md), and how they are cut into batches |
-| `[rollout]` | which harness runs each task, in which sandbox, sampled how |
+| `[rollout]` | how trials run: in which sandbox, how many at once, sampled how, through which proxy; optional |
 | `[recipe]` | what the run does with the rollouts; `kind` names it |
 | `[checkpoints]` | when a training run saves its weights; optional |
+| `[logging]` | where the trainer writes besides the run directory, such as wandb; optional |
 
-The first four tables are required. Every key, with its type and default, is in the
+`[agent]`, `[data]` and `[recipe]` are required. Every key, with its type and default, is in the
 [configuration reference](../reference/configuration.md).
 
-A model is *served* when `[model] provider` is `"tinker"`, the default: the run starts its
+A model is *served* when `[agent] provider` is `"tinker"`, the default: the run starts its
 own [proxy](proxy.md) and samples the weights from a Tinker-API backend. Any other provider,
 such as `"anthropic"`, means the harness calls that provider itself.
 
@@ -69,16 +70,16 @@ A key the schema does not know is an error. `check` lists every problem in one p
 line, as `[table] key: problem`:
 
 ```toml
-[model]
-name = "Qwen/Qwen3-8B"
+[agent]
+model = "Qwen/Qwen3-8B"
 base = "Qwen/Qwen3-8B"
+harness = "pi"
 
 [data]
 dataset = "hello-world"
 batch_size = 0
 
 [rollout]
-harness = "pi"
 model = "Qwen/Qwen3-8B"
 
 [recipe]
@@ -86,17 +87,26 @@ kind = "dapo"
 learning_rate = 2e-5
 clip = 0.2
 
-[logging]
+[tracking]
 wandb = true
 ```
 
 ```text
-blocked  [model] base: unknown key
+blocked  [agent] base: unknown key
 blocked  [data] batch_size: Input should be greater than or equal to 1
 blocked  [rollout] model: unknown key
 blocked  [recipe] steps: field required
 blocked  [recipe] clip: unknown key
-blocked  [logging]: unknown table
+blocked  [tracking]: unknown table
+```
+
+A key in the table it used to live in is refused with where it lives now, before anything
+else is checked. An older blueprint with `[model]` and `[rollout] harness` reads:
+
+```text
+blocked  [model] name: now [agent] model
+blocked  [model] lora_rank: now [recipe] lora_rank
+blocked  [rollout] harness: now [agent] harness
 ```
 
 `clip` is a `dr-grpo` knob, so `dapo` refuses it. A misspelt kind lists the valid ones:
@@ -156,11 +166,11 @@ What `check` looks at includes:
   trial networks behind, as a warning;
 - for a `modal` sandbox with a token, whether Modal takes it: a network call, a warning
   when Modal does not answer within 15 seconds;
-- that `[rollout] env` holds no key starting with `TINKER_` and no `SHIPYARD_CONTROL_TOKEN`,
+- that `[agent] env` holds no key starting with `TINKER_` and no `SHIPYARD_CONTROL_TOKEN`,
   which must not enter a sandbox;
 - a key that `.env` assigns twice, as a warning, since the last one wins;
 - for a served model: where the proxy will stand, whether the harness has a profile,
-  whether `[rollout] env` switches its compaction off without `fill_context`, and whether
+  whether `[agent] env` switches its compaction off without `fill_context`, and whether
   the backend serves the model. The backend check is a network call, made only when
   `TINKER_API_KEY` is set. Without it, `check` warns.
 

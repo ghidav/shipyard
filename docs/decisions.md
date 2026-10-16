@@ -72,7 +72,7 @@ tasks are.
 **A checkpoint saves the state and the sampler weights, and a `final` one is always saved.**
 A record that names only the sampler path can be measured again but never continued.
 
-**A continuation is a new run, started from `[model] from_checkpoint`.**
+**A continuation is a new run, started from `[agent] from_checkpoint`.**
 Each run id then holds the metrics of one process.
 
 **Weights published for sampling expire on their own, after 12 hours.**

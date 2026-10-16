@@ -7,7 +7,6 @@ from typing import Any
 import pytest
 import tinker
 
-from shipyard.config import Model
 from shipyard.pack import datum
 from shipyard.proxy.wire import Picture
 from shipyard.training.client import DEFAULT_LORA_RANK, TinkerClient
@@ -23,7 +22,7 @@ def _datum(tokens: int = 4, *, mu: float = -0.5, advantage: float = 1.0) -> tink
 
 async def _client(**fake: Any) -> tuple[TinkerClient, FakeTrainingClient]:
     service = FakeService(client=FakeTrainingClient(**fake))
-    made = TinkerClient(service, Model(name=MODEL))
+    made = TinkerClient(service, MODEL)
     await made.open()
     return made, service.client
 
@@ -33,13 +32,13 @@ async def _client(**fake: Any) -> tuple[TinkerClient, FakeTrainingClient]:
 
 async def test_open_makes_a_lora_at_the_rank_named_or_tinkers_default() -> None:
     service = FakeService()
-    opened = TinkerClient(service, Model(name=MODEL, lora_rank=16))
+    opened = TinkerClient(service, MODEL, lora_rank=16)
     assert opened.client is None
     await opened.open()
     assert service.calls == [("lora", MODEL, 16)] and service.metadata == [None]
     assert opened.client is service.client and opened.service is service
     service = FakeService()
-    await TinkerClient(service, Model(name=MODEL), {"shipyard_run": "r"}).open()
+    await TinkerClient(service, MODEL, metadata={"shipyard_run": "r"}).open()
     assert service.calls == [("lora", MODEL, DEFAULT_LORA_RANK)] and DEFAULT_LORA_RANK == 32
     assert service.metadata == [{"shipyard_run": "r"}], "the training run is tagged too"
 
@@ -47,21 +46,23 @@ async def test_open_makes_a_lora_at_the_rank_named_or_tinkers_default() -> None:
 async def test_open_from_a_state_path_restores_the_moments_only_if_asked() -> None:
     path = "tinker://run/weights/step-3"
     service = FakeService()
-    await TinkerClient(service, Model(name=MODEL, from_checkpoint=path, lora_rank=64)).open()
+    await TinkerClient(service, MODEL, from_checkpoint=path, lora_rank=64).open()
     assert service.calls == [("from_state", path)]
     service = FakeService()
-    model = Model(name=MODEL, from_checkpoint=path, restore_optimizer=True)
-    await TinkerClient(service, model, {"a": "b"}).open()
+    restoring = TinkerClient(
+        service, MODEL, from_checkpoint=path, restore_optimizer=True, metadata={"a": "b"}
+    )
+    await restoring.open()
     assert service.calls == [("from_state_with_optimizer", path)]
     assert service.metadata == [{"a": "b"}]
     service = FakeService()
-    await TinkerClient(service, Model(name=MODEL, restore_optimizer=True)).open()
+    await TinkerClient(service, MODEL, restore_optimizer=True).open()
     assert service.calls == [("lora", MODEL, 32)]
 
 
 async def test_open_refuses_a_model_the_backend_lacks_or_cannot_train_before_spending() -> None:
     service = FakeService(capabilities=capable(("thinkingmachines/Inkling-Small", True)))
-    refused = TinkerClient(service, Model(name="thinkingmachines/Inkling-Smal"))
+    refused = TinkerClient(service, "thinkingmachines/Inkling-Smal")
     with pytest.raises(ValueError, match="does not serve 'thinkingmachines/Inkling-Smal'"):
         await refused.open()
     assert service.calls == [] and len(service.closed) == 1
@@ -71,25 +72,25 @@ async def test_open_refuses_a_model_the_backend_lacks_or_cannot_train_before_spe
     assert len(service.closed) == 1, "a failed open leaves no session to finish"
     service = FakeService(capabilities=capable((MODEL, True), (f"{MODEL}:sampling-nvfp4", False)))
     with pytest.raises(ValueError, match="sampled but not trained"):
-        await TinkerClient(service, Model(name=f"{MODEL}:sampling-nvfp4")).open()
+        await TinkerClient(service, f"{MODEL}:sampling-nvfp4").open()
     service = FakeService(capabilities=None)
-    opened = TinkerClient(service, Model(name="anything/at-all"))
+    opened = TinkerClient(service, "anything/at-all")
     await opened.open()
     assert opened.client is service.client, "a capabilities read that fails stops nothing"
     service = FakeService(refusing=RuntimeError("no capacity for a new model"))
     with pytest.raises(RuntimeError, match="no capacity"):
-        await TinkerClient(service, Model(name=MODEL)).open()
+        await TinkerClient(service, MODEL).open()
     assert service.closed == [("errored", "RuntimeError: no capacity for a new model")]
 
 
 async def test_the_anchor_is_a_sampling_client_on_the_weights_as_opened() -> None:
     service = FakeService()
-    opened = TinkerClient(service, Model(name=MODEL))
+    opened = TinkerClient(service, MODEL)
     await opened.open()
     assert await opened.anchor() is service.anchor
     assert service.calls[-1] == ("sampling", MODEL, None) and service.client.calls == []
     service = FakeService()
-    opened = TinkerClient(service, Model(name=MODEL, from_checkpoint="tinker://s"))
+    opened = TinkerClient(service, MODEL, from_checkpoint="tinker://s")
     await opened.open()
     await opened.anchor()
     assert service.client.calls == [("save_weights_for_sampler", "anchor", SERVE_TTL)]
@@ -177,13 +178,13 @@ async def test_load_state_restores_the_optimizer_too() -> None:
 
 async def test_close_finishes_the_session_once_with_its_status() -> None:
     service = FakeService()
-    opened = TinkerClient(service, Model(name=MODEL))
+    opened = TinkerClient(service, MODEL)
     await opened.open()
     await opened.close()
     await opened.close()
     assert service.closed == [("success", None)] and opened.service is None
     service = FakeService()
-    opened = TinkerClient(service, Model(name=MODEL))
+    opened = TinkerClient(service, MODEL)
     await opened.open()
     await opened.close("errored", "RuntimeError: the loop broke")
     assert service.closed == [("errored", "RuntimeError: the loop broke")]

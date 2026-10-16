@@ -1,4 +1,4 @@
-"""`[model] from_checkpoint` is a state path for a training run and a sampler path for
+"""`[agent] from_checkpoint` is a state path for a training run and a sampler path for
 anything that only samples. `check` names the other column, the proxy of a training run
 starts on the base model, and the KL anchor samples weights published from the state."""
 
@@ -16,7 +16,7 @@ SAMPLER = "tinker://abc:train:0/sampler_weights/final"
 
 def _with(tmp_path: Path, kind: str, checkpoint: str) -> Path:
     text = (BLUEPRINTS / kind / "run.toml").read_text(encoding="utf-8")
-    text = text.replace("[model]\n", f'[model]\nfrom_checkpoint = "{checkpoint}"\n', 1)
+    text = text.replace("[agent]\n", f'[agent]\nfrom_checkpoint = "{checkpoint}"\n', 1)
     return write_blueprint(tmp_path / kind, text)
 
 
@@ -38,7 +38,7 @@ def test_a_sampling_run_names_a_sampler_path(tmp_path: Path) -> None:
     (wrong,) = [
         t for t in _blocked(_with(tmp_path / "w", "evaluate", STATE)) if "from_checkpoint" in t
     ]
-    assert "sampler_path" in wrong and wrong.startswith("[model] from_checkpoint: evaluate")
+    assert "sampler_path" in wrong and wrong.startswith("[agent] from_checkpoint: evaluate")
 
 
 def test_the_proxy_of_a_training_run_starts_on_the_base_model(tmp_path: Path) -> None:

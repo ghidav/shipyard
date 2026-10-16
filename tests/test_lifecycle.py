@@ -75,13 +75,14 @@ CLOUDFLARED_STUB = textwrap.dedent(
     """
 )
 SERVED = """
-[model]
-name = "Qwen/Qwen3-8B"
+[agent]
+model = "Qwen/Qwen3-8B"
+harness = "pi@0.85.1"
+
 [data]
 test = "fixture"
 batch_size = 1
 [rollout]
-harness = "pi@0.85.1"
 sandbox = "{sandbox}"
 [recipe]
 kind = "evaluate"

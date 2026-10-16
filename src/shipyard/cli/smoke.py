@@ -108,7 +108,7 @@ async def smoke(run: Run) -> Smoked:
     and its stop is kept for `verify`."""
     cfg = run.config
     endpoint = endpoint_for(cfg, run.directory)
-    agent = Agent(Policy(endpoint), [harness(cfg.rollout.harness)], seeded(cfg))
+    agent = Agent(Policy(endpoint), [harness(cfg.agent.harness)], seeded(cfg))
     with Trainer(cfg, run.directory) as trainer:
         async with agent.policy:
             try:
@@ -138,11 +138,11 @@ def report(
     for trial, verdict in zip(trials, judged, strict=True):
         name = Path(trial).name
         if serving is None:
-            served, records = cfg.model.provider, None
+            served, records = cfg.agent.provider, None
         else:
             taken = [one for one in requests if one["trial"] == name]
             served = (
-                ", ".join(sorted({one["served"] or cfg.model.name for one in taken})) or "nothing"
+                ", ".join(sorted({one["served"] or cfg.agent.model for one in taken})) or "nothing"
             )
             records = len(taken)
         said = f"masked {verdict.mask}" if verdict.reward is None else str(verdict.reward)
@@ -151,12 +151,12 @@ def report(
     if serving is not None:
         proxy = f"{serving.origin}  ({serving.placement})"
     else:
-        proxy = f"none (the harness calls {cfg.model.provider} directly)"
+        proxy = f"none (the harness calls {cfg.agent.provider} directly)"
     return Smoked(
         run=run.id,
         sandbox=cfg.rollout.sandbox,
         proxy=proxy,
-        harness=cfg.rollout.harness,
+        harness=cfg.agent.harness,
         profile=wiring(cfg) if serving is not None else "none (provider-served)",
         proxied=serving is not None,
         trials=found,
@@ -168,8 +168,8 @@ def report(
 def wiring(cfg: Blueprint) -> str:
     """The harness's profile name with what it adds, as in `pi (model_api=openai-completions)`.
     A table kwarg shows by name alone: `opencode (provider=shipyard, opencode_config)`."""
-    name = bare_name(cfg.rollout.harness)
-    profile = profile_for(cfg.rollout.harness)
+    name = bare_name(cfg.agent.harness)
+    profile = profile_for(cfg.agent.harness)
     said = [
         key if isinstance(value, Mapping) else f"{key}={value}"
         for key, value in profile.kwargs.items()

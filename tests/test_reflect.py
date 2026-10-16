@@ -36,17 +36,18 @@ from tests.trials import Harbor, fixture_tasks, trial, write_blueprint, write_re
 SKILL = "---\nname: solving\ndescription: how to solve.\n---\n\nset up the algebra first\n"
 REWRITTEN = "---\nname: solving\ndescription: how to solve.\n---\n\ncheck the constraints\n"
 BLUEPRINT = """
-[model]
-name = "some-hosted-model"
+[agent]
+model = "some-hosted-model"
 provider = "openrouter"
+harness = "pi@0.85.1"
+kwargs = { turns = 10 }
+env = { POLICY_ONLY = "1" }
+
 [data]
 train = "fixture"
 batch_size = 1
 [rollout]
-harness = "pi@0.85.1"
 sandbox = "modal"
-kwargs = { turns = 10 }
-env = { POLICY_ONLY = "1" }
 timeout = 900
 [recipe]
 kind = "gepa"
@@ -284,7 +285,7 @@ class Reflector:
 def _run(tmp_path: Path, text: str = BLUEPRINT) -> Run:
     fixture_tasks(tmp_path)
     opened = Run.open(write_blueprint(tmp_path, text), root=tmp_path / "runs")
-    assert not opened.config.model.served, "no proxy to point a reflection at"
+    assert not opened.config.agent.served, "no proxy to point a reflection at"
     return opened
 
 

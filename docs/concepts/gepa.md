@@ -18,9 +18,11 @@ This page uses these terms:
 ## The blueprint
 
 ```toml
-[model]
-name = "claude-sonnet-5-5"
+[agent]
+model = "claude-sonnet-5-5"
 provider = "anthropic"
+harness = "claude-code"
+modules = "modules"
 
 [data]
 dataset = "hello-world"
@@ -28,7 +30,6 @@ batch_size = 1
 group_size = 2
 
 [rollout]
-harness = "claude-code"
 sandbox = "docker"
 concurrency = 2
 
@@ -36,7 +37,6 @@ concurrency = 2
 kind = "gepa"
 reflection_harness = "claude-code"
 reflection_model = "claude-sonnet-5-5"
-modules = "modules"
 pareto = 0
 minibatch = 1
 patience = 2

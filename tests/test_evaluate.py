@@ -120,7 +120,7 @@ async def test_a_served_model_runs_through_its_proxy_and_is_judged_by_its_record
     }
     home = _blueprint(tmp_path, **replacements)
     opened = Run.open(home, root=tmp_path / "runs")
-    assert opened.config.model.served
+    assert opened.config.agent.served
     trials = harbor(FakeTrials(breaks=("d",), outcomes={**OUTCOMES, "b": {"reward": 1.0}}))
     with opened:
         await trainer_for(opened.config.recipe)(opened.config, opened.directory).train()

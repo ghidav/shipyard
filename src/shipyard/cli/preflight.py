@@ -45,7 +45,7 @@ from shipyard.sampling.endpoint import LOCAL_SANDBOXES, backend, placement
 SANDBOXES = tuple(kind.value for kind in EnvironmentType)
 #: What `check` says of a blueprint that cannot run yet.
 NO_HARNESS = (
-    "[rollout] harness: name the harness; Harbor reads an unnamed agent as its oracle, "
+    "[agent] harness: name the harness; Harbor reads an unnamed agent as its oracle, "
     "which runs the task's reference solution"
 )
 NO_REFLECTOR = (
@@ -113,18 +113,18 @@ def findings(loaded: Blueprint, environ: Mapping[str, str] | None = None) -> lis
     """The findings of a blueprint that loaded: one ok line per fact, then every problem.
     Datasets are looked up under `tasks/` in the working directory, as `run` does."""
     environ = os.environ if environ is None else environ
-    model, rollout = loaded.model, loaded.rollout
-    served = " (served by this run)" if model.served else ""
+    agent, rollout = loaded.agent, loaded.rollout
+    served = " (served by this run)" if agent.served else ""
     found = [
         Finding("ok", f"recipe {loaded.recipe.kind}"),
-        Finding("ok", f"model {model.name}, provider {model.provider}{served}"),
+        Finding("ok", f"model {agent.model}, provider {agent.provider}{served}"),
     ]
     for label, names in (("train", loaded.datasets), ("test", loaded.test_sets)):
         if names:
             found.append(Finding("ok", f"{label} {', '.join(names)}"))
-    found.append(Finding("ok", f"harness {rollout.harness}, sandbox {rollout.sandbox}"))
-    if loaded.wandb is not None:
-        found.append(_wandb_finding(loaded.wandb))
+    found.append(Finding("ok", f"harness {agent.harness}, sandbox {rollout.sandbox}"))
+    if loaded.logging.wandb is not None:
+        found.append(_wandb_finding(loaded.logging.wandb))
     found += [_dataset_finding(name) for name in [*loaded.datasets, *loaded.test_sets]]
     found += _data_findings(loaded)
     for finding in (_provider_finding(loaded), _checkpoint_finding(loaded)):
@@ -155,7 +155,7 @@ def findings(loaded: Blueprint, environ: Mapping[str, str] | None = None) -> lis
                 "whole reward, so a long solved answer can score as low as a failure",
             )
         )
-    if not rollout.harness.strip():
+    if not agent.harness.strip():
         found.append(Finding("blocked", NO_HARNESS))
     if rollout.sandbox not in SANDBOXES:
         named = f"no Harbor environment called {rollout.sandbox!r}; one of {', '.join(SANDBOXES)}"
@@ -222,9 +222,12 @@ def _length_cap(recipe: Any) -> float | None:
 
 
 def _wandb_finding(table: Wandb) -> Finding:
-    """Where `[wandb]` sends the trainer's rows; `blocked` when wandb is not installed."""
+    """Where `[logging.wandb]` sends the trainer's rows; `blocked` when wandb is not
+    installed."""
     if importlib.util.find_spec("wandb") is None:
-        return Finding("blocked", "[wandb]: wandb is not installed; install shipyard[wandb]")
+        return Finding(
+            "blocked", "[logging.wandb]: wandb is not installed; install shipyard[wandb]"
+        )
     return Finding(
         "ok", f"wandb {table.entity}/{table.project}" if table.entity else f"wandb {table.project}"
     )
@@ -232,11 +235,11 @@ def _wandb_finding(table: Wandb) -> Finding:
 
 def _provider_finding(loaded: Blueprint) -> Finding | None:
     """`blocked` when the recipe trains weights this run does not serve."""
-    if loaded.trains and not loaded.model.served:
+    if loaded.trains and not loaded.agent.served:
         return Finding(
             "blocked",
             f"[recipe] kind = {loaded.recipe.kind!r} trains the weights this run serves, and "
-            f"[model] provider = {loaded.model.provider!r} serves them elsewhere",
+            f"[agent] provider = {loaded.agent.provider!r} serves them elsewhere",
         )
     return None
 
@@ -244,17 +247,17 @@ def _provider_finding(loaded: Blueprint) -> Finding | None:
 def _checkpoint_finding(loaded: Blueprint) -> Finding | None:
     """`blocked` when `from_checkpoint` names the wrong column of `checkpoints.jsonl`. A
     training run resumes from a `state_path`. A run that only samples needs a `sampler_path`."""
-    named = loaded.model.from_checkpoint or ""
+    named = loaded.agent.from_checkpoint or ""
     if loaded.trains and "/sampler_weights/" in named:
         return Finding(
             "blocked",
-            "[model] from_checkpoint: a training run resumes from a checkpoint's state_path "
+            "[agent] from_checkpoint: a training run resumes from a checkpoint's state_path "
             "(tinker://.../weights/...), not its sampler_path",
         )
     if not loaded.trains and "/weights/" in named and "/sampler_weights/" not in named:
         return Finding(
             "blocked",
-            f"[model] from_checkpoint: {loaded.recipe.kind} samples a checkpoint's sampler_path "
+            f"[agent] from_checkpoint: {loaded.recipe.kind} samples a checkpoint's sampler_path "
             "(tinker://.../sampler_weights/...), not its state_path",
         )
     return None
@@ -265,16 +268,16 @@ def _modules_finding(directory: Path) -> Finding:
     try:
         candidate = seed(directory)
     except Inadmissible as refused:
-        return Finding("blocked", f"[recipe] modules: {refused}")
+        return Finding("blocked", f"[agent] modules: {refused}")
     return Finding(
         "ok", f"modules: {len(candidate)} component(s) under {directory} ({candidate.digest})"
     )
 
 
 def _template_finding(loaded: Blueprint, directory: Path) -> Finding | None:
-    """`warning` when the modules hold a prompt and `[rollout.kwargs]` names a prompt
+    """`warning` when the modules hold a prompt and `[agent.kwargs]` names a prompt
     template: the prompt's template replaces it in every rollout that carries the prompt."""
-    if "prompt_template_path" not in loaded.rollout.kwargs:
+    if "prompt_template_path" not in loaded.agent.kwargs:
         return None
     try:
         kinds = {one.kind for one in seed(directory).components.values()}
@@ -284,7 +287,7 @@ def _template_finding(loaded: Blueprint, directory: Path) -> Finding | None:
         return None
     return Finding(
         "warning",
-        "[rollout.kwargs] prompt_template_path: the prompt in the modules is delivered as the "
+        "[agent.kwargs] prompt_template_path: the prompt in the modules is delivered as the "
         "prompt template, so this one is not used where the prompt is carried",
     )
 
@@ -371,7 +374,7 @@ def key_finding(harness: str, model: str | None, environ: Mapping[str, str]) -> 
 
 def sandbox_findings(cfg: Blueprint, environ: Mapping[str, str]) -> list[Finding]:
     """For a sandbox elsewhere: Harbor's extra, the credentials and the setup time. For a
-    docker sandbox: docker and leftover networks. Also a run secret in `[rollout] env` and a
+    docker sandbox: docker and leftover networks. Also a run secret in `[agent] env` and a
     key the working directory's `.env` assigns twice."""
     rollout, found = cfg.rollout, []
     name = rollout.sandbox
@@ -389,8 +392,8 @@ def sandbox_findings(cfg: Blueprint, environ: Mapping[str, str]) -> list[Finding
         down = docker_findings("the docker sandbox")
         found += down if down else network_findings()
     found += [
-        Finding("blocked", f"[rollout] env carries {carried}, which must never enter a sandbox")
-        for key, value in rollout.env.items()
+        Finding("blocked", f"[agent] env carries {carried}, which must never enter a sandbox")
+        for key, value in cfg.agent.env.items()
         for carried in secrets_in(key, value)
     ]
     return found + twice_in(Path.cwd() / ".env")
@@ -633,8 +636,8 @@ def assigned(dotenv: Path) -> list[str]:
 def served_findings(cfg: Blueprint, environ: Mapping[str, str]) -> list[Finding]:
     """Findings for a served model: where its proxy will stand and whether that works here,
     the harness's wiring, and whether the backend serves the model."""
-    model, rollout = cfg.model, cfg.rollout
-    if not model.served:
+    agent, rollout = cfg.agent, cfg.rollout
+    if not agent.served:
         return []
     found: list[Finding] = []
     where = placement(rollout)
@@ -650,14 +653,14 @@ def served_findings(cfg: Blueprint, environ: Mapping[str, str]) -> list[Finding]
             )
     elif where == "local":
         found.append(
-            Finding("ok", f"serving {model.name} on this machine for a {rollout.sandbox} sandbox")
+            Finding("ok", f"serving {agent.model} on this machine for a {rollout.sandbox} sandbox")
         )
     elif (located := tunnel.found()) is not None:
         binary, command = located
         in_docker = tunnel.IMAGE in command
         how = f"docker at {binary}, image {tunnel.IMAGE}" if in_docker else binary
         found.append(
-            Finding("ok", f"serving {model.name} behind a cloudflared tunnel (found at {how})")
+            Finding("ok", f"serving {agent.model} behind a cloudflared tunnel (found at {how})")
         )
         found += docker_findings("the tunnel image") if in_docker else []
     else:
@@ -679,23 +682,23 @@ def served_findings(cfg: Blueprint, environ: Mapping[str, str]) -> list[Finding]
                 )
             )
         found.append(Finding("warning", NOT_KEPT_ALIVE))
-    if bare_name(rollout.harness) not in PROFILES:
+    if bare_name(agent.harness) not in PROFILES:
         found.append(
-            Finding("warning", f"no profile for harness {rollout.harness}; generic OpenAI wiring")
+            Finding("warning", f"no profile for harness {agent.harness}; generic OpenAI wiring")
         )
-    profiled = profile_for(rollout.harness).env
-    by_hand = [key for key, value in profiled.items() if rollout.env.get(key) == value]
+    profiled = profile_for(agent.harness).env
+    by_hand = [key for key, value in profiled.items() if agent.env.get(key) == value]
     if by_hand and not rollout.fill_context:
         found.append(
             Finding(
                 "warning",
-                f"[rollout] env sets {', '.join(by_hand)}, which switches the harness's "
+                f"[agent] env sets {', '.join(by_hand)}, which switches the harness's "
                 "compaction off. The proxy still refuses a call that overflows the "
                 "context, as a harness that compacts expects. Set [rollout] fill_context = "
                 "true instead. It sets the same keys and gives such a call what is left",
             )
         )
-    found.append(probe(model.name, environ))
+    found.append(probe(agent.model, environ))
     return found
 
 

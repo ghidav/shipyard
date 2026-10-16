@@ -40,12 +40,19 @@ class _Table(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class Model(_Table):
-    name: str
+class Agent(_Table):
+    """What acts in a trial: the model, who serves it and where its weights start, the
+    harness that drives it with its Harbor kwargs and env, and the modules it carries."""
+
+    model: str
     provider: str = TINKER
     from_checkpoint: str | None = None
-    lora_rank: int | None = None
-    restore_optimizer: bool = False
+    harness: str
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    env: dict[str, str] = Field(default_factory=dict)
+    #: A modules directory, relative to the blueprint: carried into every job, or the seed
+    #: of a search (`modules` when unset).
+    modules: str | None = None
 
     @property
     def served(self) -> bool:
@@ -96,13 +103,13 @@ class Data(_Table):
 
 
 class Rollout(_Table):
-    harness: str
+    """How trials run and how the model reaches them: the sandbox, the limits, the sampling
+    settings and the proxy."""
+
     sandbox: str = "docker"
     concurrency: int = Field(default=4, ge=1)
     timeout: float | None = None
     setup_timeout: float | None = None
-    env: dict[str, str] = Field(default_factory=dict)
-    kwargs: dict[str, Any] = Field(default_factory=dict)
     endpoint_url: str = ""
     host: str = "host.docker.internal"
     bind: str = "0.0.0.0"
@@ -150,7 +157,10 @@ class Gradient(_Table):
     warmup: int = Field(default=0, ge=0)
     reference: Literal["trainer", "sampler"] = "trainer"
     kl_coef: float = Field(default=0.0, ge=0)
-    modules: str | None = None
+    #: The LoRA rank of the adapter trained; Tinker's default when unset.
+    lora_rank: int | None = None
+    #: With `[agent] from_checkpoint`, resume its optimizer state too.
+    restore_optimizer: bool = False
 
 
 class DapoRecipe(Gradient):
@@ -178,6 +188,8 @@ class CispoRecipe(Gradient):
     overlong_buffer: float = Field(default=PAPER_OVERLONG_BUFFER, gt=0, le=1)
 
 
+#: The seed a search reads when `[agent] modules` names none.
+SEARCH_MODULES = "modules"
 #: GEPA 4.3: "All GEPA optimization runs use a minibatch size of 3".
 PAPER_MINIBATCH = 3
 #: No patience: the budget alone ends the search, as in GEPA's released code, whose
@@ -188,14 +200,13 @@ GEPA_PATIENCE = None
 
 class Search(_Table):
     """The search's knobs, gepa's and fst's: the reflector (harness, model and image), the
-    seed modules directory, the minibatch a child is judged on, the rollout budget, the
-    number of rounds without a better Pareto that ends the search, and how the reflector
-    edits."""
+    minibatch a child is judged on, the rollout budget, the number of rounds without a better
+    Pareto that ends the search, and how the reflector edits. It seeds from `[agent]
+    modules`."""
 
     reflection_harness: str
     reflection_model: str | None = None
     reflection_image: str = REFLECTION_IMAGE
-    modules: str = "modules"
     minibatch: int = Field(default=PAPER_MINIBATCH, ge=1)
     budget: int | None = Field(default=None, ge=1)
     patience: int | None = Field(default=GEPA_PATIENCE, ge=1)
@@ -260,7 +271,6 @@ class FstRecipe(Search, Gradient):
 
 class EvaluateRecipe(_Table):
     kind: Literal["evaluate"]
-    modules: str | None = None
 
 
 Recipe = DapoRecipe | DrGrpoRecipe | CispoRecipe | GepaRecipe | FstRecipe | EvaluateRecipe
@@ -272,25 +282,34 @@ class Checkpoints(_Table):
 
 
 class Wandb(_Table):
-    """The wandb project the trainer's rows go to, beside the run's own folder."""
+    """The wandb project the trainer's rows go to, beside its directory."""
 
     project: str
     entity: str | None = None
 
 
+class Logging(_Table):
+    """Where the trainer writes besides its directory: each a table of its own."""
+
+    wandb: Wandb | None = None
+
+
 class Blueprint(_Table):
-    model: Model
+    agent: Agent
     data: Data
-    rollout: Rollout
+    rollout: Rollout = Field(default_factory=Rollout)
     recipe: Recipe = Field(discriminator="kind")
     checkpoints: Checkpoints = Field(default_factory=Checkpoints)
-    wandb: Wandb | None = None
+    logging: Logging = Field(default_factory=Logging)
     _raw: dict[str, Any] = PrivateAttr(default_factory=dict)
     _home: Path = PrivateAttr(default_factory=Path)
 
     @model_validator(mode="after")
     def _sets(self) -> Blueprint:
-        """The evaluate kind measures: `train` alone is read as `test`."""
+        """The evaluate kind measures: `train` alone is read as `test`. A search seeds from
+        `modules` when `[agent] modules` names nothing."""
+        if isinstance(self.recipe, Search) and self.agent.modules is None:
+            self.agent.modules = SEARCH_MODULES
         data = self.data
         if self.recipe.kind == "evaluate":
             if data.test is None:
@@ -322,7 +341,7 @@ class Blueprint(_Table):
 
     @property
     def home(self) -> Path:
-        """The directory the blueprint was loaded from; `[recipe] modules` is relative to it."""
+        """The directory the blueprint was loaded from; `[agent] modules` is relative to it."""
         return self._home
 
 
@@ -350,6 +369,8 @@ def load(path: Path) -> Blueprint:
         raw = tomllib.loads(text)
     except tomllib.TOMLDecodeError as error:
         raise ConfigError([f"{file.name} is not readable TOML: {error}"]) from error
+    if moved := _moved(raw):
+        raise ConfigError(moved)
     try:
         blueprint = Blueprint.model_validate(raw)
     except ValidationError as error:
@@ -360,9 +381,34 @@ def load(path: Path) -> Blueprint:
 
 
 def modules_dir(loaded: Blueprint) -> Path | None:
-    """The directory `[recipe] modules` names, relative to the blueprint; None when unset."""
-    named = getattr(loaded.recipe, "modules", None)
+    """The directory `[agent] modules` names, relative to the blueprint; None when unset."""
+    named = loaded.agent.modules
     return loaded.home / named if named else None
+
+
+#: The keys that moved table, by where they were: where they are now.
+MOVED = {
+    ("model", "name"): "[agent] model",
+    ("model", "provider"): "[agent] provider",
+    ("model", "from_checkpoint"): "[agent] from_checkpoint",
+    ("model", "lora_rank"): "[recipe] lora_rank",
+    ("model", "restore_optimizer"): "[recipe] restore_optimizer",
+    ("rollout", "harness"): "[agent] harness",
+    ("rollout", "kwargs"): "[agent] kwargs",
+    ("rollout", "env"): "[agent] env",
+    ("recipe", "modules"): "[agent] modules",
+    ("wandb", "project"): "[logging.wandb] project",
+    ("wandb", "entity"): "[logging.wandb] entity",
+}
+
+
+def _moved(raw: dict[str, Any]) -> list[str]:
+    """A problem for each key the blueprint names where it used to live."""
+    return [
+        f"[{table}] {key}: now {where}"
+        for (table, key), where in MOVED.items()
+        if isinstance(raw.get(table), dict) and key in raw[table]
+    ]
 
 
 def _problem(error: dict[str, Any]) -> str:

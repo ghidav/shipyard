@@ -1,6 +1,6 @@
 """`check`'s sandbox findings: Harbor's extra, the credentials for a provider elsewhere
 (the table is confirmed against the installed Harbor), Modal's verdict on its token, a short
-setup time, a run secret in `[rollout] env`, a key `.env` assigns twice, docker for a docker
+setup time, a run secret in `[agent] env`, a key `.env` assigns twice, docker for a docker
 sandbox or the tunnel image, and the trial networks that hard-killed runs left behind. The
 conftest pins this machine's facts. Each test removes the pin for the fact it tests."""
 
@@ -42,14 +42,15 @@ from tests.trials import check, fixture_tasks, write_blueprint
 
 runner = CliRunner()
 BLUEPRINT = """
-[model]
-name = "Qwen/Qwen3-8B"
+[agent]
+model = "Qwen/Qwen3-8B"
 provider = "{provider}"
+harness = "pi@0.85.1"
+{agent}
 [data]
 test = "fixture"
 batch_size = 1
 [rollout]
-harness = "pi@0.85.1"
 sandbox = "{sandbox}"
 {rollout}
 [recipe]
@@ -78,10 +79,15 @@ MADE = count()
 
 
 def blueprint(
-    tmp_path: Path, sandbox: str, *, provider: str = "openrouter", rollout: str = ""
+    tmp_path: Path,
+    sandbox: str,
+    *,
+    provider: str = "openrouter",
+    rollout: str = "",
+    agent: str = "",
 ) -> Path:
     """An evaluate blueprint over the fixture dataset, in a directory of its own."""
-    text = BLUEPRINT.format(provider=provider, sandbox=sandbox, rollout=rollout)
+    text = BLUEPRINT.format(provider=provider, sandbox=sandbox, rollout=rollout, agent=agent)
     return write_blueprint(tmp_path / "made" / str(next(MADE)), text)
 
 
@@ -218,15 +224,15 @@ def test_a_short_setup_time_is_a_warning_for_a_sandbox_elsewhere_only(here: Path
     assert problems(check(blueprint(here, "docker", rollout=short))) == []
 
 
-def test_a_run_secret_in_the_rollout_env_is_blocked(here: Path) -> None:
+def test_a_run_secret_in_the_agent_env_is_blocked(here: Path) -> None:
     env = 'env = { TINKER_API_KEY = "a", SHIPYARD_CONTROL_TOKEN = "b", OPENAI_API_KEY = "c" }'
-    assert problems(check(blueprint(here, "docker", rollout=env))) == [
-        "blocked  [rollout] env carries TINKER_API_KEY, which must never enter a sandbox",
-        "blocked  [rollout] env carries SHIPYARD_CONTROL_TOKEN, which must never enter a sandbox",
+    assert problems(check(blueprint(here, "docker", agent=env))) == [
+        "blocked  [agent] env carries TINKER_API_KEY, which must never enter a sandbox",
+        "blocked  [agent] env carries SHIPYARD_CONTROL_TOKEN, which must never enter a sandbox",
     ]
 
 
-def test_a_run_secret_a_rollout_env_value_names_for_harbor_to_fill_is_blocked(
+def test_a_run_secret_an_agent_env_value_names_for_harbor_to_fill_is_blocked(
     here: Path,
 ) -> None:
     """Harbor fills `${VAR}` and `${VAR:-default}` from this process (utils/env.py)."""
@@ -234,9 +240,9 @@ def test_a_run_secret_a_rollout_env_value_names_for_harbor_to_fill_is_blocked(
         'env = { KEY = "${TINKER_API_KEY}", GATE = "${SHIPYARD_CONTROL_TOKEN:-x}", '
         'OPENAI_API_KEY = "${OPENAI_API_KEY}", NOTE = "a ${TINKER_API_KEY} b" }'
     )
-    assert problems(check(blueprint(here, "docker", rollout=env))) == [
-        "blocked  [rollout] env carries TINKER_API_KEY (in KEY), which must never enter a sandbox",
-        "blocked  [rollout] env carries SHIPYARD_CONTROL_TOKEN (in GATE), which must never "
+    assert problems(check(blueprint(here, "docker", agent=env))) == [
+        "blocked  [agent] env carries TINKER_API_KEY (in KEY), which must never enter a sandbox",
+        "blocked  [agent] env carries SHIPYARD_CONTROL_TOKEN (in GATE), which must never "
         "enter a sandbox",
     ]
 

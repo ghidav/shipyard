@@ -14,14 +14,15 @@ from tests.trials import BLUEPRINTS, check, fixture_tasks, write_blueprint
 
 #: An evaluate blueprint `check` passes from a working directory holding the fixtures.
 HOSTED = """
-[model]
-name = "m"
+[agent]
+model = "m"
 provider = "openrouter"
+harness = "pi@0.85.1"
+
 [data]
 test = "fixture"
 batch_size = 2
 [rollout]
-harness = "pi@0.85.1"
 [recipe]
 kind = "evaluate"
 """
@@ -94,22 +95,28 @@ def test_check_blocks_an_unknown_sandbox_and_a_blank_harness(
 ) -> None:
     fixture_tasks(tmp_path)
     monkeypatch.chdir(tmp_path)
-    text = HOSTED.replace('harness = "pi@0.85.1"', 'harness = "  "\nsandbox = "cloud9"')
+    text = HOSTED.replace('harness = "pi@0.85.1"', 'harness = "  "').replace(
+        "[rollout]\n", '[rollout]\nsandbox = "cloud9"\n'
+    )
     blocked = [f.text for f in check(write_blueprint(tmp_path, text)) if f.level == "blocked"]
     assert len(blocked) == 2
-    assert blocked[0].startswith("[rollout] harness: name the harness")
+    assert blocked[0].startswith("[agent] harness: name the harness")
     assert blocked[1].startswith("[rollout] sandbox: no Harbor environment called 'cloud9'")
     assert "docker, podman" in blocked[1] and "modal" in blocked[1]
     assert set(preflight.SANDBOXES) >= {"docker", "modal", "podman", "e2b", "daytona"}
 
 
 SERVED = HOSTED.replace('provider = "openrouter"', 'provider = "tinker"').replace(
-    'name = "m"', 'name = "Qwen/Qwen3-8B"'
+    'model = "m"', 'model = "Qwen/Qwen3-8B"'
 )
 
 
 def _served(tmp_path: Path, **rollout: object) -> list[Finding]:
-    """The served evaluate blueprint over the fixture dataset, with `[rollout]` keys added."""
+    """The served evaluate blueprint over the fixture dataset, with `[rollout]` keys added; a
+    `harness` replaces `[agent]`'s."""
+    base = SERVED
+    if "harness" in rollout:
+        base = base.replace('harness = "pi@0.85.1"', f"harness = {rollout.pop('harness')!r}")
     extra = (
         "".join(
             f"{key} = {value if not isinstance(value, str) else repr(value)}\n"
@@ -118,7 +125,6 @@ def _served(tmp_path: Path, **rollout: object) -> list[Finding]:
         .replace("True", "true")
         .replace("False", "false")
     )
-    base = SERVED.replace('harness = "pi@0.85.1"\n', "") if "harness" in rollout else SERVED
     return check(write_blueprint(tmp_path, base.replace("[rollout]\n", f"[rollout]\n{extra}")))
 
 
@@ -217,7 +223,7 @@ def test_compaction_switched_off_by_hand_without_fill_context_is_warned_about(
     assert (
         Finding(
             "warning",
-            "[rollout] env sets DISABLE_COMPACT, which switches the harness's compaction off. "
+            "[agent] env sets DISABLE_COMPACT, which switches the harness's compaction off. "
             "The proxy still refuses a call that overflows the context, as a harness that "
             "compacts expects. Set [rollout] fill_context = true instead. It sets the same keys "
             "and gives such a call what is left",
@@ -227,7 +233,7 @@ def test_compaction_switched_off_by_hand_without_fill_context_is_warned_about(
     mixed = 'harness = "claude-code"\nenv = { DISABLE_COMPACT = "0", DISABLE_AUTO_COMPACT = "1" }'
     said = check(write_blueprint(tmp_path / "m", SERVED.replace('harness = "pi@0.85.1"', mixed)))
     assert [f.text.split(",")[0] for f in said if "compaction" in f.text] == [
-        "[rollout] env sets DISABLE_AUTO_COMPACT"
+        "[agent] env sets DISABLE_AUTO_COMPACT"
     ]
     on = 'harness = "claude-code"\nenv = { DISABLE_COMPACT = "0" }'
     kept = check(write_blueprint(tmp_path / "o", SERVED.replace('harness = "pi@0.85.1"', on)))

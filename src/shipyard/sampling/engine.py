@@ -43,12 +43,15 @@ DELIVERED = "modules"
 
 
 class HarborEngine(RolloutEngine):
-    """Built from `[rollout]`: the sandbox, the jobs directory, one concurrency limit, settings."""
+    """Built from `[rollout]`: the sandbox, the jobs directory, one concurrency limit, the
+    timeouts; and the harness's Harbor `env` and `kwargs` from `[agent]`."""
 
     def __init__(
         self,
         rollout: Rollout,
         *,
+        env: Mapping[str, str] | None = None,
+        kwargs: Mapping[str, Any] | None = None,
         run_trial: TrialRunner | None = None,
         progress: Reporter | None = None,
     ) -> None:
@@ -57,8 +60,8 @@ class HarborEngine(RolloutEngine):
         self.settings = Settings(
             setup_timeout=rollout.setup_timeout,
             timeout=rollout.timeout,
-            env=dict(rollout.env),
-            kwargs=dict(rollout.kwargs),
+            env=dict(env or {}),
+            kwargs=dict(kwargs or {}),
         )
         self.run_trial = run_trial
         self.progress = progress
@@ -129,7 +132,7 @@ class HarborEngine(RolloutEngine):
     ) -> AgentConfig:
         if not harness.agent.strip():
             raise ValueError(
-                "name the harness under `[rollout] harness`: Harbor reads an unnamed agent "
+                "name the harness under `[agent] harness`: Harbor reads an unnamed agent "
                 "as its oracle, which runs the task's reference solution instead of the policy"
             )
         name, version = _harness_at_version(harness.agent)

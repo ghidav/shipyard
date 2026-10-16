@@ -14,10 +14,10 @@ of their rewards.
 | `evaluate` | Measures the policy. | no |
 
 The first three are the gradient recipes, and `fst` steps like them. They train the weights the run serves, so they need
-`[model] provider = "tinker"`, which is the default. With any other provider, the run stops before it trains:
+`[agent] provider = "tinker"`, which is the default. With any other provider, the run stops before it trains:
 
 ```
-ValueError: [recipe] kind = 'dapo' trains the weights this run serves, and [model] provider = 'anthropic' serves them elsewhere
+ValueError: [recipe] kind = 'dapo' trains the weights this run serves, and [agent] provider = 'anthropic' serves them elsewhere
 ```
 
 ## A gradient recipe is a name
@@ -173,7 +173,7 @@ from 0, uses `learning_rate × (k + 1) / N`. Every update from the N-th on uses 
 All substeps of a step use the same rate, and the row's `learning_rate` is the rate applied. A step
 that trains nothing takes no update and does not advance the warm-up.
 
-A run from `from_checkpoint` with `[model] restore_optimizer = true` skips any warm-up. Its
+A run from `from_checkpoint` with `[recipe] restore_optimizer = true` skips any warm-up. Its
 optimizer state continues the earlier run's, and every update uses `learning_rate`. A run from a
 checkpoint without it, or from the base model, warms up when `warmup` is set.
 

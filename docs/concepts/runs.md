@@ -31,21 +31,21 @@ runs/02-eval-tinker-docker__eTNXY25/
 | `costs.json` | counts per party and per sandbox | after each job and each step |
 | `modules/` | the text the run carried or searched | see below |
 | `proxy.log` | the proxy's output | while the proxy runs |
-| `wandb/` | wandb's own files, with [`[wandb]`](../reference/configuration.md#wandb) | while the run writes rows |
+| `wandb/` | wandb's own files, with [`[logging.wandb]`](../reference/configuration.md#loggingwandb) | while the run writes rows |
 
 `shipyard run` opens the run, which writes `run.toml` and `process.json`, and hands the
 trainer the run's directory. The trainer writes the rest: `modules/`, and `metrics.jsonl`,
 `jobs.jsonl`, `checkpoints.jsonl` and `costs.json` through its loggers. Its directory is always
-one of them, and wandb is another with `[wandb]`. A trainer made in Python with a directory of
+one of them, and wandb is another with `[logging.wandb]`. A trainer made in Python with a directory of
 its own writes the same files there, without a run's `run.toml` or process note.
 
 A file the run had no reason to write is absent. An `evaluate` run has no `checkpoints.jsonl`.
-A run whose model is not served (any `[model] provider` but `"tinker"`) has no
+A run whose model is not served (any `[agent] provider` but `"tinker"`) has no
 `requests.jsonl` and no `proxy.log`. A run whose `[rollout] endpoint_url` names a proxy started
 elsewhere has no `proxy.log` either. Without that key, a remote sandbox reaches the proxy through
 a tunnel the run starts, and the tunnel's command and output go to `tunnel.log`.
 
-`modules/` holds `carried/` when a gradient or `evaluate` recipe names `[recipe] modules`,
+`modules/` holds `carried/` when a gradient or `evaluate` recipe names `[agent] modules`,
 copied when the trainer starts. A `gepa` run writes `seed/` when it starts and `best/` when its
 search ends. See [Modules](modules.md).
 
@@ -147,13 +147,15 @@ Once a run ends, nothing writes to its directory again.
 ## Going on from a checkpoint
 
 To go on training after a run ends, start a new run from one of its checkpoints. Copy the
-`state_path` of a `checkpoints.jsonl` row into `[model] from_checkpoint`, and set
-`restore_optimizer = true` to load the optimizer state with the weights:
+`state_path` of a `checkpoints.jsonl` row into `[agent] from_checkpoint`, and set
+`[recipe] restore_optimizer = true` to load the optimizer state with the weights:
 
 ```toml
-[model]
-name = "Qwen/Qwen3-8B"
+[agent]
+model = "Qwen/Qwen3-8B"
 from_checkpoint = "tinker://<id>/weights/step-2"
+
+[recipe]
 restore_optimizer = true
 ```
 

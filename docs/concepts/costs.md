@@ -64,7 +64,7 @@ that calls a provider adds that provider as a party beside the policy's.
 
 The full `TINKER_BASE_URL` is in `process.json` as `tinker_base_url`.
 
-A provider party falls back to `[model] provider` when Harbor recorded none, or when the
+A provider party falls back to `[agent] provider` when Harbor recorded none, or when the
 trials disagree. A reflection with neither is billed to `unknown`.
 
 ## Token counts

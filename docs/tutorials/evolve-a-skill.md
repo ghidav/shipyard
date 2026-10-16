@@ -34,7 +34,7 @@ Give the final answer exactly in the format the question asks for, and nothing a
 The directory name is the module name. `SKILL.md` must open with a `---` frontmatter block holding a non-empty `name` and `description`, which the harness needs to surface the skill. Files beside `SKILL.md` travel with it. A skill without a description is refused:
 
 ```
-blocked  [recipe] modules: 'solving' cannot be delivered as a skill: the frontmatter has no description
+blocked  [agent] modules: 'solving' cannot be delivered as a skill: the frontmatter has no description
 ```
 
 See [Modules](../concepts/modules.md).
@@ -42,8 +42,9 @@ See [Modules](../concepts/modules.md).
 ## The blueprint
 
 ```toml title="blueprints/gepa-docker/run.toml"
-[model]
-name = "Qwen/Qwen3-8B"
+[agent]
+model = "Qwen/Qwen3-8B"
+harness = "pi@0.85.1"
 
 [data]
 dataset = "rg-small"
@@ -51,7 +52,6 @@ batch_size = 4
 group_size = 2
 
 [rollout]
-harness = "pi@0.85.1"
 sandbox = "docker"
 concurrency = 4
 max_tokens = 4096
