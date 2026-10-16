@@ -144,8 +144,8 @@ def report(run: Run, trials: Sequence[Path], judged: Sequence[Verdict]) -> Smoke
         said = f"masked {verdict.mask}" if verdict.reward is None else str(verdict.reward)
         found.append(Trial(name, records, served, said, verdict.mask is None))
     cached, prompt = int(row["cache_tokens"]), int(row["input_tokens"])
-    if serving is not None:  # the proxy's `input_tokens` leave the cached ones out
-        proxy, prompt = f"{serving.origin}  ({serving.placement})", prompt + cached
+    if serving is not None:
+        proxy = f"{serving.origin}  ({serving.placement})"
     else:
         proxy = f"none (the harness calls {cfg.model.provider} directly)"
     return Smoked(
