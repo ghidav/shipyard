@@ -80,16 +80,17 @@ def advantages(shaped_rewards: Values[float], *, normalize: bool) -> list[float]
 
 
 def sampler_logprobs(sequence: Sequence) -> list[float]:
-    """Return mu, the sampler's logprobs at the sequence's targets, as the proxy recorded them.
+    """Return the sampler's logprobs at the sequence's targets, as the proxy recorded them.
 
     Raise `ValueError` when they are missing or incomplete, since a short list would
     misalign every ratio after it."""
-    if sequence.mu is None or len(sequence.mu) != len(sequence.targets):
+    recorded = sequence.sampled_logprobs
+    if recorded is None or len(recorded) != len(sequence.targets):
         raise ValueError(
             '`[recipe] reference = "sampler"` reads the records\' logprobs, and a record '
             "of this batch carries none for its completion"
         )
-    return list(sequence.mu)
+    return list(recorded)
 
 
 async def anchor_logprobs(anchor: Any, sequences: Values[Sequence]) -> list[list[float]]:

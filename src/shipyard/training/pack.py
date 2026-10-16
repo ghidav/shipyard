@@ -71,7 +71,8 @@ def chains(records: Values[Record]) -> list[list[Record]]:
 def sequences(records: Values[Record]) -> list[Sequence]:
     """Return one `Sequence` per chain, skipping chains in which the policy generated nothing.
 
-    `mu` is None unless every record carries a logprob for each completion token."""
+    `sampled_logprobs` is None unless every record carries a logprob for each completion
+    token."""
     out: list[Sequence] = []
     for chain in chains(records):
         last = chain[-1]
@@ -79,13 +80,15 @@ def sequences(records: Values[Record]) -> list[Sequence]:
         spans = tuple(_span(record) for record in chain if record.completion_token_ids)
         if not spans:
             continue
-        mu: list[float] | None = []
+        sampled: list[float] | None = []
         for record in chain:
             if len(record.inference_logprobs) != len(record.completion_token_ids):
-                mu = None
+                sampled = None
                 break
-            mu.extend(record.inference_logprobs)
-        out.append(Sequence(tokens, spans, None if mu is None else tuple(mu), last.images))
+            sampled.extend(record.inference_logprobs)
+        out.append(
+            Sequence(tokens, spans, None if sampled is None else tuple(sampled), last.images)
+        )
     return out
 
 

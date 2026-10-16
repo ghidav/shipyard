@@ -6,6 +6,7 @@ import json
 import logging
 from itertools import islice
 from pathlib import Path
+from typing import Any
 
 import pytest
 from harbor.models.trial.config import TrialConfig
@@ -18,8 +19,8 @@ from shipyard.training.client import TinkerClient
 from shipyard.training.recipes.cispo import CISPOTrainer
 from shipyard.training.recipes.dapo import DAPOTrainer
 from shipyard.training.recipes.dr_grpo import DrGRPOTrainer
-from shipyard.training.trainer import ROW, Trainer
-from shipyard.types import SERVE_TTL, Agent, Group, Policy, harness
+from shipyard.training.trainer import ROW, Signals, Trainer, together
+from shipyard.types import SERVE_TTL, Agent, Datum, Group, Member, Policy, Sequence, harness
 from tests.records import FakeProxy
 from tests.trainers import FakeService
 from tests.trials import (
@@ -317,7 +318,7 @@ async def test_cispo_reads_the_samplers_logprobs_and_makes_no_forward(
     )
     (row,) = rows(run)
     assert row["loss_fn"] == "cispo" and row["train_tokens"] == 24 and row["substeps"] == 4
-    assert row["kl_v1"] == pytest.approx(-0.2, abs=1e-5), "mu is the record's -0.5"
+    assert row["kl_v1"] == pytest.approx(-0.2, abs=1e-5), "the reference is the record's -0.5"
     costs = record.read_json(run.directory / record.COSTS)["parties"]["tinker"]
     assert costs["train_tokens"] == 24 and "reference_tokens" not in costs
 
@@ -335,12 +336,94 @@ async def test_the_kl_anchor_is_subtracted_per_token_billed_and_reported(
     await _train(run, trainer, _agent(run, service, anchored=True))
     assert len(service.anchor.asked) == 8
     (row,) = rows(run)
-    # mu is the forward's -0.5 and the anchor says -0.1: the gap is -0.4 on every token.
+    # The reference is the forward's -0.5 and the anchor's -0.1: the gap is -0.4 per token.
     assert row["anchor_kl"] == pytest.approx(-0.4, abs=1e-5)
     keys = list(row)
     assert keys.index("entropy") < keys.index("anchor_kl") < keys.index("learning_rate")
     costs = record.read_json(run.directory / record.COSTS)["parties"]["tinker"]
     assert costs["anchor_tokens"] == 8 * SEQUENCE_TOKENS
+
+
+async def test_a_recipe_that_trains_on_flat_groups_gets_their_datums(
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
+) -> None:
+    """Every reward is 1, so the base would drop every group; this recipe has a per-token
+    signal of its own and keeps them."""
+    _, service = fakes
+    run = Run.open(blueprint(tmp_path, **ONE_STEP), root=tmp_path)
+    harbor(FakeTrials())
+
+    class EveryGroup(Trainer):
+        def trains_on(self, group: Group) -> bool:
+            return bool(group.measured)
+
+        def token_advantages(
+            self, member: Member, sequence: Sequence, signals: Signals, advantage: float
+        ) -> list[float]:
+            return [1.0] * len(sequence.targets)
+
+    await _train(run, EveryGroup(run.config, run.directory), _agent(run, service))
+    trained = [d for d in service.client.sent if "advantages" in d.loss_fn_inputs]
+    assert len(trained) == 8
+    assert {a for d in trained for a in d.loss_fn_inputs["advantages"].tolist() if a} == {1.0}
+    (row,) = rows(run)
+    assert row["trained"] is True and row["degenerate"] == 0
+
+
+async def test_a_recipes_own_signal_reaches_its_token_advantages(
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
+) -> None:
+    _, service = fakes
+    run = Run.open(blueprint(tmp_path, **ONE_STEP), root=tmp_path)
+    harbor(Alternating())
+    seen: list[set[str]] = []
+
+    class Bonus(Trainer):
+        async def signals(self, policy: Policy, pairs: Any) -> list[Signals]:
+            found = await super().signals(policy, pairs)
+            for row, (_, sequence) in zip(found, pairs, strict=True):
+                row["bonus"] = [0.25] * len(sequence.targets)
+            return found
+
+        def token_advantages(
+            self, member: Member, sequence: Sequence, signals: Signals, advantage: float
+        ) -> list[float]:
+            seen.append(set(signals))
+            base = super().token_advantages(member, sequence, signals, advantage)
+            return [a + b for a, b in zip(base, signals["bonus"], strict=True)]
+
+    await _train(run, Bonus(run.config, run.directory), _agent(run, service))
+    assert seen and all(names == {"reference", "bonus"} for names in seen)
+    trained = [d for d in service.client.sent if "advantages" in d.loss_fn_inputs]
+    found = {a for d in trained for a in d.loss_fn_inputs["advantages"].tolist() if a}
+    assert found == {0.75, -0.25}, "the rewards' +/-0.5, plus the bonus on every target"
+
+
+async def test_a_recipe_sends_two_losses_before_one_optimizer_step(
+    tmp_path: Path,
+    fakes: tuple[FakeProxy, FakeService],
+    harbor: Harbor,
+) -> None:
+    _, service = fakes
+    run = Run.open(blueprint(tmp_path, **ONE_STEP), root=tmp_path)
+    harbor(Alternating())
+
+    class Both(Trainer):
+        async def forward_backward(self, client: Any, part: list[Datum]) -> Any:
+            first = await client.forward_backward(part, "importance_sampling", None)
+            second = await client.forward_backward(part, "cispo", {"clip_high_threshold": 4.0})
+            return together(first, second)
+
+    await _train(run, Both(run.config, run.directory), _agent(run, service))
+    calls = [c[0] if c[0] != "forward_backward" else c[2] for c in service.client.calls]
+    sent = [c for c in calls if c in ("importance_sampling", "cispo", "optim_step")]
+    (row,) = rows(run)
+    assert sent == ["importance_sampling", "cispo", "optim_step"] * row["substeps"]
+    assert row["trained"] is True and row["kl_v1"] is not None, "the last result's logprobs"
 
 
 async def test_a_kl_term_without_an_anchor_is_refused_at_the_step(

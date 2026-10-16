@@ -47,10 +47,14 @@ uvx --with mkdocs-material mkdocs build --strict
 
 ## A new recipe
 
-A gradient recipe is a `Trainer` subclass that overrides the rules it changes: `shape` and
-`advantage` (rewards into advantages), `weights` (each group's factor on its tokens),
-`loss_fn` and `bounds` (Tinker's loss and its config), `ADAM` (the optimizer), and `rules`
-(what `check` prints about it). To add one called `my-recipe`:
+A gradient recipe is a `Trainer` subclass that overrides the rules it changes. Per rollout:
+`shape` and `advantage` (rewards into one advantage each). Per group: `trains_on` (whether it
+carries a gradient) and `weights` (its factor on its tokens). Per token, in the order a step
+runs them: `signals` (logprobs and other values each training sequence is scored with),
+`token_advantages` (the rollout's advantage and the signals combined at each target) and
+`datum` (what Tinker receives). Per substep: `loss_fn` and `bounds` (a Tinker loss and its
+config), or `forward_backward` for several losses or one of its own. Then `ADAM` (the
+optimizer) and `rules` (what `check` prints about it). To add one called `my-recipe`:
 
 1. In `src/shipyard/config.py`, add a class over `Gradient` with `kind: Literal["my-recipe"]` and its own knobs, each with a default and a bound. Add it to the `Recipe` union and its name to `KINDS`.
 2. Add `src/shipyard/training/recipes/my_recipe.py` (a hyphen in the name becomes an underscore) defining `MyRecipeTrainer`, a subclass of `Trainer` or of the recipe it is closest to, such as `DAPOTrainer`. Register it in `TRAINERS` in `src/shipyard/training/recipes/__init__.py`, and export it from `src/shipyard/training/__init__.py`.

@@ -78,7 +78,7 @@ class DAPOTrainer(Trainer):
         held: list[Group] = []
         for _ in range(self.generator.per_pass):
             held += self.credited(await self.job(agent, self.draw()))
-            if sum(group.reward_variance > 0 for group in held) >= target:
+            if sum(self.trains_on(group) for group in held) >= target:
                 break
         return held
 

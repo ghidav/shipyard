@@ -45,9 +45,9 @@ Otherwise an off-policy batch is credited as on-policy.
 sampled.**
 Otherwise the ratio is formed against weights that produced none of the tokens.
 
-**μ comes from the trainer by default.**
-The sampler and the trainer are different engines whose logprobs differ slightly, and recomputing μ
-keeps the ratio within one engine.
+**The reference logprobs come from the trainer by default.**
+The sampler and the trainer are different engines whose logprobs differ slightly, and recomputing
+the reference logprobs keeps the ratio within one engine.
 
 **Under `reference = "sampler"`, a batch whose records carry no logprobs is refused.**
 A gap misaligns every ratio after it.
@@ -57,9 +57,9 @@ before the reference pass.**
 It carries no gradient, and a step left with nothing logs `trained: false`.
 
 **Substeps split the batch by prompt, into at most as many parts as there are groups, and every
-substep keeps μ from the weights the batch was sampled at.**
-The papers' mini-batches are sets of prompts. With μ read again before each substep, the ratio stays
-1 and the clipping never acts.
+substep keeps the reference logprobs of the weights the batch was sampled at.**
+The papers' mini-batches are sets of prompts. With the reference logprobs read again before each
+substep, the ratio stays 1 and the clipping never acts.
 
 **`dapo`, `cispo` and `fst` average each prompt's token losses; `dr-grpo` keeps Tinker's sum.**
 Summed, a prompt whose rollouts wrote long answers outweighs the others.

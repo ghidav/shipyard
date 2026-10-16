@@ -64,7 +64,7 @@ class Sequence:
     #: (start, end) positions of each completion, in chain order.
     spans: tuple[tuple[int, int], ...]
     #: The sampler's logprobs at the targets; None when a record carried none.
-    mu: tuple[float, ...] | None
+    sampled_logprobs: tuple[float, ...] | None
     images: tuple[Picture, ...] = ()
 
     @property
@@ -104,7 +104,8 @@ class Update:
     seconds: float
     #: Number of sequences the step trained on.
     sequences: int = 0
-    #: Mean of mu minus the anchor's logprobs over those sequences; None without a KL term.
+    #: Mean of the reference logprobs minus the anchor's over those sequences; None without a
+    #: KL term.
     anchor_kl: float | None = None
 
 
@@ -140,8 +141,8 @@ class TrainingClient(ABC):
 
     @abstractmethod
     async def compute_logprobs(self, sequences: Values[Sequence]) -> list[list[float]]:
-        """Return the trainer's logprobs (mu) at every target of every sequence, from one
-        batched forward pass."""
+        """Return the trainer's logprobs at every target of every sequence, from one batched
+        forward pass."""
 
     @abstractmethod
     async def save_weights_for_sampler(self, name: str, *, ttl_seconds: int | None) -> str: ...

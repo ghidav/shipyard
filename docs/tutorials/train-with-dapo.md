@@ -175,8 +175,8 @@ One row per step, after the `at` and `seq` every metrics row starts with. A meas
 | `sequences`, `sequences_per_rollout` | training sequences built from the credited rollouts, and their mean per rollout |
 | `train_tokens` | tokens sent through the forward-backward pass |
 | `reward_mean`, `reward_spread`, `length_mean` | the batch's rewards, their spread within groups, tokens written per rollout |
-| `kl_v1`, `kl_v2` | the reference logprobs μ against the training pass's: mean(μ − π) and half its mean square |
-| `entropy` | mean(−μ) over the trained tokens |
+| `kl_v1`, `kl_v2` | the reference logprobs against the training pass's: mean(reference − trained) and half its mean square |
+| `entropy` | mean(−reference) over the trained tokens |
 | `anchor_kl` | the KL to the starting weights, only when `kl_coef > 0` |
 | `overlong` | rollouts that sampled into the last part of their token budget, which the overlong penalty docks |
 | `learning_rate`, `substeps`, `loss_fn`, `seconds` | what the step used, the learning rate after any warm-up, and how long it took |

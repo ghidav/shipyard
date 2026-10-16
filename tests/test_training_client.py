@@ -15,9 +15,9 @@ from tests.proxies import MODEL
 from tests.trainers import FakeService, FakeTrainingClient, capable
 
 
-def _datum(tokens: int = 4, *, mu: float = -0.5, advantage: float = 1.0) -> tinker.Datum:
+def _datum(tokens: int = 4, *, reference: float = -0.5, advantage: float = 1.0) -> tinker.Datum:
     sequence = Sequence(tuple(range(1, tokens + 1)), ((tokens - 2, tokens),), None)
-    return datum(sequence, logprobs=[mu, mu], advantages=[advantage, advantage])
+    return datum(sequence, logprobs=[reference, reference], advantages=[advantage, advantage])
 
 
 async def _client(**fake: Any) -> tuple[TinkerClient, FakeTrainingClient]:

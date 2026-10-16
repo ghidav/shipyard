@@ -240,7 +240,7 @@ async def test_a_kl_anchor_is_a_sampling_client_on_the_starting_weights(
     assert service.calls == [("lora", MODEL, 32), ("sampling", MODEL, None)]
     assert len(service.anchor.asked) == 8
     (row,) = rows(opened)
-    # mu is the forward's -0.5 and the anchor says -0.1: the gap is -0.4 on every token.
+    # The reference is the forward's -0.5 and the anchor's -0.1: the gap is -0.4 per token.
     assert row["anchor_kl"] == pytest.approx(-0.4, abs=1e-5)
     tinker = record.read_json(opened.directory / record.COSTS)["parties"]["tinker"]
     assert tinker["anchor_tokens"] == 8 * SEQUENCE_TOKENS

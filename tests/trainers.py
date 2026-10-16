@@ -46,7 +46,7 @@ class FakeForwardBackward:
 @dataclass
 class FakeTrainingClient:
     """Fake `tinker.TrainingClient`. `forward` scores every position `logprob` (the reference
-    mu), or the negated target token id when `positional` is set; `forward_backward` scores
+    logprobs), or the negated target token id when `positional` is set; `forward_backward` scores
     `trained` (pi) or raises `failing`. Calls are appended to `calls` and datums to `sent`."""
 
     logprob: float = -0.5

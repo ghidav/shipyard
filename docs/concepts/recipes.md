@@ -203,7 +203,7 @@ of prompts, so the batch is split by prompt. Each substep holds whole groups, cu
 there are never more substeps than groups that carry a gradient. A batch of four such groups at the
 default 16 takes four substeps.
 
-Every substep forms its ratio against μ, the logprobs of the weights the batch was sampled at. The first
+Every substep forms its ratio against the reference logprobs, those of the weights the batch was sampled at. The first
 substep runs on those same weights, so with `reference = "trainer"` its ratio is 1. From the second on,
 the weights have moved, the ratio moves with them, and the clip bounds act. With `substeps = 1` and
 `reference = "trainer"`, the ratio is 1 on every token and the bounds never act.
@@ -215,8 +215,8 @@ the weights have moved, the ratio moves with them, and the clip bounds act. With
 | `learning_rate` | required, > 0 | AdamW's step size, after the warm-up if any (see [The optimizer](#the-optimizer)). |
 | `warmup` | `0` | Updates over which the learning rate rises linearly to `learning_rate`. DAPO warms up over 20 (§4.1) and FST over 10 (App. D). |
 | `substeps` | `16` for `dapo` and `cispo`, `1` for `dr-grpo` and `fst` | Optimizer steps per batch, split by prompt (see [Substeps](#substeps)). |
-| `reference` | `"trainer"` | Where μ comes from. μ is the sampling logprobs that the ratio is formed against. `"trainer"` recomputes μ in one forward pass on the training engine. `"sampler"` reads the logprobs the proxy recorded and makes no extra pass. |
-| `kl_coef` | `0.0`; `0.001` for `fst` | A per-token penalty for drifting from the run's starting weights, which are the base model or `from_checkpoint`. It is subtracted from the advantage as `kl_coef × (μ − anchor)`, token by token, and is not centred on the step's mean. DAPO (§2.3), Dr. GRPO (App. G) and MiniMax-M1 (§3.1) train without one. FST uses 0.001 (App. D) and does not say how the term enters the loss. |
+| `reference` | `"trainer"` | Where the reference logprobs come from: the logprobs of the sampled tokens that the ratio is formed against. `"trainer"` recomputes them in one forward pass on the training engine. `"sampler"` reads the logprobs the proxy recorded and makes no extra pass. |
+| `kl_coef` | `0.0`; `0.001` for `fst` | A per-token penalty for drifting from the run's starting weights, which are the base model or `from_checkpoint`. It is subtracted from the advantage as `kl_coef × (reference − anchor)`, token by token, and is not centred on the step's mean. DAPO (§2.3), Dr. GRPO (App. G) and MiniMax-M1 (§3.1) train without one. FST uses 0.001 (App. D) and does not say how the term enters the loss. |
 | `modules` | unset | A directory of skills to carry into every rollout. See [Modules](modules.md). |
 
 `"trainer"` is the default because the sampler and the trainer are different engines and their logprobs
@@ -237,7 +237,7 @@ A run takes `steps` steps, numbered from 0. Each starts on the stream's next bat
    call starts a new sequence. Each completion is a training target exactly once. Failed
    calls and calls carrying images never pack.
 5. **Credit.** Rollouts are grouped by task, and only the measured ones count (see [Admission](admission.md)).
-   Degenerate groups are dropped, then the advantages, μ, the KL term and each prompt's weight are computed.
+   Degenerate groups are dropped, then the advantages, the reference logprobs, the KL term and each prompt's weight are computed.
 6. **Step.** `forward_backward` and `optim_step` run on Tinker once per substep.
 7. **Log.** One row is appended to `metrics.jsonl`.
 8. **Checkpoint.** When `step + 1` is divisible by `[checkpoints] every`, `step-<step + 1>` is saved. After the last step, `final` is saved with no expiry.
@@ -275,7 +275,7 @@ job has its row in `jobs.jsonl` with the step's number, and its tokens are in `c
 
 ### The pinned-weights refusal
 
-Under `reference = "trainer"`, μ must come from the weights the rollouts were sampled at. Each job is
+Under `reference = "trainer"`, the reference logprobs must come from the weights the rollouts were sampled at. Each job is
 stamped with the trainer's update count, and credit refuses a batch if that count has moved since:
 
 ```
@@ -302,9 +302,9 @@ never written as 0. Every row also carries `at` and `seq`.
 | `train_tokens` | Tokens sent to `forward_backward`. |
 | `reward_mean`, `reward_spread` | The mean reward over graded rollouts, and the mean of the groups' spreads. |
 | `length_mean` | Mean tokens the policy wrote per graded rollout. |
-| `kl_v1`, `kl_v2` | mean(μ − π) and half its mean square over the trained tokens, where π is the training pass's logprobs. |
-| `entropy` | mean(−μ) over the trained tokens. |
-| `anchor_kl` | mean(μ − anchor), present only when `kl_coef > 0`. |
+| `kl_v1`, `kl_v2` | mean(reference − trained) and half its mean square over the trained tokens, where `trained` is the training pass's logprobs. |
+| `entropy` | mean(−reference) over the trained tokens. |
+| `anchor_kl` | mean(reference − anchor), present only when `kl_coef > 0`. |
 | `overlong` | Graded rollouts that sampled into the last `overlong_buffer` of their token budget; present under `dapo` and `cispo` when the proxy reports a budget. |
 | `learning_rate`, `substeps`, `loss_fn` | As applied, `learning_rate` after any warm-up; `substeps` never exceeds the groups trained on. |
 | `seconds` | The time taken to apply the gradient. |
