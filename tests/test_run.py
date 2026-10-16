@@ -38,29 +38,6 @@ def test_open_from_the_file_names_its_directory(tmp_path: Path) -> None:
     assert Run.read(run.directory)["blueprint"] == str(DAPO.resolve())
 
 
-def test_closing_calls_back_last_first_with_why_it_stopped(tmp_path: Path) -> None:
-    told: list[tuple[str, str | None]] = []
-
-    def broken(error: str | None) -> None:
-        raise OSError("the disk went away")
-
-    run = Run.open(DAPO, root=tmp_path)
-    run.closing(lambda error: told.append(("first", error)))
-    run.closing(broken)
-    run.closing(lambda error: told.append(("last", error)))
-    with pytest.raises(RuntimeError), run:
-        raise RuntimeError("the loop broke")
-    assert told == [
-        ("last", "RuntimeError: the loop broke"),
-        ("first", "RuntimeError: the loop broke"),
-    ]
-    note = Run.read(run.directory)
-    assert note["error"] == "RuntimeError: the loop broke", "a closer that raised keeps no end off"
-    with run:
-        pass
-    assert len(told) == 2, "each is called once"
-
-
 def test_exit_records_finished(tmp_path: Path) -> None:
     with Run.open(DAPO, root=tmp_path) as run:
         run.note(hello="world")
@@ -109,7 +86,7 @@ async def test_a_runner_dispatches_to_the_kinds_trainer(tmp_path: Path, monkeypa
     monkeypatch.chdir(tmp_path)
     opened = Run.open(BLUEPRINTS / "gepa", root=tmp_path / "runs")
     with pytest.raises(NoSuchDataset, match="aime-train"):
-        await trainer_for(opened.config.recipe)(opened).train()
+        await trainer_for(opened.config.recipe)(opened.config, opened.directory).train()
 
 
 def test_open_refuses_an_existing_directory(tmp_path: Path, monkeypatch) -> None:

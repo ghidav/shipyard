@@ -115,7 +115,7 @@ modules = "modules"
 ok  modules: 1 component(s) under blueprints/05-gepa-docker/modules (f33ca85e3cd4ecf1)
 ```
 
-The run reads the directory once, when it opens, and copies it to `runs/<id>/modules/carried/`.
+The trainer reads the directory once, when it starts, and copies it to `runs/<id>/modules/carried/`. A resumed run carries that copy.
 Edits to the blueprint's modules during the run do not reach later jobs. The digest on each
 job row matches that copy.
 

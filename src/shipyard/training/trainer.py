@@ -8,17 +8,21 @@ from collections import Counter
 from collections.abc import Awaitable, Iterator, Mapping
 from collections.abc import Sequence as Values
 from dataclasses import dataclass
+from pathlib import Path
 from statistics import fmean, pstdev
-from typing import TYPE_CHECKING, Any
+from types import TracebackType
+from typing import Any, Self
 
 import torch
 
 from shipyard import record
 from shipyard.admit import judge
+from shipyard.config import Blueprint, Search, modules_dir
 from shipyard.cost import Costs, billed_by, reported, sampled, sandbox_seconds
 from shipyard.credit import advantages, anchor_logprobs, sampler_logprobs
 from shipyard.data import Generator
 from shipyard.logs import Folder, Logger, Loggers, Wandb
+from shipyard.modules import Candidate, keep, seed
 from shipyard.pack import datum, groups
 from shipyard.progress import reporter
 from shipyard.sampling.endpoint import NothingServed, endpoint_for
@@ -41,12 +45,11 @@ from shipyard.types import (
     harness,
 )
 
-if TYPE_CHECKING:
-    from shipyard.run import Run
-
 logger = logging.getLogger(__name__)
 
 SECONDS_PER_HOUR = 3600
+#: Under `<directory>/modules/`: the candidate a trainer carries, as `seed` reads it back.
+CARRIED = "carried"
 
 #: The step's row keys, in this order. A measure with nothing behind it is left out.
 ROW = (
@@ -156,25 +159,31 @@ class Trainer:
     def aggregated(cls) -> str:
         return "summed over tokens"
 
-    def __init__(self, run: Run) -> None:
-        self.run = run
-        self.recipe = run.config.recipe
-        #: The blueprint's tasks, read first so a missing dataset stops the trainer before
-        #: anything opens: the train set as a stream of batches, and the test set.
-        self.generator = Generator.of(run.config)
+    def __init__(self, config: Blueprint, directory: Path) -> None:
+        self.config = config
+        #: Where the trainer writes: its rows, its checkpoints, its modules, the proxy's
+        #: records. A trainer goes on from what an earlier one wrote there.
+        self.directory = Path(directory)
+        #: What its jobs, its wandb run and its Tinker session are named after.
+        self.name = self.directory.name
+        self.recipe = config.recipe
+        # The blueprint's inputs are read first, so a missing dataset or a broken seed stops
+        # the trainer before anything opens.
+        #: The train set as a stream of batches, and the test set.
+        self.generator = Generator.of(config)
+        #: What the agent carries: the directory's own modules, or the ones a checkpoint
+        #: restores.
+        self.modules = carried(config, self.directory)
+        self.directory.mkdir(parents=True, exist_ok=True)
         #: The jobs' bars on a terminal.
         self.progress = reporter()
         #: One engine, so every job in flight shares its `[rollout] concurrency`.
-        self.engine = HarborEngine(run.config.rollout, progress=self.progress)
+        self.engine = HarborEngine(config.rollout, progress=self.progress)
         #: Where every row goes.
         self.logs = Loggers(self.loggers())
-        # Closed with the run, the bars first so nothing a logger prints lands under them.
-        run.closing(self.logs.close)
-        run.closing(lambda _: self.progress.close())
-        #: What the run has spent, going on from what it had spent before a resume.
-        self.costs = Costs.from_dict(record.read_json(run.directory / record.COSTS))
-        #: What the agent carries: the run's own modules, or the ones a checkpoint restores.
-        self.modules = run.carried
+        #: What has been spent, going on from what was spent before a resume.
+        self.costs = Costs.from_dict(record.read_json(self.directory / record.COSTS))
+        self._next_job = next_job(self.name, self.directory, Path(config.rollout.jobs_dir))
         #: The checkpoint row the run reopened at; None on a fresh run.
         self.resumed: Mapping[str, Any] | None = None
         self.steps = 0
@@ -186,21 +195,45 @@ class Trainer:
         self._stream: Iterator[list[Task]] | None = None
 
     def loggers(self) -> list[Logger]:
-        """Where this trainer writes: the run's folder, and wandb when `[wandb]` names a
+        """Where this trainer writes: its directory, and wandb when `[wandb]` names a
         project. A subclass adds its own."""
-        found: list[Logger] = [Folder(self.run.directory)]
-        if self.run.config.wandb is not None:
-            found.append(Wandb(self.run))
+        found: list[Logger] = [Folder(self.directory)]
+        if self.config.wandb is not None:
+            found.append(Wandb(self.config, self.directory))
         return found
 
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        """Close what the trainer opened, however it ended: its bars, then its loggers."""
+        self.progress.close()
+        self.logs.close(exc)
+
+    def reserve_name(self) -> str:
+        """The next job name, `<name>-NNNN`, with its directory created; raises if it exists."""
+        jobs_dir = Path(self.config.rollout.jobs_dir)
+        name = f"{self.name}-{self._next_job:04d}"
+        try:
+            (jobs_dir / name).mkdir(parents=True)
+        except FileExistsError:
+            raise FileExistsError(f"job {name} is taken: {jobs_dir / name} exists") from None
+        self._next_job += 1
+        return name
+
     def agent(self) -> Agent:
-        """The agent the run samples: the policy over the run's endpoint, with the training
+        """The agent the trainer samples: the policy over its endpoint, with the training
         client when the recipe trains, standing at the checkpoint reopened at, and carrying
         `modules`."""
-        cfg, row = self.run.config, self.resumed or {}
-        client = TinkerClient.from_run(self.run) if cfg.trains else None
+        cfg, row = self.config, self.resumed or {}
+        client = TinkerClient.of(cfg, name=self.name) if cfg.trains else None
         policy = Policy(
-            endpoint_for(cfg, self.run.directory),
+            endpoint_for(cfg, self.directory),
             client,
             start=row.get("sampler_path"),
             state=row.get("state_path"),
@@ -211,7 +244,7 @@ class Trainer:
     async def train(self) -> Agent:
         """The run: open the agent, take `[recipe] steps` steps (the evaluate kind takes none),
         then `finish`."""
-        steps = self.recipe.steps if self.run.config.trains else 0
+        steps = self.recipe.steps if self.config.trains else 0
         agent = self.agent()
         async with agent.policy:
             while self.steps < steps:
@@ -230,7 +263,7 @@ class Trainer:
         if done.update is not None:
             self.updates += 1
             await agent.policy.sync(f"sample-{self.steps}")
-            every = self.run.config.checkpoints.every
+            every = self.config.checkpoints.every
             if every and self.updates % every == 0:
                 await self.checkpoint(agent, f"step-{self.steps}")
         every = self.recipe.evaluate_every
@@ -270,10 +303,10 @@ class Trainer:
     ) -> list[Group]:
         """The one place a policy is sampled: run, judge, record, group. The groups carry no
         advantages; `credited` sets them where a step trains on them."""
-        cfg, endpoint = self.run.config, agent.policy.endpoint
+        cfg, endpoint = self.config, agent.policy.endpoint
         attempts = cfg.data.group_size if attempts is None else attempts
-        job = Job.reserve(
-            self.run,
+        job = Job(
+            self.reserve_name(),
             purpose=purpose,
             step=self.steps,
             modules=agent.modules,
@@ -312,7 +345,7 @@ class Trainer:
             counted, noted = sampled(job)
         else:
             counted, party, noted = reported(job), billed_by(job) or party, {}
-        sandbox = self.run.config.rollout.sandbox
+        sandbox = self.config.rollout.sandbox
         timed, seconds = sandbox_seconds(job)
         self.logs.job(
             {
@@ -349,7 +382,7 @@ class Trainer:
         """One job per batch of `tasks` at `[data] test_group_size`, then one row with the mean."""
         if not tasks:
             return None
-        data = self.run.config.data
+        data = self.config.data
         attempts = data.test_group_size or data.group_size
         found: list[Group] = []
         for start in range(0, len(tasks), data.batch_size):
@@ -375,8 +408,8 @@ class Trainer:
         """The checkpoint the trainer stands at, evaluated on `tasks` as one more row."""
         if self.resumed is None:
             raise ValueError("an evaluation needs a run reopened at a checkpoint")
-        cfg = self.run.config
-        policy = Policy(endpoint_for(cfg, self.run.directory), start=self.resumed["sampler_path"])
+        cfg = self.config
+        policy = Policy(endpoint_for(cfg, self.directory), start=self.resumed["sampler_path"])
         agent = Agent(policy, [harness(cfg.rollout.harness)], self.modules)
         async with agent.policy:
             return await self.evaluate(agent, list(tasks), checkpoint=self.resumed["tag"])
@@ -490,7 +523,7 @@ class Trainer:
         if client is None:
             return TrainingStep(self.steps, list(found))
         began = time.monotonic()
-        party = agent.policy.endpoint.party or self.run.config.model.provider
+        party = agent.policy.endpoint.party or self.config.model.provider
         credit = await self.credit(agent.policy, found)
         self.spent(
             party, reference_tokens=credit.reference_tokens, anchor_tokens=credit.anchor_tokens
@@ -504,7 +537,7 @@ class Trainer:
         datums = [one for piece in pieces for one in piece]
         train_tokens = sum(int(one.model_input.length) for one in datums)
         # An earlier run's optimizer state continues its schedule; a resume stands at `updates`.
-        model = self.run.config.model
+        model = self.config.model
         rate = (
             recipe.learning_rate
             if model.from_checkpoint and model.restore_optimizer
@@ -587,7 +620,7 @@ class Trainer:
         client = agent.policy.client
         if client is None:
             return
-        hours = None if keep else self.run.config.checkpoints.ttl_hours
+        hours = None if keep else self.config.checkpoints.ttl_hours
         ttl = None if hours is None else int(hours * SECONDS_PER_HOUR)
         state = await client.save_state(tag, ttl_seconds=ttl)
         sampler = await client.save_weights_for_sampler(tag, ttl_seconds=ttl)
@@ -612,6 +645,41 @@ class Trainer:
         weights for the agent to open at."""
         self.resumed = row
         self.steps, self.updates, self.drawn = row["step"], row["updates"], row["drawn"]
+
+
+def carried(config: Blueprint, directory: Path) -> Candidate | None:
+    """The candidate every job carries: the copy kept in `directory`, else the one `[recipe]
+    modules` seeds, kept there so a resume carries the same text. None when the key is unset
+    or the recipe (gepa, fst) searches over its own."""
+    if isinstance(config.recipe, Search):
+        return None
+    kept = directory / record.MODULES / CARRIED
+    if kept.is_dir():
+        return seed(kept)
+    found = seeded(config)
+    if found is not None:
+        keep(found, kept)
+    return found
+
+
+def seeded(config: Blueprint) -> Candidate | None:
+    """The candidate `[recipe] modules` seeds, for any recipe. None when it is unset."""
+    named = modules_dir(config)
+    return None if named is None else seed(named)
+
+
+def next_job(name: str, directory: Path, jobs_dir: Path) -> int:
+    """One past the highest job number on the record or on disk; 0 for a new directory."""
+    named = [row.get("job") for row in record.read(directory / record.JOBS)]
+    if jobs_dir.is_dir():
+        named += [one.name for one in jobs_dir.iterdir()]
+    prefix = f"{name}-"
+    numbers = [
+        int(one[len(prefix) :])
+        for one in named
+        if isinstance(one, str) and one.startswith(prefix) and one[len(prefix) :].isdigit()
+    ]
+    return max(numbers, default=-1) + 1
 
 
 def split(items: list[Any], parts: int) -> list[list[Any]]:

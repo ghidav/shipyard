@@ -64,7 +64,7 @@ async def test_an_evaluate_job_nothing_reached_is_recorded_and_stops_the_run(
     opened = Run.open(_four(tmp_path, "evaluate", **SERVED_EVALUATE), root=tmp_path / "runs")
     trials = harbor(FakeTrials())
     with pytest.raises(NothingServed, match=DEAD), opened:
-        await trainer_for(opened.config.recipe)(opened).train()
+        await trainer_for(opened.config.recipe)(opened.config, opened.directory).train()
     note = Run.read(opened.directory)
     assert note["failed"] is True
     assert note["error"] == f"NothingServed: job {opened.id}-0000: {DEAD}"
@@ -85,7 +85,7 @@ async def test_a_job_where_some_trials_reached_the_proxy_masks_the_rest_and_goes
     opened = Run.open(_four(tmp_path, "evaluate", **SERVED_EVALUATE), root=tmp_path / "runs")
     harbor(FakeTrials())
     with opened:
-        await trainer_for(opened.config.recipe)(opened).train()
+        await trainer_for(opened.config.recipe)(opened.config, opened.directory).train()
     assert Run.read(opened.directory)["failed"] is False
     jobs = list(record.read(opened.directory / record.JOBS))
     assert len(jobs) == 2
@@ -101,7 +101,7 @@ async def test_a_provider_served_job_with_no_result_is_masked_not_stopped(
     opened = Run.open(_four(tmp_path, "evaluate"), root=tmp_path / "runs")
     harbor(FakeTrials(breaks=("a", "b", "c", "d")))
     with opened:
-        await trainer_for(opened.config.recipe)(opened).train()
+        await trainer_for(opened.config.recipe)(opened.config, opened.directory).train()
     assert Run.read(opened.directory)["failed"] is False
     assert len(list(record.read(opened.directory / record.JOBS))) == 2
 
@@ -116,7 +116,7 @@ async def test_a_job_whose_every_request_failed_at_the_sampler_stops_the_run(
     opened = Run.open(_four(tmp_path, "evaluate", **SERVED_EVALUATE), root=tmp_path / "runs")
     trials = harbor(FakeTrials())
     with pytest.raises(NothingServed, match=re.escape(POISONED)), opened:
-        await trainer_for(opened.config.recipe)(opened).train()
+        await trainer_for(opened.config.recipe)(opened.config, opened.directory).train()
     assert Run.read(opened.directory)["error"].startswith(
         f"NothingServed: job {opened.id}-0000: {POISONED}; the weights it serves are gone"
     )
@@ -154,7 +154,7 @@ async def test_a_dapo_step_nothing_reached_stops_before_credit_and_closes_as_err
     opened = Run.open(_four(tmp_path, "dapo"), root=tmp_path / "runs")
     harbor(FakeTrials())
     with pytest.raises(NothingServed), opened:
-        await trainer_for(opened.config.recipe)(opened).train()
+        await trainer_for(opened.config.recipe)(opened.config, opened.directory).train()
     assert not any(c[0] == "forward_backward" for c in service.client.calls)
     assert service.closed == [("errored", f"NothingServed: job {opened.id}-0000: {DEAD}")]
     assert not (opened.directory / record.METRICS).exists()
@@ -173,7 +173,7 @@ async def test_a_step_whose_groups_are_all_degenerate_is_untrained_not_dead(
     opened = Run.open(home, root=tmp_path / "runs")
     harbor(FakeTrials())
     with opened:
-        await trainer_for(opened.config.recipe)(opened).train()
+        await trainer_for(opened.config.recipe)(opened.config, opened.directory).train()
     [row] = list(record.read(opened.directory / record.METRICS))
     assert row["trained"] is False and Run.read(opened.directory)["failed"] is False
 
@@ -190,7 +190,7 @@ async def test_a_gepa_search_whose_seed_nothing_reached_stops(
     opened = Run.open(home, root=tmp_path / "runs")
     harbor(FakeTrials())
     with pytest.raises(NothingServed, match=DEAD), opened:
-        await trainer_for(opened.config.recipe)(opened).train()
+        await trainer_for(opened.config.recipe)(opened.config, opened.directory).train()
     [job] = list(record.read(opened.directory / record.JOBS))
     assert job["purpose"] == "search" and job["step"] == 0
     assert not (opened.directory / record.METRICS).exists()

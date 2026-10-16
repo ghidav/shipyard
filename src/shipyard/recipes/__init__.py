@@ -73,8 +73,8 @@ def trainer_of(run: Run) -> type[Trainer]:
     return trainer_in(kept) if kept.is_file() else trainer_for(run.config.recipe)
 
 
-def reopened(directory: Path, *, tag: str = "last") -> Trainer:
-    """The trainer over a run reopened at one of its checkpoints, standing where it stood,
+def reopened(directory: Path, *, tag: str = "last") -> tuple[Run, Trainer]:
+    """A run reopened at one of its checkpoints, and its trainer standing where it stood,
     under `trainer_of` the run."""
     directory = Path(directory)
     if not (directory / record.CONFIG).is_file():
@@ -87,9 +87,9 @@ def reopened(directory: Path, *, tag: str = "last") -> Trainer:
         tags = ", ".join(r["tag"] for r in rows)
         raise ValueError(f"{directory.name} has no checkpoint tagged {tag!r}; it has {tags}")
     run = Run.reopen(directory, resumed=row["tag"])
-    trainer = trainer_of(run)(run)
+    trainer = trainer_of(run)(run.config, run.directory)
     trainer.restore(row)
-    return trainer
+    return run, trainer
 
 
 def resolution(recipe: Any, trainer: type[Trainer] | None = None) -> str | None:

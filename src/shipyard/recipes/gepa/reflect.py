@@ -85,8 +85,8 @@ async def _job(
     about: Reflection,
 ) -> Job:
     """A job that is no rollout: its own agent on a provider endpoint, recorded as a reflection."""
-    job = Job.reserve(
-        trainer.run,
+    job = Job(
+        trainer.reserve_name(),
         purpose="reflection",
         about={"component": about.component, "candidate": about.candidate.digest},
     )

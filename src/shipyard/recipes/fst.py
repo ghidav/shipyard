@@ -8,18 +8,16 @@ from collections.abc import Mapping
 from collections.abc import Sequence as Values
 from dataclasses import replace
 from functools import partial
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
 
 from shipyard import record
-from shipyard.config import SLOW_KNOBS, CispoRecipe, DapoRecipe, DrGrpoRecipe
+from shipyard.config import SLOW_KNOBS, Blueprint, CispoRecipe, DapoRecipe, DrGrpoRecipe
 from shipyard.credit import weights
 from shipyard.modules import Candidate, keep, seed
 from shipyard.recipes.gepa import BEST, SEED, GEPATrainer
 from shipyard.training.trainer import Trainer
 from shipyard.types import Adam, Agent, Group, Task, TrainingStep
-
-if TYPE_CHECKING:
-    from shipyard.run import Run
 
 #: The config model of the slow recipe each `slow` value names; its trainer is the kind's.
 SLOW: dict[str, type] = {"dapo": DapoRecipe, "dr-grpo": DrGrpoRecipe, "cispo": CispoRecipe}
@@ -79,9 +77,9 @@ class FSTTrainer(GEPATrainer):
     def aggregated(cls) -> str:
         return "averaged per prompt"
 
-    def __init__(self, run: Run) -> None:
-        super().__init__(run)
-        self.fst = run.config.recipe
+    def __init__(self, config: Blueprint, directory: Path) -> None:
+        super().__init__(config, directory)
+        self.fst = config.recipe
         self.recipe = slow_recipe(self.fst)
         self.score_group_size = CELL_ROLLOUTS
         self.population: list[Candidate] = []
@@ -92,9 +90,9 @@ class FSTTrainer(GEPATrainer):
     async def train(self) -> Agent:
         """Cycles until `[recipe] steps`: a fast phase over the next `cycle` batches, then a
         slow step on each; then `finish`."""
-        kept = self.run.directory / record.MODULES
+        kept = self.directory / record.MODULES
         if not self.population:
-            seeded = seed(self.run.config.home / self.fst.modules)
+            seeded = seed(self.config.home / self.fst.modules)
             keep(seeded, kept / SEED)
             self.population = [seeded]
         self.modules = self.population[0]
@@ -127,12 +125,12 @@ class FSTTrainer(GEPATrainer):
             budget=(fst.budget or BUDGET_PASSES * cells) + carried * cells,
             minibatch=fst.minibatch,
             patience=fst.patience,
-            rng=random.Random(self.run.config.data.seed + cycle),
+            rng=random.Random(self.config.data.seed + cycle),
             log=partial(self.logs.log, "search", cycle=cycle),
         )
         self.population = result.top(fst.population)
         for rank, text in enumerate(self.population):
-            keep(text, self.run.directory / record.MODULES / f"cycle-{cycle}" / str(rank))
+            keep(text, self.directory / record.MODULES / f"cycle-{cycle}" / str(rank))
         self.logs.log(
             "search",
             cycle=cycle,
@@ -149,7 +147,7 @@ class FSTTrainer(GEPATrainer):
         """The cycle's next batch, one job per text at its share of the group, merged into one
         group per task and credited as one."""
         batch = self.pending.pop(0)
-        share = self.run.config.data.group_size // self.fst.population
+        share = self.config.data.group_size // self.fst.population
         parts = [
             await self.job(replace(agent, modules=text), batch, share) for text in self.population
         ]
@@ -164,7 +162,7 @@ class FSTTrainer(GEPATrainer):
         """The population of the checkpoint's cycle, and the batches of it left to step, drawn
         again; a finished cycle leaves none, and the next starts with its fast phase."""
         super().restore(row)
-        kept = self.run.directory / record.MODULES / f"cycle-{row['cycle']}"
+        kept = self.directory / record.MODULES / f"cycle-{row['cycle']}"
         self.population = [seed(kept / str(rank)) for rank in range(self.fst.population)]
         self.modules = self.population[0]
         self.drawn -= row["pending"]

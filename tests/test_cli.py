@@ -40,7 +40,6 @@ def isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 async def _finishes(self: Trainer) -> None:
     self.logs.log("train", reward=1.0)
-    self.run.note(hello="world")
 
 
 def _only_run(root: Path) -> Path:
@@ -232,7 +231,7 @@ def test_run_with_a_recipe_that_returns_ends_finished(
     assert result.exit_code == 0, result.output
     directory = _only_run(root)
     note = Run.read(directory)
-    assert state_of(note) == "finished" and note["error"] is None and note["hello"] == "world"
+    assert state_of(note) == "finished" and note["error"] is None
     assert [row["seq"] for row in record.read(directory / record.METRICS)] == [1]
     assert "finished" in result.output
 
@@ -456,7 +455,7 @@ FINAL = {
 
 async def _checkpointed(self: Trainer) -> None:
     """`Trainer.train` standing in: the run ends with its `final` checkpoint and nothing else."""
-    record.append(self.run.directory / record.CHECKPOINTS, FINAL)
+    record.append(self.directory / record.CHECKPOINTS, FINAL)
 
 
 def test_evaluate_measures_a_checkpoint_and_prints_its_row(
@@ -550,8 +549,8 @@ def test_run_under_a_trainer_file_keeps_a_copy_and_resumes_under_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async def marks(self: Trainer) -> None:
-        self.run.note(ran=type(self).__name__)
-        record.append(self.run.directory / record.CHECKPOINTS, FINAL)
+        self.logs.log("train", ran=type(self).__name__)
+        record.append(self.directory / record.CHECKPOINTS, FINAL)
 
     monkeypatch.setattr(Trainer, "train", marks)
     root, file = tmp_path / "r", _trainer_file(tmp_path / "bp" / "mine.py")
@@ -559,16 +558,17 @@ def test_run_under_a_trainer_file_keeps_a_copy_and_resumes_under_it(
     assert result.exit_code == 0, result.output
     directory = _only_run(root)
     note = Run.read(directory)
-    assert note["ran"] == "Marked" and note["trainer"] == str(file.resolve())
+    assert note["trainer"] == str(file.resolve())
+    assert [row["ran"] for row in record.read(directory / record.METRICS)] == ["Marked"]
     assert (directory / record.TRAINER).read_text(encoding="utf-8") == TRAINER_FILE
     assert "trainer Marked from" not in result.output, "the ok line is check's"
 
     file.unlink()
     result = runner.invoke(app, ["run", directory.name, "--resume", "--root", str(root)])
     assert result.exit_code == 0, result.output
-    note = Run.read(directory)
-    assert note["ran"] == "Marked", "the copy, not the file"
-    assert note["resumed"] == "final"
+    ran = [row["ran"] for row in record.read(directory / record.METRICS)]
+    assert ran == ["Marked", "Marked"], "the copy, not the file"
+    assert Run.read(directory)["resumed"] == "final"
 
 
 def test_run_with_a_broken_trainer_file_starts_nothing(tmp_path: Path) -> None:

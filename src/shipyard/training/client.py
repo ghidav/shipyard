@@ -15,8 +15,7 @@ from shipyard.pack import shifted
 from shipyard.types import SERVE_TTL, Adam, Datum, Forward, Sequence, TrainingClient
 
 if TYPE_CHECKING:
-    from shipyard.config import Model
-    from shipyard.run import Run
+    from shipyard.config import Blueprint, Model
 
 logger = logging.getLogger(__name__)
 
@@ -46,10 +45,9 @@ class TinkerClient(TrainingClient):
         self.client: Any = None
 
     @classmethod
-    def from_run(cls, run: Run) -> TinkerClient:
-        """On the run's model, with the session named after the run."""
-        cfg = run.config
-        metadata = {"shipyard_run": run.id, "shipyard_recipe": cfg.recipe.kind}
+    def of(cls, cfg: Blueprint, *, name: str) -> TinkerClient:
+        """On the blueprint's model, with the session named `name`."""
+        metadata = {"shipyard_run": name, "shipyard_recipe": cfg.recipe.kind}
         return cls(service_client(metadata), cfg.model, metadata)
 
     async def open(self) -> None:
