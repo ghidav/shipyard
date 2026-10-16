@@ -33,8 +33,8 @@ def reporter(console: Console | None = None) -> Reporter:
 class Reporter:
     """Receiver of a run's job events. This base class ignores them; `Bars` draws them."""
 
-    def started(self, job: str, *, trials: int, step: int | None = None) -> None:
-        """Report that a job with `trials` planned trials has started, for `step` if given."""
+    def started(self, job: str, *, trials: int) -> None:
+        """Report that a job with `trials` planned trials has started."""
 
     def finished(self, trial: Path, *, masked: bool) -> None:
         """Report that one trial of a started job has finished. `masked` is true when
@@ -49,7 +49,7 @@ class Reporter:
 
 class Bars(Reporter):
     """Progress bars, one per job, redrawn in place as Harbor draws a job. Each shows the
-    step, trials finished out of planned, trials masked and the elapsed time."""
+    job, trials finished out of planned, trials masked and the elapsed time."""
 
     def __init__(self, console: Console) -> None:
         self.console = console
@@ -66,13 +66,12 @@ class Bars(Reporter):
         self._tasks: dict[str, Any] = {}
         self._masked: dict[str, int] = {}
 
-    def started(self, job: str, *, trials: int, step: int | None = None) -> None:
+    def started(self, job: str, *, trials: int) -> None:
         if self._live is None:
             self._live = Live(self.bars, console=self.console, refresh_per_second=8)
             self._live.start()
-        label = f"step {step}  {job}" if step is not None else job
         self._masked[job] = 0
-        self._tasks[job] = self.bars.add_task(label, total=trials, masked=0)
+        self._tasks[job] = self.bars.add_task(job, total=trials, masked=0)
 
     def finished(self, trial: Path, *, masked: bool) -> None:
         """Advance the bar of the trial's job, which is the trial directory's parent in

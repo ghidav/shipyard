@@ -23,11 +23,11 @@ from shipyard.cost import Costs, billed_by, reported, sampled, sandbox_seconds
 from shipyard.data import Generator
 from shipyard.logs import Folder, Logger, Loggers, Wandb
 from shipyard.modules import Candidate, keep, seed
-from shipyard.progress import reporter
 from shipyard.sampling.admit import judge
 from shipyard.sampling.attempt import INSTRUCTION, attempt
 from shipyard.sampling.endpoint import NothingServed, endpoint_for
 from shipyard.sampling.engine import HarborEngine
+from shipyard.sampling.progress import reporter
 from shipyard.sampling.secrets import Pool, Secrets
 from shipyard.training.client import TinkerClient
 from shipyard.training.credit import advantages as relative
@@ -394,11 +394,7 @@ class Trainer:
             modules=agent.modules,
             about=about,
         )
-        self.progress.started(
-            job.name, trials=len(tasks) * len(agent.harness) * attempts, step=self.steps
-        )
         job.trials = await self.engine.run(job.name, tasks, attempts, agent=agent)
-        self.progress.done(job.name)
         job.records = await endpoint.record(job.name, job.trials)
         judge(job, check_turns=cfg.rollout.check_turns)
         masked = Counter(one.mask for one in job.verdicts if one.mask is not None)

@@ -23,12 +23,12 @@ from harbor.models.trial.config import (
 from shipyard.harnesses import bare_name
 from shipyard.modules import deliver
 from shipyard.sampling.admit import verdict
+from shipyard.sampling.progress import Reporter
 from shipyard.sampling.secrets import Secrets, scrub
 from shipyard.types import Agent, Connection, Harness, RolloutEngine, Settings, Task, Trial
 
 if TYPE_CHECKING:
     from shipyard.config import Rollout
-    from shipyard.progress import Reporter
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,7 @@ class HarborEngine(RolloutEngine):
         )
         self.secrets = Secrets() if secrets is None else secrets
         self.run_trial = run_trial
-        self.progress = progress
+        self.progress = Reporter() if progress is None else progress
         self._limit = asyncio.Semaphore(rollout.concurrency)
 
     async def run(
@@ -139,11 +139,13 @@ class HarborEngine(RolloutEngine):
                             scrub(trial.dir, held)
                         finally:
                             await self.secrets.release(trial, held)
-            if self.progress is not None:
-                self.progress.finished(trial.dir, masked=verdict(trial.dir).mask is not None)
+            self.progress.finished(trial.dir, masked=verdict(trial.dir).mask is not None)
             return trial
 
-        return list(await asyncio.gather(*(one(*planned) for planned in plan)))
+        self.progress.started(job, trials=len(plan))
+        trials = list(await asyncio.gather(*(one(*planned) for planned in plan)))
+        self.progress.done(job)
+        return trials
 
     @staticmethod
     def _agent_config(
