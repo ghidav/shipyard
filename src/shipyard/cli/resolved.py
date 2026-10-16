@@ -40,15 +40,20 @@ class Report:
 
 
 def report(blueprint: Path, trainer: Any = None) -> Report:
-    """Run `check` on a blueprint path, the resolution line under `trainer` when given. A
-    blueprint that does not load yields only its problems."""
+    """Run `check` on a blueprint path, the resolution line under `trainer` when given, and
+    a line naming its secrets when it gives its own. A blueprint that does not load yields
+    only its problems."""
     from shipyard.training.recipes import resolution
+    from shipyard.training.trainer import Trainer
 
     try:
         loaded = load(blueprint)
     except ConfigError as error:
         return Report(None, None, [Finding("blocked", problem) for problem in error.problems])
-    return Report(resolved(loaded), resolution(loaded.recipe, trainer), findings(loaded))
+    found = findings(loaded)
+    if trainer is not None and trainer.secrets is not Trainer.secrets:
+        found.append(Finding("ok", f"secrets from {trainer.__name__}.secrets"))
+    return Report(resolved(loaded), resolution(loaded.recipe, trainer), found)
 
 
 def resolved(loaded: Blueprint) -> dict[str, Any]:

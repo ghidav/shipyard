@@ -174,7 +174,79 @@ How the trial runs is `[rollout]`'s:
 | `jobs_dir` | `"jobs"` | where the job directories go |
 | `fill_context` | `false` | lays the profile's environment on each served trial, and lets a turn fill the context (see [The proxy](proxy.md)); `check` warns when `[agent] env` sets one of the profile's keys to the profile's own value without it, since the proxy then still refuses an overflowing call |
 | `check_turns` | `false` | compares the harness's own turn count with the proxy's records (see [Admission](admission.md)) |
+| `secrets` | `{}` | a variable each trial holds alone, one value per trial in flight (see [Secrets that are identities](#secrets-that-are-identities)) |
 
 The other `[rollout]` keys configure the proxy (see [The proxy](proxy.md)).
 Every key with its default is in
 [Configuration](../reference/configuration.md).
+
+## Secrets that are identities
+
+A task reads a secret from its environment: a `${BAUPLAN_API_KEY}` in its `[environment.env]`
+is filled by Harbor from the process that runs it. A secret every trial may share needs nothing
+more. A secret that is an identity does: a service keeps state per identity, so trials that
+run at once under one key wipe and read each other's state. Such a secret needs one value per
+trial in flight.
+
+`[rollout.secrets]` names each such variable, and the variable of shipyard's own environment
+holding its values, separated by commas. The values stay in `.env`, never in `run.toml`:
+
+```toml
+[rollout.secrets]
+BAUPLAN_API_KEY = "BAUPLAN_API_KEYS"
+```
+
+```sh title=".env"
+BAUPLAN_API_KEYS=key-one,key-two,key-three
+```
+
+Each trial acquires one value before Harbor starts it and gives it back after its teardown, so
+the task's prepare step, the agent, the healthcheck and the tests all see the same identity,
+and no other trial holds it meanwhile. A trial waits for a free one, so no more trials run at
+once than there are values, whatever `concurrency` says. Several variables pair by position: the
+second trial in flight might hold the second key and the second user.
+
+The value reaches the trial's environment and its verifier's, over what the task's
+`${BAUPLAN_API_KEY}` resolves to. shipyard sets the variable to `""` in its own environment, so
+the template always resolves and a path that missed the trial's value authenticates as nobody.
+After the trial, the value is replaced with `${BAUPLAN_API_KEY}` in every text file of the
+trial's directory, Harbor's saved config and the agent's logs included. It is never in
+`run.toml`, the `check` output, or a job row. An agent that holds the key can still read it and
+send it to the model, and then it is in that call's tokens: give each identity no more than the
+task needs.
+
+`check` blocks a variable that is unset or empty, pools of different sizes, a name that
+`[agent] env` also sets, and a run secret such as `TINKER_API_KEY`. It warns when `concurrency` is
+above the number of values.
+
+### Secrets of your own
+
+A trainer decides what each trial holds through its `secrets` method, which returns the pools
+by default. For other logic, such as a key made for each trial and revoked after it, a trainer
+file returns its own `Secrets`. A trainer file is a Python file defining one `Trainer`
+subclass, passed after the blueprint: `shipyard run blueprints/bauplan mine.py`.
+
+```python title="mine.py"
+from shipyard.sampling import Secrets
+from shipyard.training import DAPOTrainer
+
+
+class FreshUser(Secrets):
+    async def acquire(self, trial):
+        user = await admin.create_user(f"shipyard-{trial.name}")
+        return {"BAUPLAN_API_KEY": user.key}
+
+    async def release(self, trial, held):
+        await admin.delete_user(held["BAUPLAN_API_KEY"])
+
+
+class Mine(DAPOTrainer):
+    def secrets(self):
+        return FreshUser()
+```
+
+`acquire` gets the trial, so it can also keep one identity per task or draw from a vault, and
+it may wait, which bounds how many trials run at once. The rest stays shipyard's: when a trial
+acquires and releases, where the values go, and the scrub. `check` prints
+`secrets from Mine.secrets` and cannot look further; `acquire` raises at the first trial if
+something is wrong.

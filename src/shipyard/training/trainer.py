@@ -25,6 +25,7 @@ from shipyard.progress import reporter
 from shipyard.sampling.admit import judge
 from shipyard.sampling.endpoint import NothingServed, endpoint_for
 from shipyard.sampling.engine import HarborEngine
+from shipyard.sampling.secrets import Pool, Secrets
 from shipyard.training.client import TinkerClient
 from shipyard.training.credit import advantages, anchor_logprobs, sampler_logprobs
 from shipyard.training.pack import datum, groups
@@ -179,7 +180,11 @@ class Trainer:
         self.progress = reporter()
         #: One engine, so every job in flight shares its `[rollout] concurrency`.
         self.engine = HarborEngine(
-            config.rollout, env=config.agent.env, kwargs=config.agent.kwargs, progress=self.progress
+            config.rollout,
+            env=config.agent.env,
+            kwargs=config.agent.kwargs,
+            secrets=self.secrets(),
+            progress=self.progress,
         )
         #: Where every row goes.
         self.logs = Loggers(self.loggers())
@@ -203,6 +208,13 @@ class Trainer:
         if self.config.logging.wandb is not None:
             found.append(Wandb(self.config, self.directory))
         return found
+
+    def secrets(self) -> Secrets:
+        """What each trial acquires for its environment and releases after its teardown: the
+        pools `[rollout.secrets]` names, else nothing. Called once, as the trainer is made; a
+        subclass returns its own."""
+        table = self.config.rollout.secrets
+        return Pool.of(table) if table else Secrets()
 
     def __enter__(self) -> Self:
         return self
