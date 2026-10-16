@@ -14,9 +14,9 @@ from pathlib import Path
 import pytest
 
 from shipyard import record
-from shipyard.recipes import trainer_for
-from shipyard.run import Run
+from shipyard.cli.run import Run
 from shipyard.sampling.endpoint import NothingServed, served_nothing
+from shipyard.training.recipes import trainer_for
 from tests.proxies import MODEL
 from tests.records import FakeProxy, made
 from tests.trainers import FakeService, capable

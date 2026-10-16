@@ -11,13 +11,13 @@ import pytest
 from harbor.models.trial.config import TrialConfig
 
 from shipyard import record
+from shipyard.cli.run import Run
 from shipyard.data import Generator, tasks
-from shipyard.recipes.cispo import CISPOTrainer
-from shipyard.recipes.dapo import DAPOTrainer
-from shipyard.recipes.dr_grpo import DrGRPOTrainer
-from shipyard.run import Run
 from shipyard.sampling.endpoint import ProviderEndpoint, endpoint_for
 from shipyard.training.client import TinkerClient
+from shipyard.training.recipes.cispo import CISPOTrainer
+from shipyard.training.recipes.dapo import DAPOTrainer
+from shipyard.training.recipes.dr_grpo import DrGRPOTrainer
 from shipyard.training.trainer import ROW, Trainer
 from shipyard.types import SERVE_TTL, Agent, Group, Policy, harness
 from tests.records import FakeProxy

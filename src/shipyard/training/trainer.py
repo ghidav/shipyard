@@ -19,15 +19,15 @@ from shipyard import record
 from shipyard.admit import judge
 from shipyard.config import Blueprint, Search, modules_dir
 from shipyard.cost import Costs, billed_by, reported, sampled, sandbox_seconds
-from shipyard.credit import advantages, anchor_logprobs, sampler_logprobs
 from shipyard.data import Generator
 from shipyard.logs import Folder, Logger, Loggers, Wandb
 from shipyard.modules import Candidate, keep, seed
-from shipyard.pack import datum, groups
 from shipyard.progress import reporter
 from shipyard.sampling.endpoint import NothingServed, endpoint_for
 from shipyard.sampling.engine import HarborEngine
 from shipyard.training.client import TinkerClient
+from shipyard.training.credit import advantages, anchor_logprobs, sampler_logprobs
+from shipyard.training.pack import datum, groups
 from shipyard.types import (
     Adam,
     Agent,

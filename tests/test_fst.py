@@ -13,6 +13,7 @@ import pytest
 from harbor.models.trial.config import TrialConfig
 
 from shipyard import record
+from shipyard.cli.run import Run, reopened
 from shipyard.config import (
     SLOW_KNOBS,
     CispoRecipe,
@@ -25,9 +26,10 @@ from shipyard.config import (
 )
 from shipyard.data import Generator, tasks
 from shipyard.modules import seed
-from shipyard.recipes import reopened, resolution, trainer_for
-from shipyard.recipes.cispo import CISPOTrainer
-from shipyard.recipes.fst import (
+from shipyard.sampling.endpoint import ProviderEndpoint
+from shipyard.training.recipes import resolution, trainer_for
+from shipyard.training.recipes.cispo import CISPOTrainer
+from shipyard.training.recipes.fst import (
     ADAM,
     BUDGET_PASSES,
     FSTTrainer,
@@ -35,8 +37,6 @@ from shipyard.recipes.fst import (
     merged,
     slow_recipe,
 )
-from shipyard.run import Run
-from shipyard.sampling.endpoint import ProviderEndpoint
 from shipyard.types import Agent, Group, Member, Policy, Sequence, Trial, Verdict, harness
 from tests.trials import (
     BLUEPRINTS,

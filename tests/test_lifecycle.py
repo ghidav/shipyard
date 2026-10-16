@@ -16,10 +16,10 @@ import httpx
 import pytest
 
 from shipyard import record
+from shipyard.cli.run import Run
 from shipyard.proxy import client
 from shipyard.proxy.client import Proxy, Unreachable
 from shipyard.proxy.tunnel import Tunnel
-from shipyard.run import Run
 from shipyard.sampling.endpoint import ProxyEndpoint, ProxyGone
 from shipyard.types import Trial, harness
 from tests.proxies import MODEL, FakeSampler, control, root, server
@@ -306,7 +306,7 @@ async def test_a_tunnel_that_dies_under_a_batch_stops_the_run_once_the_job_is_re
     monkeypatch: pytest.MonkeyPatch,
     harbor: Harbor,
 ) -> None:
-    from shipyard.recipes import trainer_for
+    from shipyard.training.recipes import trainer_for
 
     fixture_tasks(tmp_path)
     monkeypatch.chdir(tmp_path)

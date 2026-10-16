@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from shipyard.modules import Candidate, Module
-from shipyard.recipes.gepa.fitness import Outcome
+from shipyard.training.recipes.gepa.fitness import Outcome
 
 
 @dataclass(frozen=True)

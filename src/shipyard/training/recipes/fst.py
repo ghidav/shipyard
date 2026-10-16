@@ -20,9 +20,9 @@ from shipyard.config import (
     DrGrpoRecipe,
     modules_dir,
 )
-from shipyard.credit import weights
 from shipyard.modules import Candidate, keep, seed
-from shipyard.recipes.gepa import BEST, SEED, GEPATrainer
+from shipyard.training.credit import weights
+from shipyard.training.recipes.gepa import BEST, SEED, GEPATrainer
 from shipyard.training.trainer import Trainer
 from shipyard.types import Adam, Agent, Group, Task, TrainingStep
 

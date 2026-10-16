@@ -1,6 +1,6 @@
-"""Post-training on Harbor jobs, configured by a blueprint and recorded as a run."""
+"""Post-training on Harbor jobs: a blueprint loaded, and a trainer over it."""
 
-from shipyard.config import Blueprint
-from shipyard.run import Run
+from shipyard.config import Blueprint, load
+from shipyard.training.trainer import Trainer
 
-__all__ = ["Blueprint", "Run"]
+__all__ = ["Blueprint", "Trainer", "load"]

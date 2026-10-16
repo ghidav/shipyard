@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from shipyard.recipes.gepa.fitness import Outcome
+from shipyard.training.recipes.gepa.fitness import Outcome
 from shipyard.types import Verdict
 
 if TYPE_CHECKING:

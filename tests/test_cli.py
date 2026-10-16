@@ -15,9 +15,9 @@ from typer.testing import CliRunner
 
 from shipyard import record
 from shipyard.cli.main import app
+from shipyard.cli.run import Run
 from shipyard.cli.show import state_of
 from shipyard.logs import Folder
-from shipyard.run import Run
 from shipyard.training.trainer import Trainer
 from tests.records import FakeProxy, made
 from tests.trials import BLUEPRINTS, FakeTrials, fixture_tasks
@@ -517,7 +517,7 @@ def test_resume_and_evaluate_refuse_a_run_with_no_checkpoint(tmp_path: Path) -> 
 
 
 TRAINER_FILE = """\
-from shipyard.training.trainer import Trainer
+from shipyard.training import Trainer
 
 
 class Marked(Trainer):

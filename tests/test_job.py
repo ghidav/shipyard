@@ -9,10 +9,10 @@ from typing import Any
 import pytest
 
 from shipyard import record
-from shipyard.pack import groups
-from shipyard.run import Run
+from shipyard.cli.run import Run
 from shipyard.sampling.endpoint import ProviderEndpoint
 from shipyard.sampling.engine import HarborEngine
+from shipyard.training.pack import groups
 from shipyard.training.trainer import Trainer
 from shipyard.types import Agent, Job, Policy, Settings, Trial, Verdict, harness
 from tests.trials import (

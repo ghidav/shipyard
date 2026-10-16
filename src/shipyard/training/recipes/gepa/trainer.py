@@ -12,10 +12,10 @@ from shipyard import record
 from shipyard.config import Blueprint, modules_dir
 from shipyard.data import search_sets
 from shipyard.modules import Candidate, keep, seed
-from shipyard.recipes.gepa.cycle import Evolution, Log, evolve
-from shipyard.recipes.gepa.fitness import Outcome
-from shipyard.recipes.gepa.outcomes import outcomes
-from shipyard.recipes.gepa.reflect import reflect
+from shipyard.training.recipes.gepa.cycle import Evolution, Log, evolve
+from shipyard.training.recipes.gepa.fitness import Outcome
+from shipyard.training.recipes.gepa.outcomes import outcomes
+from shipyard.training.recipes.gepa.reflect import reflect
 from shipyard.training.trainer import Trainer
 from shipyard.types import Agent
 

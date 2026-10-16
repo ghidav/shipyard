@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from shipyard.credit import overlong
+from shipyard.training.credit import overlong
 
 
 def test_the_overlong_term_ramps_over_the_last_fifth_of_the_budget_as_eq_13() -> None:

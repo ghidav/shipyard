@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from shipyard.credit import shaped
-from shipyard.recipes.dapo import clipped
+from shipyard.training.credit import shaped
+from shipyard.training.recipes.dapo import clipped
 from shipyard.training.trainer import Trainer
 from shipyard.types import Adam, Group
 

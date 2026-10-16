@@ -18,11 +18,11 @@ from harbor.models.trial.config import TrialConfig
 from shipyard import record
 from shipyard.cli import resolved
 from shipyard.cli.preflight import Finding
+from shipyard.cli.run import Run
 from shipyard.modules import SKILL_FILE, Candidate
-from shipyard.recipes.gepa.cycle import minibatches
-from shipyard.recipes.gepa.reflect import COLLECTED
-from shipyard.run import Run
 from shipyard.sampling.endpoint import endpoint_for
+from shipyard.training.recipes.gepa.cycle import minibatches
+from shipyard.training.recipes.gepa.reflect import COLLECTED
 from shipyard.training.trainer import Trainer, carried
 from shipyard.types import Agent, Group, Member, Policy, Trial, harness
 

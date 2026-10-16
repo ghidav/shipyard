@@ -13,9 +13,9 @@ from typing import TYPE_CHECKING
 from shipyard import types
 from shipyard.admit import verdict
 from shipyard.modules import KINDS, Module, read, write
-from shipyard.recipes.gepa.fitness import Outcome
-from shipyard.recipes.gepa.propose import Proposer, Reflection
 from shipyard.sampling.endpoint import ProviderEndpoint
+from shipyard.training.recipes.gepa.fitness import Outcome
+from shipyard.training.recipes.gepa.propose import Proposer, Reflection
 from shipyard.types import Agent, Job, Policy, Settings
 
 if TYPE_CHECKING:

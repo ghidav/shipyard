@@ -15,9 +15,9 @@ from typing import Any
 import pytest
 
 from shipyard.modules import SKILL_FILE, Candidate, Module
-from shipyard.recipes.gepa.cycle import Evolution, best, evolve, minibatches, perfect
-from shipyard.recipes.gepa.fitness import Outcome, tally
-from shipyard.recipes.gepa.propose import Reflection, component_for, propose
+from shipyard.training.recipes.gepa.cycle import Evolution, best, evolve, minibatches, perfect
+from shipyard.training.recipes.gepa.fitness import Outcome, tally
+from shipyard.training.recipes.gepa.propose import Reflection, component_for, propose
 from tests.trials import drawn
 
 TASKS = tuple(Path("tasks/four") / name for name in ("t1", "t2", "t3", "t4"))

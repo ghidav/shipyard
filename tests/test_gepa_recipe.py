@@ -15,6 +15,7 @@ from typer.testing import CliRunner
 from shipyard import record
 from shipyard.cli.main import app
 from shipyard.cli.preflight import NO_REFLECTOR, Finding
+from shipyard.cli.run import Run
 from shipyard.config import (
     REFLECTION_IMAGE,
     ConfigError,
@@ -22,9 +23,8 @@ from shipyard.config import (
 )
 from shipyard.data import Generator, held_out, search_sets, tasks
 from shipyard.modules import SKILL_FILE, seed
-from shipyard.recipes import trainer_for
-from shipyard.recipes.gepa import BEST, SEED, GEPATrainer
-from shipyard.run import Run
+from shipyard.training.recipes import trainer_for
+from shipyard.training.recipes.gepa import BEST, SEED, GEPATrainer
 from tests.trials import (
     BLUEPRINTS,
     GEPA,

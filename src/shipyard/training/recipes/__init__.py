@@ -1,5 +1,4 @@
-"""The recipes: a trainer class per `[recipe] kind`, one a trainer file defines, and the
-trainer a run reopens under."""
+"""The recipes: a trainer class per `[recipe] kind`, and the one a trainer file defines."""
 
 from __future__ import annotations
 
@@ -9,17 +8,15 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
-from shipyard import record
 from shipyard.config import Gradient
-from shipyard.recipes.cispo import CISPOTrainer
-from shipyard.recipes.dapo import DAPOTrainer
-from shipyard.recipes.dr_grpo import DrGRPOTrainer
-from shipyard.recipes.fst import fst_trainer
-from shipyard.recipes.gepa import GEPATrainer
-from shipyard.run import Run
+from shipyard.training.recipes.cispo import CISPOTrainer
+from shipyard.training.recipes.dapo import DAPOTrainer
+from shipyard.training.recipes.dr_grpo import DrGRPOTrainer
+from shipyard.training.recipes.fst import fst_trainer
+from shipyard.training.recipes.gepa import GEPATrainer
 from shipyard.training.trainer import Trainer
 
-__all__ = ["TRAINERS", "reopened", "resolution", "trainer_for", "trainer_in", "trainer_of"]
+__all__ = ["TRAINERS", "resolution", "trainer_for", "trainer_in"]
 
 #: The trainer class of each `[recipe] kind`.
 TRAINERS: dict[str, type[Trainer]] = {
@@ -64,32 +61,6 @@ def trainer_in(path: Path) -> type[Trainer]:
             f"{path} defines {len(found)} Trainer subclasses; a trainer file defines one"
         )
     return found[0]
-
-
-def trainer_of(run: Run) -> type[Trainer]:
-    """The trainer class a run goes under: the one its kept trainer file defines, else its
-    kind's."""
-    kept = run.directory / record.TRAINER
-    return trainer_in(kept) if kept.is_file() else trainer_for(run.config.recipe)
-
-
-def reopened(directory: Path, *, tag: str = "last") -> tuple[Run, Trainer]:
-    """A run reopened at one of its checkpoints, and its trainer standing where it stood,
-    under `trainer_of` the run."""
-    directory = Path(directory)
-    if not (directory / record.CONFIG).is_file():
-        raise ValueError(f"no run at {directory}")
-    rows = list(record.read(directory / record.CHECKPOINTS))
-    if not rows:
-        raise ValueError(f"{directory.name} has no checkpoint to go on from")
-    row = rows[-1] if tag == "last" else next((r for r in rows if r["tag"] == tag), None)
-    if row is None:
-        tags = ", ".join(r["tag"] for r in rows)
-        raise ValueError(f"{directory.name} has no checkpoint tagged {tag!r}; it has {tags}")
-    run = Run.reopen(directory, resumed=row["tag"])
-    trainer = trainer_of(run)(run.config, run.directory)
-    trainer.restore(row)
-    return run, trainer
 
 
 def resolution(recipe: Any, trainer: type[Trainer] | None = None) -> str | None:

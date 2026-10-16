@@ -19,7 +19,7 @@ from pydantic import (
 from shipyard.record import CONFIG
 
 TINKER = "tinker"
-#: The recipe kinds, each but evaluate a module under `shipyard.recipes`.
+#: The recipe kinds, each but evaluate a module under `shipyard.training.recipes`.
 KINDS = ("dapo", "dr-grpo", "cispo", "gepa", "fst", "evaluate")
 #: The SDK's floor on a checkpoint's TTL: `TrainingClient.save_state` takes "between
 #: 1 hour (3600) and 10 years" (tinker/lib/public_interfaces/training_client.py).

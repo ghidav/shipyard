@@ -11,11 +11,11 @@ from typing import Any
 import pytest
 
 from shipyard import record
+from shipyard.cli.run import Run
 from shipyard.config import load
 from shipyard.cost import Costs
 from shipyard.logs import Folder, Logger, Loggers, Wandb
-from shipyard.recipes import trainer_for
-from shipyard.run import Run
+from shipyard.training.recipes import trainer_for
 from shipyard.training.trainer import Trainer
 from tests.records import FakeProxy
 from tests.trainers import FakeService

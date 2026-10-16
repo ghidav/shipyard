@@ -15,7 +15,7 @@ from typer.testing import CliRunner
 from shipyard import record
 from shipyard.cli import show
 from shipyard.cli.main import app
-from shipyard.run import Run
+from shipyard.cli.run import Run
 from tests.trials import BLUEPRINTS
 
 DAPO = BLUEPRINTS / "dapo"

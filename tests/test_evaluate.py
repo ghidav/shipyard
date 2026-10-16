@@ -8,8 +8,8 @@ import pytest
 
 from shipyard import record
 from shipyard.admit import BUDGET
-from shipyard.recipes import trainer_for
-from shipyard.run import Run
+from shipyard.cli.run import Run
+from shipyard.training.recipes import trainer_for
 from tests.records import FakeProxy, made
 from tests.trials import BLUEPRINTS, FakeTrials, Harbor, dataset
 

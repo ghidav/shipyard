@@ -8,9 +8,9 @@ from typing import Any
 import pytest
 
 from shipyard import record
+from shipyard.cli.run import Run
 from shipyard.harnesses import PROFILES, bare_name
 from shipyard.proxy.wire import CONTROL_TOKEN_ENV, PROXY_TOKEN_ENV
-from shipyard.run import Run
 from shipyard.sampling.endpoint import (
     PROXY_LOG,
     NothingServed,

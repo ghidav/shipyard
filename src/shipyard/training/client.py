@@ -11,7 +11,7 @@ import tinker
 import torch
 from tinker import TensorData
 
-from shipyard.pack import shifted
+from shipyard.training.pack import shifted
 from shipyard.types import SERVE_TTL, Adam, Datum, Forward, Sequence, TrainingClient
 
 if TYPE_CHECKING:

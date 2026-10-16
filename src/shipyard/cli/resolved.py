@@ -42,7 +42,7 @@ class Report:
 def report(blueprint: Path, trainer: Any = None) -> Report:
     """Run `check` on a blueprint path, the resolution line under `trainer` when given. A
     blueprint that does not load yields only its problems."""
-    from shipyard.recipes import resolution
+    from shipyard.training.recipes import resolution
 
     try:
         loaded = load(blueprint)

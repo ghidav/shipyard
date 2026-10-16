@@ -6,7 +6,7 @@ import logging
 from collections.abc import Sequence as Values
 from typing import Any
 
-from shipyard.credit import overlong, weights
+from shipyard.training.credit import overlong, weights
 from shipyard.training.trainer import Trainer, centred
 from shipyard.types import Adam, Agent, Group, TrainingStep
 

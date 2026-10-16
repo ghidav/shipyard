@@ -1,5 +1,6 @@
 """A run: what `shipyard run` wraps around a trainer. A directory holding the blueprint it
-consumed, opened, reopened and closed; what happens in it is the trainer's to write."""
+consumed, opened, reopened and closed; what happens in it is the trainer's to write. Also the
+trainer a run goes under, and a run reopened at a checkpoint with its trainer."""
 
 from __future__ import annotations
 
@@ -16,6 +17,8 @@ from shortuuid import ShortUUID
 from shipyard import record
 from shipyard.config import Blueprint, config_file, load
 from shipyard.sampling.endpoint import tinker_base_url
+from shipyard.training.recipes import trainer_for, trainer_in
+from shipyard.training.trainer import Trainer
 
 
 class RunRefused(RuntimeError):
@@ -111,6 +114,32 @@ class Run:
         else:
             error = f"{type(exc).__name__}: {exc}"
         self.note(finished_at=record.now(), failed=exc is not None, error=error)
+
+
+def trainer_of(run: Run) -> type[Trainer]:
+    """The trainer class a run goes under: the one its kept trainer file defines, else its
+    kind's."""
+    kept = run.directory / record.TRAINER
+    return trainer_in(kept) if kept.is_file() else trainer_for(run.config.recipe)
+
+
+def reopened(directory: Path, *, tag: str = "last") -> tuple[Run, Trainer]:
+    """A run reopened at one of its checkpoints, and its trainer standing where it stood,
+    under `trainer_of` the run."""
+    directory = Path(directory)
+    if not (directory / record.CONFIG).is_file():
+        raise ValueError(f"no run at {directory}")
+    rows = list(record.read(directory / record.CHECKPOINTS))
+    if not rows:
+        raise ValueError(f"{directory.name} has no checkpoint to go on from")
+    row = rows[-1] if tag == "last" else next((r for r in rows if r["tag"] == tag), None)
+    if row is None:
+        tags = ", ".join(r["tag"] for r in rows)
+        raise ValueError(f"{directory.name} has no checkpoint tagged {tag!r}; it has {tags}")
+    run = Run.reopen(directory, resumed=row["tag"])
+    trainer = trainer_of(run)(run.config, run.directory)
+    trainer.restore(row)
+    return run, trainer
 
 
 def _process(config: Blueprint, blueprint: str | None, **extra: Any) -> dict[str, Any]:

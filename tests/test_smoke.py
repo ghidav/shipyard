@@ -14,11 +14,11 @@ from typer.testing import CliRunner
 
 from shipyard import record
 from shipyard.cli.main import app
+from shipyard.cli.run import Run
 from shipyard.cli.smoke import Smoked, Trial, planned, wiring
 from shipyard.config import load
 from shipyard.data import Generator
 from shipyard.modules import seed
-from shipyard.run import Run
 from tests.records import FakeProxy, made
 from tests.trials import BLUEPRINTS, GEPA, VALID, FakeTrials, dataset, write_blueprint
 

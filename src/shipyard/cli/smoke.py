@@ -21,7 +21,7 @@ from shipyard.types import Agent, Endpoint, Policy, Verdict, harness
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from shipyard.run import Run
+    from shipyard.cli.run import Run
 
 #: The `purpose` of a smoke job's row.
 PURPOSE = "smoke"

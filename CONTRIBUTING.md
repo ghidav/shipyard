@@ -26,31 +26,38 @@ uvx --with mkdocs-material mkdocs build --strict
 
 ## Where the code is
 
-`src/shipyard/` is flat. One module per concept page of the docs, roughly:
+`src/shipyard/` keeps the shared pieces at the top and groups the rest by part: `sampling/`
+(running trials), `proxy/` (serving the weights), `training/` (the trainer and its recipes) and
+`cli/` (the commands, and the run they open). Roughly, by docs page:
 
 | Docs page | Modules |
 |---|---|
-| Blueprints | `config` (the schema, `load`, the blueprint's findings), `preflight` (the sandbox, credential and served-model findings), `resolved` (what `check` prints), `cli` |
-| Runs | `run`, `record` (the run's files), `show` (a run read back), `smoke`, `progress` (live bars) |
+| Blueprints | `config` (the schema and `load`), `cli/preflight` (every `check` finding), `cli/resolved` (what `check` prints), `cli/main` (the commands) |
+| Runs | `cli/run` (the run `shipyard run` opens around a trainer), `record` (the files' names, writers and readers), `logs` (the trainer's loggers), `cli/show` (a run read back), `cli/smoke`, `progress` (live bars) |
 | Datasets | `data` |
-| Rollouts | `rollout` (one Harbor job), `serving` (the run's side of serving), `proxy/profiles` (per-harness wiring) |
-| The proxy | `proxy/serve` (the process), `proxy/endpoint` and the server modules beside it, `proxy/wire` (shared by both ends), `proxy/client` and `proxy/tunnel` (the run's side) |
+| Rollouts | `sampling/engine` (one Harbor job), `sampling/endpoint` (the run's side of serving), `harnesses` (per-harness wiring) |
+| The proxy | `proxy/serve` (the process), `proxy/server` and the modules beside it, `proxy/wire` (shared by both ends), `proxy/client` and `proxy/tunnel` (the run's side) |
 | Admission | `admit` |
-| Recipes | `recipes/<kind>` (exactly one module per `[recipe] kind`), `gradient` (the loop the gradient recipes share), `pack` and `credit` (records into a batch), `trainer` and `session` (the Tinker clients) |
+| Recipes | `training/trainer` (the base `Trainer`: the loop, a step, a job), `training/recipes/<kind>` (one subclass per `[recipe] kind`), `training/credit` (rewards into advantages), `training/pack` (records into sequences and datums), `training/client` (the Tinker training client) |
 | Modules | `modules` |
-| gepa | `gepa/` (`cycle` is its loop) |
+| gepa | `training/recipes/gepa/` (`cycle` is its loop) |
 | Costs | `cost` |
 
-`tests/test_<module>.py` tests `<module>`. A test file named for a behaviour instead (`test_loop`, `test_lifecycle`, `test_sandboxes`) says so in its docstring. Fixtures are `tests/blueprints/`, `tests/modules/` and `tests/tasks/`; the fakes are `tests/proxies.py`, `tests/trainers.py`, `tests/trials.py` and `tests/records.py`.
+`tests/test_<module>.py` tests `<module>`. A test file named for a behaviour instead (`test_train`, `test_lifecycle`, `test_sandboxes`) says so in its docstring. Fixtures are `tests/blueprints/`, `tests/modules/` and `tests/tasks/`; the fakes are `tests/proxies.py`, `tests/trainers.py`, `tests/trials.py` and `tests/records.py`.
 
-## A new recipe preset
+## A new recipe
 
-A gradient recipe is a name for a `Preset`: how the advantage is formed, which Tinker loss, which clipping. To add one called `my-preset`:
+A gradient recipe is a `Trainer` subclass that overrides the rules it changes: `shape` and
+`advantage` (rewards into advantages), `weights` (each group's factor on its tokens),
+`loss_fn` and `bounds` (Tinker's loss and its config), `ADAM` (the optimizer), and `rules`
+(what `check` prints about it). To add one called `my-recipe`:
 
-1. In `src/shipyard/config.py`, add a class over `Gradient` with `kind: Literal["my-preset"]` and its own knobs, each with a default and a bound. Add it to the `Recipe` union and its name to `KINDS`.
-2. Add `src/shipyard/recipes/my_preset.py` (a hyphen in the name becomes an underscore). Like `dapo.py`, it imports `shipyard.gradient` and defines two functions. `preset(recipe) -> Preset` builds the preset with `gradient.shared(recipe)` and, for a clipped ratio, `gradient.clipped(low, high)`. `async def run(run)` awaits `gradient.train(run, preset(run.config.recipe))`.
-3. Add a fixture, `tests/blueprints/my-preset/run.toml`. Test what the preset resolves to beside the other three in `tests/test_credit.py`, and its defaults and `check` line in `tests/test_config.py`.
+1. In `src/shipyard/config.py`, add a class over `Gradient` with `kind: Literal["my-recipe"]` and its own knobs, each with a default and a bound. Add it to the `Recipe` union and its name to `KINDS`.
+2. Add `src/shipyard/training/recipes/my_recipe.py` (a hyphen in the name becomes an underscore) defining `MyRecipeTrainer`, a subclass of `Trainer` or of the recipe it is closest to, such as `DAPOTrainer`. Register it in `TRAINERS` in `src/shipyard/training/recipes/__init__.py`, and export it from `src/shipyard/training/__init__.py`.
+3. Add a fixture, `tests/blueprints/my-recipe/run.toml`. Test its rules in `tests/test_training_trainer.py`, and its defaults and `check` line in `tests/test_config.py`.
 4. Document it in `docs/concepts/recipes.md` and `docs/reference/configuration.md`.
+
+A recipe that only changes the run around the step (how a step samples, what it logs, a loop of its own) overrides `sample`, `log` or `train` the same way. A one-off of this kind can live in a trainer file passed to `shipyard run` instead of the package.
 
 ## A new module kind
 

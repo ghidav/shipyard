@@ -17,6 +17,7 @@ from typer.testing import CliRunner
 from shipyard import record
 from shipyard.cli.main import app
 from shipyard.cli.preflight import Finding
+from shipyard.cli.run import Run
 from shipyard.config import Rollout
 from shipyard.modules import (
     KINDS,
@@ -37,7 +38,6 @@ from shipyard.modules import (
     seed,
     write,
 )
-from shipyard.run import Run
 from shipyard.sampling.endpoint import ProviderEndpoint
 from shipyard.sampling.engine import DELIVERED, HarborEngine, laid_over
 from shipyard.training.trainer import CARRIED, Trainer, carried

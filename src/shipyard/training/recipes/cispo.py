@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from shipyard.recipes.dapo import DAPOTrainer, overlong_clause
+from shipyard.training.recipes.dapo import DAPOTrainer, overlong_clause
 from shipyard.types import Adam
 
 
