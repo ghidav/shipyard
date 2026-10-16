@@ -37,7 +37,7 @@ uvx --with mkdocs-material mkdocs build --strict
 | Datasets | `data` |
 | Rollouts | `sampling/engine` (one Harbor job), `sampling/endpoint` (the run's side of serving), `harnesses` (per-harness wiring) |
 | The proxy | `proxy/serve` (the process), `proxy/server` and the modules beside it, `proxy/wire` (shared by both ends), `proxy/client` and `proxy/tunnel` (the run's side) |
-| Admission | `admit` |
+| Admission | `sampling/admit` (a trial's verdict: its reward, or why it is masked) |
 | Recipes | `training/trainer` (the base `Trainer`: the loop, a step, a job), `training/recipes/<kind>` (one subclass per `[recipe] kind`), `training/credit` (rewards into advantages), `training/pack` (records into sequences and datums), `training/client` (the Tinker training client) |
 | Modules | `modules` |
 | gepa | `training/recipes/gepa/` (`cycle` is its loop) |

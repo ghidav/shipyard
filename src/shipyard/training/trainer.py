@@ -16,13 +16,13 @@ from typing import Any, Self
 import torch
 
 from shipyard import record
-from shipyard.admit import judge
 from shipyard.config import Blueprint, Search, modules_dir
 from shipyard.cost import Costs, billed_by, reported, sampled, sandbox_seconds
 from shipyard.data import Generator
 from shipyard.logs import Folder, Logger, Loggers, Wandb
 from shipyard.modules import Candidate, keep, seed
 from shipyard.progress import reporter
+from shipyard.sampling.admit import judge
 from shipyard.sampling.endpoint import NothingServed, endpoint_for
 from shipyard.sampling.engine import HarborEngine
 from shipyard.training.client import TinkerClient

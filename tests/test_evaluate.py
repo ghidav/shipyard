@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 
 from shipyard import record
-from shipyard.admit import BUDGET
 from shipyard.cli.run import Run
+from shipyard.sampling.admit import BUDGET
 from shipyard.training.recipes import trainer_for
 from tests.records import FakeProxy, made
 from tests.trials import BLUEPRINTS, FakeTrials, Harbor, dataset

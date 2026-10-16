@@ -13,10 +13,10 @@ import pytest
 from harbor.models.environment_type import EnvironmentType
 from harbor.models.trial.config import AgentConfig, TrialConfig
 
-from shipyard.admit import result_of
 from shipyard.config import Rollout
 from shipyard.harnesses import PROFILES
 from shipyard.progress import Reporter
+from shipyard.sampling.admit import result_of
 from shipyard.sampling.endpoint import ProviderEndpoint, ProxyEndpoint
 from shipyard.sampling.engine import (
     MODAL_IMAGE_BUILDER,

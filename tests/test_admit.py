@@ -10,7 +10,8 @@ from typing import Any
 
 import pytest
 
-from shipyard.admit import (
+from shipyard.proxy.wire import BUDGET, CONTEXT, IMAGE_TOKEN, Picture
+from shipyard.sampling.admit import (
     API_ERROR,
     CONTEXT_OVERFLOW,
     ENDPOINT_FAILED,
@@ -26,7 +27,6 @@ from shipyard.admit import (
     verdict,
     verdicts,
 )
-from shipyard.proxy.wire import BUDGET, CONTEXT, IMAGE_TOKEN, Picture
 from shipyard.types import Job, Trial, harness
 from tests.records import made
 from tests.trials import trial, write_result

@@ -20,9 +20,9 @@ from harbor.models.trial.config import (
     VerifierConfig,
 )
 
-from shipyard.admit import verdict
 from shipyard.harnesses import bare_name
 from shipyard.modules import deliver
+from shipyard.sampling.admit import verdict
 from shipyard.types import Agent, Connection, Harness, RolloutEngine, Settings, Task, Trial
 
 if TYPE_CHECKING:

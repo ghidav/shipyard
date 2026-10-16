@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from shipyard.admit import BUDGET, verdict
+from shipyard.sampling.admit import BUDGET, verdict
 from shipyard.sampling.endpoint import ProviderEndpoint
 from shipyard.training.recipes.gepa.outcomes import (
     MAX_FEEDBACK,

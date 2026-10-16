@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from shipyard import types
-from shipyard.admit import verdict
 from shipyard.modules import KINDS, Module, read, write
+from shipyard.sampling.admit import verdict
 from shipyard.sampling.endpoint import ProviderEndpoint
 from shipyard.training.recipes.gepa.fitness import Outcome
 from shipyard.training.recipes.gepa.propose import Proposer, Reflection
