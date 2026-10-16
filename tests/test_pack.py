@@ -53,7 +53,7 @@ def test_a_tool_loop_packs_into_one_sequence_with_three_target_spans() -> None:
     assert found.spans == ((3, 5), (6, 7), (9, 11))
     assert found.targets == (3, 4, 6, 9, 10)
     assert _written(found) == [*C1, *C2, *C3]
-    assert found.mu == (-1.0, -1.1, -1.2, -1.3, -1.4)
+    assert found.sampled_logprobs == (-1.0, -1.1, -1.2, -1.3, -1.4)
 
 
 def test_a_prompt_that_does_not_extend_opens_a_second_sequence() -> None:
@@ -122,7 +122,7 @@ def _chunks(found: tinker.ModelInput) -> list[tuple[str, Any]]:
 def test_a_pictured_datum_is_the_cookbooks_chunks_and_shift() -> None:
     seen = _record((1, IMAGE_TOKEN, IMAGE_TOKEN, IMAGE_TOKEN, 5), (6, 7), 1, images=(SHOT,))
     [found] = sequences([seen])
-    ours = datum(found, logprobs=found.mu, advantages=[0.5, 0.5])
+    ours = datum(found, logprobs=found.sampled_logprobs, advantages=[0.5, 0.5])
     whole = [
         tinker.types.EncodedTextChunk(tokens=[1]),
         tinker.types.ImageChunk(data=b"png-bytes", format="png", expected_tokens=3),
@@ -156,7 +156,7 @@ def test_a_record_without_logprobs_leaves_the_sequence_with_no_mu() -> None:
     first, second, third = _tool_loop()
     bare = replace(second, inference_logprobs=())
     [found] = sequences([first, bare, third])
-    assert found.mu is None and found.spans == ((3, 5), (6, 7), (9, 11))
+    assert found.sampled_logprobs is None and found.spans == ((3, 5), (6, 7), (9, 11))
     silent = replace(first, completion_token_ids=(), inference_logprobs=())
     assert sequences([silent]) == []
 
@@ -194,7 +194,7 @@ def _fields(found: tinker.Datum) -> dict[str, list]:
 def test_the_datum_matches_the_cookbooks_shift_by_one_token_for_token() -> None:
     records = _tool_loop()
     [found] = sequences(records)
-    ours = datum(found, logprobs=found.mu, advantages=[0.75] * len(found.targets))
+    ours = datum(found, logprobs=found.sampled_logprobs, advantages=[0.75] * len(found.targets))
     [theirs] = _cookbook(records, 0.75)
     assert set(ours.loss_fn_inputs) == {"target_tokens", "logprobs", "advantages", "mask"}
     assert _fields(ours) == _fields(theirs)
@@ -216,7 +216,10 @@ def test_a_broken_chain_gives_the_cookbooks_two_datums() -> None:
     apart = _record((30, 31), (32, 33), 3)
     records = [first, second, apart]
     found = sequences(records)
-    ours = [datum(one, logprobs=one.mu, advantages=[-1.0] * len(one.targets)) for one in found]
+    ours = [
+        datum(one, logprobs=one.sampled_logprobs, advantages=[-1.0] * len(one.targets))
+        for one in found
+    ]
     theirs = _cookbook(records, -1.0)
     assert len(ours) == len(theirs) == 2
     assert [_fields(one) for one in ours] == [_fields(one) for one in theirs]
@@ -230,5 +233,5 @@ def test_a_datum_refuses_misaligned_inputs_and_a_sequence_too_short_to_shift() -
         datum(Sequence((1,), ((0, 1),), None), logprobs=[0.0], advantages=[1.0])
     # A completion starting at position 0 has no prediction to credit: the cookbook drops it.
     headless = Sequence((5, 6), ((0, 2),), (-0.1, -0.2))
-    made_one = datum(headless, logprobs=headless.mu, advantages=[1.0, 1.0])
+    made_one = datum(headless, logprobs=headless.sampled_logprobs, advantages=[1.0, 1.0])
     assert made_one.loss_fn_inputs["mask"].tolist() == [1] and made_one.model_input.to_ints() == [5]

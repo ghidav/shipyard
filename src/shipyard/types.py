@@ -64,7 +64,7 @@ class Sequence:
     #: (start, end) positions of each completion, in chain order.
     spans: tuple[tuple[int, int], ...]
     #: The sampler's logprobs at the targets; None when a record carried none.
-    mu: tuple[float, ...] | None
+    sampled_logprobs: tuple[float, ...] | None
     images: tuple[Picture, ...] = ()
 
     @property
@@ -104,14 +104,22 @@ class Update:
     seconds: float
     #: Number of sequences the step trained on.
     sequences: int = 0
-    #: Mean of mu minus the anchor's logprobs over those sequences; None without a KL term.
+    #: Mean of the reference logprobs minus the anchor's over those sequences; None without a
+    #: KL term.
     anchor_kl: float | None = None
+    #: Mean of the reference logprobs minus the teacher's over those sequences; None without a
+    #: teacher.
+    teacher_kl: float | None = None
+    #: Sequences the teacher scored, and those whose rollout had privileged text the teacher
+    #: could not read before them; None without a teacher.
+    taught: int | None = None
+    untaught: int | None = None
 
 
 @dataclass(frozen=True)
 class TrainingStep:
     """Result of one training step. `update` is None when no gradient was taken: there was
-    no training client, or no group had any reward variance."""
+    no training client, or no group carried one."""
 
     index: int
     groups: list[Group]
@@ -131,6 +139,11 @@ class TrainingClient(ABC):
         """Return a sampling client on the weights as first opened, for the KL term."""
 
     @abstractmethod
+    async def sampler(self, model: str) -> Any:
+        """Return a sampling client on a base model, or on the sampler weights at a
+        `tinker://` path."""
+
+    @abstractmethod
     async def forward_backward(
         self, datums: Values[Datum], loss_fn: str, loss_config: Mapping[str, float] | None
     ) -> Awaitable[Forward]: ...
@@ -140,8 +153,8 @@ class TrainingClient(ABC):
 
     @abstractmethod
     async def compute_logprobs(self, sequences: Values[Sequence]) -> list[list[float]]:
-        """Return the trainer's logprobs (mu) at every target of every sequence, from one
-        batched forward pass."""
+        """Return the trainer's logprobs at every target of every sequence, from one batched
+        forward pass."""
 
     @abstractmethod
     async def save_weights_for_sampler(self, name: str, *, ttl_seconds: int | None) -> str: ...
@@ -219,6 +232,10 @@ class Policy:
     #: is loaded.
     anchored: bool = False
     anchor: Any = field(default=None, init=False)
+    #: Sampling clients opened in the client's session, by the model or path they sample.
+    samplers: dict[str, Any] = field(default_factory=dict, init=False)
+    #: Sampler path the endpoint serves; None while it serves the base model.
+    served: str | None = field(default=None, init=False)
 
     async def __aenter__(self) -> Policy:
         try:
@@ -231,6 +248,7 @@ class Policy:
             await self.endpoint.open()
             if self.start is not None:
                 await self.endpoint.serve(self.start)
+                self.served = self.start
             elif self.client is not None:
                 await self.sync("start")
         except BaseException as failed:
@@ -250,13 +268,25 @@ class Policy:
         status = "errored" if isinstance(failed, Exception) else "interrupted"
         await self.client.close(status, f"{type(failed).__name__}: {failed}")
 
+    async def sampler(self, model: str) -> Any:
+        """Return a sampling client on `model`, a base model or a `tinker://` sampler path,
+        opening it on first use."""
+        if self.client is None:
+            raise RuntimeError("a provider's policy has no session to sample another model in")
+        if model not in self.samplers:
+            self.samplers[model] = await self.client.sampler(model)
+        return self.samplers[model]
+
     async def sync(self, tag: str) -> str:
         """Save the client's weights for sampling as `tag`, serve them, and return their
-        path."""
+        path. A sampler opened on the weights served before is dropped, as they expire."""
         if self.client is None:
             raise RuntimeError("a provider's policy has no weights to sync")
         path = await self.client.save_weights_for_sampler(tag, ttl_seconds=SERVE_TTL)
         await self.endpoint.serve(path)
+        if self.served is not None:
+            self.samplers.pop(self.served, None)
+        self.served = path
         return path
 
 
@@ -374,6 +404,9 @@ class Member:
     #: Empty when masked.
     sequences: tuple[Sequence, ...]
     sampled_tokens: int
+    #: Text the teacher reads before this rollout's instruction, from `Trainer.privileged`:
+    #: "" for none, None for no teacher term.
+    privileged: str | None = None
 
     @property
     def measured(self) -> bool:

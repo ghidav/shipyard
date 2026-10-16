@@ -112,6 +112,11 @@ class TinkerClient(TrainingClient):
             base_model=self.model, model_path=start
         )
 
+    async def sampler(self, model: str) -> Any:
+        if model.startswith("tinker://"):
+            return await self.service.create_sampling_client_async(model_path=model)
+        return await self.service.create_sampling_client_async(base_model=model)
+
     async def forward_backward(
         self, datums: Values[Datum], loss_fn: str, loss_config: Mapping[str, float] | None
     ) -> Awaitable[Forward]:

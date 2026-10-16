@@ -1,0 +1,18 @@
+[agent]
+model = "Qwen/Qwen3-8B"
+harness = "pi@0.85.1"
+
+[data]
+train = "aime-train"
+batch_size = 2
+group_size = 4
+
+[rollout]
+concurrency = 2
+
+[recipe]
+kind = "opd"
+steps = 2
+learning_rate = 2e-5
+teacher = "Qwen/Qwen3-32B"
+lora_rank = 32

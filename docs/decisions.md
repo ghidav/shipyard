@@ -32,8 +32,8 @@ A learning rate tuned with one set of betas, eps and warm-up trains differently 
 ## Training
 
 **The step is shipyard's own, over the Tinker SDK. The cookbook is imported in one adapter module,
-for the renderers and the proxy app only, plus one lazy lookup of its model table when `check`
-names the renderer it would pick.**
+for the renderers, the tokenizers and the proxy app only, plus one lazy lookup of its model table
+when `check` names the renderer it would pick.**
 A cookbook release cannot change the loss under a run, and shipyard sends the same datums and loss
 config to any backend that `TINKER_BASE_URL` names.
 
@@ -45,21 +45,43 @@ Otherwise an off-policy batch is credited as on-policy.
 sampled.**
 Otherwise the ratio is formed against weights that produced none of the tokens.
 
-**μ comes from the trainer by default.**
-The sampler and the trainer are different engines whose logprobs differ slightly, and recomputing μ
-keeps the ratio within one engine.
+**The reference logprobs come from the trainer by default.**
+The sampler and the trainer are different engines whose logprobs differ slightly, and recomputing
+the reference logprobs keeps the ratio within one engine.
 
 **Under `reference = "sampler"`, a batch whose records carry no logprobs is refused.**
 A gap misaligns every ratio after it.
 
-**A group with one measured rollout, or with equal rewards after `dr-grpo`'s length rule, is dropped
-before the reference pass.**
+**Without a teacher, a group with one measured rollout, or with equal rewards after `dr-grpo`'s
+length rule, is dropped before the reference pass.**
 It carries no gradient, and a step left with nothing logs `trained: false`.
 
+**With a teacher, every group with a measured rollout trains, equal rewards or not.**
+The teacher's term gives each of its tokens a gradient, and the batches dropped otherwise include
+those the policy fails entirely, where a teacher has the most to teach.
+
+**A teacher must tokenize as the policy does, and `check` loads both tokenizers to compare them.**
+The teacher scores the policy's token ids. Under another vocabulary those ids are other text, and
+the term pulls toward noise without an error.
+
+**Privileged text is placed by finding the instruction in the decoded tokens, and inserted at a
+token boundary as its own tokens.**
+The records keep token ids only, and the instruction tokenized alone does not match its tokens in
+context, where they can merge with what comes before.
+
+**A sequence whose instruction does not come before its first completion, or whose text would
+overflow the context, gets no teacher term and is counted; it is never truncated.**
+Text placed after a completion cannot condition it, and a truncated sequence trains on part of its
+tokens with no sign it was cut.
+
+**`check` blocks `teacher = "current"` under a trainer that gives no privileged text.**
+The teacher then scores the tokens with the policy's own weights, and the run pays for a term of
+about 0.
+
 **Substeps split the batch by prompt, into at most as many parts as there are groups, and every
-substep keeps μ from the weights the batch was sampled at.**
-The papers' mini-batches are sets of prompts. With μ read again before each substep, the ratio stays
-1 and the clipping never acts.
+substep keeps the reference logprobs of the weights the batch was sampled at.**
+The papers' mini-batches are sets of prompts. With the reference logprobs read again before each
+substep, the ratio stays 1 and the clipping never acts.
 
 **`dapo`, `cispo` and `fst` average each prompt's token losses; `dr-grpo` keeps Tinker's sum.**
 Summed, a prompt whose rollouts wrote long answers outweighs the others.

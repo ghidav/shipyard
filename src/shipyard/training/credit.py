@@ -12,7 +12,7 @@ from shipyard.types import Sequence
 
 #: Harbor's reward for a fully solved task. The length penalty compares solved rollouts only.
 SOLVED = 1.0
-#: Maximum number of concurrent anchor logprob requests.
+#: Maximum number of concurrent logprob requests to one sampling client.
 LOGPROB_CONCURRENCY = 16
 
 #: Added to the standard deviation when normalizing, to avoid dividing by zero.
@@ -80,20 +80,22 @@ def advantages(shaped_rewards: Values[float], *, normalize: bool) -> list[float]
 
 
 def sampler_logprobs(sequence: Sequence) -> list[float]:
-    """Return mu, the sampler's logprobs at the sequence's targets, as the proxy recorded them.
+    """Return the sampler's logprobs at the sequence's targets, as the proxy recorded them.
 
     Raise `ValueError` when they are missing or incomplete, since a short list would
     misalign every ratio after it."""
-    if sequence.mu is None or len(sequence.mu) != len(sequence.targets):
+    recorded = sequence.sampled_logprobs
+    if recorded is None or len(recorded) != len(sequence.targets):
         raise ValueError(
             '`[recipe] reference = "sampler"` reads the records\' logprobs, and a record '
             "of this batch carries none for its completion"
         )
-    return list(sequence.mu)
+    return list(recorded)
 
 
-async def anchor_logprobs(anchor: Any, sequences: Values[Sequence]) -> list[list[float]]:
-    """Return the starting weights' logprobs at every target of each sequence.
+async def scored_logprobs(sampler: Any, sequences: Values[Sequence]) -> list[list[float]]:
+    """Return a sampling client's logprobs at every target of each sequence, such as the
+    starting weights' or a teacher's.
 
     Each sequence is scored with one `compute_logprobs_async` call, at most
     `LOGPROB_CONCURRENCY` at once. Position `p` scores `tokens[p]` (the cookbook's
@@ -102,7 +104,7 @@ async def anchor_logprobs(anchor: Any, sequences: Values[Sequence]) -> list[list
 
     async def one(sequence: Sequence) -> list[float]:
         async with gate:
-            scored = await anchor.compute_logprobs_async(
+            scored = await sampler.compute_logprobs_async(
                 model_input(sequence.tokens, sequence.images)
             )
         scored = list(scored)

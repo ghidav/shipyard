@@ -46,7 +46,7 @@ class FakeForwardBackward:
 @dataclass
 class FakeTrainingClient:
     """Fake `tinker.TrainingClient`. `forward` scores every position `logprob` (the reference
-    mu), or the negated target token id when `positional` is set; `forward_backward` scores
+    logprobs), or the negated target token id when `positional` is set; `forward_backward` scores
     `trained` (pi) or raises `failing`. Calls are appended to `calls` and datums to `sent`."""
 
     logprob: float = -0.5
@@ -120,6 +120,29 @@ class FlatAnchor:
         return [None] + [self.logprob] * (prompt.length - 1)
 
 
+class Positional:
+    """Fake teacher that scores each token minus its id over 1000, so a score read at the
+    wrong position shows. The first position is unscored, as in `compute_logprobs`."""
+
+    def __init__(self) -> None:
+        self.asked: list[list[int]] = []
+
+    async def compute_logprobs_async(self, prompt: Any) -> list[float | None]:
+        found = chunk_ids(prompt)
+        self.asked.append(found)
+        return [None] + [-one / 1000 for one in found[1:]]
+
+
+class CharTokenizer:
+    """Fake tokenizer that reads one character per token, as `tests.proxies.ids` renders."""
+
+    def decode(self, tokens: list[int]) -> str:
+        return "".join(chr(one) for one in tokens)
+
+    def encode(self, text: str, add_special_tokens: bool = True) -> list[int]:
+        return [ord(one) for one in text]
+
+
 def chunk_ids(prompt: Any) -> list[int]:
     """Return a prompt's token ids with each image chunk as a run of -1 of its length. This
     avoids `to_ints`, which rejects images."""
@@ -140,13 +163,14 @@ def capable(*models: tuple[str, bool]) -> GetServerCapabilitiesResponse:
 @dataclass
 class FakeService:
     """Fake `tinker.ServiceClient` covering what a run uses: the three training client
-    factories (each `user_metadata` is kept in `metadata`), the anchor sampling client, the
-    server capabilities (None makes the call raise, which a run must survive), and `close`,
-    which records its status."""
+    factories (each `user_metadata` is kept in `metadata`), sampling clients (a model or path
+    in `teachers` gets its own, any other the anchor), the server capabilities (None makes the
+    call raise, which a run must survive), and `close`, which records its status."""
 
     client: FakeTrainingClient = field(default_factory=FakeTrainingClient)
     capabilities: GetServerCapabilitiesResponse | None = None
     anchor: FlatAnchor = field(default_factory=FlatAnchor)
+    teachers: dict[str, FlatAnchor] = field(default_factory=dict)
     refusing: Exception | None = None
     calls: list[tuple[Any, ...]] = field(default_factory=list)
     metadata: list[dict[str, str] | None] = field(default_factory=list)
@@ -185,7 +209,7 @@ class FakeService:
         self, model_path: str | None = None, base_model: str | None = None
     ) -> FlatAnchor:
         self.calls.append(("sampling", base_model, model_path))
-        return self.anchor
+        return self.teachers.get(model_path or base_model or "", self.anchor)
 
     async def close(self, status: str, detail: str | None = None) -> None:
         self.closed.append((status, detail))

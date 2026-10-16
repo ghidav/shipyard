@@ -5,10 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from tinker.types import SupportedModel
 
-from shipyard.cli import preflight
+from shipyard.cli import preflight, resolved
 from shipyard.cli.preflight import Finding
+from shipyard.cli.resolved import UNTOLD
 from shipyard.proxy import tunnel
+from shipyard.training.recipes.opd import OPDTrainer
+from shipyard.types import Group, Member
 from tests.trials import BLUEPRINTS, check, fixture_tasks, write_blueprint
 
 #: Provider-hosted evaluate blueprint that passes `check` from a directory with the fixtures.
@@ -267,17 +271,19 @@ def test_the_probe_asks_the_backend_only_under_a_key_and_names_it(
     fixture_tasks(tmp_path)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("TINKER_API_KEY", "sk")
-    monkeypatch.setattr(
-        "shipyard.cli.preflight.supported_models", lambda: ["Qwen/Qwen3-8B", "other/m"]
+    served = _catalog(
+        SupportedModel(model_name="Qwen/Qwen3-8B"), SupportedModel(model_name="other/m")
     )
+    monkeypatch.setattr("shipyard.cli.preflight.supported_models", lambda: served)
     assert _served(tmp_path, sandbox="docker")[-1] == Finding("ok", "tinker serves Qwen/Qwen3-8B")
     monkeypatch.setenv("TINKER_BASE_URL", "https://api.fireworks.ai/inference/v1")
-    monkeypatch.setattr("shipyard.cli.preflight.supported_models", lambda: ["other/m"])
+    other = _catalog(SupportedModel(model_name="other/m"))
+    monkeypatch.setattr("shipyard.cli.preflight.supported_models", lambda: other)
     assert _served(tmp_path / "f", sandbox="docker")[-1] == Finding(
         "blocked", "tinker@api.fireworks.ai does not serve Qwen/Qwen3-8B; it serves other/m"
     )
 
-    def broken() -> list[str]:
+    def broken() -> dict[str, SupportedModel]:
         raise ConnectionError("no route to host")
 
     monkeypatch.setattr("shipyard.cli.preflight.supported_models", broken)
@@ -285,6 +291,132 @@ def test_the_probe_asks_the_backend_only_under_a_key_and_names_it(
         "warning",
         "could not ask tinker@api.fireworks.ai whether it serves Qwen/Qwen3-8B: no route to host",
     )
+
+
+# ------------------------------------------------------------------------ the teacher
+
+#: The opd fixture's teacher.
+TEACHER = "Qwen/Qwen3-32B"
+
+
+def _catalog(*models: SupportedModel) -> dict[str, SupportedModel]:
+    return {str(one.model_name): one for one in models}
+
+
+def _taught(tmp_path: Path, teacher: str = TEACHER, rollout: str = "") -> list[Finding]:
+    """Run `check` on the opd fixture with another teacher and extra `[rollout]` keys, and
+    return the findings that name the teacher or its tokenizer."""
+    text = (BLUEPRINTS / "opd" / "run.toml").read_text(encoding="utf-8")
+    text = text.replace(f'teacher = "{TEACHER}"', f'teacher = "{teacher}"')
+    text = text.replace("[rollout]\n", f"[rollout]\n{rollout}")
+    found = check(write_blueprint(tmp_path, text))
+    return [f for f in found if "teacher" in f.text or "tokeniz" in f.text]
+
+
+def test_a_teacher_is_named_and_checked_only_under_a_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    assert _taught(tmp_path / "a") == [
+        Finding("ok", f"teacher {TEACHER}, distill 1.0"),
+        Finding("warning", f"could not check the teacher {TEACHER}: TINKER_API_KEY is unset"),
+    ]
+    found = _taught(tmp_path / "b", rollout="temperature = 0.7\n")
+    assert (
+        Finding(
+            "warning",
+            "[rollout] temperature = 0.7: the teacher scores at temperature 1, so its term is "
+            "measured on tokens the policy sampled at another temperature",
+        )
+        in found
+    )
+
+
+def test_a_teacher_must_be_served_sampleable_long_enough_and_tokenize_as_the_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TINKER_API_KEY", "sk")
+    models = _catalog(
+        SupportedModel(model_name="Qwen/Qwen3-8B", max_context_length=32768),
+        SupportedModel(model_name=TEACHER, max_context_length=32768, sampleable=True),
+        SupportedModel(model_name="Qwen/Qwen3-Short", max_context_length=8192),
+        SupportedModel(model_name="Qwen/Qwen3-Busy", sampleable=False),
+        SupportedModel(model_name="meta-llama/Llama-3.1-70B", max_context_length=32768),
+    )
+    monkeypatch.setattr("shipyard.cli.preflight.supported_models", lambda: models)
+    monkeypatch.setattr(
+        "shipyard.cli.preflight.vocabulary", lambda model: {"qwen" if "Qwen" in model else "x": 0}
+    )
+    assert [f for f in _taught(tmp_path / "ok") if f.level != "ok"] == []
+    assert Finding("ok", f"the teacher {TEACHER} tokenizes as Qwen/Qwen3-8B does") in _taught(
+        tmp_path / "said"
+    )
+    blocked = {
+        "Qwen/Qwen3-9B": "[recipe] teacher: tinker does not serve Qwen/Qwen3-9B",
+        "Qwen/Qwen3-Busy": "[recipe] teacher: tinker lists Qwen/Qwen3-Busy but cannot sample it",
+        "Qwen/Qwen3-Short": "[recipe] teacher: Qwen/Qwen3-Short reads at most 8192 tokens and a "
+        "rollout may reach 32768; set [rollout] max_context = 8192",
+        "meta-llama/Llama-3.1-70B": "[recipe] teacher: meta-llama/Llama-3.1-70B tokenizes "
+        "differently from Qwen/Qwen3-8B, so it would score other tokens than the policy sampled",
+    }
+    for at, (teacher, said) in enumerate(blocked.items()):
+        found = _taught(tmp_path / str(at), teacher)
+        assert [f for f in found if f.level == "blocked"] == [Finding("blocked", said)]
+    short = _taught(tmp_path / "capped", "Qwen/Qwen3-Short", "max_context = 8192\n")
+    assert [f for f in short if f.level == "blocked"] == []
+
+
+def test_a_checkpoint_teacher_is_checked_as_its_base_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TINKER_API_KEY", "sk")
+    models = _catalog(
+        SupportedModel(model_name="Qwen/Qwen3-8B"), SupportedModel(model_name=TEACHER)
+    )
+    monkeypatch.setattr("shipyard.cli.preflight.supported_models", lambda: models)
+    monkeypatch.setattr("shipyard.cli.preflight.vocabulary", lambda model: {"same": 0})
+    asked: list[str] = []
+
+    def base(path: str) -> str:
+        asked.append(path)
+        if "gone" in path:
+            raise RuntimeError("404 not found")
+        return TEACHER
+
+    monkeypatch.setattr("shipyard.cli.preflight.checkpoint_base", base)
+    path = "tinker://r/sampler_weights/final"
+    assert Finding("ok", f"tinker serves the teacher {TEACHER}") in _taught(tmp_path / "a", path)
+    gone = "tinker://gone/sampler_weights/final"
+    assert [f for f in _taught(tmp_path / "b", gone) if f.level == "blocked"] == [
+        Finding("blocked", f"[recipe] teacher: cannot read {gone}: 404 not found")
+    ]
+    assert asked == [path, gone]
+
+
+def test_a_teacher_of_the_policys_own_weights_needs_privileged_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The backend is not asked about the policy's own weights, and a trainer that gives the
+    teacher text lifts the block on "current" and the warning on "start"."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TINKER_API_KEY", "sk")
+    models = _catalog(SupportedModel(model_name="Qwen/Qwen3-8B"))
+    monkeypatch.setattr("shipyard.cli.preflight.supported_models", lambda: models)
+
+    class Told(OPDTrainer):
+        async def privileged(self, member: Member, group: Group) -> str | None:
+            return "Think first.\n"
+
+    for teacher, said in (("current", "the current weights"), ("start", "the starting weights")):
+        text = (BLUEPRINTS / "opd" / "run.toml").read_text(encoding="utf-8")
+        home = write_blueprint(tmp_path / teacher, text.replace(TEACHER, teacher))
+        found = [f for f in resolved.report(home).findings if "teacher" in f.text]
+        assert found == [Finding("ok", f"teacher {said}, distill 1.0"), UNTOLD[teacher]]
+        told = resolved.report(home, Told).findings
+        assert UNTOLD[teacher] not in told
+        assert Finding("ok", "privileged text from Told.privileged") in told
 
 
 # ------------------------------------------------------------------ the reflector's key

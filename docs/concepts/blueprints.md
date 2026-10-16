@@ -49,12 +49,13 @@ such as `"anthropic"`, means the harness calls that provider itself.
 
 ## Recipe names
 
-`[recipe] kind` is one of five names:
+`[recipe] kind` is one of seven names:
 
 | Kind | Does |
 |---|---|
-| `dapo`, `dr-grpo`, `cispo` | train the served weights by gradient |
+| `dapo`, `dr-grpo`, `cispo`, `opd` | train the served weights by gradient |
 | `gepa` | search over the text in `modules/`; the weights stay fixed |
+| `fst` | alternate a `gepa` search and gradient steps |
 | `evaluate` | measure the policy |
 
 A name is a preset: it fixes how the advantage is formed and which loss and clipping are
@@ -112,7 +113,7 @@ blocked  [rollout] harness: now [agent] harness
 `clip` is a `dr-grpo` knob, so `dapo` refuses it. A misspelt kind lists the valid ones:
 
 ```text
-blocked  [recipe] kind: no recipe called 'grpo'; one of dapo, dr-grpo, cispo, gepa, evaluate
+blocked  [recipe] kind: no recipe called 'grpo'; one of dapo, dr-grpo, cispo, opd, gepa, fst, evaluate
 ```
 
 ## What check prints

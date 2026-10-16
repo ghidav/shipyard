@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 #: Counts kept for each party. Only counts are stored, never prices.
 COUNTS = ("trials", "input_tokens", "cache_tokens", "output_tokens")
 #: Counts training adds to the Tinker party. Each appears only once the run has spent some.
-TRAINING_COUNTS = ("train_tokens", "reference_tokens", "anchor_tokens")
+TRAINING_COUNTS = ("train_tokens", "reference_tokens", "anchor_tokens", "teacher_tokens")
 #: The phases Harbor times on a trial, in the order they run.
 PHASES = ("environment_setup", "agent_setup", "agent_execution", "verifier")
 

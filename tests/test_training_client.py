@@ -15,9 +15,9 @@ from tests.proxies import MODEL
 from tests.trainers import FakeService, FakeTrainingClient, capable
 
 
-def _datum(tokens: int = 4, *, mu: float = -0.5, advantage: float = 1.0) -> tinker.Datum:
+def _datum(tokens: int = 4, *, reference: float = -0.5, advantage: float = 1.0) -> tinker.Datum:
     sequence = Sequence(tuple(range(1, tokens + 1)), ((tokens - 2, tokens),), None)
-    return datum(sequence, logprobs=[mu, mu], advantages=[advantage, advantage])
+    return datum(sequence, logprobs=[reference, reference], advantages=[advantage, advantage])
 
 
 async def _client(**fake: Any) -> tuple[TinkerClient, FakeTrainingClient]:
@@ -95,6 +95,18 @@ async def test_the_anchor_is_a_sampling_client_on_the_weights_as_opened() -> Non
     await opened.anchor()
     assert service.client.calls == [("save_weights_for_sampler", "anchor", SERVE_TTL)]
     assert service.calls[-1] == ("sampling", MODEL, "tinker://fake/sampler_weights/anchor")
+
+
+async def test_a_sampler_opens_on_a_base_model_or_on_a_checkpoints_sampler_weights() -> None:
+    service = FakeService()
+    opened = TinkerClient(service, MODEL)
+    await opened.open()
+    await opened.sampler("Qwen/Qwen3-32B")
+    await opened.sampler("tinker://r/sampler_weights/final")
+    assert service.calls[-2:] == [
+        ("sampling", "Qwen/Qwen3-32B", None),
+        ("sampling", None, "tinker://r/sampler_weights/final"),
+    ]
 
 
 # -------------------------------------------------------------------- the step

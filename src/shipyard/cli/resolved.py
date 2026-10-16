@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from shipyard.cli.preflight import Finding, findings
-from shipyard.config import Blueprint, ConfigError, load
+from shipyard.config import OWN_TEACHERS, Blueprint, ConfigError, load
 
 #: Keys TOML accepts unquoted; any other key is written as a quoted string.
 BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
@@ -48,10 +48,12 @@ def report(blueprint: Path, trainer: Any = None) -> Report:
     """Load a blueprint and report its resolved config, resolution line and findings.
 
     When `trainer` is given, the resolution line is computed for it, and an `ok` finding notes
-    when it defines its own `secrets`. A blueprint that does not load yields only its load
-    errors, as blocking findings.
+    when it defines its own `secrets` or `privileged`. A teacher that is the policy's own
+    weights, under a trainer that gives it no privileged text, is blocked for "current" and
+    warned about for "start". A blueprint that does not load yields only its load errors, as
+    blocking findings.
     """
-    from shipyard.training.recipes import resolution
+    from shipyard.training.recipes import resolution, trainer_for
     from shipyard.training.trainer import Trainer
 
     try:
@@ -61,7 +63,29 @@ def report(blueprint: Path, trainer: Any = None) -> Report:
     found = findings(loaded)
     if trainer is not None and trainer.secrets is not Trainer.secrets:
         found.append(Finding("ok", f"secrets from {trainer.__name__}.secrets"))
+    chosen = trainer or trainer_for(loaded.recipe)
+    teacher = getattr(loaded.recipe, "teacher", None)
+    if chosen.privileged is not Trainer.privileged:
+        found.append(Finding("ok", f"privileged text from {chosen.__name__}.privileged"))
+    elif teacher in OWN_TEACHERS:
+        found.append(UNTOLD[teacher])
     return Report(resolved(loaded), resolution(loaded.recipe, trainer), found)
+
+
+#: Findings for a teacher that is the policy's own weights and reads no privileged text.
+UNTOLD = {
+    "current": Finding(
+        "blocked",
+        '[recipe] teacher = "current" is the policy itself, so with no privileged text its '
+        "term is about 0; a trainer file gives the teacher text by overriding `privileged`",
+    ),
+    "start": Finding(
+        "warning",
+        '[recipe] teacher = "start" with no privileged text pulls toward the starting '
+        "weights, as kl_coef does; a trainer file gives the teacher text by overriding "
+        "`privileged`",
+    ),
+}
 
 
 def resolved(loaded: Blueprint) -> dict[str, Any]:
