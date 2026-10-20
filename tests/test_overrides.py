@@ -3,6 +3,7 @@ how the flags are read, what they set, and the run's copy of its blueprint, whic
 
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,8 @@ from shipyard.config import ConfigError, load
 from shipyard.run.directory import continued, open_run
 from tests.test_trainer import blueprint
 
+#: A color code, which rich writes around what it highlights once a terminal is forced, as on CI.
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
 MINE = "from shipyard import Trainer\n\n\nclass Mine(Trainer):\n    pass\n"
 
 
@@ -110,4 +113,4 @@ def test_the_cli_refuses_a_mistyped_key_before_opening_a_run(
     assert result.exit_code == 1 and "[data] trian: unknown key" in result.output
     assert not trained and not runs.exists()
     result = CliRunner().invoke(app, ["run", str(home), "--data.train"])
-    assert result.exit_code == 2 and "--data.train needs a value" in result.output
+    assert result.exit_code == 2 and "--data.train needs a value" in ANSI.sub("", result.output)
