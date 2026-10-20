@@ -19,7 +19,8 @@ uvx harbor datasets download <dataset> -o tasks   # tasks land in tasks/<dataset
 shipyard run recipes/dapo --data.train <dataset>  # the run writes runs/dapo__<id>/
 ```
 
-`--data.train` sets the dataset for this run, in place of the one the recipe's `run.toml` names. Each recipe's `README.md` says what else it needs: keys and sandbox.
+> [!IMPORTANT]
+> Check all the parameters of this run at `recipes/dapo/run.toml`.
 
 ## Customizing
 
