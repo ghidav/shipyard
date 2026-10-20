@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
 from collections.abc import Sequence as Values
 from pathlib import Path
 from types import TracebackType
@@ -11,9 +10,9 @@ import tinker
 
 from harness_proxy.wire import model_input
 from shipyard.groups import Sequence
-from shipyard.models.client import SERVE_TTL, TinkerClient
+from shipyard.models.clients import Client, client_for
 from shipyard.models.endpoints import ProviderEndpoint, ProxyEndpoint
-from shipyard.run.costs import UNKNOWN, Costs
+from shipyard.run.costs import UNKNOWN, Spend
 
 if TYPE_CHECKING:
     from shipyard.config import Blueprint
@@ -28,14 +27,14 @@ LOGPROB_CONCURRENCY = 16
 class Frozen:
     """A model frozen in the agent's Tinker session: `INITIAL`, another model, or a checkpoint."""
 
-    def __init__(self, load: str, model: str | None, costs: Costs) -> None:
+    def __init__(self, load: str, model: str | None, spend: Spend) -> None:
         #: What it loads: `INITIAL`, a model's name, or a `tinker://` checkpoint.
         self.load = load
         #: The model its tokens are priced as; for a checkpoint or `INITIAL`, its base model,
         #: known once the session opens it.
         self.model = model
         self.provider: str | None = None
-        self.costs = costs
+        self.spend = spend
         self.sampler: Any = None
         #: It is never served to a harness, and has no rollout budget.
         self.endpoint: Any = None
@@ -56,29 +55,37 @@ class Frozen:
                 "`train` starts"
             )
         found, tokens = await sampled(self.sampler, sequences)
-        self.costs.add(self.provider or UNKNOWN, self.model or UNKNOWN, **tokens)
+        self.spend(self.provider or UNKNOWN, self.model or UNKNOWN, **tokens)
         return found
 
 
 class Provider:
     """A provider's model, asked through LiteLLM. It cannot score."""
 
-    def __init__(self, model: str, provider: str, costs: Costs) -> None:
-        self.model, self.provider, self.costs = model, provider, costs
+    def __init__(self, model: str, provider: str, spend: Spend) -> None:
+        self.model, self.provider, self.spend = model, provider, spend
         #: What a harness calls when this model is the agent, and what `sample` asks.
         self.endpoint = ProviderEndpoint(model, provider)
         #: The provider's limits apply, not a budget of the run's.
         self.budget: int | None = None
 
     async def sample(self, prompts: Values[str], **params: Any) -> list[str]:
-        """Return the model's reply to each prompt. `params` go to the provider as they are."""
-        asked = (
-            self.endpoint.sample([{"role": "user", "content": one}], **params) for one in prompts
-        )
-        replies = []
-        for reply, tokens in await asyncio.gather(*asked):
-            self.costs.add(self.provider, self.model, **tokens)
-            replies.append(reply)
+        """Return the model's reply to each prompt. `params` go to the provider as they are.
+        Each call is billed as it ends; if any failed, the first failure is raised once every
+        call has ended."""
+
+        async def ask(prompt: str) -> str:
+            reply, tokens = await self.endpoint.sample(
+                [{"role": "user", "content": prompt}], **params
+            )
+            self.spend(self.provider, self.model, **tokens)
+            return reply
+
+        replies: list[str] = []
+        for one in await asyncio.gather(*(ask(one) for one in prompts), return_exceptions=True):
+            if isinstance(one, BaseException):
+                raise one
+            replies.append(one)
         return replies
 
     async def score(self, sequences: Values[Sequence]) -> list[list[float]]:
@@ -88,31 +95,26 @@ class Provider:
 
 
 class Session:
-    """The agent on Tinker: its training client and the proxy its harnesses call."""
+    """The agent on Tinker or Together: its training client and the proxy its harnesses
+    call."""
 
     def __init__(
         self,
         config: Blueprint,
         directory: Path,
-        costs: Costs,
+        spend: Spend,
         *,
-        resumed: Mapping[str, Any] | None = None,
+        weights: str | None = None,
     ) -> None:
-        self.client = TinkerClient(
-            config.agent.model,
-            run=Path(directory).name,
-            from_checkpoint=config.agent.from_checkpoint,
-            lora_rank=config.recipe.lora_rank,
-            restore_optimizer=config.recipe.restore_optimizer,
-            anchor_ttl=round(config.checkpoints.ttl_hours * 3600),
-        )
+        self.client: Client = client_for(config, directory)
         #: The proxy the agent's harnesses call.
         self.endpoint = ProxyEndpoint(config, directory)
-        self.costs = costs
+        self.spend = spend
         #: The frozen models that open in this session.
         self.frozen: list[Frozen] = []
-        #: The training state a resumed run loads before it goes on.
-        self.state: str | None = resumed["state_path"] if resumed is not None else None
+        #: The training state the session opens on, from the checkpoint a run resumes from;
+        #: None opens the initial weights.
+        self.weights = weights
 
     @property
     def provider(self) -> str:
@@ -140,8 +142,9 @@ class Session:
                 sampler = await self.client.sampler(one.load)
                 model = one.model or await sampler.get_base_model_async()
                 one.opened(sampler, self.provider, model)
-            if self.state is not None:
-                await self.client.load_state(self.state)
+            if self.weights is not None:
+                await self.client.load_state(self.weights)
+            self.endpoint.backend = await self.client.serving()
             await self.endpoint.open()
             await self.serve("start")
         except BaseException as failed:
@@ -175,8 +178,8 @@ class Session:
         return await self.client.compute_logprobs(sequences)
 
     async def serve(self, tag: str) -> str:
-        """Save the agent's weights as `tag`, point the proxy at them, and return their path."""
-        path = await self.client.save_weights_for_sampler(tag, ttl_seconds=SERVE_TTL)
+        """Publish the agent's weights as `tag`, point the proxy at them, and return their path."""
+        path = await self.client.publish(tag)
         await self.endpoint.serve(path)
         return path
 
@@ -193,8 +196,8 @@ class Session:
         return state, weights
 
     def count(self, **tokens: int) -> None:
-        """Add tokens the agent spent, by kind, to the run's costs."""
-        self.costs.add(self.provider, self.model, **tokens)
+        """File tokens the agent spent, by kind, in the run's costs."""
+        self.spend(self.provider, self.model, **tokens)
 
 
 async def sampled(

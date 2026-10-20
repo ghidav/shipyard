@@ -8,7 +8,7 @@ import torch
 
 from shipyard.groups import Sequence
 from shipyard.models.agent import INITIAL, Frozen, Provider, Session
-from shipyard.models.client import TINKER
+from shipyard.models.clients.tinker import TINKER
 from shipyard.models.context import insert
 
 __all__ = ["INITIAL", "Policy"]

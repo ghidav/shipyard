@@ -32,6 +32,8 @@ harness-proxy = "harness_proxy.serve:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.3", "pytest-asyncio>=0.24"]
+# The `together` backend, which samples a Together post-training session.
+together = ["together>=2.42"]
 
 [build-system]
 requires = ["hatchling"]

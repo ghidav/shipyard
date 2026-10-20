@@ -1,5 +1,5 @@
 """Tests for packing a trial's records into sequences (`shipyard.groups`) and sequences
-into Tinker datums (`shipyard.models.client`), checked against the cookbook."""
+into Tinker datums (`shipyard.models.clients.tinker`), checked against the cookbook."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from harness_proxy.wire import IMAGE_TOKEN, Picture, Record, model_input
 from shipyard.groups import Sequence, Trial, chains, grouped
 from shipyard.jobs.admit import ENV_ERROR, Verdict
 from shipyard.jobs.harnesses import harness
-from shipyard.models.client import datum, shifted
+from shipyard.models.clients.tinker import datum, shifted
 from tests.fakes import made
 
 P1, C1, T1, C2, T2, C3 = (1, 2, 3), (10, 11), (20,), (12,), (21, 22), (13, 14)

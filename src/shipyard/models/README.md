@@ -10,9 +10,11 @@ Recipes interact only with high-level abstractions (`Policy`, `rollout`, and `up
 | Module | Primary Role |
 | --- | --- |
 | **`agent.py`** | Defines runtime backends (`Session`, `Frozen`, `Provider`), initial reference policies (`INITIAL`), and scoring routines. |
-| **`client.py`** | Wraps the Tinker training client (`TinkerClient`) and formats sequences/token shifts (`shifted`, `datum`) for training passes. |
+| **`clients/`** | The agent's training client, one module per provider that trains it; `client_for` picks it by `[agent] provider`. |
+| **`clients/tinker.py`** | Wraps the Tinker training client (`TinkerClient`) and formats sequences/token shifts (`shifted`, `datum`) for training passes. |
 | **`endpoints.py`** | Configures connection endpoints (`ProxyEndpoint`, `ProviderEndpoint`) that route harness calls to models. |
 | **`context.py`** | Utility to insert text (e.g., critic advice) prior to the task instruction via token splicing. |
+| **`clients/together.py`** | Trains the agent on Together post-training (`TogetherClient`) when `[agent] provider = "together"`: a LoRA session on a GPU resource the run provisions, whose generator the proxy samples. |
 
 
 ## 2. Policy Backends
@@ -26,6 +28,8 @@ When `Trainer.train` begins, each `Policy` the trainer holds (as an attribute, o
 | **`Provider`** | External commercial LLMs (OpenAI, Anthropic). | Routed via LiteLLM (concurrency capped at 8, 4 retries). | Refused. | Billed to provider directly. |
 
 > **Note:** Calling `sample` or `logprobs` on a policy before it is bound raises `RuntimeError` (`"not connected yet"`).
+
+> **Together:** with `[agent] provider = "together"`, `Session` trains through `TogetherClient` instead of Tinker. Its generator serves only the session's latest published weights, so frozen policies are refused; checkpoints are Together ids that never expire; and the GPUs bill by the hour until the run stops them.
 
 
 ## 3. Training & Session Lifecycle
@@ -95,7 +99,8 @@ During an `update`, trajectories captured by the proxy are formatted for Tinker:
 
 | Test Suite | Coverage |
 | --- | --- |
-| `tests/test_client.py` | Tinker client lifecycle (open, anchor, samplers, saves, close), the pipelined training step and `compute_logprobs`. |
+| `tests/test_tinker.py` | Tinker client lifecycle (open, anchor, samplers, saves, close), the pipelined training step and `compute_logprobs`. |
+| `tests/test_together.py` | A run on Together: provisioning, training and publishing on a fake session, frozen policies refused, a resume, and the loss and Adam conversions. |
 | `tests/test_pack.py` | Verifies `shifted` and `datum` correctness against standard reference implementations. |
 | `tests/test_endpoints.py` | Proxy placement and tokens, connection strings, records and post-job checks, and `ProviderEndpoint`'s LiteLLM calls. |
 | `tests/test_context.py` | Token splicing and offset alignment mechanics. |

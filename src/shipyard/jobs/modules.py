@@ -21,8 +21,8 @@ LAYOUT = f"{PROMPT_FILE} and {SKILLS_DIR}/<name>/{SKILL_FILE}"
 PROMPT_TEMPLATE = "prompt/template.j2"
 #: Matches the end of a Jinja raw block, which a prompt's text may not contain.
 END_RAW = re.compile(r"{%-?\s*endraw\s*-?%}")
-#: Top-level directories reserved for kinds this version does not deliver, so `seed` can
-#: report them as unsupported.
+#: Top-level directories reserved for kinds this version does not deliver, so `Modules.read`
+#: can report them as unsupported.
 RESERVED = {"tools": "tool", "harness": "harness"}
 #: Generated files a module directory may contain, which `read` skips.
 INCIDENTAL = ("__pycache__", ".DS_Store")
@@ -60,8 +60,47 @@ class Module:
 
 
 @dataclass(frozen=True)
-class Candidate:
+class Modules:
     components: Mapping[str, Module]
+
+    def __post_init__(self) -> None:
+        # Checked as `read` checks them, so modules made in code deliver as read ones do.
+        for module in self.components.values():
+            _checked(module)
+
+    @classmethod
+    def read(cls, directory: Path) -> Modules:
+        """Read the modules a directory holds, checking each one."""
+        directory = Path(directory)
+        if not directory.is_dir():
+            raise Inadmissible(f"no modules at {directory}: a directory holding {LAYOUT}")
+        components: dict[str, Module] = {}
+        for entry in _entries(directory):
+            if entry.name in RESERVED:
+                raise Unsupported(RESERVED[entry.name], entry.name)
+            if entry.name == PROMPT_FILE and entry.is_file():
+                prompt = Module(PROMPT, "prompt", {PROMPT_FILE: _text(entry)})
+                components[PROMPT] = _checked(prompt)
+            elif entry.name == SKILLS_DIR and entry.is_dir():
+                for home in _entries(entry):
+                    if not (home / SKILL_FILE).is_file():
+                        raise Inadmissible(
+                            f"'{SKILLS_DIR}/{home.name}' holds no {SKILL_FILE}; each entry under "
+                            f"{SKILLS_DIR}/ is a skill's directory"
+                        )
+                    if home.name in components:
+                        raise Inadmissible(
+                            f"'{SKILLS_DIR}/{home.name}' takes the name of the {PROMPT_FILE} "
+                            "component"
+                        )
+                    components[home.name] = _checked(Module(home.name, "skill", read(home)))
+            else:
+                raise Inadmissible(
+                    f"{entry.name!r} is not part of the layout: a modules directory holds {LAYOUT}"
+                )
+        if not components:
+            raise Inadmissible(f"no modules under {directory}: it holds neither {LAYOUT}")
+        return cls(components)
 
     @property
     def digest(self) -> str:
@@ -74,7 +113,7 @@ class Candidate:
         """Return each component's text, by name."""
         return {name: module.text for name, module in self.components.items()}
 
-    def with_texts(self, texts: Mapping[str, str]) -> Candidate:
+    def with_texts(self, texts: Mapping[str, str]) -> Modules:
         """Return a copy in which each component named in `texts` has that text in its marker
         file, its other files kept."""
         components = dict(self.components)
@@ -82,7 +121,7 @@ class Candidate:
             module = components[name]
             files = {**module.files, KINDS[module.kind].marker: text}
             components[name] = replace(module, files=files)
-        return Candidate(components)
+        return Modules(components)
 
 
 class Kind(Protocol):
@@ -174,7 +213,7 @@ class Prompt:
         """Write the Jinja template Harbor renders each task's instruction through."""
         if len(modules) > 1:
             names = ", ".join(sorted(module.name for module in modules))
-            raise Inadmissible(f"a candidate carries one prompt, and this one has {names}")
+            raise Inadmissible(f"modules carry one prompt, and these have {names}")
         template = (into / PROMPT_TEMPLATE).resolve()
         template.parent.mkdir(parents=True, exist_ok=True)
         text = "{% raw %}" + preamble(modules[0]) + "{% endraw %}{{ instruction }}"
@@ -189,38 +228,6 @@ def preamble(module: Module) -> str:
 
 #: Module kinds this version delivers, by name. A new kind is a class plus an entry here.
 KINDS: dict[str, Kind] = {"skill": Skill(), "prompt": Prompt()}
-
-
-def seed(directory: Path) -> Candidate:
-    """Read the candidate a modules directory holds, checking each module."""
-    directory = Path(directory)
-    if not directory.is_dir():
-        raise Inadmissible(f"no modules at {directory}: a directory holding {LAYOUT}")
-    components: dict[str, Module] = {}
-    for entry in _entries(directory):
-        if entry.name in RESERVED:
-            raise Unsupported(RESERVED[entry.name], entry.name)
-        if entry.name == PROMPT_FILE and entry.is_file():
-            components[PROMPT] = _checked(Module(PROMPT, "prompt", {PROMPT_FILE: _text(entry)}))
-        elif entry.name == SKILLS_DIR and entry.is_dir():
-            for home in _entries(entry):
-                if not (home / SKILL_FILE).is_file():
-                    raise Inadmissible(
-                        f"'{SKILLS_DIR}/{home.name}' holds no {SKILL_FILE}; each entry under "
-                        f"{SKILLS_DIR}/ is a skill's directory"
-                    )
-                if home.name in components:
-                    raise Inadmissible(
-                        f"'{SKILLS_DIR}/{home.name}' takes the name of the {PROMPT_FILE} component"
-                    )
-                components[home.name] = _checked(Module(home.name, "skill", read(home)))
-        else:
-            raise Inadmissible(
-                f"{entry.name!r} is not part of the layout: a modules directory holds {LAYOUT}"
-            )
-    if not components:
-        raise Inadmissible(f"no modules under {directory}: it holds neither {LAYOUT}")
-    return Candidate(components)
 
 
 def _entries(directory: Path) -> list[Path]:
@@ -247,23 +254,23 @@ def _checked(module: Module) -> Module:
     return module
 
 
-def keep(candidate: Candidate, into: Path) -> None:
-    """Write the candidate in the layout `seed` reads, so that a winner can seed a later
-    search."""
-    for module in candidate.components.values():
+def keep(modules: Modules, into: Path) -> None:
+    """Write `modules` in the layout `Modules.read` reads, so that a later run can carry
+    them, or a search start from them."""
+    for module in modules.components.values():
         kind = KINDS[module.kind]
         files = {kind.marker: module.text} if kind.alone else module.files
         write(files, into=Path(into) / kind.home(module.name))
 
 
-def deliver(candidate: Candidate, into: Path) -> dict[str, Any]:
+def deliver(modules: Modules, into: Path) -> dict[str, Any]:
     """Write every module where Harbor finds it, and return the merged agent-config fields."""
     into = Path(into)
     if into.exists():
         shutil.rmtree(into)
     fields: dict[str, Any] = {}
     for kind, handler in KINDS.items():
-        mine = [module for module in candidate.components.values() if module.kind == kind]
+        mine = [module for module in modules.components.values() if module.kind == kind]
         if mine:
             fields.update(handler.deliver(mine, into))
     return fields

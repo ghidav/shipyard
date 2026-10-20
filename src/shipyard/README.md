@@ -4,7 +4,7 @@ The top level of `shipyard` defines the public programming model for RL recipes.
 
 The framework encapsulates session lifecycle, policy-to-backend binding, token expenditure tracking, step telemetry, checkpoint persistence, evaluation loops, and state restoration.
 
-Recipes interact exclusively with the root exports: `Trainer`, `Policy`, `INITIAL`, `Group`, `Trial`, `Blueprint`, `Candidate`, and `load`. Subsystem implementations are partitioned into three dedicated packages:
+Recipes interact exclusively with the root exports: `Trainer`, `Policy`, `INITIAL`, `Group`, `Trial`, `Blueprint`, `Modules`, `Inadmissible`, and `load`. Subsystem implementations are partitioned into three dedicated packages:
 
 * **[`models/`](models/README.md):** Model backends, Tinker training/sampling sessions, and the trial proxy.
 * **[`jobs/`](jobs/README.md):** Harbor sandbox orchestration, harness profiles, secret pooling, and admittance judging.
@@ -49,8 +49,9 @@ async def step(self) -> None:
 | Parameter | Default | Description |
 | --- | --- | --- |
 | `attempts` | `[data] group_size` | Number of independent trials dispatched per task. |
-| `modules` | `self.modules` | The prompt template and skill package (`Candidate`) delivered to sandboxes. Overridden by search recipes. |
+| `modules` | `self.state.modules` | The prompt template and skills (`Modules`) delivered to sandboxes. Overridden by search recipes. |
 | `harness` | `[agent] harness` | Target Harbor agent string (e.g., `claude-code@2.1.0`). When omitted, each harness listed in `[agent] harness` runs its own job. |
+| `renderer` | `[rollout] renderer` | One of the renderers in `[rollout] renderer`; any other is refused. When omitted, the tasks take the run's renderers in turn. |
 | `purpose` | `"training"` | Labels the job's row in `jobs.jsonl`. Only `"training"` rollouts feed the step's `train` row; `evaluate` passes `"evaluation"`, and search recipes pass `"search"`. |
 
 #### Multi-Harness Dispatching
@@ -60,15 +61,21 @@ When `[agent] harness` defines multiple agents:
 * **`mix_harnesses = true`:** Each task's `attempts` are distributed evenly across harnesses; every `Group` contains mixed-agent trials.
 * **`mix_harnesses = false` (default):** Tasks are interleaved round-robin across harnesses (offsetting by one harness each step); each `Group` belongs to a single harness.
 
+#### Several Renderers (Reasoning Efforts)
+
+When `[rollout] renderer` lists several cookbook renderers, such as the reasoning efforts `qwen3_8_low_reasoning` and `qwen3_8_xhigh_reasoning`, one proxy renders with all of them and each trial's address names its own. Tasks are interleaved round-robin across the renderers (offsetting by one each step), so each `Group` belongs to a single renderer and its baseline compares an effort only with itself. With harnesses unmixed, one round-robin runs over every (harness, renderer) pair; with `mix_harnesses = true`, each task's attempts are split across the harnesses at its renderer. `evaluate` runs every test task at each renderer.
+
 ### Trainer Runtime State
 
 | Attribute | Type | Description |
 | --- | --- | --- |
 | `self.config` / `self.recipe` | `Blueprint` / `Recipe` | Validated configuration and recipe-specific schema bindings. |
 | `self.policy` | `Policy` | The active agent policy instantiated from `[agent]`. |
-| `self.modules` | `Candidate \| None` | Global baseline modules deployed with trials. |
+| `self.state` | `State` | What the run has done so far, which a checkpoint saves and a resume restores, plus a recipe's own fields (§3). |
+| `self.state.modules` | `Modules \| None` | Global baseline modules deployed with trials. |
 | `self.metrics` | `dict[str, Any]` | Ephemeral telemetry dictionary logged to `metrics.jsonl` and reset each step. |
-| `self.steps` / `self.updates` / `self.drawn` | `int` | Monotonic counters tracking elapsed steps, `update` calls, and drawn task batches. Fully restored on resume. |
+| `self.state.steps` / `.updates` / `.drawn` | `int` | Monotonic counters tracking elapsed steps, `update` calls, and drawn task batches. |
+| `self.state.evaluated` | `int \| None` | The step after which the test set was last evaluated. |
 | `self.directory` | `Path` | Active run directory root. |
 
 
@@ -76,31 +83,45 @@ When `[agent] harness` defines multiple agents:
 ## 3. Run Lifecycle
 
 ```
-[Resume Check] ──> [Bind Policies] ──> [Open Session] ──> [Step Loop] ──> [Final Eval] ──> [Final Checkpoint]
- (Exits if resumed  (Introspect &       (Tinker training   (Runs [recipe]   (Runs if test    (Saves weights if
-  from final)        assign backends)    client & proxy)    steps)           set exists)      updates occurred)
+[Bind Policies] ──> [Open Session] ──> [Step Loop] ──> [Final Checkpoint]
+ (Introspect &       (Tinker training   (Runs [recipe]   (Saves the state,
+  assign backends)    client & proxy)    steps)           and any weights)
 
 ```
 
-1. **Resume Verification:** If resumed from a `final` checkpoint, the run terminates immediately.
-2. **Policy Discovery & Binding:** Introspects trainer attributes, binding each `Policy` instance to its target backend (§4).
-3. **Session Initialization:** For an agent on Tinker, initializes the training client, registers frozen baseline models, loads checkpoint weights (if resuming), and boots the harness proxy.
-4. **Step Loop:** Iterates for `[recipe] steps`:
+1. **Policy Discovery & Binding:** Introspects trainer attributes, binding each `Policy` instance to its target backend (§4).
+2. **Session Initialization:** For an agent on Tinker, initializes the training client, registers frozen baseline models, loads the weights the restored state names (if any), and boots the harness proxy.
+3. **Step Loop:** Iterates for `[recipe] steps`:
 * Resets `self.metrics`.
 * Executes `await self.step()`.
-* Appends summary telemetry to `metrics.jsonl`.
-* Persists periodic checkpoints (`step-<n>`) every `[checkpoints] every` updates.
-* Runs validation rollouts on test tasks every `[recipe] evaluate_every` steps.
+* Evaluates on the test set every `[recipe] evaluate_every` steps, and after the last step, if the run has one.
+* Writes the step's row to `metrics.jsonl`, its evaluation's numbers among it as `eval_` fields.
+* Persists periodic checkpoints (`step-<n>`) every `[checkpoints] every` steps.
 
 
-5. **Final Evaluation:** Runs test-set evaluation if configured and not yet executed at the final step.
-6. **Final Checkpoint:** If model parameters were updated during the run, saves the training state and sampling weights as `final`, kept permanently. Pure exploration runs (e.g., discrete module searches) bypass checkpoint generation.
+4. **Final Checkpoint:** Saves the state as `final`, and, if updates moved the weights, the training state and sampling weights, kept permanently. A run that moves no weights, such as a module search, saves its state alone.
 
 ### Checkpointing & Resumption
 
-* **`checkpoint(tag, keep=False)`:** Serializes training states via Tinker. Checkpoints expire after `[checkpoints] ttl_hours` unless `keep=True`, which marks weights permanent and exports sampling artifacts.
-* **`restore(row)`:** Restores the step, update and draw counters, and checks out the module configuration matching the checkpoint digest. Weights and optimizer state load when `train` opens the session.
-* **`keep(modules, name)`:** Persists candidate prompts/skills to `modules/<name>/`. Required whenever a recipe replaces the carried modules (`self.modules`), so resumed runs can find them by digest.
+* **`checkpoint(tag, keep=False)`:** Saves the agent's training state via Tinker once an update has moved it (it expires after `[checkpoints] ttl_hours` unless `keep=True`, which keeps it for good and exports the weights for sampling), then `self.state` as `states/step-<n>.json`, then the row naming both. `final` and the checkpoint of the last step share that step's state and differ in their weights. A provider's agent, or one no update has moved, saves its state alone.
+* **`restore(origin, row)`:** Reads the state the row of the run in `origin` names into `self.State`, refusing a state whose fields no longer fit it and dropping, with a warning, those the recipe no longer declares. The weights it names load when `train` opens the session.
+* **`keep(modules, name)`:** Persists modules (prompt and skills) to `modules/<name>/`, for a later run to carry. A resume needs none: the state holds the modules whole.
+
+### A Recipe's Own State
+
+A recipe whose step builds something a resume must find again, such as a memory bank or a population of prompts, declares it as its `State`, as it declares its `Recipe`:
+
+```python
+class FSTTrainer(Trainer):
+    class State(Trainer.State):
+        population: list[Modules] = []  # each field has a default
+        pending: list[list[Path]] = []
+
+    async def step(self) -> None:
+        batch = self.state.pending.pop(0)  # saved at every checkpoint, restored on resume
+```
+
+Fields are saved as JSON: numbers, text, paths, lists and dicts of them, pydantic models, and `Modules`, whole. What can be recomputed, such as embeddings, is better left out and rebuilt.
 
 
 
@@ -193,9 +214,9 @@ Runs are declared in a `run.toml` blueprint validated against the recipe's confi
 
 | Table | Target Scope | Key Parameters |
 | --- | --- | --- |
-| **`[agent]`** | Model definition & harnesses | `model`, `provider` (`"tinker"`), `from_checkpoint`, `harness`, `mix_harnesses` (`false`), `kwargs`, `env`, `modules` |
+| **`[agent]`** | Model definition & harnesses | `model`, `provider` (`"tinker"`, or `"together"`), `from_checkpoint`, `harness`, `mix_harnesses` (`false`), `kwargs`, `env`, `modules` |
 | **`[data]`** | Tasks & sampling batch sizes | `train`, `test`, `batch_size`, `group_size` (`1`), `test_group_size`, `seed` (`0`) |
-| **`[rollout]`** | Sandbox & proxy topology | `sandbox` (`"docker"`), `concurrency` (`4`), `timeout`, `max_tokens` (`8192`), `max_context`, `fill_context`, `endpoint_url`, `host`, `secrets` |
+| **`[rollout]`** | Sandbox & proxy topology | `sandbox` (`"docker"`), `concurrency` (`4`), `timeout`, `max_tokens` (`8192`), `max_context`, `fill_context`, `renderer` (the model's own), `endpoint_url`, `host`, `secrets` |
 | **`[recipe]`** | Optimization hyperparameters | `steps`, `learning_rate`, `substeps` (`1`), `warmup` (`0`), `evaluate_every` (`0`), `lora_rank` (`32`), `restore_optimizer` (`false`), `grade_timeouts` (`false`) |
 | **`[checkpoints]`** | Retention rules | `every` (`1`), `ttl_hours` (`168`) |
 | **`[logging.wandb]`** | Cloud metrics synchronization | `project`, `entity` |
@@ -218,13 +239,16 @@ Declared keys carry no defaults, so the blueprint sets every one; a `None` defau
 ## 8. CLI & Signal Handling (`cli.py`)
 
 ```bash
+# Copy the built-in recipes into ./recipes, and write ./.env.example, keeping what is there
+shipyard init
+
 # Launch a new run from a recipe folder (its run.toml, and the trainer.py beside it)
 shipyard run recipes/dapo --root ./runs
 
 # Or name the blueprint and the trainer file explicitly
 shipyard run recipes/dapo/run.toml recipes/dapo/trainer.py
 
-# Resume execution from a specific checkpoint tag (the latest by default)
+# Go on from a checkpoint (the latest by default): a new run beside it, from the state it saved
 shipyard resume ./runs/dapo__a1b2c3d --tag step-50
 
 ```
@@ -234,13 +258,13 @@ shipyard resume ./runs/dapo__a1b2c3d --tag step-50
 In-flight runs intercept `SIGINT`, `SIGTERM`, and `SIGHUP` to prevent orphaned sandbox containers and dangling Tinker sessions:
 
 ```
-[Signal Received] ──> [Cancel asyncio Tasks] ──> [Drain Cleanup Handlers] ──> [Persist process.json] ──> [Exit 130]
+[Signal Received] ──> [Cancel asyncio Tasks] ──> [Drain Cleanup Handlers] ──> [Persist run.json] ──> [Exit 130]
  (SIGINT, SIGTERM,      (Halt trial runners)     (Close proxy, tunnel, Tinker) (Record the stop)
   SIGHUP)
 
 ```
 
-The active Tinker session closes as `interrupted`, `process.json` records the stop (e.g. `stopped: SIGTERM`), and `shipyard resume` continues from the last checkpoint.
+The active Tinker session closes as `interrupted`, `run.json` records the stop (e.g. `stopped: SIGTERM`), and `shipyard resume` goes on from the last checkpoint, as a new run.
 
 
 
@@ -250,6 +274,6 @@ The active Tinker session closes as `interrupted`, `process.json` records the st
 | --- | --- |
 | **`tests/test_trainer.py`** | Full-loop step orchestration, policy binding, checkpoint restoration, evaluation loops, and signal traps. |
 | **`tests/test_pack.py`** | Token-prefix trajectory reconstruction (`chains`), span extraction, and Tinker datum alignment. |
-| **`tests/test_modules.py`** | Multi-harness round-robin and mixed trial scheduling; candidate prompt/skill packaging. |
+| **`tests/test_modules.py`** | Multi-harness round-robin and mixed trial scheduling; prompt and skill packaging. |
 
 All integration tests execute hermetically using mocks from `tests/fakes.py` (Harbor trial runners, proxy stand-ins) and `tests/trainers.py` (Tinker mock clients, tokenizers), requiring no GPUs or active sandbox daemon.

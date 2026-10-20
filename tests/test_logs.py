@@ -12,7 +12,9 @@ from shipyard.groups import Trial
 from shipyard.jobs.engine import Job
 from shipyard.jobs.harnesses import harness
 from shipyard.run import record
+from shipyard.run.costs import Costs
 from shipyard.run.logs import Logs
+from shipyard.trainer import Evaluation
 from tests.fakes import made
 
 BLUEPRINT = """[agent]
@@ -49,7 +51,7 @@ def test_a_job_writes_its_row_and_a_row_per_model_call_the_proxy_served(
     beta.records = [made("go", error="context", seq=1)]
     logs.job(Job("j", trials=[alpha, beta]), SimpleNamespace(provider="tinker", model="m"))
     [job] = list(record.read(logs.directory / record.JOBS))
-    assert (job["job"], job["trials"], job["served"]) == ("j", 2, "tinker")
+    assert (job["job"], job["trials"], job["backend"]) == ("j", 2, "tinker")
     rows = list(record.read(logs.directory / record.REQUESTS))
     assert [row["trial"] for row in rows] == [alpha.name, alpha.name, beta.name]
     first = rows[0]
@@ -57,7 +59,7 @@ def test_a_job_writes_its_row_and_a_row_per_model_call_the_proxy_served(
         "at",
         "job",
         "trial",
-        "seq",
+        "call",
         "sample",
         "samples",
         "prompt_tokens",
@@ -65,18 +67,18 @@ def test_a_job_writes_its_row_and_a_row_per_model_call_the_proxy_served(
         "completion_tokens",
         "stop_reason",
         "sample_ms",
-        "served",
+        "weights",
         "request_id",
         "bridged",
         "error",
     }
-    assert (first["job"], first["seq"], first["prompt_tokens"], first["completion_tokens"]) == (
+    assert (first["job"], first["call"], first["prompt_tokens"], first["completion_tokens"]) == (
         "j",
         1,
         3,
         2,
     )
-    assert (first["request_id"], first["served"], first["error"], first["bridged"]) == (
+    assert (first["request_id"], first["weights"], first["error"], first["bridged"]) == (
         "r-1",
         None,
         None,
@@ -88,21 +90,58 @@ def test_a_job_writes_its_row_and_a_row_per_model_call_the_proxy_served(
         0,
         "",
     )
+    # What the job spent is the agent's, filed under the job, and the costs are its totals.
+    spent = list(record.read(logs.directory / record.USAGE))
+    assert {(row["role"], row["job"]) for row in spent} == {("agent", "j")}
+    assert [row["model"] for row in spent if "provider" in row] == ["m"]
+    totals = record.read_json(logs.directory / record.COSTS)
+    assert Costs.of(spent).to_dict() == totals and totals["tokens"]["tinker"]["m"]["sample"] == 6
 
 
-def test_each_metrics_row_says_its_section_and_continues_the_numbering(
+def test_every_spend_is_a_row_of_the_usage_ledger_and_on_disk_at_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "run.toml").write_text(BLUEPRINT, encoding="utf-8")
+    logs = Logs(load(tmp_path), tmp_path / "runs" / "r", step=lambda: 3)
+    logs.spend("embedder", "openai", "openai/text-embedding-3-small", prefill=120)
+    logs.spend("embedder", "openai", "text-embedding-3-small", prefill=0)  # nothing spent
+    with pytest.raises(ValueError, match="tokens are counted as prefill, cache, sample, train"):
+        logs.spend("embedder", "openai", "text-embedding-3-small", embedded=5)
+    [row] = list(record.read(logs.directory / record.USAGE))
+    assert {key: row[key] for key in ("step", "role", "provider", "model", "prefill")} == {
+        "step": 3,
+        "role": "embedder",
+        "provider": "openai",
+        "model": "text-embedding-3-small",
+        "prefill": 120,
+    }
+    totals = record.read_json(logs.directory / record.COSTS)
+    assert totals["tokens"] == {"openai": {"text-embedding-3-small": {"prefill": 120}}}
+
+
+def test_a_steps_row_holds_its_evaluation_and_the_recipes_numbers_beside_its_own(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
     logs = _logs(tmp_path)
-    logs.log("train", step=0)
-    logs.log("eval", step=1, reward_mean=0.5)
-    again = Logs(load(tmp_path), logs.directory)
-    again.log("train", step=1)
-    rows = list(record.read(logs.directory / record.METRICS))
-    assert [(row["seq"], row["section"], row["step"]) for row in rows] == [
-        (1, "train", 0),
-        (2, "eval", 1),
-        (3, "train", 1),
-    ]
-    assert "evaluation" not in rows[1]
+    by = {"reward_mean_low": 0.25}
+    evaluation = Evaluation(
+        1, tasks=2, trials=4, graded=3, masked=1, reward_mean=0.5, by_renderer=by
+    )
+    logs.step(1, [], None, evaluation, {"trials": 9, "own": 1})
+    logs.step(2, [], None, None, {})
+    first, second = record.read(logs.directory / record.METRICS)
+    assert (first["step"], first["trained"], first["trials"]) == (1, False, 0)
+    evaluated = {key: value for key, value in first.items() if key.startswith("eval_")}
+    assert evaluated == {
+        "eval_tasks": 2,
+        "eval_trials": 4,
+        "eval_graded": 3,
+        "eval_masked": 1,
+        "eval_reward_mean": 0.5,
+        "eval_reward_mean_low": 0.25,
+    }
+    assert (first["recipe_trials"], first["own"]) == (9, 1), "named like the row's own: beside it"
+    assert second["step"] == 2 and not any(key.startswith("eval_") for key in second)
+    assert not {"section", "seq", "attempt"} & set(first), "one kind of row, written by one process"

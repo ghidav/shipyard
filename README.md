@@ -2,6 +2,83 @@
 
 Post-training framework for AI agents on Harbor benchmark tasks, built as composable reinforcement learning recipes.
 
+
+
+## Installation
+
+Requires **Python 3.12+** and [uv](https://github.com/astral-sh/uv):
+
+```sh
+# Base installation
+uv tool install shipyard
+
+```
+
+### Extras
+
+Additional modules install with the same command.
+
+```sh
+uv tool install "shipyard[gepa]"                 # GEPA prompt/skill evolution search (the gepa recipe)
+uv tool install "shipyard[wandb]"                # Mirror metrics to Weights & Biases ([logging.wandb])
+uv tool install "shipyard[together]"             # Train on Together post-training ([agent] provider = "together")
+uv tool install shipyard --with "harbor[modal]"  # Run agent trials in Modal sandboxes
+uv tool install "shipyard[gepa,wandb]" --with "harbor[modal]"  # Several at once
+
+```
+
+Local Docker sandboxes (the default) need no extra, only a running Docker daemon.
+
+
+
+## Quickstart
+
+### 1. Get the Recipes
+
+In the directory you will run from, copy the built-in recipes into `recipes/`, each with a `README.md` saying what it needs, and configure API keys and endpoints in a `.env` file:
+
+```sh
+shipyard init
+cp .env.example .env
+
+```
+
+### 2. Download Tasks
+
+Fetch Harbor-compatible datasets into your working directory:
+
+```sh
+uvx harbor datasets download <dataset_name> -o tasks
+
+```
+
+Tasks reside at `tasks/<dataset>/<task>/`.
+
+### 3. Launch a Recipe
+
+Each recipe lives in a self-contained folder containing a configuration blueprint (`run.toml`) and an optional implementation file (`trainer.py`):
+
+```sh
+# Run a recipe
+shipyard run recipes/dapo
+
+# Artifacts, metrics, and checkpoints are stored under:
+# runs/<recipe>__<id>/
+
+```
+
+
+
+## Customizing Runs & Algorithms
+
+* **Modify Hyperparameters & Tasks:** Edit the recipe's `run.toml` (controls model selection, LoRA rank, learning rate, harness configurations, and dataset batching).
+* **Modify the Algorithm:** Subclass `Trainer` in `trainer.py` and override `step()` or `score()`, declaring any extra `Policy` in `__init__` (see [Writing a Recipe](#writing-a-recipe)).
+* **Available Recipes:** Check out the [`recipes/` directory](recipes/README.md) for the built-in algorithms: **Dr. GRPO**, **DAPO**, **CISPO**, **On-Policy Distillation (OPD)**, and **GEPA**.
+
+
+
+## Writing a Recipe
+
 A recipe subclasses `Trainer` and defines its optimization loop using four core primitives:
 
 ```python
@@ -39,85 +116,6 @@ shipyard/
 └── recipes/             # Algorithmic implementations (Dr. GRPO, DAPO, CISPO, OPD, GEPA)
 
 ```
-
-
-## Installation
-
-Requires **Python 3.12+** and [uv](https://github.com/astral-sh/uv):
-
-```sh
-# Base installation
-uv sync
-
-# With prompt/skill evolution search extras (GEPA)
-uv sync --extra gepa
-
-```
-
-### Sandbox Providers
-
-Local Docker sandboxes (the default) need no extra, only a running Docker daemon. To run agent trials in cloud sandboxes, add the corresponding Harbor provider package:
-
-```sh
-uv add "harbor[modal]"     # For Modal-backed sandboxes
-
-```
-
-Configure API keys and endpoints in a `.env` file at the root of your workspace:
-
-```sh
-cp .env.example .env
-
-```
-
-
-
-## Quickstart
-
-### 1. Download Benchmark Tasks
-
-Fetch Harbor-compatible datasets into your working directory:
-
-```sh
-harbor datasets download <dataset_name> -o tasks
-
-```
-
-Tasks reside at `tasks/<dataset>/<task>/`.
-
-### 2. Launch a Recipe
-
-Each recipe lives in a self-contained folder containing a configuration blueprint (`run.toml`) and an optional implementation file (`trainer.py`):
-
-```sh
-# Run a recipe
-uv run shipyard run recipes/dapo
-
-# Artifacts, metrics, and checkpoints are stored under:
-# runs/<recipe>__<id>/
-
-```
-
-### 3. Resume an Interrupted Run
-
-Runs can be resumed seamlessly from their latest (or a targeted) checkpoint:
-
-```sh
-# Resume from latest checkpoint
-uv run shipyard resume runs/dapo__a1b2c3d
-
-# Resume from a specific tag
-uv run shipyard resume runs/dapo__a1b2c3d --tag step-50
-
-```
-
-
-
-## Customizing Runs & Algorithms
-
-* **Modify Hyperparameters & Tasks:** Edit the recipe's `run.toml` (controls model selection, LoRA rank, learning rate, harness configurations, and dataset batching).
-* **Modify the Algorithm:** Subclass `Trainer` in `trainer.py` and override `step()` or `score()`, declaring any extra `Policy` in `__init__`.
-* **Available Recipes:** Check out the [`recipes/` directory](recipes/README.md) for the built-in algorithms: **Dr. GRPO**, **DAPO**, **CISPO**, **On-Policy Distillation (OPD)**, and **GEPA**.
 
 
 

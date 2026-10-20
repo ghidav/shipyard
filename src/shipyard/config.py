@@ -39,7 +39,8 @@ class Agent(_Table):
     """The `[agent]` table: the run's own policy, and the harnesses that drive it."""
 
     model: str
-    #: Who serves the model: `tinker`, which the run trains, or a provider such as `anthropic`.
+    #: Who serves the model: `tinker` or `together`, which the run trains, or a provider such
+    #: as `anthropic`.
     provider: str = "tinker"
     from_checkpoint: str | None = None
     #: The harness, or the harnesses, that drive it: Harbor agents, each with an optional
@@ -109,7 +110,11 @@ class Rollout(_Table):
     top_k: int = -1
     max_tokens: int = Field(default=8192, ge=1)
     max_context: int = Field(default=0, ge=0)
-    renderer: str = ""
+    #: The cookbook renderer, or the renderers, the proxy renders the agent's calls with; none
+    #: for the model's own. Several, such as reasoning efforts (`qwen3_8_low_reasoning`,
+    #: `qwen3_8_xhigh_reasoning`), take a batch's tasks in turn, so each group is one
+    #: renderer's, and the test set is evaluated at each. Read as a list.
+    renderer: list[str] = Field(default_factory=list)
     fill_context: bool = False
     jobs_dir: str = "jobs"
     #: Per-trial secrets. Maps a variable of the trial's environment to a variable of this
@@ -117,6 +122,21 @@ class Rollout(_Table):
     #: Each trial in flight holds one value alone, so no more trials run at once than there
     #: are values. Several pools pair by position.
     secrets: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("renderer", mode="before")
+    @classmethod
+    def _renderers(cls, value: Any) -> Any:
+        """Accept a renderer or a list of them, each named once; "" is the model's own."""
+        found = ([value] if value else []) if isinstance(value, str) else value
+        if not isinstance(found, list) or not all(
+            isinstance(one, str) and one.strip() for one in found
+        ):
+            raise ValueError("a renderer or a list of them")
+        if any("/" in one for one in found):
+            raise ValueError("a renderer is named in its trials' addresses, so it holds no '/'")
+        if len(set(found)) < len(found):
+            raise ValueError("each renderer is named once")
+        return found
 
 
 class Recipe(_Table):
@@ -144,6 +164,7 @@ class Recipe(_Table):
 class Checkpoints(_Table):
     """The `[checkpoints]` table: how often the run saves, and how long a save is kept."""
 
+    #: Save the run's state every this many steps, and at the end.
     every: int = Field(default=1, ge=1)
     ttl_hours: float = Field(default=168.0, ge=MIN_TTL_HOURS)
 

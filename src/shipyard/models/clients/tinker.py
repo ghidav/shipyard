@@ -142,6 +142,14 @@ class TinkerClient:
             out.append([scored[at - 1] if at > 0 else 0.0 for at in one.targets])
         return out
 
+    async def serving(self) -> dict[str, str]:
+        """Return what the proxy samples through beyond its default: nothing, as it is Tinker."""
+        return {}
+
+    async def publish(self, tag: str) -> str:
+        """Save the weights for sampling as `tag`, kept `SERVE_TTL`, and return their path."""
+        return await self.save_weights_for_sampler(tag, ttl_seconds=SERVE_TTL)
+
     async def save_weights_for_sampler(self, name: str, *, ttl_seconds: int | None) -> str:
         future = await self.client.save_weights_for_sampler_async(name, ttl_seconds=ttl_seconds)
         return str((await future.result_async()).path)

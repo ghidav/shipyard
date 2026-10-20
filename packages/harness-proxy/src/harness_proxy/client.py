@@ -76,16 +76,17 @@ def serve_command(settings: Mapping[str, Any], *, host: str, tunnel: bool = Fals
     """Return the `python -m harness_proxy.serve` command for `settings`, which stops once this
     process is gone, and with `tunnel` opens a quick tunnel to itself.
 
-    `model`, `weights`, `renderer`, `bind` and `bind_port` become flags. The other settings
-    go in `--settings` as JSON."""
+    `model`, `weights`, `renderer` (a name, or a list of them, one flag each), `bind` and
+    `bind_port` become flags. The other settings go in `--settings` as JSON."""
     made = [*SERVE, "--model", str(settings["model"])]
     made += ["--bind", str(settings.get("bind") or "0.0.0.0")]
     made += ["--port", str(int(settings.get("bind_port") or 0)), "--advertise", host]
     made += ["--parent-pid", str(os.getpid()), *(["--tunnel"] if tunnel else [])]
     if settings.get("weights"):
         made += ["--weights", str(settings["weights"])]
-    if settings.get("renderer"):
-        made += ["--renderer", str(settings["renderer"])]
+    renderers = settings.get("renderer") or []
+    for one in [renderers] if isinstance(renderers, str) else renderers:
+        made += ["--renderer", str(one)]
     rest = {key: value for key, value in settings.items() if key not in FLAGGED}
     if rest:
         made += ["--settings", json.dumps(rest, sort_keys=True)]
@@ -110,6 +111,9 @@ class Proxy:
     #: Tokens a trial may sample, as last reported by `/healthz`. None when no budget is
     #: enforced.
     budget: int | None = None
+    #: Renderers a trial's address may name, as last reported by `/healthz`. None for a proxy
+    #: that does not say, as one from before a proxy rendered with several.
+    renderers: list[str] | None = None
     #: Transport for the HTTP client, set by tests. None uses httpx's default.
     transport: Any = field(default=None, repr=False)
 
@@ -227,8 +231,8 @@ class Proxy:
         """Wait for the proxy to answer `/healthz` and return the model it serves.
 
         The probe goes through the tunnel if there is one, else to the loopback address (for a
-        remote proxy, its origin). The reported token budget is stored in `budget`. Raise
-        `Unreachable` with the address when nothing answers."""
+        remote proxy, its origin). The reported token budget is stored in `budget`, and the
+        renderers in `renderers`. Raise `Unreachable` with the address when nothing answers."""
         what, base = ("tunnel", self.origin) if self.tunnel else ("proxy", self.loopback)
         url = f"{base}{HEALTH_PATH}"
         try:
@@ -240,6 +244,8 @@ class Proxy:
         budget = answer.get("budget")
         known = isinstance(budget, int) and not isinstance(budget, bool) and budget > 0
         self.budget = budget if known else None
+        named = answer.get("renderers")
+        self.renderers = [str(one) for one in named] if isinstance(named, list) else None
         return str(answer.get("serving") or answer.get("model") or "")
 
     def gone(self) -> str | None:
@@ -251,16 +257,20 @@ class Proxy:
             return f"harness-proxy exited with {code}"
         return None
 
-    def address_for(self, trial: str) -> str:
-        """Return the base URL for a trial's harness, `<origin>/r/trial/<trial>/v1`.
+    def address_for(self, trial: str, renderer: str | None = None) -> str:
+        """Return the base URL for a trial's harness, `<origin>/r/trial/<trial>/v1`, or with a
+        renderer, `<origin>/r/trial/<trial>/renderer/<renderer>/v1`, which the proxy renders the
+        trial's calls with.
 
-        Raise ValueError for a trial name that is empty or contains `/`."""
-        if not trial or "/" in trial:
-            raise ValueError(
-                f"{trial!r} cannot be addressed: a trial name goes in the URL path, "
-                "so it must be non-empty and contain no '/'."
-            )
-        return f"{self.origin}/r/trial/{trial}/v1"
+        Raise ValueError for a trial name or a renderer that is empty or contains `/`."""
+        for what, name in (("trial name", trial), ("renderer", renderer)):
+            if name is not None and (not name or "/" in name):
+                raise ValueError(
+                    f"{name!r} cannot be addressed: a {what} goes in the URL path, "
+                    "so it must be non-empty and contain no '/'."
+                )
+        named = f"/renderer/{renderer}" if renderer is not None else ""
+        return f"{self.origin}/r/trial/{trial}{named}/v1"
 
     async def swap(self, model_path: str | None) -> None:
         """Switch the proxy to a `tinker://` path, or to the base model for None.

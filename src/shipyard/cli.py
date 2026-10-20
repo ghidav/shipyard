@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 import signal
 from collections.abc import Coroutine, Mapping
 from pathlib import Path
@@ -11,7 +12,17 @@ import typer
 from dotenv import load_dotenv
 
 from shipyard.config import Blueprint, ConfigError
-from shipyard.run.directory import open_run, reopened, running, trainer_class
+from shipyard.run.directory import continued, open_run, reopened, running, trainer_class
+
+#: Where `init` copies the recipes, and the env template it writes, in the directory it runs in.
+RECIPES = "recipes"
+ENV_EXAMPLE = ".env.example"
+#: What a first run needs once `init` has run.
+NEXT = """
+next:
+  cp .env.example .env                              # your keys
+  uvx harbor datasets download <dataset> -o tasks   # the dataset a recipe's run.toml names
+  shipyard run recipes/dapo                         # each recipe's README.md says what it needs"""
 
 app = typer.Typer(
     help="Train with a recipe written from four primitives: draw, rollout, logprobs, update.",
@@ -23,6 +34,23 @@ app = typer.Typer(
 def main() -> None:
     load_dotenv(Path.cwd() / ".env", override=False)  # the shell wins over the file
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+
+@app.command()
+def init() -> None:
+    """Copy the built-in recipes into ./recipes and write ./.env.example, keeping whatever is
+    already there."""
+    try:
+        copied, kept, wrote = initialized(Path.cwd())
+    except FileNotFoundError as missing:
+        _refuse(missing)
+    if copied:
+        typer.echo(f"copied recipes/: {', '.join(copied)}")
+    if kept:
+        typer.echo(f"kept your recipes/: {', '.join(kept)}")
+    if wrote:
+        typer.echo(f"wrote {ENV_EXAMPLE}")
+    typer.echo(NEXT)
 
 
 @app.command()
@@ -45,7 +73,7 @@ def run(
         _refuse(refused)
     made = trainer_class(directory).__name__
     typer.echo(f"run {directory.name} in {directory.parent}, trained by {made}")
-    _train(directory, config, None)
+    _train(directory, config)
 
 
 @app.command()
@@ -53,32 +81,84 @@ def resume(
     directory: Annotated[Path, typer.Argument(help="The run directory.")],
     tag: Annotated[str, typer.Option(help="The checkpoint to go on from.")] = "last",
 ) -> None:
-    """Go on with the run in DIRECTORY from its checkpoint TAG, the last one by default."""
+    """Go on from the run in DIRECTORY at its checkpoint TAG, the last one by default: a new
+    run beside it, which starts from the state that checkpoint saved."""
+    origin = Path(directory)
     try:
-        config, row = reopened(directory, tag=tag)
+        config, row = reopened(origin, tag=tag)
     except (ConfigError, ValueError) as refused:
         _refuse(refused)
-    typer.echo(f"run {Path(directory).name} from {row['tag']} at step {row['step']}")
-    _train(Path(directory), config, row)
+    if row["step"] >= config.recipe.steps:
+        typer.echo(f"run {origin.name} finished at step {row['step']}: nothing is left to run")
+        return
+    try:
+        directory, config = continued(origin, row)
+    except (ConfigError, ValueError) as refused:
+        _refuse(refused)
+    typer.echo(f"run {directory.name} goes on from {origin.name} at {row['tag']}")
+    _train(directory, config, origin, row)
 
 
-def _train(directory: Path, config: Blueprint, row: Mapping[str, Any] | None) -> None:
-    """Train the run, and exit 130 if a signal stopped it: Ctrl-C, SIGTERM or SIGHUP."""
+def _train(
+    directory: Path,
+    config: Blueprint,
+    origin: Path | None = None,
+    row: Mapping[str, Any] | None = None,
+) -> None:
+    """Train the run, from checkpoint `row` of the run in `origin` if any, and exit 130 if a
+    signal stopped it: Ctrl-C, SIGTERM or SIGHUP."""
     made = trainer_class(directory)
-    resumed = row["tag"] if row else None
     try:
         # The trainer is made inside the process note, so a recipe's `__init__` that fails,
         # such as on a missing [recipe] key, is recorded as the run's error.
-        with (
-            running(directory, trainer=made.__name__, resumed=resumed),
-            made(config, directory) as trainer,
-        ):
-            if row is not None:
-                trainer.restore(row)
+        with running(directory, trainer=made.__name__), made(config, directory) as trainer:
+            if origin is not None and row is not None:
+                trainer.restore(origin, row)
             _until_stopped(trainer.train())
     except KeyboardInterrupt as stopped:
         typer.echo(f"run {directory.name} stopped: {str(stopped) or 'SIGINT'}", err=True)
         raise typer.Exit(130) from None
+
+
+def initialized(into: Path) -> tuple[list[str], list[str], bool]:
+    """Copy into `into/recipes` each shipped recipe it lacks, and the recipes' README if it lacks
+    one, and write `into/.env.example` if missing. Return the recipes copied, those kept, and
+    whether `.env.example` was written."""
+    recipes, env = shipped()
+    target = into / RECIPES
+    target.mkdir(parents=True, exist_ok=True)
+    copied, kept = [], []
+    for one in sorted(path for path in recipes.iterdir() if path.is_dir()):
+        if one.name.startswith((".", "_")):
+            continue
+        if (target / one.name).exists():
+            kept.append(one.name)
+            continue
+        skipped = shutil.ignore_patterns("__pycache__", "*.pyc", ".*")
+        shutil.copytree(one, target / one.name, ignore=skipped)
+        copied.append(one.name)
+    if (recipes / "README.md").is_file() and not (target / "README.md").exists():
+        shutil.copyfile(recipes / "README.md", target / "README.md")
+    wrote = not (into / ENV_EXAMPLE).exists()
+    if wrote:
+        shutil.copyfile(env, into / ENV_EXAMPLE)
+    return copied, kept, wrote
+
+
+def shipped() -> tuple[Path, Path]:
+    """Return the recipes and the env template `init` copies: those the package ships, else
+    those of the source checkout it runs from. Raise FileNotFoundError when there are neither."""
+    package = Path(__file__).resolve().parent
+    checkout = package.parents[1]
+    for recipes, env in (
+        (package / RECIPES, package / "env.example"),
+        (checkout / RECIPES, checkout / ENV_EXAMPLE),
+    ):
+        if recipes.is_dir() and env.is_file():
+            return recipes, env
+    raise FileNotFoundError(
+        "this install of shipyard ships no recipes: reinstall it, or clone the repository"
+    )
 
 
 def _until_stopped(work: Coroutine[Any, Any, None]) -> None:

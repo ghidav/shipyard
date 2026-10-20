@@ -11,7 +11,7 @@ from typing import IO, TYPE_CHECKING, Any
 from harness_proxy.client import Proxy
 from harness_proxy.wire import CONTROL_TOKEN_ENV, PROXY_TOKEN_ENV, SAMPLER_FAILED
 from shipyard.jobs.harnesses import slug_of
-from shipyard.models.client import backend, tagged
+from shipyard.models.clients.tinker import backend, tagged
 
 if TYPE_CHECKING:
     from harness_proxy.wire import Record
@@ -58,7 +58,7 @@ def settings(config: Blueprint, run: str) -> dict[str, Any]:
     rollout = config.rollout
     return {
         "model": config.agent.model,
-        "renderer": rollout.renderer or None,
+        "renderer": list(rollout.renderer) or None,
         "bind": rollout.bind,
         "bind_port": rollout.bind_port,
         "temperature": rollout.temperature,
@@ -81,6 +81,9 @@ class ProxyEndpoint:
     proxy: Proxy | None = None
     #: The weights the run last pointed the proxy at; None for the base model.
     told: str | None = None
+    #: The proxy's backend settings beyond Tinker's: for Together, the backend and the
+    #: session, which the agent's client opens before the proxy starts.
+    backend: dict[str, str] = field(default_factory=dict)
     _logs: list[IO[str]] = field(default_factory=list, repr=False)
 
     @property
@@ -90,7 +93,7 @@ class ProxyEndpoint:
 
     @property
     def provider(self) -> str:
-        return backend()
+        return self.backend.get("backend") or backend()
 
     @property
     def model(self) -> str:
@@ -114,7 +117,8 @@ class ProxyEndpoint:
                 )
             self.proxy = proxy
         else:
-            given, log = settings(self.config, self.directory.name), self._log(PROXY_LOG)
+            given = {**settings(self.config, self.directory.name), **self.backend}
+            log = self._log(PROXY_LOG)
             if where == "local":
                 self.proxy = await Proxy.local(
                     given, host=rollout.host, environ=self.environ, log=log
@@ -123,6 +127,7 @@ class ProxyEndpoint:
                 self.proxy = await Proxy.tunnelled(given, environ=self.environ, log=log)
         self.told = None
         served = await self.proxy.ready()
+        renders_each(self.proxy, rollout.renderer)
         logger.info("the proxy at %s answers (%s), serving %s", self.proxy.origin, where, served)
 
     def alive(self) -> None:
@@ -138,9 +143,10 @@ class ProxyEndpoint:
         self.told = path
 
     def connection(self, trial: Trial) -> Connection:
-        """Return what a trial's harness dials: its own address on the proxy, and the token."""
+        """Return what a trial's harness dials: its own address on the proxy, which names its
+        renderer, and the token."""
         profile = trial.harness.profile
-        address = self.proxy.address_for(trial.name)
+        address = self.proxy.address_for(trial.name, trial.renderer)
         if profile.in_process is not None:
             # Its calls leave from this machine, not the container: the proxy's own address.
             address = self.proxy.loopback + address.removeprefix(self.proxy.origin)
@@ -220,6 +226,24 @@ def answered_by_ours(job: str, taken: Mapping[str, Sequence[Record]], told: str 
             f"job {job} was served from {sorted(answered)}, but this run pointed its proxy "
             f"at {told}. Something re-pointed it while the batch was in flight."
         )
+
+
+def renders_each(proxy: Any, named: Sequence[str]) -> None:
+    """Raise `RuntimeError` unless the proxy renders with each renderer `named`, so that no
+    trial's call is refused for the renderer its address names."""
+    known = proxy.renderers
+    missing = [one for one in named if one not in (known or ())]
+    if not missing:
+        return
+    has = (
+        "does not say which renderers it renders with"
+        if known is None
+        else f"renders with {', '.join(known) or 'its model default alone'}"
+    )
+    raise RuntimeError(
+        f"the proxy at {proxy.origin} {has}, and [rollout] renderer names {', '.join(missing)}: "
+        f"start it with a --renderer for each of {', '.join(named)}"
+    )
 
 
 #: Calls to a provider in flight at once, and LiteLLM's retries of one that failed.

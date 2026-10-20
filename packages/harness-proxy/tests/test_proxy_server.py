@@ -10,9 +10,10 @@ import httpx
 import pytest
 import tinker
 
+from harness_proxy.backends.tinker import context_of
 from harness_proxy.exchange import Exchange, exchange
 from harness_proxy.recorder import Recorder
-from harness_proxy.server import DEFAULT_MAX_TOKENS, Server, context_of
+from harness_proxy.server import DEFAULT_MAX_TOKENS, Server
 from proxies import FakeSampler, address, ask, ask_anthropic, by_path, control, ids, server
 
 # ------------------------------------------------------------------ before it starts

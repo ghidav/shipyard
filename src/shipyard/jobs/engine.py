@@ -22,7 +22,7 @@ from harbor.models.trial.config import (
 from shipyard.groups import Trial
 from shipyard.jobs.admit import judge
 from shipyard.jobs.harnesses import Harness, bare_name
-from shipyard.jobs.modules import Candidate, deliver
+from shipyard.jobs.modules import Modules, deliver
 from shipyard.jobs.progress import Bars
 from shipyard.jobs.secrets import Secrets, scrub
 
@@ -48,9 +48,11 @@ class Job:
     name: str
     purpose: str = "training"
     step: int | None = None
-    modules: Candidate | None = None
+    modules: Modules | None = None
     #: The harness its trials run, such as `pi@0.85.1`.
     harness: Harness | None = None
+    #: The renderer the proxy renders its trials' calls with; None for the model's own.
+    renderer: str | None = None
     #: Grade a trial cut at its timeout by the verifier's reward, rather than mask it.
     grade_timeouts: bool = False
     trials: list[Trial] = field(default_factory=list)
@@ -104,7 +106,9 @@ class HarborEngine:
 
         async def one(task: Path) -> Trial:
             config = _trial_config(task, trials_dir=trials_dir, agent=agent, sandbox=self.sandbox)
-            trial = Trial(job.name, task, harness, trials_dir / config.trial_name)
+            trial = Trial(
+                job.name, task, harness, trials_dir / config.trial_name, renderer=job.renderer
+            )
             config = connected(config, endpoint.connection(trial))
             async with self._limit:
                 held = await self.secrets.acquire(trial)

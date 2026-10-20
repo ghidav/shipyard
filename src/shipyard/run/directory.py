@@ -15,7 +15,7 @@ from shortuuid import ShortUUID
 
 from shipyard.config import Blueprint, config_file, load
 from shipyard.run import record
-from shipyard.trainer import Trainer
+from shipyard.trainer import CARRIED, Trainer
 
 logger = logging.getLogger(__name__)
 
@@ -29,22 +29,52 @@ def runs_root(flag: Path | None = None) -> Path:
 
 
 def open_run(
-    blueprint: Path, *, root: Path | None = None, trainer: Path | None = None
+    blueprint: Path,
+    *,
+    root: Path | None = None,
+    trainer: Path | None = None,
+    origin: Mapping[str, Any] | None = None,
 ) -> tuple[Path, Blueprint]:
-    """Create a run's directory for a blueprint, noting its recipe's place."""
+    """Create a run's directory for a blueprint, noting in its `run.json` its recipe's place
+    and, for a run that goes on from a checkpoint of an earlier one, that `origin`."""
     source = config_file(blueprint)
     if trainer is None and (source.parent / record.TRAINER).is_file():
         trainer = source.parent / record.TRAINER
     made = trainer_in(trainer) if trainer is not None else Trainer
     config = load(blueprint, made.Recipe)
-    stem = source.parent.name[:32].rstrip("_-") or "run"
+    # A run that goes on from another is named as that one is, without its id.
+    named = source.parent.name.rsplit("__", 1)[0] if origin else source.parent.name
+    stem = named[:32].rstrip("_-") or "run"
     directory = runs_root(root) / f"{stem}__{ShortUUID().random(length=7)}"
     directory.mkdir(parents=True)
     shutil.copyfile(source, directory / record.CONFIG)
+    noted: dict[str, Any] = {}
     if trainer is not None:
         trainer = Path(trainer).resolve()
-        noted = {"trainer": str(trainer), "fingerprint": fingerprint(trainer.parent)}
-        record.write_json(directory / record.RECIPE, noted)
+        noted["recipe"] = {"trainer": str(trainer), "fingerprint": fingerprint(trainer.parent)}
+    if origin is not None:
+        noted["origin"] = dict(origin)
+    record.write_json(directory / record.RUN, noted)
+    return directory, config
+
+
+def continued(origin: Path, row: Mapping[str, Any]) -> tuple[Path, Blueprint]:
+    """Open a run beside `origin` that goes on from its checkpoint `row`, with its blueprint, its
+    recipe and the modules it carried; the run restores the state the row names. Its `origin`
+    notes the run, the tag and the first run of the chain."""
+    origin = Path(origin).resolve()
+    noted = record.read_json(origin / record.RUN)
+    trainer = (noted.get("recipe") or {}).get("trainer")
+    first = (noted.get("origin") or {}).get("first", origin.name)
+    directory, config = open_run(
+        origin / record.CONFIG,
+        root=origin.parent,
+        trainer=Path(trainer) if trainer else None,
+        origin={"run": str(origin), "tag": row["tag"], "first": first},
+    )
+    carried = origin / record.MODULES / CARRIED
+    if carried.is_dir():
+        shutil.copytree(carried, directory / record.MODULES / CARRIED)
     return directory, config
 
 
@@ -53,15 +83,15 @@ def reopened(directory: Path, *, tag: str = "last") -> tuple[Blueprint, Mapping[
     directory = Path(directory)
     if not (directory / record.CONFIG).is_file():
         raise ValueError(f"no run at {directory}")
-    noted = record.read_json(directory / record.RECIPE)
-    if noted and Path(noted["trainer"]).is_file():
-        now = fingerprint(Path(noted["trainer"]).parent)
-        if now != noted.get("fingerprint"):
+    recipe = record.read_json(directory / record.RUN).get("recipe")
+    if recipe and Path(recipe["trainer"]).is_file():
+        now = fingerprint(Path(recipe["trainer"]).parent)
+        if now != recipe.get("fingerprint"):
             logger.warning(
-                "%s: the recipe's code at %s changed since the run started; it goes on with "
-                "the code as it is now",
+                "%s: the recipe's code at %s changed since the run started; the run that goes "
+                "on from it runs the code as it is now",
                 directory.name,
-                Path(noted["trainer"]).parent,
+                Path(recipe["trainer"]).parent,
             )
     rows = list(record.read(directory / record.CHECKPOINTS))
     if tag == "last":
@@ -77,9 +107,9 @@ def reopened(directory: Path, *, tag: str = "last") -> tuple[Blueprint, Mapping[
 def trainer_class(directory: Path) -> type[Trainer]:
     """Return the run's trainer: its recipe's, else its own copy's, else the base `Trainer`."""
     directory = Path(directory)
-    noted = record.read_json(directory / record.RECIPE)
-    if noted:
-        path = Path(noted["trainer"])
+    recipe = record.read_json(directory / record.RUN).get("recipe")
+    if recipe:
+        path = Path(recipe["trainer"])
         if not path.is_file():
             raise ValueError(
                 f"{directory.name} is trained by {path}, which is gone: put the recipe back "
@@ -135,19 +165,16 @@ def trainer_in(path: Path) -> type[Trainer]:
 
 @contextmanager
 def running(directory: Path, **about: Any) -> Iterator[None]:
-    """Write this invocation's process note, and record how it ended."""
-    path = Path(directory) / record.PROCESS
-    earlier = record.read_json(path)
-    before = earlier.pop("earlier", []) if earlier else []
+    """Note the process that runs the run in its `run.json`, and how it ended."""
+    path = Path(directory) / record.RUN
+    noted = record.read_json(path)
     note: dict[str, Any] = {
         "pid": os.getpid(),
         "started_at": record.now(),
         "tinker_base_url": tinker_base_url(),
         **{key: value for key, value in about.items() if value},
     }
-    if earlier:
-        note["earlier"] = [*before, earlier]
-    record.write_json(path, note)
+    record.write_json(path, {**noted, "process": note})
     error: str | None = None
     try:
         yield
@@ -159,7 +186,7 @@ def running(directory: Path, **about: Any) -> Iterator[None]:
         raise
     finally:
         note.update(finished_at=record.now(), failed=error is not None, error=error)
-        record.write_json(path, note)
+        record.write_json(path, {**noted, "process": note})
 
 
 def tinker_base_url() -> str:

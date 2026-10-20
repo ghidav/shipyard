@@ -70,6 +70,20 @@ class DAPOTrainer(Trainer):
 * Missing mandatory fields raise validation errors immediately.
 * Undeclared or misspelled keys in `[recipe]` trigger pre-execution failures.
 
+### A recipe's own state (`State`)
+
+What a recipe builds as it runs, and a resume must find again, such as a memory bank or a population of prompts, it declares as a nested `State`, as it declares its `Recipe`. Each checkpoint saves `self.state`, the counters and carried modules among it, as `states/step-<n>.json`, and a resume restores it:
+
+```python
+class FSTTrainer(Trainer):
+    class State(Trainer.State):
+        population: list[Modules] = []  # each field has a default
+        pending: list[list[Path]] = []
+```
+
+* Fields are JSON: numbers, text, paths, lists and dicts of them, pydantic models, and `Modules`, whole.
+* A resume refuses a state whose fields no longer fit the recipe's `State`; a field the recipe no longer declares is dropped, with a warning.
+
 
 
 ## 4. Recipe Catalog
@@ -92,11 +106,13 @@ recipes/
 | **`dapo`** | **DAPO**: Group-normalized rewards with length-penalty dampening on overlong generations. Token losses are averaged per prompt; includes an iterative re-sampling loop in `step`. | Clipped PPO (prompt-normalized) |
 | **`cispo`** | **CISPO**: Employs Tinker’s `cispo` objective, which clamps token-level importance weights rather than truncating surrogate objectives directly. | `cispo` |
 | **`opd`** | **On-Policy Distillation**: Matches token generation distributions against a stronger frozen teacher (`self.teacher.logprobs`). | Per-token reverse KL as advantages (`importance_sampling`) |
-| **`gepa`** | Genetic Pareto search over prompt templates and skill files (`Candidate`). Evaluates candidates via `rollout(tasks, modules=...)`. Requires `shipyard[gepa]`. | Black-box discrete search (no weight updates) |
+| **`gepa`** | Genetic Pareto search over prompt templates and skill files (`Modules`). Evaluates candidates via `rollout(tasks, modules=...)`. Requires `shipyard[gepa]`. | Black-box discrete search (no weight updates) |
 
 
 
 ## 5. Execution & Dispatching
+
+Outside a clone of this repository, `shipyard init` copies these recipes into `./recipes`, each with a `README.md` saying what it needs to run.
 
 Launch runs by specifying either the recipe directory containing a `run.toml` and `trainer.py`, or by passing a custom configuration blueprint explicitly:
 
@@ -107,7 +123,7 @@ shipyard run recipes/opd
 # Launch using a standalone blueprint and explicit trainer implementation
 shipyard run configs/agent_dapo.toml recipes/dapo/trainer.py --root ./runs
 
-# Resume execution from a persisted checkpoint
+# Go on from a checkpoint, as a new run beside it
 shipyard resume runs/opd__a1b2c3d --tag step-100
 
 ```

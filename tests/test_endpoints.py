@@ -97,7 +97,7 @@ def test_a_started_proxy_takes_the_rollout_knobs_and_its_sessions_tags_on_the_ba
     )
     assert settings(cfg, "dapo__abc") == {
         "model": MODEL,
-        "renderer": "tml_v0",
+        "renderer": ["tml_v0"],
         "bind": "127.0.0.1",
         "bind_port": 8000,
         "temperature": 0.7,

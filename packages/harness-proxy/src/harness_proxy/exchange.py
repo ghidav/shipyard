@@ -20,6 +20,9 @@ class Exchange:
     """State of one request: the trial, the SDK headers, and what the renderer wrapper bridged."""
 
     trial: str = ""
+    #: The renderer the trial's address names, which renders the call; "" for the proxy's
+    #: first.
+    renderer: str = ""
     #: `anthropic` for a request on `/messages`, otherwise `openai`. Determines the form
     #: of generated tool call ids.
     wire: str = "openai"
@@ -41,22 +44,25 @@ class Exchange:
 exchange: ContextVar[Exchange | None] = ContextVar("harness_proxy_exchange", default=None)
 
 
-def trial_in(address: str) -> str:
-    """Return the trial named in a `/r/key/value/...` address: the value after `trial`."""
+def keys_in(address: str) -> dict[str, str]:
+    """Return the keys of a `/r/key/value/...` address, such as its `trial` and `renderer`."""
     parts = [part for part in address.strip("/").split("/") if part]
-    return str(dict(zip(parts[0::2], parts[1::2], strict=False)).get("trial") or "")
+    return dict(zip(parts[0::2], parts[1::2], strict=False))
 
 
 def middleware() -> Any:
     """Return middleware that sets an `Exchange` for each request.
 
     The exchange is built from the request's headers and its `/r/trial/<name>/...` address,
-    and reset afterwards so it does not leak into a task the event loop reuses."""
+    which may name a `renderer` too, and reset afterwards so it does not leak into a task the
+    event loop reuses."""
 
     @web.middleware
     async def opened(request: Any, handler: Any) -> Any:
+        keys = keys_in(str(request.match_info.get("address") or ""))
         found = Exchange(
-            trial=trial_in(str(request.match_info.get("address") or "")),
+            trial=keys.get("trial") or "",
+            renderer=keys.get("renderer") or "",
             wire="anthropic" if request.path.endswith("/messages") else "openai",
             retry=_count(request.headers.get(RETRY_HEADER)),
             idempotency_key=request.headers.get("Idempotency-Key") or None,

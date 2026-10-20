@@ -68,6 +68,9 @@ class Trial:
     verdict: Verdict | None = None
     #: The chains of model calls it made, as token ids; none when it is masked.
     sequences: list[Sequence] = field(default_factory=list)
+    #: The renderer the proxy rendered its calls with, as `[rollout] renderer` names it; None
+    #: for the model's own.
+    renderer: str | None = None
 
     @property
     def name(self) -> str:

@@ -23,7 +23,7 @@ from typing import Any
 import gepa
 from gepa import EvaluationBatch
 
-from shipyard import Blueprint, Candidate, Group, Policy, Trainer
+from shipyard import Blueprint, Group, Inadmissible, Modules, Policy, Trainer
 
 #: Characters of a trial's transcript and of its tests' output a reflection reads, from the end,
 #: where the attempt finished and the tests said what failed.
@@ -50,12 +50,12 @@ class GEPATrainer(Trainer):
 
     def __init__(self, config: Blueprint, directory: Path) -> None:
         super().__init__(config, directory)
-        if self.modules is None:
+        if self.state.modules is None:
             raise ValueError("GEPA searches the modules the agent carries: set [agent] modules")
         self.reflector = Policy(self.recipe.reflector, provider=self.recipe.reflector_provider)
 
     async def step(self) -> None:
-        loop, seed = asyncio.get_running_loop(), self.modules
+        loop, seed = asyncio.get_running_loop(), self.state.modules
         assert seed is not None
 
         # GEPA calls its adapter and its reflector synchronously, from the thread it runs in,
@@ -90,7 +90,7 @@ class GEPATrainer(Trainer):
         )
         best = seed.with_texts(result.best_candidate)  # type: ignore[arg-type]
         self.keep(best, "best")
-        self.modules = best
+        self.state.modules = best
         self.metrics.update(
             candidates=len(result.candidates),
             best_score=result.val_aggregate_scores[result.best_idx],
@@ -106,18 +106,23 @@ class Rollouts:
     #: None: GEPA proposes new texts itself, through the reflector.
     propose_new_texts = None
 
-    def __init__(self, trainer: Trainer, seed: Candidate, wait: Wait) -> None:
+    def __init__(self, trainer: Trainer, seed: Modules, wait: Wait) -> None:
         self.trainer, self.seed, self.wait = trainer, seed, wait
 
     def evaluate(
         self, batch: list[Path], candidate: dict[str, str], capture_traces: bool = False
     ) -> EvaluationBatch:
-        modules = self.seed.with_texts(candidate)
         # GEPA pads a minibatch with tasks it already holds: each is rolled out once, and
         # scored wherever it is.
-        groups: list[Group] = self.wait(
-            self.trainer.rollout(list(dict.fromkeys(batch)), modules=modules, purpose="search")
-        )
+        tasks = list(dict.fromkeys(batch))
+        try:
+            modules = self.seed.with_texts(candidate)
+        except Inadmissible as refused:
+            # Not rolled out: it would fail every trial. Scoring nothing, it is never kept.
+            logging.getLogger("gepa").warning("a proposal scores 0: %s", refused)
+            groups = [Group(task, []) for task in tasks]
+        else:
+            groups = self.wait(self.trainer.rollout(tasks, modules=modules, purpose="search"))
         found = {group.task: group for group in groups}
         each = [found[task] for task in batch]
         return EvaluationBatch(

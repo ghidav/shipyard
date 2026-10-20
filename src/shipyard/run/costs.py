@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from harbor.models.agent.context import ModelUsage
 
@@ -23,6 +23,26 @@ UNKNOWN = "unknown"
 Tokens = dict[str, dict[str, dict[str, int]]]
 
 
+class Spend(Protocol):
+    """Where a policy's spend goes: `spend(provider, model, **counts)` files it in the run's
+    costs, under the policy's role."""
+
+    def __call__(self, provider: str, model: str, /, **counts: int) -> None: ...
+
+
+def counted(counts: Mapping[str, int]) -> dict[str, int]:
+    """Return token counts by kind, in `KINDS` order, leaving out zeros."""
+    unknown = set(counts) - set(KINDS)
+    if unknown:
+        raise ValueError(f"tokens are counted as {', '.join(KINDS)}; got {sorted(unknown)}")
+    return {kind: int(counts[kind]) for kind in KINDS if counts.get(kind)}
+
+
+def filed(provider: str, model: str) -> str:
+    """Return the name a provider's model is counted under: without the provider's prefix."""
+    return model.removeprefix(f"{provider}/")
+
+
 @dataclass
 class Costs:
     """Tokens by provider, model and kind, and trials and seconds per sandbox."""
@@ -32,18 +52,12 @@ class Costs:
 
     def add(self, provider: str, model: str, **counts: int) -> None:
         """Add token counts by kind to a provider's model, leaving out zeros."""
-        unknown = set(counts) - set(KINDS)
-        if unknown:
-            raise ValueError(f"tokens are counted as {', '.join(KINDS)}; got {sorted(unknown)}")
-        counted = {kind: int(value) for kind, value in counts.items() if value}
-        if not counted:
+        found = counted(counts)
+        if not found:
             return
-        held = self.tokens.setdefault(provider, {}).setdefault(
-            model.removeprefix(f"{provider}/"), {}
-        )
-        for kind in KINDS:
-            if kind in counted:
-                held[kind] = held.get(kind, 0) + counted[kind]
+        held = self.tokens.setdefault(provider, {}).setdefault(filed(provider, model), {})
+        for kind, value in found.items():
+            held[kind] = held.get(kind, 0) + value
 
     def merge(self, tokens: Tokens) -> None:
         """Add counts in the shape of `tokens`."""
@@ -72,6 +86,17 @@ class Costs:
         costs.merge(payload.get("tokens") or {})
         for name, held in (payload.get("sandboxes") or {}).items():
             costs.add_sandbox(name, held.get("trials", 0), held.get("seconds", 0.0))
+        return costs
+
+    @classmethod
+    def of(cls, rows: Iterable[Mapping[str, Any]]) -> Costs:
+        """Return the totals of usage-ledger rows: each a model's tokens, or a sandbox's time."""
+        costs = cls()
+        for row in rows:
+            if "sandbox" in row:
+                costs.add_sandbox(row["sandbox"], row.get("trials", 0), row.get("seconds", 0.0))
+            else:
+                costs.add(row["provider"], row["model"], **{k: row[k] for k in KINDS if k in row})
         return costs
 
 

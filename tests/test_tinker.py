@@ -1,4 +1,4 @@
-"""Tests for `shipyard.models.client`, the trained policy's training client, using a fake
+"""Tests for `shipyard.models.clients.tinker`, the trained policy's training client, using a fake
 Tinker SDK client."""
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from harness_proxy.wire import Picture
 from proxies import MODEL
 from shipyard.groups import Sequence, Trial
 from shipyard.jobs.harnesses import harness
-from shipyard.models.client import DEFAULT_LORA_RANK, SERVE_TTL, TinkerClient, datum
+from shipyard.models.clients.tinker import DEFAULT_LORA_RANK, SERVE_TTL, TinkerClient, datum
 from tests.trainers import FakeService, FakeTrainingClient, capable
 
 #: The trial a test's sequences belong to; the client reads only their tokens and images.
@@ -45,7 +45,7 @@ def test_the_session_is_tinkers_own_and_tagged_with_the_run(
         tagged.append(metadata)
         return FakeService()
 
-    monkeypatch.setattr("shipyard.models.client.service_client", service_client)
+    monkeypatch.setattr("shipyard.models.clients.tinker.service_client", service_client)
     TinkerClient(MODEL, run="r")
     TinkerClient(MODEL)
     assert tagged == [TAGGED, None]

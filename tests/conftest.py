@@ -48,5 +48,7 @@ def fakes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[FakeProxy, F
     monkeypatch.setattr("shipyard.models.endpoints.Proxy", proxy)
     service = FakeService(capabilities=capable((MODEL, True)))
     service.client.trained = -0.3
-    monkeypatch.setattr("shipyard.models.client.service_client", lambda metadata=None: service)
+    monkeypatch.setattr(
+        "shipyard.models.clients.tinker.service_client", lambda metadata=None: service
+    )
     return proxy, service

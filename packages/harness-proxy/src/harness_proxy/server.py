@@ -1,9 +1,11 @@
-"""HTTP server that harnesses call, on a Tinker sampling client.
+"""HTTP server that harnesses call, on its backend's sampling client.
 
 It serves both wires at `/v1/...` and under a trial's `/r/trial/<name>/v1/...`, plus the records
-route and the control route. A call is read by its dialect, completed by `chat.complete` and
-written back by the dialect, with keepalives on slow streams. Every route except `/healthz`
-requires a token, because sampling spends Tinker credit."""
+route and the control route. A trial's address may name the renderer its calls are rendered
+with, `/r/trial/<name>/renderer/<renderer>/v1/...`, among the several the proxy was given. A call
+is read by its dialect, completed by `chat.complete` and written back by the dialect, with
+keepalives on slow streams. Every route except `/healthz` requires a token, because sampling
+spends the backend's credit."""
 
 from __future__ import annotations
 
@@ -20,10 +22,10 @@ from typing import Any
 
 from aiohttp import web
 
-from harness_proxy import cookbook, keepalive
+from harness_proxy import backends, cookbook, keepalive
 from harness_proxy.chat import Refused, complete
 from harness_proxy.dialects import anthropic, openai
-from harness_proxy.exchange import exchange, middleware
+from harness_proxy.exchange import Exchange, exchange, middleware
 from harness_proxy.keepalive import KEEPALIVE_EVERY, KEEPALIVE_GRACE
 from harness_proxy.recorder import Recorder
 from harness_proxy.rendering import Rendering
@@ -47,7 +49,7 @@ DEFAULT_MAX_TOKENS = 8192
 #: Largest request body the proxy reads, in bytes. aiohttp's default is 1 MiB.
 MAX_BODY_BYTES = 256 * 1024**2
 
-#: Makes a sampling client on a `tinker://` path, or on the base model for None.
+#: Makes a sampling client on named weights, or on the base model for None.
 ClientFactory = Callable[[str | None], Awaitable[Any]]
 
 
@@ -60,7 +62,9 @@ class Server:
 
     base_model: str
     model_path: str | None = None
-    #: A cookbook renderer name, a renderer object (tests), or None for the model's default.
+    #: The renderers calls are rendered with: a cookbook renderer name, or a list of them that a
+    #: trial's address picks from by name; a renderer object, or a dict of them by name (tests);
+    #: or None for the model's default. A call whose address names none takes the first.
     renderer: Any = None
     host: str = "host.docker.internal"
     bind: str = "0.0.0.0"
@@ -79,29 +83,48 @@ class Server:
     control_token: str | None = field(default=None, repr=False)
     #: `user_metadata` of the Tinker session, naming the run and recipe it samples for.
     metadata: dict[str, str] | None = None
-    #: Sampling client factory for tests. None uses Tinker's service client.
+    #: The backend that samples: `tinker`, or `together` for the run's Together session.
+    backend: str = "tinker"
+    #: The training session a `together` backend samples from, which the run opened.
+    session: str | None = None
+    #: Sampling client factory for tests. None uses the backend's service.
     client_factory: ClientFactory | None = field(default=None, repr=False)
 
+    #: The backend's service, opened on `start`; a test may pass a fake one.
     _service: Any = field(default=None, repr=False)
     _recorder: Recorder | None = field(default=None, repr=False)
-    _rendering: Rendering | None = field(default=None, repr=False)
+    #: The renderers, by the name a trial's address gives each; "" for the model's default.
+    _renderings: dict[str, Rendering] = field(default_factory=dict, repr=False)
     _runner: Any = field(default=None, repr=False)
     _port: int | None = field(default=None, repr=False)
     _served_last: dict[str, tuple[float, dict[str, Any]]] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
-        """Generate a token if it is empty, as an unset env var arrives here."""
+        """Generate a token if it is empty, as an unset env var arrives here. Raise
+        ValueError for an unknown backend."""
         if not self.token:
             self.token = new_token()
+        backends.named(self.backend)
 
     @property
     def port(self) -> int | None:
         return self._port
 
     @property
+    def sampling(self) -> ModuleType:
+        """The backend module the proxy samples through."""
+        return backends.named(self.backend)
+
+    @property
     def serving(self) -> str:
         """The model a reply names: the served weights, or the base model."""
         return self.model_path or self.base_model
+
+    @property
+    def renderers(self) -> list[str]:
+        """The renderers a trial's address may name, in the order given; none for a proxy that
+        renders with its model's default."""
+        return [name for name in self._renderings if name]
 
     @property
     def recorder(self) -> Recorder:
@@ -113,22 +136,18 @@ class Server:
         return self.recorder.records_for(trial)
 
     async def start(self) -> None:
-        """Build the renderer, the sampling client, the app and its routes, then bind the socket.
+        """Build the renderers, the sampling client, the app and its routes, then bind the socket.
 
         The sampling client is on `model_path`, or on the base model when it is None. The context
-        length is read from Tinker when not set."""
-        renderer = (
-            cookbook.renderer_for(self.base_model, self.renderer)
-            if self.renderer is None or isinstance(self.renderer, str)
-            else self.renderer
-        )
+        length is read from the backend when not set."""
+        renderers = self._built()
         if self.client_factory is None and self._service is None:
-            import tinker
-
-            self._service = tinker.ServiceClient(user_metadata=self.metadata)
+            self._service = await self.sampling.connect(
+                metadata=self.metadata, session=self.session
+            )
         client = await self._make(self.model_path)
         if self.max_context is None and self._service is not None:
-            self.max_context = await context_of(self._service, self.base_model)
+            self.max_context = await self.sampling.context_of(self._service, self.base_model)
         self._recorder = Recorder(
             client,
             temperature=self.temperature,
@@ -140,7 +159,9 @@ class Server:
             fill_context=self.fill_context,
             served=self.model_path,
         )
-        self._rendering = Rendering(renderer, recorder=self._recorder)
+        self._renderings = {
+            name: Rendering(one, recorder=self._recorder) for name, one in renderers.items()
+        }
         # Control outermost, so only the control token opens the control route. The exchange
         # after auth, so a refused request opens none.
         middlewares = [self._control_middleware(), self._auth_middleware(), middleware()]
@@ -170,14 +191,37 @@ class Server:
         if self._recorder is not None:
             self._recorder.client, self._recorder.served = client, model_path
 
+    def _built(self) -> dict[str, Any]:
+        """Return the renderers by the name a trial's address gives each: "" for the model's
+        default, or for a renderer object."""
+        given = self.renderer
+        if isinstance(given, dict):
+            return dict(given)
+        names = (given if isinstance(given, list) else [given]) or [None]
+        if not all(one is None or isinstance(one, str) for one in names):
+            return {"": given}
+        return {one or "": cookbook.renderer_for(self.base_model, one or None) for one in names}
+
+    def _rendering_for(self, found: Exchange | None) -> Rendering:
+        """Return the renderer the call's address names, or the first for one that names none.
+        Raise `Refused` for a renderer this proxy was not given, rather than render the call
+        with another."""
+        named = found.renderer if found is not None else ""
+        if not named:
+            return next(iter(self._renderings.values()))
+        rendering = self._renderings.get(named)
+        if rendering is None:
+            served = ", ".join(self.renderers) or "its model's default alone"
+            raise Refused(f"this proxy does not render with {named!r}: it renders with {served}")
+        return rendering
+
     async def _make(self, model_path: str | None) -> Any:
-        if model_path is not None and not model_path.startswith("tinker://"):
-            raise ValueError(f"{model_path!r} is not a tinker:// path")
+        prefix = self.sampling.PREFIX
+        if model_path is not None and not model_path.startswith(prefix):
+            raise ValueError(f"{model_path!r} is not a {prefix} path")
         if self.client_factory is not None:
             return await self.client_factory(model_path)
-        if model_path is None:
-            return await self._service.create_sampling_client_async(base_model=self.base_model)
-        return await self._service.create_sampling_client_async(model_path=model_path)
+        return await self.sampling.sampler(self._service, self.base_model, model_path)
 
     async def stop(self) -> None:
         runner, self._runner = self._runner, None
@@ -187,7 +231,7 @@ class Server:
         service, self._service = self._service, None
         if service is not None:
             with contextlib.suppress(Exception):
-                await service.close("success")
+                await self.sampling.close(service)
 
     async def __aenter__(self) -> Server:
         await self.start()
@@ -204,13 +248,14 @@ class Server:
 
         async def serve(request: web.Request) -> Any:
             try:
+                found = exchange.get()
+                rendering = self._rendering_for(found)
                 # Off the event loop: images and PDF pages decode here, and other trials wait
                 # on the loop.
                 call = await asyncio.to_thread(dialect.read, await _body(request))
-                found = exchange.get()
                 if found is not None:
                     found.requested_model = call.model
-                reply = await complete(call, self._rendering, self.recorder, int(self.max_tokens))
+                reply = await complete(call, rendering, self.recorder, int(self.max_tokens))
             except Refused as refused:
                 logger.warning("refused a request to %s: %s", request.path, refused)
                 return dialect.error(400, str(refused))
@@ -269,13 +314,15 @@ class Server:
         harness token is in every sandbox, and the model under training must neither re-point its
         own proxy nor read or drain any trial's records. Without a control token both are closed.
         `GET /healthz` needs no token and answers `status`, `model` and `serving` (the served
-        model) and `budget` (the tokens each trial may sample, null when none is enforced)."""
+        model), `budget` (the tokens each trial may sample, null when none is enforced) and
+        `renderers` (the renderers a trial's address may name)."""
 
         @web.middleware
         async def control(request: Any, handler: Any) -> Any:
             if request.path == HEALTH_PATH and request.method == "GET":
                 answer = {"status": "ok", "model": self.serving, "serving": self.serving}
-                return web.json_response({**answer, "budget": self.max_context or None})
+                budget = self.max_context or None
+                return web.json_response({**answer, "budget": budget, "renderers": self.renderers})
             weights = request.path == CONTROL_PATH
             if not weights and not request.path.startswith(f"{RECORDS_PATH}/"):
                 return await handler(request)
@@ -293,7 +340,7 @@ class Server:
         return control
 
     async def _serve_control(self, request: Any) -> Any:
-        """Switch to the body's `model_path` (a `tinker://` path or null).
+        """Switch to the body's `model_path`: a path under the backend's prefix, or null.
 
         A malformed body, or a path that cannot be served, gets a 400."""
         try:
@@ -302,9 +349,9 @@ class Server:
             raise web.HTTPBadRequest(reason="expected a JSON object with a 'model_path'") from None
         if not isinstance(body, dict) or "model_path" not in body:
             raise web.HTTPBadRequest(reason="expected a JSON object with a 'model_path'")
-        path = body["model_path"]
-        if path is not None and (not isinstance(path, str) or not path.startswith("tinker://")):
-            raise web.HTTPBadRequest(reason="'model_path' must be a tinker:// path or null")
+        path, prefix = body["model_path"], self.sampling.PREFIX
+        if path is not None and (not isinstance(path, str) or not path.startswith(prefix)):
+            raise web.HTTPBadRequest(reason=f"'model_path' must be a {prefix} path or null")
         try:
             await self.swap(path)
         except Exception as refused:
@@ -346,22 +393,3 @@ def _bound_port(runner: Any) -> int:
         if isinstance(address, tuple) and len(address) >= 2:
             return int(address[1])
     raise RuntimeError("The endpoint bound no port.")
-
-
-async def context_of(service: Any, base_model: str) -> int | None:
-    """Return the model's context length from `get_server_capabilities`, or None on any error.
-
-    Without a context length nothing is refused, so a failed lookup does not fail a run."""
-    try:
-        caps = await service.get_server_capabilities_async()
-        for model in getattr(caps, "supported_models", None) or []:
-            if getattr(model, "model_name", None) == base_model:
-                return int(getattr(model, "max_context_length", 0) or 0) or None
-    except Exception:  # noqa: BLE001 - a failed capability read must not fail a run
-        logger.warning(
-            "could not read the context length of %s: the budget and the context fit are "
-            "not enforced",
-            base_model,
-            exc_info=True,
-        )
-    return None

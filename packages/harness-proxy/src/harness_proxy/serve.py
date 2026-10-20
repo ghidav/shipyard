@@ -16,7 +16,7 @@ import logging
 import os
 import signal
 import sys
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import fields
 from typing import Any, TextIO
 
@@ -60,15 +60,16 @@ def server_for(
     bind: str,
     port: int,
     advertise: str | None,
-    renderer: str | None,
+    renderer: str | Sequence[str] | None,
     settings: Mapping[str, Any] | None,
     token: str | None,
     control_token: str | None,
 ) -> Server:
     """Build the server the command-line flags describe.
 
-    `settings` carries the run's other `Server` settings. Raise ValueError for a key that is
-    not a `Server` field or that a flag already sets."""
+    `renderer` is a renderer, or the several a trial's address picks from. `settings` carries
+    the run's other `Server` settings. Raise ValueError for a key that is not a `Server` field or
+    that a flag already sets."""
     named: dict[str, Any] = {
         "base_model": model,
         "model_path": weights or None,
@@ -79,7 +80,7 @@ def server_for(
         "control_token": control_token or None,
     }
     if renderer:
-        named["renderer"] = renderer
+        named["renderer"] = renderer if isinstance(renderer, str) else list(renderer)
     if settings:
         taken = {f.name for f in fields(Server) if not f.name.startswith("_")} - SET_HERE
         foreign = sorted(set(settings) - taken)
@@ -227,7 +228,11 @@ def parser(prog: str = "harness-proxy") -> argparse.ArgumentParser:
     made.add_argument("--port", type=int, default=0, help="the port to listen on; 0 for any")
     made.add_argument("--advertise", help="the name a sandbox reaches this by (default: the bind)")
     made.add_argument(
-        "--renderer", metavar="NAME", help="a cookbook renderer that overrides the model's default"
+        "--renderer",
+        metavar="NAME",
+        action="append",
+        help="a cookbook renderer that overrides the model's default; given again, another, "
+        "which a trial's address names to be rendered with it, the first rendering the rest",
     )
     made.add_argument(
         "--tunnel",

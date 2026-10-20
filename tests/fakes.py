@@ -204,6 +204,9 @@ class FakeProxy:
     swapped: list[str | None] = field(default_factory=list)
     #: Token budget reported by `/healthz`; None means no budget is enforced.
     budget: int | None = None
+    #: Renderers reported by `/healthz`: the ones the run started it with, or a test's for a
+    #: remote one; None for a proxy that does not say.
+    renderers: list[str] | None = field(default_factory=list)
     closed: int = 0
     #: Number of times `/healthz` was probed.
     probed: int = 0
@@ -216,11 +219,13 @@ class FakeProxy:
 
     async def local(self, settings: Any, *, host: str, **named: Any) -> FakeProxy:
         self.placed.append(("local", dict(settings), {"host": host, **named}))
+        self.renderers = list(settings.get("renderer") or [])
         return self
 
     async def tunnelled(self, settings: Any, **named: Any) -> FakeProxy:
         self.placed.append(("tunnel", dict(settings), named))
         self.origin = "https://fake-words.trycloudflare.com"
+        self.renderers = list(settings.get("renderer") or [])
         return self
 
     def remote(self, url: str, token: str, control_token: str | None = None) -> FakeProxy:
@@ -230,9 +235,10 @@ class FakeProxy:
         self.origin, self.token, self.control_token = url.rstrip("/"), token, control_token
         return self
 
-    def address_for(self, trial: str) -> str:
+    def address_for(self, trial: str, renderer: str | None = None) -> str:
         self.addressed.append(trial)
-        return f"{self.origin}/r/trial/{trial}/v1"
+        named = f"/renderer/{renderer}" if renderer is not None else ""
+        return f"{self.origin}/r/trial/{trial}{named}/v1"
 
     async def swap(self, model_path: str | None) -> None:
         if self.control_token is None:

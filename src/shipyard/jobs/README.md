@@ -2,7 +2,7 @@
 
 A **Job** manages a batch of Harbor trials evaluating an agent against a set of tasks. `Trainer.rollout` generates a `Job`, passes it to `HarborEngine.run`, and receives back the trial records, verifier outputs, and parsed verdicts.
 
-Recipes reach this package only through `Trainer` (`rollout`, `keep`) and the `Candidate` that `shipyard` re-exports; none imports from `shipyard.jobs`.
+Recipes reach this package only through `Trainer` (`rollout`, `keep`) and the `Modules` that `shipyard` re-exports; none imports from `shipyard.jobs`.
 
 ## 1. Module Overview
 
@@ -12,7 +12,7 @@ Recipes reach this package only through `Trainer` (`rollout`, `keep`) and the `C
 | **`admit.py`** | Decides whether a trial is awarded a reward or masked from training/metrics (`Verdict`, `judge`). |
 | **`harnesses.py`** | Manages agent integration configurations, wire protocols, and environment bindings (`Harness`, `Profile`, `PROFILES`). |
 | **`secrets.py`** | Leases isolated credential sets to concurrent trials and scrubs leaked values from trial artifacts (`Secrets`, `Pool`, `scrub`). |
-| **`modules.py`** | Manages candidate prompt templates and skill files injected into trial sandboxes (`Module`, `Candidate`, `deliver`). |
+| **`modules.py`** | Manages the prompt template and skill files injected into trial sandboxes (`Module`, `Modules`, `deliver`). |
 | **`progress.py`** | Renders terminal progress bars showing completed vs. masked trials per job (`Bars`). |
 
 ## 2. Job Execution Lifecycle
@@ -25,7 +25,7 @@ A call to `HarborEngine.run(job, tasks, attempts, *, endpoint)`, which runs `job
 
 ```
 
-1. **Config Assembly:** Resolves the harness agent (e.g., `pi@0.85.1`), injects environment variables/kwargs, and renders candidate modules under `jobs/<job>/modules/`.
+1. **Config Assembly:** Resolves the harness agent (e.g., `pi@0.85.1`), injects environment variables/kwargs, and renders the modules under `jobs/<job>/modules/`.
 2. **Preflight Checks:** Validates Harbor compatibility and aborts early if a task disables networking while the harness relies on container-local model calls.
 3. **Trial Execution:** Runs `attempts` trials per task, throttled by `[rollout] concurrency`. Each trial leases a secret identity (when `[rollout.secrets]` sets a pool) and connects to the active endpoint. Failures during runner startup are automatically masked.
 4. **Admittance:** Drains proxy interaction records onto each trial and assigns a `Verdict`. Each trial's files (`result.json`, `agent/`, `verifier/`) sit in `<jobs_dir>/<run>-NNNN/<trial>/`, beside the job's `modules/`. The trainer then appends the job's row to the run's `jobs.jsonl`.
@@ -104,7 +104,7 @@ Post-Trial:    scrub(Trial Artifacts, key_A -> "${API_KEY}") ──> Release key
 
 ## 6. Prompt & Skill Modules (`modules.py`)
 
-Candidate agent components live in a standard directory layout read by `seed` and exported by `keep`:
+Modules live in a standard directory layout read by `Modules.read` and written by `keep`:
 
 ```
 ├── PROMPT.md                  # Text prepended to each task's instruction
@@ -120,7 +120,7 @@ Candidate agent components live in a standard directory layout read by `seed` an
 * **Skills:** Written to `modules/skills/<name>/` and passed as `AgentConfig.skills`; Harbor uploads each to the container's skills directory (`/harbor/skills/<name>/` by default) before agent setup.
 * **Prompt Template:** Wrapped into a Jinja template (`prompt/template.j2`) as `{% raw %}<PROMPT.md>{% endraw %}{{ instruction }}` and passed via `prompt_template_path`.
 
-Search recipes (e.g., `gepa`) inspect and mutate component texts using `Candidate.texts` and `Candidate.with_texts`; each job's row in `jobs.jsonl` records its candidate's `digest`.
+Search recipes (e.g., `gepa`) inspect and mutate component texts using `Modules.texts` and `Modules.with_texts`; each job's row in `jobs.jsonl` records its modules' `digest`.
 
 ## 7. Progress & Testing
 

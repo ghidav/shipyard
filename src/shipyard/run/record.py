@@ -8,20 +8,25 @@ from typing import Any
 
 #: File names in a run directory, defined in one place for every reader and writer.
 CONFIG = "run.toml"
-PROCESS = "process.json"
+#: What the run is: its recipe's place and code, the checkpoint of an earlier run it goes
+#: on from, and the process that ran it.
+RUN = "run.json"
 JOBS = "jobs.jsonl"
 METRICS = "metrics.jsonl"
 CHECKPOINTS = "checkpoints.jsonl"
 REQUESTS = "requests.jsonl"
+#: The usage ledger: a row for each spend, as it happens. `costs.json` holds its totals.
+USAGE = "usage.jsonl"
 COSTS = "costs.json"
 #: The trainer file a recipe folder holds. A run started before runs kept their recipe's
 #: place, rather than a copy of its code, holds its own copy under this name.
 TRAINER = "trainer.py"
-#: Where the run's trainer file is, and a fingerprint of its recipe's code then.
-RECIPE = "recipe.json"
 #: Directory, not a file: the modules the run carried (`carried/`), and a search's `seed/`
 #: and `best/`.
 MODULES = "modules"
+#: Directory, not a file: the state after each step a checkpoint was taken at, as
+#: `step-<n>.json`.
+STATES = "states"
 
 
 def now() -> str:
@@ -81,17 +86,3 @@ def read_json(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
-
-
-def next_job(name: str, directory: Path, jobs_dir: Path) -> int:
-    """Return the next job number: one past the highest in the job log or on disk, else 0."""
-    named = [row.get("job") for row in read(directory / JOBS)]
-    if jobs_dir.is_dir():
-        named += [one.name for one in jobs_dir.iterdir()]
-    prefix = f"{name}-"
-    numbers = [
-        int(one[len(prefix) :])
-        for one in named
-        if isinstance(one, str) and one.startswith(prefix) and one[len(prefix) :].isdigit()
-    ]
-    return max(numbers, default=-1) + 1

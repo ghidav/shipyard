@@ -34,7 +34,7 @@ from shipyard.jobs.engine import (
     quiet_litellm,
 )
 from shipyard.jobs.harnesses import PROFILES, harness
-from shipyard.jobs.modules import PROMPT_TEMPLATE, Candidate, Module
+from shipyard.jobs.modules import PROMPT_TEMPLATE, Module, Modules
 from shipyard.jobs.secrets import Pool, Secrets
 from shipyard.models.endpoints import Connection, ProviderEndpoint, ProxyEndpoint
 from tests.fakes import FakeProxy, FakeTrials, write_result
@@ -85,7 +85,7 @@ async def _run(
     *,
     deployed: str = "pi",
     endpoint: Any = PROVIDER,
-    modules: Candidate | None = None,
+    modules: Modules | None = None,
 ) -> Job:
     job = Job(name, modules=modules, harness=harness(deployed))
     return await engine.run(job, tasks, attempts, endpoint=endpoint)
@@ -342,7 +342,7 @@ async def test_a_jobs_modules_are_delivered_beside_its_trials_and_laid_into_the_
     tmp_path: Path,
 ) -> None:
     skill = "---\nname: tidy\ndescription: Keep the tree tidy.\n---\nTidy up.\n"
-    modules = Candidate(
+    modules = Modules(
         {
             "prompt": Module("prompt", "prompt", {"PROMPT.md": "Be brief."}),
             "tidy": Module("tidy", "skill", {"SKILL.md": skill}),

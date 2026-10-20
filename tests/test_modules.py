@@ -27,16 +27,15 @@ from shipyard.jobs.modules import (
     RESERVED,
     SKILL_FILE,
     SKILLS_DIR,
-    Candidate,
     Inadmissible,
     Module,
+    Modules,
     Skill,
     Unsupported,
     deliver,
     keep,
     preamble,
     read,
-    seed,
     write,
 )
 from shipyard.models.endpoints import ProviderEndpoint
@@ -87,11 +86,11 @@ def _files(home: Path) -> dict[str, str]:
     }
 
 
-# ------------------------------------------------------------------- seed and keep
+# ------------------------------------------------------------------- read and keep
 
 
-def test_a_valid_directory_seeds_one_component_per_skill() -> None:
-    candidate = seed(VALID)
+def test_a_valid_directory_reads_as_one_component_per_skill() -> None:
+    candidate = Modules.read(VALID)
     assert list(candidate.components) == ["solving"]
     module = candidate.components["solving"]
     assert (module.name, module.kind) == ("solving", "skill")
@@ -103,7 +102,7 @@ def test_a_valid_directory_seeds_one_component_per_skill() -> None:
 def test_the_layout_holds_a_prompt_at_the_top_and_skills_beneath(tmp_path: Path) -> None:
     write({PROMPT_FILE: "Run the tests.\n"}, into=tmp_path)
     shutil.copytree(VALID / SKILLS_DIR, tmp_path / SKILLS_DIR)
-    candidate = seed(tmp_path)
+    candidate = Modules.read(tmp_path)
     assert list(candidate.components) == [PROMPT, "solving"]
     prompt = candidate.components[PROMPT]
     assert (prompt.name, prompt.kind, prompt.files) == (
@@ -114,32 +113,32 @@ def test_the_layout_holds_a_prompt_at_the_top_and_skills_beneath(tmp_path: Path)
 
 
 @pytest.mark.parametrize("prompted", [False, True])
-def test_keep_writes_the_layout_seed_reads_so_a_winner_is_a_seed(
+def test_keep_writes_the_layout_read_takes_so_a_winner_can_be_carried(
     tmp_path: Path, prompted: bool
 ) -> None:
     home = tmp_path / "modules"
     shutil.copytree(VALID, home)
     if prompted:
         write({PROMPT_FILE: "Run the tests.\n"}, into=home)
-    candidate = seed(home)
+    candidate = Modules.read(home)
     kept = tmp_path / "kept"
     keep(candidate, kept)
     assert _files(kept) == _files(home)
-    again = seed(kept)
+    again = Modules.read(kept)
     assert again == candidate and again.digest == candidate.digest
 
 
 def test_a_missing_or_empty_directory_is_refused(tmp_path: Path) -> None:
     with pytest.raises(Inadmissible, match="no modules at"):
-        seed(tmp_path / "none")
+        Modules.read(tmp_path / "none")
     (tmp_path / "empty").mkdir()
     with pytest.raises(Inadmissible, match="no modules under"):
-        seed(tmp_path / "empty")
+        Modules.read(tmp_path / "empty")
     # Dot-files and an empty skills directory hold no module.
     (tmp_path / "empty" / ".hidden" / "x").mkdir(parents=True)
     (tmp_path / "empty" / SKILLS_DIR).mkdir()
     with pytest.raises(Inadmissible, match="no modules under"):
-        seed(tmp_path / "empty")
+        Modules.read(tmp_path / "empty")
 
 
 @pytest.mark.parametrize(
@@ -157,7 +156,7 @@ def test_an_entry_outside_the_layout_is_refused(tmp_path: Path, entry: str, why:
     shutil.copytree(VALID, tmp_path / "modules")
     write({entry: _skill("x")}, into=tmp_path / "modules")
     with pytest.raises(Inadmissible, match=re.escape(why) + ": a modules directory holds"):
-        seed(tmp_path / "modules")
+        Modules.read(tmp_path / "modules")
 
 
 # ------------------------------------------------------------------ what is refused
@@ -180,14 +179,14 @@ def test_frontmatter_failures_are_named(text: str, reason: str) -> None:
     assert Skill().check(_module(_skill("body"))) is None
 
 
-def test_a_skill_without_frontmatter_is_refused_at_the_seed_by_name() -> None:
+def test_a_skill_without_frontmatter_is_refused_on_read_by_name() -> None:
     with pytest.raises(Inadmissible, match="'solving' cannot be delivered as a skill: it does"):
-        seed(FIXTURES / "bare")
+        Modules.read(FIXTURES / "bare")
 
 
 def test_a_skill_directory_without_its_marker_is_refused_by_name() -> None:
     with pytest.raises(Inadmissible, match="'skills/solving' holds no SKILL.md"):
-        seed(FIXTURES / "unknown")
+        Modules.read(FIXTURES / "unknown")
 
 
 @pytest.mark.parametrize(("directory", "kind"), list(RESERVED.items()))
@@ -196,9 +195,9 @@ def test_a_reserved_directory_says_the_kind_is_not_supported(
 ) -> None:
     write({"lakehouse/server.py": "print('hello')\n"}, into=tmp_path / directory)
     with pytest.raises(Unsupported, match=f"{kind} modules are not supported in this version"):
-        seed(tmp_path)
+        Modules.read(tmp_path)
     with pytest.raises(Inadmissible) as refused:  # an Unsupported is an Inadmissible
-        seed(tmp_path)
+        Modules.read(tmp_path)
     assert isinstance(refused.value, Unsupported) and refused.value.kind == kind
     assert f"{directory!r}" in str(refused.value)
 
@@ -233,7 +232,7 @@ def test_a_prompt_is_refused_when_it_cannot_be_delivered_as_written(
     with pytest.raises(
         Inadmissible, match="'prompt' cannot be delivered as a prompt: .*" + re.escape(why)
     ):
-        seed(tmp_path)
+        Modules.read(tmp_path)
 
 
 def test_a_prompt_is_its_marker_alone() -> None:
@@ -244,14 +243,14 @@ def test_a_prompt_is_its_marker_alone() -> None:
 def test_a_skill_may_not_take_the_prompts_name(tmp_path: Path) -> None:
     write({PROMPT_FILE: "go", f"{SKILLS_DIR}/{PROMPT}/{SKILL_FILE}": _skill("x")}, into=tmp_path)
     with pytest.raises(Inadmissible, match="'skills/prompt' takes the name of the PROMPT.md"):
-        seed(tmp_path)
+        Modules.read(tmp_path)
 
 
 def test_a_prompt_is_delivered_as_harbors_prompt_template(tmp_path: Path) -> None:
     """Harbor renders the instruction through the template, which yields the prompt text, a
     blank line, then the instruction. Jinja syntax in the prompt text is not evaluated."""
     text = "Use {{ python }} and {% if x %}this{% endif %}.\n\n"
-    fields = deliver(Candidate({PROMPT: _prompt(text)}), tmp_path / "into")
+    fields = deliver(Modules({PROMPT: _prompt(text)}), tmp_path / "into")
     template = Path(fields["kwargs"]["prompt_template_path"])
     assert template == (tmp_path / "into" / "prompt" / "template.j2").resolve()
     rendered = render_prompt_template(template, "Fix the bug.\n")
@@ -260,7 +259,7 @@ def test_a_prompt_is_delivered_as_harbors_prompt_template(tmp_path: Path) -> Non
 
 
 def test_a_prompt_rides_with_skills_and_lays_over_the_blueprints_kwargs(tmp_path: Path) -> None:
-    candidate = Candidate({PROMPT: _prompt(), "solving": _module()})
+    candidate = Modules({PROMPT: _prompt(), "solving": _module()})
     under: dict[str, Any] = {"kwargs": {"version": "1.0", "prompt_template_path": "theirs.j2"}}
     fields = laid_over(under, deliver(candidate, tmp_path / "into"))
     assert fields["skills"] == [str((tmp_path / "into" / "skills").resolve())]
@@ -269,9 +268,23 @@ def test_a_prompt_rides_with_skills_and_lays_over_the_blueprints_kwargs(tmp_path
 
 
 def test_a_candidate_carries_one_prompt(tmp_path: Path) -> None:
-    two = Candidate({"a": _prompt(name="a"), "b": _prompt("Other.\n", name="b")})
-    with pytest.raises(Inadmissible, match="a candidate carries one prompt, and this one has a, b"):
+    two = Modules({"a": _prompt(name="a"), "b": _prompt("Other.\n", name="b")})
+    with pytest.raises(Inadmissible, match="modules carry one prompt, and these have a, b"):
         deliver(two, tmp_path / "into")
+
+
+def test_texts_written_in_code_are_refused_as_reading_refuses_them() -> None:
+    """Modules made in code, by `with_texts` or by hand, are checked as read ones are:
+    otherwise `deliver` writes a template Harbor cannot render, or a skill the harness never
+    surfaces, and `keep` saves what a resume cannot read back."""
+    carried = Modules({PROMPT: _prompt(), "solving": _module()})
+    with pytest.raises(Inadmissible, match="'prompt' cannot be delivered as a prompt: .*endraw"):
+        carried.with_texts({PROMPT: "Check it. {% endraw %} Then finish."})
+    with pytest.raises(Inadmissible, match="'solving' cannot be delivered as a skill: .*---"):
+        carried.with_texts({"solving": "Read it twice."})
+    with pytest.raises(Inadmissible, match="'prompt' cannot be delivered as a prompt: .*empty"):
+        Modules({PROMPT: _prompt("  \n")})
+    assert carried.with_texts({PROMPT: "Check it.\n"}).texts[PROMPT] == "Check it.\n"
 
 
 # ------------------------------------------------------------------------ digests
@@ -288,12 +301,12 @@ def test_the_digest_changes_with_any_file() -> None:
 
 
 def test_a_candidates_digest_covers_its_components_and_their_names() -> None:
-    one = Candidate({"solving": _module()})
-    assert one.digest == Candidate({"solving": _module()}).digest
-    assert one.digest != Candidate({"planning": _module()}).digest, "the name counts"
-    two = Candidate({"solving": _module(), "planning": _module(_skill("plan", name="planning"))})
+    one = Modules({"solving": _module()})
+    assert one.digest == Modules({"solving": _module()}).digest
+    assert one.digest != Modules({"planning": _module()}).digest, "the name counts"
+    two = Modules({"solving": _module(), "planning": _module(_skill("plan", name="planning"))})
     assert two.digest != one.digest
-    changed = Candidate({"solving": _module(_skill("read it three times"))})
+    changed = Modules({"solving": _module(_skill("read it three times"))})
     assert changed.digest != one.digest
 
 
@@ -303,7 +316,7 @@ def test_a_candidates_digest_covers_its_components_and_their_names() -> None:
 def test_deliver_names_the_skills_root_harbor_takes_and_writes_every_file(
     tmp_path: Path,
 ) -> None:
-    candidate = seed(VALID)
+    candidate = Modules.read(VALID)
     into = tmp_path / "m"
     stale = into / "skills" / "stale" / SKILL_FILE
     stale.parent.mkdir(parents=True)
@@ -337,7 +350,7 @@ async def test_a_kinds_fields_land_on_the_agent_config_beside_the_rollouts_own(
     runner = FakeTrials()
     table = Rollout(sandbox="docker", concurrency=1, jobs_dir=str(tmp_path / "jobs"))
     engine = HarborEngine(table, env={"KEEP": "1"}, kwargs={"thinking": "high"}, run_trial=runner)
-    job = Job("run-0000", modules=seed(VALID), harness=harness("pi@0.85.1"))
+    job = Job("run-0000", modules=Modules.read(VALID), harness=harness("pi@0.85.1"))
     endpoint = ProviderEndpoint("m", "openrouter")
     await engine.run(job, [tmp_path / "tasks" / "alpha"], 1, endpoint=endpoint)
     agent = runner.configs[0].agent
@@ -351,7 +364,7 @@ def test_a_relative_into_is_delivered_absolute(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    fields = deliver(seed(VALID), Path("m"))
+    fields = deliver(Modules.read(VALID), Path("m"))
     assert Path(fields["skills"][0]).is_absolute()
     assert Path(fields["skills"][0]) == (tmp_path / "m" / "skills").resolve()
 
@@ -442,12 +455,12 @@ async def test_a_run_keeps_the_carried_modules_once_and_each_job_delivers_them(
         (_batch(tmp_path, "alpha", "beta"), {"attempts": 2}),
         (_batch(tmp_path, "alpha"), {"attempts": 1}),
     )
-    assert trainer.modules is not None and trainer.modules == seed(home / "modules")
+    assert trainer.state.modules == Modules.read(home / "modules")
     copy = directory / record.MODULES / CARRIED
     assert kept == [copy] and _files(copy) == _files(VALID)
-    assert seed(copy).digest == trainer.modules.digest
+    assert Modules.read(copy).digest == trainer.state.modules.digest
     with Trainer(trainer.config, directory) as again:
-        assert again.modules == trainer.modules
+        assert again.state.modules == trainer.state.modules
     assert kept == [copy], "the carried copy is written once; later trainers read it back"
     first, second = f"{directory.name}-0000", f"{directory.name}-0001"
     assert len(runner.configs) == 5
@@ -457,8 +470,8 @@ async def test_a_run_keeps_the_carried_modules_once_and_each_job_delivers_them(
         assert config.agent.name == "pi" and config.agent.kwargs == {"version": "0.85.1"}
         assert _files(root / "solving") == _files(VALID / SKILLS_DIR / "solving")
     rows = _rows(directory)
-    assert [row["modules"] for row in rows] == [trainer.modules.digest] * 2
-    head = ["at", "job", "purpose", "harness", "trials", "step", "attempt", "tasks", "modules"]
+    assert [row["modules"] for row in rows] == [trainer.state.modules.digest] * 2
+    head = ["at", "job", "dir", "purpose", "harness", "trials", "step", "tasks", "modules"]
     assert list(rows[0])[:9] == head and rows[0]["harness"] == "pi@0.85.1"
     assert sorted(p.name for p in (tmp_path / "jobs" / first).iterdir()) == sorted(
         [DELIVERED] + [config.trial_name for config in runner.configs[:4]]
@@ -471,7 +484,7 @@ async def test_a_job_delivers_the_candidate_it_is_handed_and_nothing_otherwise(
     monkeypatch.chdir(tmp_path)
     home = _carrying(tmp_path, CARRYING.replace('modules = "modules"\n', ""), modules=None)
     runner = harbor(FakeTrials())
-    handed = Candidate({"solving": _module(_skill("read it three times"))})
+    handed = Modules({"solving": _module(_skill("read it three times"))})
     alpha = _batch(tmp_path, "alpha")
     directory, trainer = await _roll(
         home,
@@ -479,7 +492,7 @@ async def test_a_job_delivers_the_candidate_it_is_handed_and_nothing_otherwise(
         (alpha, {"attempts": 1}),
         (alpha, {"attempts": 1, "modules": handed}),
     )
-    assert trainer.modules is None and not (directory / record.MODULES).exists()
+    assert trainer.state.modules is None and not (directory / record.MODULES).exists()
     bare, carrying = f"{directory.name}-0000", f"{directory.name}-0001"
     assert runner.configs[0].agent.skills == []
     assert sorted(p.name for p in (tmp_path / "jobs" / bare).iterdir()) == [
@@ -567,14 +580,14 @@ async def test_a_handed_candidate_wins_over_the_carried_one(
     monkeypatch.chdir(tmp_path)
     runner = harbor(FakeTrials())
     planning = Module("planning", "skill", {SKILL_FILE: _skill("plan first", name="planning")})
-    other = Candidate({"planning": planning})
+    other = Modules({"planning": planning})
     directory, _ = await _roll(
         _carrying(tmp_path), tmp_path / "runs", (_batch(tmp_path, "alpha"), {"modules": other})
     )
     root = Path(runner.configs[0].agent.skills[0])
     assert sorted(p.name for p in root.iterdir()) == ["planning"]
     [row] = _rows(directory)
-    assert row["modules"] == other.digest != seed(VALID).digest
+    assert row["modules"] == other.digest != Modules.read(VALID).digest
     assert row["job"] == f"{directory.name}-0000"
 
 
@@ -583,7 +596,7 @@ async def test_a_job_hands_a_prompt_to_harbor_as_the_agents_prompt_template(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     runner = harbor(FakeTrials())
-    prompted = Candidate({"guidance": _prompt("Run the tests.\n", name="guidance")})
+    prompted = Modules({"guidance": _prompt("Run the tests.\n", name="guidance")})
     directory, _ = await _roll(
         _carrying(tmp_path), tmp_path / "runs", (_batch(tmp_path, "alpha"), {"modules": prompted})
     )
@@ -617,32 +630,34 @@ def test_a_run_carries_its_modules_and_keeps_a_candidate_in_the_layout_it_reads(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     directory, config = open_run(_carrying(tmp_path), root=tmp_path / "runs")
-    assert carried(config, directory) == seed(VALID)
+    assert carried(config, directory) == Modules.read(VALID)
     assert (directory / record.MODULES / CARRIED / SKILLS_DIR / "solving" / SKILL_FILE).is_file()
-    best = Candidate({**seed(VALID).components, PROMPT: _prompt("Run the tests.\n")})
+    best = Modules({**Modules.read(VALID).components, PROMPT: _prompt("Run the tests.\n")})
     with Trainer(config, directory) as trainer:
         kept = trainer.keep(best, "best")
     assert kept == directory / record.MODULES / "best"
-    assert seed(kept) == best, "a kept candidate seeds a later run"
-    assert seed(directory / record.MODULES / CARRIED) == seed(VALID), "the carried copy stays"
+    assert Modules.read(kept) == best, "a kept candidate seeds a later run"
+    assert Modules.read(directory / record.MODULES / CARRIED) == Modules.read(VALID), (
+        "the carried copy stays"
+    )
 
 
-def test_a_resumed_run_carries_the_modules_its_checkpoint_names(
+def test_a_resumed_run_carries_the_modules_its_checkpoint_saved(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Not the seed: a search, such as FST's, moved on to modules it kept along the way."""
+    """Not the seed: a search, such as FST's, moved on to other modules, which the state of
+    its checkpoint holds whole."""
     monkeypatch.chdir(tmp_path)
     directory, config = open_run(_carrying(tmp_path), root=tmp_path / "runs")
     trainer = Trainer(config, directory)
-    later = Candidate({"solving": _module(_skill("read it three times"))})
-    trainer.keep(later, "step-4/0")
-    row = {"tag": "step-4", "step": 4, "updates": 4, "drawn": 4, "modules": later.digest}
+    later = Modules({"solving": _module(_skill("read it three times"))})
+    saved = Trainer.State(steps=4, updates=4, drawn=4, modules=later).model_dump(mode="json")
+    record.write_json(directory / record.STATES / "step-4.json", saved)
     resumed = Trainer(config, directory)
-    resumed.restore(row)
-    assert resumed.modules == later != trainer.modules
-    lost = Trainer(config, directory)
-    with pytest.raises(ValueError, match="which the run did not keep"):
-        lost.restore({**row, "modules": "0" * 16})
+    resumed.restore(
+        directory, {"tag": "step-4", "step": 4, "state": f"{record.STATES}/step-4.json"}
+    )
+    assert resumed.state.modules == later != trainer.state.modules
 
 
 async def test_a_resumed_run_carries_the_modules_it_kept_not_the_blueprints(
@@ -655,10 +670,11 @@ async def test_a_resumed_run_carries_the_modules_it_kept_not_the_blueprints(
     directory, _ = await _roll(home, tmp_path / "runs", twice, update=True)
     shutil.rmtree(home / "modules")
     config, row = reopened(directory)
-    assert row["tag"] == "final" and row["modules"] == seed(VALID).digest
+    saved = Trainer.State.model_validate(record.read_json(directory / row["state"]))
+    assert row["tag"] == "final" and saved.modules == Modules.read(VALID), "in the state, whole"
     with Trainer(config, directory) as resumed:
-        resumed.restore(row)
-        assert resumed.modules == seed(VALID)
+        resumed.restore(directory, row)
+        assert resumed.state.modules == Modules.read(VALID)
 
 
 @pytest.mark.parametrize(
@@ -669,7 +685,7 @@ async def test_a_resumed_run_carries_the_modules_it_kept_not_the_blueprints(
         (FIXTURES / "unknown", "'skills/solving' holds no SKILL.md"),
     ],
 )
-def test_a_seed_the_run_cannot_read_fails_it_before_anything_is_kept_or_rolled_out(
+def test_modules_the_run_cannot_read_fail_it_before_anything_is_kept_or_rolled_out(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     harbor: Harbor,
@@ -682,7 +698,7 @@ def test_a_seed_the_run_cannot_read_fails_it_before_anything_is_kept_or_rolled_o
     result = CliRunner().invoke(app, ["run", str(home), "--root", str(tmp_path / "runs")])
     assert result.exit_code == 1 and isinstance(result.exception, Inadmissible)
     (directory,) = (tmp_path / "runs").iterdir()
-    note = record.read_json(directory / record.PROCESS)
+    note = record.read_json(directory / record.RUN)["process"]
     assert note["failed"] is True and note["error"].startswith("Inadmissible: ")
     assert reason in note["error"]
     if modules is None:
