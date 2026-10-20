@@ -1,0 +1,30 @@
+# DAPO on Reasoning Gym's easy split: 16 problems a step, 8 rollouts each. Run it with trainer.py.
+[agent]
+model = "Qwen/Qwen3-8B"
+harness = "pi@0.85.1"
+
+[data]
+train = "reasoning-gym-easy"
+batch_size = 16
+group_size = 8
+
+[rollout]
+sandbox = "modal"
+concurrency = 32
+setup_timeout = 900
+max_tokens = 8192
+
+[recipe]
+learning_rate = 2e-5
+steps = 100
+lora_rank = 32
+# The paper's 16 mini-batches a step, and its clip-higher: 0.2 below 1, 0.28 above.
+substeps = 16
+clip_low = 0.2
+clip_high = 0.28
+# Eq. 13's -1 on Harbor's 0 to 1 scale, over the last fifth of the token budget.
+overlong_penalty = 0.5
+overlong_buffer = 0.2
+
+[checkpoints]
+every = 10

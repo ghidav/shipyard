@@ -1,0 +1,183 @@
+"""SSE keepalive frames for streamed replies that are slow to sample.
+
+While the sampler works past the grace period, the stream is silent, and a tunnel may cut
+a connection that stays silent too long, failing the harness's call. An SSE comment frame
+sent at intervals keeps the connection open. Keepalives do not change the record."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from collections.abc import Sequence
+from contextvars import ContextVar
+from typing import Any
+
+from aiohttp import web
+
+logger = logging.getLogger(__name__)
+
+#: Seconds of silence on a stream before the first comment frame, then the gap between frames.
+KEEPALIVE_GRACE = 30.0
+KEEPALIVE_EVERY = 15.0
+#: An SSE comment frame. Clients ignore it, but the bytes keep the connection open.
+FRAME = b": keepalive\n\n"
+SSE_HEADERS = {"Content-Type": "text/event-stream", "Cache-Control": "no-cache"}
+
+#: Keepalive of the current request, read by `serve_sse`.
+current: ContextVar[Keepalive | None] = ContextVar("harness_proxy_keepalive", default=None)
+
+
+class Keepalive:
+    """Keepalive frames for one streamed request.
+
+    A background task opens the response once the grace period has passed, then writes a
+    comment frame per interval until the handler's chunks arrive."""
+
+    def __init__(self, request: Any, *, grace: float, every: float) -> None:
+        self.request = request
+        self.grace, self.every = grace, every
+        #: Response the frames were written to; None until the first frame.
+        self.response: web.StreamResponse | None = None
+        self.sent = 0
+        self._lock = asyncio.Lock()
+        self._stopped = False
+        self._task = asyncio.create_task(self._frames())
+
+    async def _frames(self) -> None:
+        pause = self.grace
+        while True:
+            await asyncio.sleep(pause)
+            async with self._lock:
+                if self._stopped:
+                    return
+                try:
+                    if self.response is None:
+                        self.response = web.StreamResponse(headers=SSE_HEADERS)
+                        await self.response.prepare(self.request)
+                    await self.response.write(FRAME)
+                except Exception:  # noqa: BLE001 - a disconnected client must not fail the sampler
+                    logger.debug("keepalive to %s ended", self.request.path, exc_info=True)
+                    self._stopped = True
+                    return
+                self.sent += 1
+            pause = self.every
+
+    async def opened(self) -> web.StreamResponse | None:
+        """Stop the frames and return the response they were written to, or None if none were.
+
+        The reply's chunks must then be written to that response, because a request cannot start
+        a second one."""
+        async with self._lock:
+            self._stopped = True
+        self._task.cancel()
+        return self.response
+
+    def cancel(self) -> None:
+        """Stop the frames without waiting. Called whenever a request ends."""
+        self._stopped = True
+        self._task.cancel()
+
+
+async def serve_sse(request: Any, chunks: Sequence[bytes]) -> web.StreamResponse:
+    """Write a streamed reply, to the stream the request's keepalive opened if it opened one.
+
+    The reply exists only once sampling is done, so its first byte waits on the whole sample;
+    the keepalive covers that wait. A client that has gone away (cancelled, or retrying) is not
+    a server fault: it is logged at debug and the rest of the reply is dropped."""
+    kept_alive = current.get()
+    response = await kept_alive.opened() if kept_alive is not None else None
+    if kept_alive is not None and response is not None:
+        logger.info("a reply to %s was kept alive by %d frame(s)", request.path, kept_alive.sent)
+    try:
+        if response is None:
+            response = web.StreamResponse(headers=SSE_HEADERS)
+            await response.prepare(request)
+        for chunk in chunks:
+            await response.write(chunk)
+        await response.write_eof()
+    except ConnectionResetError:
+        logger.debug("client disconnected during SSE response: path=%s", request.path)
+    return response
+
+
+def middleware(grace: float = KEEPALIVE_GRACE, every: float = KEEPALIVE_EVERY) -> Any:
+    """Return middleware that runs a `Keepalive` for each request whose body asks to stream.
+
+    The keepalive stops when the handler answers. If the keepalive has opened the stream and
+    the handler answers with something else (an error after the grace period), the answer is
+    written to the stream as an error frame, because the status was already sent."""
+
+    @web.middleware
+    async def kept(request: Any, handler: Any) -> Any:
+        if request.method != "POST" or not await streaming(request):
+            return await handler(request)
+        kept_alive = Keepalive(request, grace=grace, every=every)
+        token = current.set(kept_alive)
+        try:
+            try:
+                response = await handler(request)
+            except Exception as failed:
+                opened = await kept_alive.opened()
+                if opened is None:
+                    raise
+                logger.warning("the request to %s failed after its stream opened", request.path)
+                await error_frame(opened, request.path, f"{type(failed).__name__}: {failed}")
+                return opened
+            opened = await kept_alive.opened()
+            if opened is None or response is opened:
+                return response
+            await error_frame(opened, request.path, message_of(response))
+            return opened
+        finally:
+            kept_alive.cancel()
+            current.reset(token)
+
+    return kept
+
+
+async def streaming(request: Any) -> bool:
+    """Return whether the request body asks for a stream. The body stays cached for the handler."""
+    try:
+        raw = await request.read()
+    except Exception:  # noqa: BLE001 - the handler refuses an unreadable body
+        return False
+    if b'"stream"' not in raw:
+        return False
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        return False
+    return isinstance(body, dict) and bool(body.get("stream"))
+
+
+def message_of(response: Any) -> str:
+    """Return the error message from a response's JSON body on either wire, else its status."""
+    text = getattr(response, "text", None)
+    try:
+        body = json.loads(text) if isinstance(text, str) else None
+    except ValueError:
+        body = None
+    error = body.get("error") if isinstance(body, dict) else None
+    if isinstance(error, dict) and error.get("message"):
+        return str(error["message"])
+    return f"{response.status} {response.reason or ''}".strip()
+
+
+async def error_frame(response: web.StreamResponse, path: str, message: str) -> None:
+    """End an open stream with the wire's error event.
+
+    On `/messages` this is `event: error` (Anthropic); otherwise it is `data: {"error": ...}`
+    followed by `[DONE]` (OpenAI)."""
+    if path.endswith("/messages"):
+        payload = {"type": "error", "error": {"type": "api_error", "message": message}}
+        frames = [f"event: error\ndata: {json.dumps(payload)}\n\n"]
+    else:
+        payload = {"error": {"message": message, "type": "server_error"}}
+        frames = [f"data: {json.dumps(payload)}\n\n", "data: [DONE]\n\n"]
+    try:
+        for frame in frames:
+            await response.write(frame.encode())
+        await response.write_eof()
+    except ConnectionResetError:
+        logger.debug("client disconnected before the error frame: path=%s", path)

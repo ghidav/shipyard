@@ -1,0 +1,30 @@
+# CISPO on Reasoning Gym's easy split: 16 problems a step, 8 rollouts each.
+[agent]
+model = "Qwen/Qwen3-8B"
+harness = "pi@0.85.1"
+
+[data]
+train = "reasoning-gym-easy"
+batch_size = 16
+group_size = 8
+
+[rollout]
+sandbox = "modal"
+concurrency = 32
+setup_timeout = 900
+max_tokens = 8192
+
+[recipe]
+learning_rate = 2e-5
+steps = 100
+lora_rank = 32
+# The paper's 16 mini-batches a step. The weight is truncated at 1 + 3.0 = 4.0, ScaleRL's
+# (A.17.2) and FST's (appendix D) ceiling.
+substeps = 16
+clip_high = 3.0
+# DAPO's Eq. 13: -1 on Harbor's 0 to 1 scale, over the last fifth of the token budget.
+overlong_penalty = 0.5
+overlong_buffer = 0.2
+
+[checkpoints]
+every = 10

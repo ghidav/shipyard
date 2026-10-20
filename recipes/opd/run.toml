@@ -1,0 +1,26 @@
+# On-policy distillation: Qwen3-32B teaches Qwen3-8B on Reasoning Gym's easy split. Run it with
+# trainer.py. The teacher reads the student's token ids, so it shares its tokenizer.
+[agent]
+model = "Qwen/Qwen3-8B"
+harness = "pi@0.85.1"
+
+[data]
+train = "reasoning-gym-easy"
+batch_size = 16
+group_size = 4
+
+[rollout]
+sandbox = "modal"
+concurrency = 32
+setup_timeout = 900
+max_tokens = 8192
+
+[recipe]
+learning_rate = 2e-5
+steps = 100
+lora_rank = 32
+teacher = "Qwen/Qwen3-32B"
+teacher_coef = 1.0
+
+[checkpoints]
+every = 10
