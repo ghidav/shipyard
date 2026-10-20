@@ -6,7 +6,7 @@ from pathlib import Path
 from statistics import fmean, pstdev
 from typing import TYPE_CHECKING, Any
 
-from shipyard.groups import Group, by_task
+from shipyard.groups import Group, merged
 from shipyard.run import record
 from shipyard.run.costs import (
     UNKNOWN,
@@ -58,8 +58,7 @@ EVAL = "eval_"
 
 
 class Wandb:
-    """The wandb run the step rows and costs are mirrored to, named after the run directory, and
-    grouped with the runs of its chain: the run it went on from, and that one's, and so on."""
+    """The wandb run the rows and costs are mirrored to, grouped with the runs of its chain."""
 
     def __init__(self, config: Blueprint, directory: Path) -> None:
         try:
@@ -171,16 +170,14 @@ class Logs:
         self._write_costs()
 
     def spend(self, role: str, provider: str, model: str, /, **counts: int) -> None:
-        """File tokens `role` spent on a provider's model, by kind: a row of the usage ledger,
-        added to the run's costs at once."""
+        """File the tokens `role` spent on a provider's model in the usage ledger and the costs."""
         if self._spent({"step": self._step(), "role": role}, provider, model, counts):
             self._write_costs()
 
     def _spent(
         self, about: Mapping[str, Any], provider: str, model: str, counts: Mapping[str, int]
     ) -> bool:
-        """Append a row of tokens to the usage ledger and add them to the costs; False when
-        nothing was spent."""
+        """Append a row of tokens to the ledger and the costs; False when nothing was spent."""
         found = counted(counts)
         if not found:
             return False
@@ -198,9 +195,8 @@ class Logs:
         evaluation: Any,
         metrics: Mapping[str, Any],
     ) -> None:
-        """Write a step's row: its groups, its update, the evaluation that belongs to it, as
-        `eval_` fields, and the recipe's own `metrics`."""
-        groups = by_task(groups)
+        """Write a step's row: its groups, update, evaluation as `eval_` fields, and `metrics`."""
+        groups = merged(groups)
         measured = [one for group in groups for one in group.measured]
         trials = sum(len(group.trials) for group in groups)
         spreads = [pstdev(group.rewards) for group in groups if len(group.rewards) > 1]
@@ -219,13 +215,13 @@ class Logs:
             **(vars(update) if update is not None else {}),
         }
         kept = {key: value for key in ROW if (value := row.get(key)) is not None}
-        kept |= by_renderer(groups)
+        kept |= breakdown(groups)
         if evaluation is not None:
             evaluated = {key: value for key, value in vars(evaluation).items() if key != "step"}
-            renderers = evaluated.pop("by_renderer", None) or {}
+            each = evaluated.pop("breakdown", None) or {}
             kept |= {
                 f"{EVAL}{key}": value
-                for key, value in {**evaluated, **renderers}.items()
+                for key, value in {**evaluated, **each}.items()
                 if value is not None
             }
         own = {(f"recipe_{key}" if key in kept else key): value for key, value in metrics.items()}
@@ -253,21 +249,21 @@ def _known(about: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in about.items() if value is not None}
 
 
-def by_renderer(groups: Sequence[Group]) -> dict[str, float]:
-    """Return each renderer's mean reward and sampled tokens over its graded trials, as
-    `reward_mean_<renderer>` and `sampled_mean_<renderer>`, when the groups' trials were rendered
-    with more than one renderer; nothing otherwise."""
-    graded: dict[str, list[Trial]] = {}
-    for one in (trial for group in groups for trial in group.trials):
-        if one.renderer is not None:
-            graded.setdefault(one.renderer, []).extend([one] if one.measured else [])
-    if len(graded) < 2:
-        return {}
+def breakdown(groups: Sequence[Group]) -> dict[str, float]:
+    """Return each harness's and renderer's mean reward and tokens sampled, when several ran."""
+    trials = [one for group in groups for one in group.trials]
     found: dict[str, float] = {}
-    for name, trials in graded.items():
-        if trials:
-            found[f"reward_mean_{name}"] = fmean(one.reward or 0.0 for one in trials)
-            found[f"sampled_mean_{name}"] = fmean(one.sampled_tokens for one in trials)
+    for named in ([one.harness.agent for one in trials], [one.renderer for one in trials]):
+        graded: dict[str, list[Trial]] = {}
+        for name, one in zip(named, trials, strict=True):
+            if name is not None:
+                graded.setdefault(name, []).extend([one] if one.measured else [])
+        if len(graded) < 2:
+            continue
+        for name, kept in graded.items():
+            if kept:
+                found[f"reward_mean_{name}"] = fmean(one.reward or 0.0 for one in kept)
+                found[f"sampled_mean_{name}"] = fmean(one.sampled_tokens for one in kept)
     return found
 
 

@@ -1,5 +1,3 @@
-"""Tinker: a service client that opens a sampling client on any weights saved for sampling."""
-
 from __future__ import annotations
 
 import logging
@@ -25,9 +23,7 @@ async def sampler(service: Any, base_model: str, weights: str | None) -> Any:
 
 
 async def context_of(service: Any, base_model: str) -> int | None:
-    """Return the model's context length from `get_server_capabilities`, or None on any error.
-
-    Without a context length nothing is refused, so a failed lookup does not fail a run."""
+    """Return the model's context length from `get_server_capabilities`; None on any error."""
     try:
         caps = await service.get_server_capabilities_async()
         for model in getattr(caps, "supported_models", None) or []:

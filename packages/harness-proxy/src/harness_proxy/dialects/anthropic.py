@@ -1,14 +1,3 @@
-"""The Anthropic Messages wire (`/v1/messages`), as Claude Code speaks it.
-
-Reading: thinking blocks the harness sends back become thinking parts, so the history message
-digests the same as the sampled reply and the bridge can match it; redacted ones hold nothing a
-model can read and are dropped. Images and documents become image parts. A system-role message
-inside the list, which Claude Code sends on every call, is a user turn where it stands: folded into
-the system prompt, a block appended at the end would land at the front of the prompt, and no call
-would extend the one before it. The request's own `system` is the system prompt.
-
-Writing: the reply's thinking is a signed `thinking` block before its text and tool calls."""
-
 from __future__ import annotations
 
 import base64
@@ -80,8 +69,7 @@ def read(body: dict[str, Any]) -> Call:
 
 
 def _message(role: str, content: Any, names: dict[str, str]) -> list[Message]:
-    """Return the messages one wire message becomes: a tool message per `tool_result`, then the
-    message itself if it has anything left to say."""
+    """Return the messages a wire message becomes: one per `tool_result`, then itself if any."""
     if isinstance(content, str):
         return [Message(role=role, content=content)]
     if not isinstance(content, list):
@@ -170,8 +158,7 @@ def _tools(raw: Any) -> list[Any]:
 
 
 def signature(thinking: str) -> str:
-    """Return the signature of a thinking block this proxy writes: a base64 SHA-256 digest of
-    the text. A client sends it back unchanged, and the proxy does not verify it."""
+    """Return a thinking block's signature: a base64 SHA-256 of the text, not verified."""
     return base64.b64encode(hashlib.sha256(thinking.encode("utf-8")).digest()).decode("ascii")
 
 
@@ -250,8 +237,7 @@ def _blocks(reply: Reply) -> list[dict[str, Any]]:
 
 
 def _input(call: ToolCall) -> dict[str, Any]:
-    """Return a call's arguments as the object a `tool_use` block carries. Arguments that are not
-    an object are passed as they were sampled, never reshaped."""
+    """Return a call's arguments as a `tool_use` input, passed as sampled when not an object."""
     try:
         parsed = json.loads(call.function.arguments)
     except ValueError:

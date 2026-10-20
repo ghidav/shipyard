@@ -1,9 +1,3 @@
-"""SSE keepalive frames for streamed replies that are slow to sample.
-
-While the sampler works past the grace period, the stream is silent, and a tunnel may cut
-a connection that stays silent too long, failing the harness's call. An SSE comment frame
-sent at intervals keeps the connection open. Keepalives do not change the record."""
-
 from __future__ import annotations
 
 import asyncio
@@ -29,10 +23,7 @@ current: ContextVar[Keepalive | None] = ContextVar("harness_proxy_keepalive", de
 
 
 class Keepalive:
-    """Keepalive frames for one streamed request.
-
-    A background task opens the response once the grace period has passed, then writes a
-    comment frame per interval until the handler's chunks arrive."""
+    """Keepalive frames for one streamed request, opened once the grace period passes."""
 
     def __init__(self, request: Any, *, grace: float, every: float) -> None:
         self.request = request
@@ -64,10 +55,7 @@ class Keepalive:
             pause = self.every
 
     async def opened(self) -> web.StreamResponse | None:
-        """Stop the frames and return the response they were written to, or None if none were.
-
-        The reply's chunks must then be written to that response, because a request cannot start
-        a second one."""
+        """Stop the frames and return the response they were written to, or None if none were."""
         async with self._lock:
             self._stopped = True
         self._task.cancel()
@@ -80,11 +68,7 @@ class Keepalive:
 
 
 async def serve_sse(request: Any, chunks: Sequence[bytes]) -> web.StreamResponse:
-    """Write a streamed reply, to the stream the request's keepalive opened if it opened one.
-
-    The reply exists only once sampling is done, so its first byte waits on the whole sample;
-    the keepalive covers that wait. A client that has gone away (cancelled, or retrying) is not
-    a server fault: it is logged at debug and the rest of the reply is dropped."""
+    """Write a streamed reply, to the stream the request's keepalive opened if it opened one."""
     kept_alive = current.get()
     response = await kept_alive.opened() if kept_alive is not None else None
     if kept_alive is not None and response is not None:
@@ -102,11 +86,7 @@ async def serve_sse(request: Any, chunks: Sequence[bytes]) -> web.StreamResponse
 
 
 def middleware(grace: float = KEEPALIVE_GRACE, every: float = KEEPALIVE_EVERY) -> Any:
-    """Return middleware that runs a `Keepalive` for each request whose body asks to stream.
-
-    The keepalive stops when the handler answers. If the keepalive has opened the stream and
-    the handler answers with something else (an error after the grace period), the answer is
-    written to the stream as an error frame, because the status was already sent."""
+    """Return middleware that runs a `Keepalive` for each request whose body asks to stream."""
 
     @web.middleware
     async def kept(request: Any, handler: Any) -> Any:
@@ -165,10 +145,7 @@ def message_of(response: Any) -> str:
 
 
 async def error_frame(response: web.StreamResponse, path: str, message: str) -> None:
-    """End an open stream with the wire's error event.
-
-    On `/messages` this is `event: error` (Anthropic); otherwise it is `data: {"error": ...}`
-    followed by `[DONE]` (OpenAI)."""
+    """End an open stream with the wire's error event."""
     if path.endswith("/messages"):
         payload = {"type": "error", "error": {"type": "api_error", "message": message}}
         frames = [f"event: error\ndata: {json.dumps(payload)}\n\n"]

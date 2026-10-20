@@ -123,7 +123,10 @@ class Rollouts:
             groups = [Group(task, []) for task in tasks]
         else:
             groups = self.wait(self.trainer.rollout(tasks, modules=modules, purpose="search"))
-        found = {group.task: group for group in groups}
+        # A task's groups, one per renderer and harness, scored as one.
+        found: dict[Path, Group] = {}
+        for group in groups:
+            found.setdefault(group.task, Group(group.task, [])).trials.extend(group.trials)
         each = [found[task] for task in batch]
         return EvaluationBatch(
             outputs=[group.rewards for group in each],

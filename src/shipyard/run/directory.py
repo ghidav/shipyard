@@ -35,8 +35,7 @@ def open_run(
     trainer: Path | None = None,
     origin: Mapping[str, Any] | None = None,
 ) -> tuple[Path, Blueprint]:
-    """Create a run's directory for a blueprint, noting in its `run.json` its recipe's place
-    and, for a run that goes on from a checkpoint of an earlier one, that `origin`."""
+    """Create a blueprint's run directory, noting its recipe and any `origin` in `run.json`."""
     source = config_file(blueprint)
     if trainer is None and (source.parent / record.TRAINER).is_file():
         trainer = source.parent / record.TRAINER
@@ -59,9 +58,7 @@ def open_run(
 
 
 def continued(origin: Path, row: Mapping[str, Any]) -> tuple[Path, Blueprint]:
-    """Open a run beside `origin` that goes on from its checkpoint `row`, with its blueprint, its
-    recipe and the modules it carried; the run restores the state the row names. Its `origin`
-    notes the run, the tag and the first run of the chain."""
+    """Open a run beside `origin` that goes on from its checkpoint `row`, noting the chain."""
     origin = Path(origin).resolve()
     noted = record.read_json(origin / record.RUN)
     trainer = (noted.get("recipe") or {}).get("trainer")

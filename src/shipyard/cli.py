@@ -25,7 +25,7 @@ next:
   shipyard run recipes/dapo                         # each recipe's README.md says what it needs"""
 
 app = typer.Typer(
-    help="Train with a recipe written from four primitives: draw, rollout, logprobs, update.",
+    help="Train with a recipe written from four primitives: draw, rollout, score, update.",
     no_args_is_help=True,
 )
 
@@ -38,8 +38,7 @@ def main() -> None:
 
 @app.command()
 def init() -> None:
-    """Copy the built-in recipes into ./recipes and write ./.env.example, keeping whatever is
-    already there."""
+    """Copy the built-in recipes into ./recipes, and write ./.env.example, keeping what is there."""
     try:
         copied, kept, wrote = initialized(Path.cwd())
     except FileNotFoundError as missing:
@@ -65,8 +64,7 @@ def run(
     ] = None,
     root: Annotated[Path | None, typer.Option(help="Where runs live; default ./runs.")] = None,
 ) -> None:
-    """Open a run for BLUEPRINT and train it with its recipe: TRAINER, else the trainer.py
-    beside the run.toml, else the base trainer."""
+    """Run BLUEPRINT, trained by TRAINER, the trainer.py beside it, or the base trainer."""
     try:
         directory, config = open_run(blueprint, root=root, trainer=trainer)
     except (ConfigError, ValueError) as refused:
@@ -81,8 +79,7 @@ def resume(
     directory: Annotated[Path, typer.Argument(help="The run directory.")],
     tag: Annotated[str, typer.Option(help="The checkpoint to go on from.")] = "last",
 ) -> None:
-    """Go on from the run in DIRECTORY at its checkpoint TAG, the last one by default: a new
-    run beside it, which starts from the state that checkpoint saved."""
+    """Go on from checkpoint TAG of the run in DIRECTORY, the last by default, in a new run."""
     origin = Path(directory)
     try:
         config, row = reopened(origin, tag=tag)
@@ -105,8 +102,7 @@ def _train(
     origin: Path | None = None,
     row: Mapping[str, Any] | None = None,
 ) -> None:
-    """Train the run, from checkpoint `row` of the run in `origin` if any, and exit 130 if a
-    signal stopped it: Ctrl-C, SIGTERM or SIGHUP."""
+    """Train the run, from checkpoint `row` of `origin` if given; exit 130 if a signal stops it."""
     made = trainer_class(directory)
     try:
         # The trainer is made inside the process note, so a recipe's `__init__` that fails,
@@ -121,9 +117,7 @@ def _train(
 
 
 def initialized(into: Path) -> tuple[list[str], list[str], bool]:
-    """Copy into `into/recipes` each shipped recipe it lacks, and the recipes' README if it lacks
-    one, and write `into/.env.example` if missing. Return the recipes copied, those kept, and
-    whether `.env.example` was written."""
+    """Copy the shipped recipes and `.env.example` that `into` lacks: (copied, kept, wrote)."""
     recipes, env = shipped()
     target = into / RECIPES
     target.mkdir(parents=True, exist_ok=True)
@@ -146,8 +140,7 @@ def initialized(into: Path) -> tuple[list[str], list[str], bool]:
 
 
 def shipped() -> tuple[Path, Path]:
-    """Return the recipes and the env template `init` copies: those the package ships, else
-    those of the source checkout it runs from. Raise FileNotFoundError when there are neither."""
+    """Return the recipes and env template `init` copies: the package's, else the checkout's."""
     package = Path(__file__).resolve().parent
     checkout = package.parents[1]
     for recipes, env in (

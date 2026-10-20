@@ -1,14 +1,3 @@
-"""The OpenAI Chat Completions wire (`/v1/chat/completions`).
-
-Reading: reasoning the harness sends back, in whichever field it uses, becomes a thinking part
-before the message's text, so the history digests the same as the sampled reply. Images and files
-become image parts. The system messages that open the list are the system prompt; one later in the
-list is a user turn where it stands, as on the Anthropic wire.
-
-Writing: the reply's reasoning goes in `reasoning`, read by pi, LiteLLM and OpenRouter's SDK,
-with one `reasoning_details` entry, which OpenRouter's SDK prefers and sends back. A stream carries
-it before any text."""
-
 from __future__ import annotations
 
 import json
@@ -226,8 +215,7 @@ def answer(reply: Reply, model: str, call: Call) -> dict[str, Any]:
 
 
 def events(reply: Reply, model: str, call: Call) -> list[bytes]:
-    """Return the reply as SSE chunks: reasoning first, then the text, the tool calls and the
-    finish. With `include_usage`, every chunk carries `usage: null` and a last one the totals."""
+    """Return the reply as SSE chunks: reasoning, text, tool calls, finish, and usage if asked."""
     head = _head(model, "chat.completion.chunk")
     deltas: list[tuple[dict[str, Any], str | None]] = []
     if reply.thinking:

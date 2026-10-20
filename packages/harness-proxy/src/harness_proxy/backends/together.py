@@ -1,6 +1,3 @@
-"""Together post-training: the run's own training session, whose generator serves the weights
-the run published last. It samples text only, and stops on strings or at the end of sequence."""
-
 from __future__ import annotations
 
 import logging
@@ -32,14 +29,12 @@ async def connect(*, metadata: dict[str, str] | None, session: str | None) -> An
 
 
 async def sampler(service: Any, base_model: str, weights: str | None) -> Sampler:
-    """Return a client on the session's generator, which serves what the run published last:
-    `weights` only names it."""
+    """Return a client on the session's generator, which serves the weights published last."""
     return Sampler(service.generator)
 
 
 async def context_of(service: Any, base_model: str) -> int | None:
-    """Return the model's context length from Together's supported models, or None on any
-    error. Without a context length nothing is refused, so a failed lookup does not fail a run."""
+    """Return the model's context length from Together's supported models; None on any error."""
     try:
         from together import AsyncTogether
 
@@ -80,8 +75,7 @@ class Sampler:
 
 
 def wire_input(model_input: Any) -> dict[str, Any]:
-    """Return a Tinker `ModelInput` as Together's. Raise ValueError for an image chunk, since
-    Together takes encoded text only."""
+    """Return a Tinker `ModelInput` as Together's; ValueError for an image: it takes text only."""
     chunks = []
     for chunk in model_input.chunks:
         if getattr(chunk, "type", "encoded_text") != "encoded_text":
@@ -91,8 +85,7 @@ def wire_input(model_input: Any) -> dict[str, Any]:
 
 
 def wire_params(params: Any) -> dict[str, Any]:
-    """Return Tinker `SamplingParams` as Together's. Together stops on strings only, so a
-    token-id stop is dropped, with a warning, and the end-of-sequence token ends the sample."""
+    """Return Tinker `SamplingParams` as Together's, dropping token-id stops with a warning."""
     found: dict[str, Any] = {
         "temperature": params.temperature,
         "top_k": params.top_k,

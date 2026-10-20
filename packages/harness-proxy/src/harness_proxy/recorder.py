@@ -1,8 +1,3 @@
-"""Sampling client wrapper that records every model call as token ids, per trial.
-
-It also applies the run's pinned sampling parameters, enforces the token budget and the
-context length, and replays SDK retries."""
-
 from __future__ import annotations
 
 import asyncio
@@ -27,9 +22,7 @@ from harness_proxy.wire import (
 
 
 class Recorder:
-    """Sampling client every call samples through, holding the records of every trial.
-
-    A request with no trial in its address is served and recorded under the trial name ""."""
+    """Sampling client every call samples through, holding the records of every trial."""
 
     def __init__(
         self,
@@ -70,10 +63,7 @@ class Recorder:
         return self.indexes.setdefault(trial, Index())
 
     def pin(self, sampling_params: Any) -> Any:
-        """Override the harness's sampling parameters with the run's.
-
-        `max_tokens` is only capped, because it bounds a turn's length and does not change which
-        token is drawn."""
+        """Override the harness's sampling parameters with the run's, `max_tokens` only capped."""
         update: dict[str, Any] = {}
         if self.temperature is not None:
             update["temperature"] = float(self.temperature)
@@ -168,13 +158,7 @@ class Recorder:
     def _fitting(
         self, trial: str, prompt: Any, prompt_ids: tuple[int, ...], pinned: Any, num_samples: int
     ) -> Any:
-        """Return the sampling params to serve the request with, or raise a refusal.
-
-        A trial that has spent its budget is refused with a 400 that is not a context overflow,
-        which a harness would answer by compacting. A turn that would exceed the
-        budget has `max_tokens` cut to its per-sample share of what is left. A prompt with no room
-        for its reply is refused as a context overflow, unless `fill_context` lets the turn use
-        the remaining context."""
+        """Return the sampling params that fit the budget and the context, or raise a refusal."""
         if self.budget:
             spent = self.spoke.get(trial, 0)
             share = (self.budget - spent) // max(1, num_samples)
@@ -219,11 +203,7 @@ class Recorder:
         sample: int = 0,
         samples: int = 1,
     ) -> Record:
-        """Append the next record of `trial`, numbered from 1 within the trial: sequence
-        `sample` of the `samples` one sampling call returned.
-
-        Refused and failed calls are recorded too, so the records show every call the harness
-        made."""
+        """Append the next record of `trial`, numbered from 1, refused and failed calls included."""
         found = exchange.get()
         self._seq[trial] = seq = self._seq.get(trial, 0) + 1
         record = Record(
@@ -262,10 +242,7 @@ class Recorder:
         rendered: tuple[int, ...] | None = None,
         call_ids: tuple[str, ...] = (),
     ) -> None:
-        """Set the parsed reply's digest on record `seq` and index the reply for the bridge.
-
-        The reply is indexed with the ids of its tool calls. A reply whose prompt has an image the
-        record did not keep is not indexed, because nothing can rebuild that prompt."""
+        """Set the parsed reply's digest on record `seq` and index the reply for the bridge."""
         records = self.records.get(trial, [])
         for at in range(len(records) - 1, -1, -1):
             if records[at].seq != seq:
@@ -286,9 +263,7 @@ class Recorder:
         return list(self.records.get(trial, []))
 
     def take(self, trial: str) -> list[Record]:
-        """Remove and return the trial's records, and drop its counters and stored replies.
-
-        Each trial is read once, so the proxy does not keep every token of a long run."""
+        """Remove and return the trial's records, and drop its counters and stored replies."""
         if trial:
             self.taken.add(trial)
         return self._forget(trial)

@@ -6,10 +6,7 @@ from shipyard.jobs.modules import Modules
 
 
 class State(BaseModel):
-    """What a run has done so far: what a checkpoint saves, and a resume goes on from. A recipe
-    with state of its own, such as a memory bank, declares it in a subclass,
-    `class State(Trainer.State)`, each field with a default. A checkpoint saves it as JSON:
-    numbers, text, paths, lists and dicts of them, pydantic models, and `Modules`, whole."""
+    """What a run has done so far, which a checkpoint saves and a resume goes on from."""
 
     #: A field the recipe no longer declares is dropped; one whose type changed refuses to load.
     model_config = ConfigDict(extra="ignore")

@@ -143,8 +143,7 @@ class ProxyEndpoint:
         self.told = path
 
     def connection(self, trial: Trial) -> Connection:
-        """Return what a trial's harness dials: its own address on the proxy, which names its
-        renderer, and the token."""
+        """Return what a trial's harness dials: its address, naming its renderer, and the token."""
         profile = trial.harness.profile
         address = self.proxy.address_for(trial.name, trial.renderer)
         if profile.in_process is not None:
@@ -229,8 +228,7 @@ def answered_by_ours(job: str, taken: Mapping[str, Sequence[Record]], told: str 
 
 
 def renders_each(proxy: Any, named: Sequence[str]) -> None:
-    """Raise `RuntimeError` unless the proxy renders with each renderer `named`, so that no
-    trial's call is refused for the renderer its address names."""
+    """Raise `RuntimeError` unless the proxy renders with each renderer `named`."""
     known = proxy.renderers
     missing = [one for one in named if one not in (known or ())]
     if not missing:
@@ -268,8 +266,7 @@ class ProviderEndpoint:
 
     @property
     def routed(self) -> str:
-        """The model under its provider, `provider/model`, as Harbor's agents and LiteLLM name
-        it."""
+        """The model as Harbor's agents and LiteLLM name it: `provider/model`."""
         named = self.model.startswith(f"{self.provider}/")
         return self.model if named else f"{self.provider}/{self.model}"
 

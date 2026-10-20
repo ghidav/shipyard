@@ -1,9 +1,3 @@
-"""Single point of import for the parts of `tinker_cookbook` the proxy uses: the renderers, their
-message types and the tokenizers.
-
-Every cookbook symbol the proxy uses is named here, so a rename in the cookbook fails at
-import time."""
-
 from __future__ import annotations
 
 import re
@@ -26,9 +20,7 @@ EFFORT_RENDERER = re.compile(r"^(tml_v0)_effort_(\d*\.?\d+)$")
 
 
 class AtEffort:
-    """Renderer wrapper that builds every prompt at a fixed thinking effort.
-
-    All other attributes are delegated to the inner renderer."""
+    """Renderer wrapper that builds every prompt at a fixed thinking effort."""
 
     def __init__(self, inner: Any, effort: float) -> None:
         self._inner = inner
@@ -43,10 +35,7 @@ class AtEffort:
 
 
 def renderer_for(base_model: str, name: str | None = None) -> Any:
-    """Build the cookbook renderer `name`, or the model's recommended one, for `base_model`.
-
-    The renderer uses the model's tokenizer, fetched over the network, and its image
-    processor. `tml_v0_effort_<e>` builds `tml_v0` at effort `e`, which must be in [0, 1)."""
+    """Build the cookbook renderer `name`, or the model's recommended one, for `base_model`."""
     chosen = name or get_recommended_renderer_name(base_model)
     effort = None
     if matched := EFFORT_RENDERER.match(chosen):
@@ -69,9 +58,7 @@ def renderer_for(base_model: str, name: str | None = None) -> Any:
 
 
 def image_processor_for(base_model: str) -> Any:
-    """Return the model's image processor, or None for a text-only model or a failed build.
-
-    A renderer without an image processor refuses images."""
+    """Return the model's image processor, or None for a text-only model or a failed build."""
     try:
         attributes = get_model_attributes(base_model)
     except Exception:  # noqa: BLE001 - a model the cookbook does not know may still be VL

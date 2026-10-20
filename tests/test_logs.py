@@ -125,9 +125,9 @@ def test_a_steps_row_holds_its_evaluation_and_the_recipes_numbers_beside_its_own
 ) -> None:
     monkeypatch.chdir(tmp_path)
     logs = _logs(tmp_path)
-    by = {"reward_mean_low": 0.25}
+    each = {"reward_mean_low": 0.25}
     evaluation = Evaluation(
-        1, tasks=2, trials=4, graded=3, masked=1, reward_mean=0.5, by_renderer=by
+        1, tasks=2, trials=4, graded=3, masked=1, reward_mean=0.5, breakdown=each
     )
     logs.step(1, [], None, evaluation, {"trials": 9, "own": 1})
     logs.step(2, [], None, None, {})

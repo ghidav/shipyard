@@ -1,86 +1,51 @@
 # harness-proxy
 
-A model server acting as a drop-in provider for agent harnesses. It supports both the OpenAI Chat Completions and Anthropic Messages APIs (streaming and non-streaming), backed by a Tinker sampling client or by the generator of a Together post-training session. For every trial, each call is logged as exact token IDs and sampler logprobs, providing the precise data needed for downstream training.
+A model server that stands in for a provider to agent harnesses: OpenAI Chat Completions and Anthropic Messages, streaming or not, sampled from Tinker or from a Together post-training session. It records every call of every trial as token ids and sampler logprobs, so a trainer can train on exactly what was sampled.
 
-On each call the proxy:
+```mermaid
+flowchart LR
+    harness["harness"] -->|"OpenAI or Anthropic call"| dialect["dialects"]
+    dialect --> chat["chat: complete the call"]
+    chat -->|render| rendering["rendering, bridge"]
+    chat -->|sample| recorder["recorder: budget, records"]
+    recorder --> backend["backends: tinker, together"]
+    run["the run, through client"] -->|"records, weights"| recorder
+```
 
-- renders the request with the model's cookbook renderer, including images, PDFs and system messages in the middle of the conversation;
-- builds the prompt from the tokens it already sampled when the history quotes one of its own replies;
-- samples with the run's sampling settings, a per-trial token budget and the model's context length, and answers an SDK retry with the original reply;
-- returns the reply's thinking in the API's own format, and sends keepalive frames on slow streams.
+On each call it renders with the model's cookbook renderer, images, PDFs and mid-conversation system messages included; builds the prompt from its own tokens when the history quotes one of its replies; answers an SDK retry with the first reply; returns thinking in the API's own format; and keeps slow streams alive.
 
 ## Run it
 
 ```bash
 harness-proxy --model Qwen/Qwen3-8B --advertise host.docker.internal
-# or: python -m harness_proxy.serve ...
 ```
 
-It prints one line, `serving <model> at http://<host>:<port> (control: on)`, and serves
-until SIGTERM. Tokens come from `HARNESS_PROXY_TOKEN` (harness routes) and
-`HARNESS_PROXY_CONTROL_TOKEN` (the run's routes: records and weights), or are generated and
-printed.
+It prints `serving <model> at http://<host>:<port> (control: on)` and serves until SIGTERM. Its tokens come from `HARNESS_PROXY_TOKEN` (the harnesses') and `HARNESS_PROXY_CONTROL_TOKEN` (the run's), or are generated and printed.
 
-## Routes
-
-| Route | Who | What |
+| Route | Token | What |
 |---|---|---|
-| `/r/trial/<trial>/v1/chat/completions`, `/r/trial/<trial>/v1/messages` | harness, with the harness token | the model, recorded under `<trial>` |
-| `/r/trial/<trial>/renderer/<renderer>/v1/...` | harness, with the harness token | the same, rendered with `<renderer>`, one of the proxy's; any other is refused |
-| `GET /records/<trial>` | trainer, with the control token | drains the trial's records (`?delta=1` sends prompts as extensions of earlier records; `?again=1` resends the last answer) |
-| `POST /control/weights` | trainer, with the control token | `{"model_path": "tinker://..." \| null}` points the proxy at new weights (on Together, `together://...` names the weights the run published); trial URLs keep working |
-| `GET /healthz` | anyone | the served model, the per-trial budget, and the renderers a trial's address may name |
+| `/r/trial/<trial>/v1/chat/completions`, `/r/trial/<trial>/v1/messages` | harness | the model, recorded under `<trial>` |
+| `/r/trial/<trial>/renderer/<renderer>/v1/...` | harness | the same, rendered with one of the proxy's renderers |
+| `GET /records/<trial>` | control | drains the trial's records (`?delta=1` sends prompts as extensions; `?again=1` resends the last answer) |
+| `POST /control/weights` | control | `{"model_path": "tinker://..." \| null}` switches the weights; trial URLs keep working |
+| `GET /healthz` | none | the model, the per-trial budget, and the renderers |
 
 ## From Python
 
 ```python
 from harness_proxy.client import Proxy
 
-# Or Proxy.tunnelled, or Proxy.remote for one already running elsewhere.
-proxy = await Proxy.local(settings, host="host.docker.internal")
+proxy = await Proxy.local(settings, host="host.docker.internal")  # or .tunnelled, or .remote
 await proxy.ready()
-base_url = proxy.address_for("trial-0")  # give this to the harness, with proxy.token
-...
+base_url = proxy.address_for("trial-0")  # for the harness, with proxy.token
 records = await proxy.records("trial-0")  # harness_proxy.wire.Record, in request order
 await proxy.swap("tinker://.../sampler_weights/000010")
 proxy.close()
 ```
 
-`--renderer` (the `renderer` setting) overrides the model's own cookbook renderer. Given more than
-once, such as `--renderer qwen3_8_low_reasoning --renderer qwen3_8_xhigh_reasoning` for two
-reasoning efforts, it builds each, and `proxy.address_for("trial-0", "qwen3_8_low_reasoning")`
-is an address whose calls are rendered with that one; an address that names none takes the
-first. Every renderer samples the same weights.
-
-`Proxy.tunnelled` puts a Cloudflare quick tunnel in front of a local proxy, for sandboxes
-with no route back to this machine (Modal, Daytona). The proxy opens the tunnel and closes it when
-it stops. A proxy the run starts stops once the run is gone, even a run killed outright, so it
-leaves no process, port, Tinker session or tunnel behind.
-
-## Backends
-
-The `backend` setting picks what the proxy samples: `tinker` (the default), or `together`,
-which attaches to the run's Together post-training session, named by the `session` setting,
-and samples its generator. That one serves the weights the run published last, takes text
-only, and stops on strings or at the end of sequence. It needs the `together` extra
-(`harness-proxy[together]`) and `TOGETHER_API_KEY`.
-
-## Inside
-
-A call runs through the following pipeline.
-
-| Module | What it does |
-|---|---|
-| `dialects/openai.py`, `dialects/anthropic.py` | read a request into a `Call`; write the reply as JSON or SSE, and refusals as the wire's 400 |
-| `chat.py` | completes a `Call`: render, sample, parse; the checks both wires share |
-| `rendering.py`, `bridge.py` | the renderer a call goes through: the bridge first, then tool call ids and the reply index |
-| `recorder.py` | samples from the backend with the run's settings, budget and context; replays retries; keeps the records |
-| `backends/tinker.py`, `backends/together.py` | what a call samples from: a Tinker sampling client on any saved weights, or the generator of the run's Together session |
-| `vision.py` | images and PDF pages as image parts |
-| `keepalive.py` | SSE frames while a stream waits on its sample |
-| `server.py`, `serve.py`, `tunnel.py` | the HTTP server; the process, with the tunnel it opens |
-| `client.py`, `wire.py` | the run's side, and the `Record` both sides share |
-| `cookbook.py` | the one import of `tinker_cookbook`: its renderers and tokenizers |
+- **Renderers:** `--renderer`, given more than once, builds each, such as two reasoning efforts; `address_for("trial-0", name)` renders with one. All of them sample the same weights.
+- **Tunnels:** `Proxy.tunnelled` puts a Cloudflare quick tunnel in front, for sandboxes with no route back (Modal, Daytona). A proxy the run starts stops once the run is gone, leaving no process, port, session or tunnel.
+- **Together:** `backend = "together"` samples the generator of the run's session (`session`): the weights published last, text only, stopping on strings or at the end of sequence. It needs `harness-proxy[together]` and `TOGETHER_API_KEY`.
 
 ## Develop
 
@@ -88,4 +53,4 @@ A call runs through the following pipeline.
 cd packages/harness-proxy && pytest
 ```
 
-The tests run on fake samplers and renderers (`tests/proxies.py`): no Tinker, no tokenizer. A test that needs a real tokenizer skips when it is not cached.
+The tests run on fake samplers and renderers (`tests/proxies.py`); one that needs a real tokenizer skips when it is not cached.

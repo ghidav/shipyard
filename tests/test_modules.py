@@ -542,18 +542,23 @@ async def _two(tmp_path: Path, text: str) -> tuple[Path, list[Group]]:
     return directory, found
 
 
-async def test_two_harnesses_take_the_tasks_in_turn_so_each_group_is_one_harnesss(
+async def test_two_unmixed_harnesses_each_run_every_task_in_a_group_of_their_own(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, harbor: Harbor
 ) -> None:
     monkeypatch.chdir(tmp_path)
     harbor(FakeTrials())
     directory, found = await _two(tmp_path, TWO)
-    assert [group.task.name for group in found] == ["alpha", "beta"], "in the order asked"
-    assert [[one.harness.name for one in group.trials] for group in found] == [
-        ["pi", "pi"],
-        ["claude-code", "claude-code"],
-    ], "each task runs all its attempts on its harness"
-    assert [row["harness"] for row in _rows(directory)] == ["pi@0.85.1", "claude-code@2.1.0"]
+    assert [(group.task.name, group.harness) for group in found] == [
+        ("alpha", "pi@0.85.1"),
+        ("alpha", "claude-code@2.1.0"),
+        ("beta", "pi@0.85.1"),
+        ("beta", "claude-code@2.1.0"),
+    ], "in the order asked, a group of each task per harness"
+    assert all(len(group.trials) == 2 for group in found), "each of group_size"
+    assert [(row["harness"], row["tasks"], row["trials"]) for row in _rows(directory)] == [
+        ("pi@0.85.1", 2, 4),
+        ("claude-code@2.1.0", 2, 4),
+    ]
 
 
 async def test_mixed_harnesses_split_each_tasks_attempts_and_share_its_group(

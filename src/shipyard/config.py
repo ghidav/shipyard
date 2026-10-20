@@ -76,8 +76,10 @@ class Data(_Table):
     #: Dataset or datasets to evaluate on. A run that sets them ends with an evaluation.
     test: str | list[str] | None = None
     batch_size: int = Field(ge=1)
+    #: The size of a group: a task's attempts at each renderer, and at each harness unless
+    #: `[agent] mix_harnesses` shares them across the harnesses.
     group_size: int = Field(default=1, ge=1)
-    #: Attempts per test task. Defaults to `group_size`.
+    #: Attempts per test task at each harness and renderer. Defaults to `group_size`.
     test_group_size: int | None = Field(default=None, ge=1)
     seed: int = 0
 
@@ -195,16 +197,13 @@ class Blueprint[R: Recipe](_Table):
 
     @model_validator(mode="after")
     def _shares(self) -> Self:
-        """Refuse groups too small to give each harness a share, when they are mixed."""
-        count = len(self.agent.harness)
-        if self.agent.mix_harnesses and count > 1:
-            for key in ("group_size", "test_group_size"):
-                size = getattr(self.data, key)
-                if size is not None and size < count:
-                    raise ValueError(
-                        f"[data] {key}: {size} is fewer than the {count} harnesses "
-                        "[agent] mix_harnesses splits it across"
-                    )
+        """Refuse a `group_size` smaller than the harnesses it is mixed across."""
+        count, size = len(self.agent.harness), self.data.group_size
+        if self.agent.mix_harnesses and count > 1 and size < count:
+            raise ValueError(
+                f"[data] group_size: {size} is fewer than the {count} harnesses "
+                "[agent] mix_harnesses splits it across"
+            )
         return self
 
     @property

@@ -79,8 +79,7 @@ class TogetherClient:
     async def forward_backward(
         self, datums: Values[tinker.Datum], loss_fn: str, loss_config: Mapping[str, float] | None
     ) -> Awaitable[list[list[float]]]:
-        """Run one training pass, and return what awaits its logprobs. Together answers once
-        a pass is done, so an update's passes run one after another."""
+        """Run one training pass, and return what awaits its logprobs, once the pass is done."""
         session = await self._session()
         result = await self._one(
             session.trainer.forward_backward_async(
@@ -139,8 +138,7 @@ class TogetherClient:
         return str((await self._one(session.create_training_checkpoint_async())).id)
 
     async def load_state(self, path: str) -> None:
-        """Go on from the training checkpoint `path`, weights and optimizer, in a new session
-        on the same resource: a session cannot load a checkpoint once it is open."""
+        """Go on from training checkpoint `path` in a new session on the same resource."""
         if self.session is not None:
             await self.session.stop_async()
         self.session = await self.resources.create_session_async(
@@ -148,8 +146,7 @@ class TogetherClient:
         )
 
     async def close(self, status: str = "success", detail: str | None = None) -> None:
-        """Stop the session and the model resource, which bills until it stops. Together keeps
-        no status for a session, so `status` is not sent. Later calls do nothing."""
+        """Stop the session and the GPU resource, which bills until it stops; then do nothing."""
         held = (("session", self.session), ("model resource", self.resources))
         self.session = self.resources = None
         for what, one in held:
@@ -166,8 +163,7 @@ class TogetherClient:
                 )
 
     async def _session(self) -> Any:
-        """Return the session, opening it on the first call: a new adapter, or the one
-        `[agent] from_checkpoint` saved."""
+        """Return the session, opened on first use: a new adapter, or `from_checkpoint`'s."""
         if self.session is None:
             if self.from_checkpoint:
                 self.session = await self.resources.create_session_async(
@@ -196,9 +192,7 @@ FROZEN = (
 
 
 async def provisioned(model: str) -> Any:
-    """Provision a LoRA model resource for `model` with one generator, and return it when ready.
-
-    Raise ValueError if Together does not train `model` with LoRA."""
+    """Provision a LoRA resource for `model` with one generator; ValueError if Together lacks it."""
     from together import AsyncTogether
     from together.post_training import ModelResourcesClient
 
@@ -242,8 +236,7 @@ def loss(name: str, config: Mapping[str, float] | None) -> dict[str, Any]:
 
 
 def adam_params(adam: tinker.AdamParams, rate: float) -> dict[str, float]:
-    """Return Tinker's Adam settings at `rate` as Together's. Gradient clipping is always sent:
-    unset, Together clips at 1.0, where Tinker does not clip."""
+    """Return Tinker's Adam settings at `rate` as Together's, gradient clipping always sent."""
     return {
         "learning_rate": rate,
         "beta1": adam.beta1,

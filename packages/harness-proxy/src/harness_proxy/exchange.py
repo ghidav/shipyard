@@ -1,8 +1,3 @@
-"""Per-request state shared by the middleware, the renderer wrapper and the recorder.
-
-The state is held in a context variable, so each of them reads and writes it in the task
-the handler runs in."""
-
 from __future__ import annotations
 
 from contextvars import ContextVar
@@ -51,11 +46,7 @@ def keys_in(address: str) -> dict[str, str]:
 
 
 def middleware() -> Any:
-    """Return middleware that sets an `Exchange` for each request.
-
-    The exchange is built from the request's headers and its `/r/trial/<name>/...` address,
-    which may name a `renderer` too, and reset afterwards so it does not leak into a task the
-    event loop reuses."""
+    """Return middleware that sets an `Exchange` for each request, and resets it afterwards."""
 
     @web.middleware
     async def opened(request: Any, handler: Any) -> Any:

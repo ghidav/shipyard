@@ -1,12 +1,3 @@
-"""HTTP server that harnesses call, on its backend's sampling client.
-
-It serves both wires at `/v1/...` and under a trial's `/r/trial/<name>/v1/...`, plus the records
-route and the control route. A trial's address may name the renderer its calls are rendered
-with, `/r/trial/<name>/renderer/<renderer>/v1/...`, among the several the proxy was given. A call
-is read by its dialect, completed by `chat.complete` and written back by the dialect, with
-keepalives on slow streams. Every route except `/healthz` requires a token, because sampling
-spends the backend's credit."""
-
 from __future__ import annotations
 
 import asyncio
@@ -55,10 +46,7 @@ ClientFactory = Callable[[str | None], Awaitable[Any]]
 
 @dataclass
 class Server:
-    """Local server that stands in for a model provider.
-
-    `host` is the hostname a sandbox uses to reach this machine. The token is required
-    regardless of `bind`."""
+    """Local server that stands in for a model provider."""
 
     base_model: str
     model_path: str | None = None
@@ -100,8 +88,7 @@ class Server:
     _served_last: dict[str, tuple[float, dict[str, Any]]] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
-        """Generate a token if it is empty, as an unset env var arrives here. Raise
-        ValueError for an unknown backend."""
+        """Generate a token if it is empty, and refuse an unknown backend."""
         if not self.token:
             self.token = new_token()
         backends.named(self.backend)
@@ -122,8 +109,7 @@ class Server:
 
     @property
     def renderers(self) -> list[str]:
-        """The renderers a trial's address may name, in the order given; none for a proxy that
-        renders with its model's default."""
+        """The renderers a trial's address may name, in order; none for the model's default."""
         return [name for name in self._renderings if name]
 
     @property
@@ -136,10 +122,7 @@ class Server:
         return self.recorder.records_for(trial)
 
     async def start(self) -> None:
-        """Build the renderers, the sampling client, the app and its routes, then bind the socket.
-
-        The sampling client is on `model_path`, or on the base model when it is None. The context
-        length is read from the backend when not set."""
+        """Build the renderers, sampling client, app and routes, then bind the socket."""
         renderers = self._built()
         if self.client_factory is None and self._service is None:
             self._service = await self.sampling.connect(
@@ -183,17 +166,14 @@ class Server:
         logger.info("serving %s on port %s as %s", self.serving, self._port, self.host)
 
     async def swap(self, model_path: str | None) -> None:
-        """Switch to a sampling client on `model_path`, or on the base model for None.
-
-        The server stays up, so addresses already given to running trials keep answering."""
+        """Switch to a sampling client on `model_path`, or on the base model for None."""
         client = await self._make(model_path)
         self.model_path = model_path
         if self._recorder is not None:
             self._recorder.client, self._recorder.served = client, model_path
 
     def _built(self) -> dict[str, Any]:
-        """Return the renderers by the name a trial's address gives each: "" for the model's
-        default, or for a renderer object."""
+        """Return the renderers by the name a trial's address gives each, "" for the default."""
         given = self.renderer
         if isinstance(given, dict):
             return dict(given)
@@ -203,9 +183,7 @@ class Server:
         return {one or "": cookbook.renderer_for(self.base_model, one or None) for one in names}
 
     def _rendering_for(self, found: Exchange | None) -> Rendering:
-        """Return the renderer the call's address names, or the first for one that names none.
-        Raise `Refused` for a renderer this proxy was not given, rather than render the call
-        with another."""
+        """Return the renderer the call's address names, the first if none; `Refused` if unknown."""
         named = found.renderer if found is not None else ""
         if not named:
             return next(iter(self._renderings.values()))
@@ -241,10 +219,7 @@ class Server:
         await self.stop()
 
     def _serving(self, dialect: ModuleType) -> Callable[[web.Request], Awaitable[Any]]:
-        """Return the handler for `dialect`'s route: read the call, complete it, write the reply.
-
-        A refusal is a 400 in the wire's shape, and costs no sample when it comes before one.
-        Any other failure is the server's own and leaves aiohttp's 500."""
+        """Return the handler for `dialect`'s route: read the call, complete it, write the reply."""
 
         async def serve(request: web.Request) -> Any:
             try:
@@ -266,8 +241,7 @@ class Server:
         return serve
 
     def _auth_middleware(self) -> Any:
-        """Return middleware that requires the harness token, as `x-api-key` (Anthropic's SDK)
-        or `Authorization: Bearer` (OpenAI's), on every route the control middleware passes on."""
+        """Return middleware that requires the harness token, as `x-api-key` or a Bearer header."""
 
         @web.middleware
         async def auth(request: Any, handler: Any) -> Any:
@@ -280,10 +254,7 @@ class Server:
         return auth
 
     async def _serve_records(self, request: Any) -> Any:
-        """Return the trial's records in request order and drain them.
-
-        With `delta=1`, each prompt is sent as an extension of an earlier record where possible.
-        With `again=1`, the last payload built for the trial is re-sent."""
+        """Return the trial's records in request order and drain them."""
         trial = request.match_info["trial"]
         now = time.monotonic()
         for name, (at, _payload) in list(self._served_last.items()):
@@ -300,22 +271,12 @@ class Server:
         return response
 
     def _records_payload(self, trial: str, delta: bool) -> dict[str, Any]:
-        """Take the trial's records and build the response payload.
-
-        An unknown trial gets an empty list and a 200: a rollout whose container never reached the
-        proxy made no requests."""
+        """Take the trial's records and build the response payload; [] for an unknown trial."""
         records = self.recorder.take(trial)
         return {"records": delta_encoded(records) if delta else [asdict(r) for r in records]}
 
     def _control_middleware(self) -> Any:
-        """Return middleware that handles the run's routes before any other.
-
-        `POST /control/weights` and `GET /records/<trial>` require the control token: the
-        harness token is in every sandbox, and the model under training must neither re-point its
-        own proxy nor read or drain any trial's records. Without a control token both are closed.
-        `GET /healthz` needs no token and answers `status`, `model` and `serving` (the served
-        model), `budget` (the tokens each trial may sample, null when none is enforced) and
-        `renderers` (the renderers a trial's address may name)."""
+        """Return the first middleware: health, then the run's routes behind the control token."""
 
         @web.middleware
         async def control(request: Any, handler: Any) -> Any:
@@ -330,6 +291,8 @@ class Server:
                 raise web.HTTPNotFound()
             if weights and request.method != "POST":
                 raise web.HTTPMethodNotAllowed(request.method, ["POST"])
+            # Every sandbox holds the harness token, so the model under training must not be able
+            # to re-point the proxy, or read and drain records: those take the run's own token.
             if not _matches(_bearer(request), self.control_token):
                 return web.json_response({"error": "invalid control token"}, status=401)
             if weights:
@@ -340,9 +303,7 @@ class Server:
         return control
 
     async def _serve_control(self, request: Any) -> Any:
-        """Switch to the body's `model_path`: a path under the backend's prefix, or null.
-
-        A malformed body, or a path that cannot be served, gets a 400."""
+        """Switch to the body's `model_path`, under the backend's prefix or null; 400 otherwise."""
         try:
             body = await request.json()
         except Exception:
@@ -367,11 +328,7 @@ def _bearer(request: Any) -> str | None:
 
 
 def _matches(presented: str | None, token: str) -> bool:
-    """Compare a presented token with `token` in constant time.
-
-    As bytes: `compare_digest` refuses a str with non-ASCII characters, which a caller controls.
-    aiohttp keeps header bytes that are not UTF-8 as surrogates; `surrogateescape` restores
-    them."""
+    """Compare a presented token with `token` in constant time, as bytes."""
     if not presented:
         return False
     return hmac.compare_digest(presented.encode("utf-8", "surrogateescape"), token.encode("utf-8"))

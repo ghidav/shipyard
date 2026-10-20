@@ -144,10 +144,21 @@ def result_in(trial: Path) -> TrialResult | None:
 
 @dataclass(eq=False)
 class Group:
-    """The trials of one task, in the order they ran."""
+    """One task's trials at one renderer, and one harness unless mixed, in the order they ran."""
 
     task: Path
     trials: list[Trial]
+
+    @property
+    def renderer(self) -> str | None:
+        """The renderer its trials' calls were rendered with: a group never mixes them."""
+        return self.trials[0].renderer if self.trials else None
+
+    @property
+    def harness(self) -> str | None:
+        """The harness its trials ran, as `[agent] harness` names it; None when it mixes them."""
+        ran = {one.harness.agent for one in self.trials}
+        return ran.pop() if len(ran) == 1 else None
 
     @property
     def measured(self) -> list[Trial]:
@@ -182,12 +193,13 @@ class Group:
         return bool(self.scored)
 
 
-def by_task(groups: Values[Group]) -> list[Group]:
-    """Return the groups' trials as one group per task, in the order the tasks first ran."""
-    merged: dict[Path, list[Trial]] = {}
+def merged(groups: Values[Group], *, mix: bool = False) -> list[Group]:
+    """Return one group per task, renderer and, unless `mix`, harness, in order of first run."""
+    found: dict[tuple[Path, str | None, str | None], list[Trial]] = {}
     for group in groups:
-        merged.setdefault(group.task, []).extend(group.trials)
-    return [Group(task, trials) for task, trials in merged.items()]
+        key = (group.task, group.renderer, None if mix else group.harness)
+        found.setdefault(key, []).extend(group.trials)
+    return [Group(task, trials) for (task, _, _), trials in found.items()]
 
 
 def grouped(trials: Values[Trial]) -> list[Group]:

@@ -114,8 +114,7 @@ class Modules:
         return {name: module.text for name, module in self.components.items()}
 
     def with_texts(self, texts: Mapping[str, str]) -> Modules:
-        """Return a copy in which each component named in `texts` has that text in its marker
-        file, its other files kept."""
+        """Return a copy with each component in `texts` holding that text in its marker file."""
         components = dict(self.components)
         for name, text in texts.items():
             module = components[name]
@@ -125,9 +124,7 @@ class Modules:
 
 
 class Kind(Protocol):
-    """A kind of module. It defines its marker file, where its modules live in the layout,
-    whether the marker is the whole module, which modules are admissible, and how its modules
-    reach the container."""
+    """A kind of module: its marker file, place in the layout, admissible modules and delivery."""
 
     marker: str
     #: Whether the marker is the whole module, so nothing beside it is read, kept or
@@ -181,8 +178,7 @@ class Skill:
         return None
 
     def deliver(self, modules: Sequence[Module], into: Path) -> dict[str, Any]:
-        """Write each module's files under `<into>/skills/<name>/`, and return that root as
-        the only entry of the agent config's `skills`."""
+        """Write the modules under `<into>/skills/<name>/`, and return that root as `skills`."""
         # `AgentConfig.skills` takes a root of skill directories, each uploaded into the
         # container before the agent's setup. The root is absolute because Harbor reads a
         # relative path that does not exist as a git source to fetch.
@@ -255,8 +251,7 @@ def _checked(module: Module) -> Module:
 
 
 def keep(modules: Modules, into: Path) -> None:
-    """Write `modules` in the layout `Modules.read` reads, so that a later run can carry
-    them, or a search start from them."""
+    """Write `modules` in the layout `Modules.read` reads, so a later run can carry them."""
     for module in modules.components.values():
         kind = KINDS[module.kind]
         files = {kind.marker: module.text} if kind.alone else module.files

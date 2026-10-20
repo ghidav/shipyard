@@ -1,9 +1,3 @@
-"""Message digests and the bridge, which builds prompts from previously sampled tokens.
-
-When a prompt's history quotes a reply this proxy sampled, the prompt is built from that
-reply's tokens and only the messages after the reply are rendered. A tool loop therefore
-trains as one token sequence."""
-
 from __future__ import annotations
 
 import hashlib
@@ -25,22 +19,14 @@ def _field(value: Any, name: str) -> Any:
 
 
 def _call(call: Any) -> list[str]:
-    """Return a tool call's name and id, leaving out its arguments.
-
-    The id identifies the reply that made the call, so a call the harness rewrote before
-    echoing it (a default filled in, a type coerced) still matches that reply."""
+    """Return a tool call's name and id, without its arguments, which a harness may rewrite."""
     function = _field(call, "function")
     named = function if function is not None else call
     return [str(_field(named, "name") or ""), str(_field(call, "id") or "")]
 
 
 def normalize(message: Any) -> dict[str, Any]:
-    """Return the fields that identify a message, for digesting.
-
-    These are the role, the text with all whitespace removed (a harness may drop some of it),
-    the thinking (a harness that strips it has changed the message), images by their pixels,
-    tool calls by name and id (`with_call_ids` gives every call an id), and a tool result's
-    tool name. Call arguments and a tool result's call id are left out."""
+    """Return the fields that identify a message, for digesting."""
     content = _field(message, "content")
     text: list[str] = []
     thinking: list[str] = []
@@ -80,9 +66,7 @@ def digests_of(messages: Sequence[Any]) -> tuple[str, ...]:
 
 
 def chains(digests: Sequence[str]) -> list[str]:
-    """Return a key for every prefix of `digests`, computed in one pass.
-
-    The key of `digests[:i]` is derived from the key of `digests[:i-1]`."""
+    """Return a key for every prefix of `digests`, each derived from the one before."""
     out: list[str] = []
     last = ""
     for one in digests:
@@ -100,11 +84,7 @@ def chain(digests: Sequence[str]) -> str:
 
 @dataclass(frozen=True)
 class Reply:
-    """A sampled reply, stored for the bridge.
-
-    Holds the call's prompt and completion ids, whether the completion ended on a stop token,
-    a fresh render of the call's messages, and the pictures behind the prompt's image tokens.
-    The render equals the prompt unless the prompt was bridged."""
+    """A sampled reply, stored for the bridge: its prompt, completion, stop, render and pictures."""
 
     prompt_ids: tuple[int, ...]
     completion_ids: tuple[int, ...]
@@ -114,12 +94,7 @@ class Reply:
 
 
 class Index:
-    """The sampled replies of one trial, each keyed by the digest chain that leads to it.
-
-    Two different replies to the same history are ambiguous when they share a call id (some
-    models, such as Kimi, number a call the same way in every sample) or when neither makes a
-    call and both have the same digest. A trimmed echo of one may match the other, so the
-    bridge uses neither."""
+    """The sampled replies of one trial, each keyed by the digest chain that leads to it."""
 
     def __init__(self) -> None:
         self._replies: dict[str, Reply] = {}
@@ -149,10 +124,7 @@ class Index:
         self._replies[key] = reply
 
     def find(self, digests: Sequence[str]) -> tuple[int, Reply] | None:
-        """Find the longest prefix of `digests` that ends in a sampled reply.
-
-        Return the reply's position among the messages and the reply, or None when no prefix
-        matches or the reply is ambiguous."""
+        """Find the longest prefix of `digests` that ends in a sampled reply, or None."""
         keys = chains(digests)
         for end in range(len(keys), 0, -1):
             if keys[end - 1] in self._ambiguous:
@@ -182,10 +154,7 @@ def bridge(
     index: Index,
     digests: Sequence[str] | None = None,
 ) -> Bridged | None:
-    """Build the prompt for `messages` from the tokens of a sampled reply they quote.
-
-    The prompt is the reply's stored prompt and completion ids, its stop token, and the ids of
-    the rendered tail. Return None when the caller must render the messages afresh."""
+    """Build the prompt for `messages` from the tokens of a sampled reply they quote, or None."""
     digests = digests_of(messages) if digests is None else digests
     found = index.find(digests)
     if found is None:
@@ -221,13 +190,7 @@ def bridge(
 def _ends_reply(
     full: Sequence[int], end: int, messages: Sequence[Any], at: int, renderer: Any, stops: set[int]
 ) -> bool:
-    """Return whether the stop at `end` of the fresh render closes the reply at `at`.
-
-    It may sit inside the reply instead: a renderer can encode a stop token's text the model
-    wrote (a chat template, say) as the token itself. What follows the reply's close does not
-    depend on the reply's text, so a render with the reply's place held by a stub, its tool calls
-    kept and nothing in it that renders a stop, must end with the same tokens, a stop before
-    them. The stub's text precedes its close, so only the stub's close can be that stop."""
+    """Return whether the stop at `end` of the fresh render closes the reply at `at`."""
     calls = [_bare(call) for call in _field(messages[at], "tool_calls") or []]
     stub: dict[str, Any] = {"role": "assistant", "content": "."}
     if calls:
@@ -247,11 +210,7 @@ def _bare(call: Any) -> Any:
 
 
 def tail_extends(tail: Sequence[Any]) -> bool:
-    """Return whether the messages after a quoted reply can be bridged (prime-rl's tail rule).
-
-    The tail must be tool results, optionally followed by one user message; an assistant
-    message in it would be re-tokenized. An empty tail means the call is a resample, so it
-    returns False."""
+    """Return whether the messages after a quoted reply can be bridged (prime-rl's tail rule)."""
     roles = [str(_field(message, "role") or "") for message in tail]
     if not roles:
         return False

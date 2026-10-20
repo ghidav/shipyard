@@ -1,8 +1,3 @@
-"""The renderer a call goes through, linking rendering to the bridge and the recorder.
-
-Before rendering, it refuses images for a model that takes none and tries the bridge.
-After parsing a reply, it gives every tool call an id and sets the reply's digest on its record."""
-
 from __future__ import annotations
 
 import hashlib
@@ -16,9 +11,7 @@ from harness_proxy.wire import model_input
 
 
 class Rendering:
-    """Renderer wrapper that overrides `build_generation_prompt` and `parse_response`.
-
-    All other attributes are delegated to the inner renderer."""
+    """Renderer wrapper that overrides `build_generation_prompt` and `parse_response`."""
 
     def __init__(self, inner: Any, recorder: Any) -> None:
         self._inner = inner
@@ -64,12 +57,7 @@ class Rendering:
 
 
 def with_call_ids(message: Any, tokens: Any, found: Exchange | None) -> Any:
-    """Give every tool call that has no id one, in the wire's format.
-
-    This runs before the reply is digested. The cookbook keeps an id that is set and the
-    harness echoes it, so the bridge recognises the reply by its call ids. Each id is derived
-    from the trial, the request's message digests and the reply's tokens, so a replayed retry
-    gets the same ids as the first answer."""
+    """Give every tool call without an id one, derived so a replayed retry gets the same ids."""
     calls = list(message.get("tool_calls") or [])
     if all(_call_id(call) for call in calls):
         return message

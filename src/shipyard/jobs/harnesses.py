@@ -35,15 +35,12 @@ class Profile:
 
 
 def litellm_options(address: str, token: str) -> dict:
-    """Return terminus-2's options for a proxy at `address`: the base URL of its litellm, and
-    the proxy's token on every call it makes."""
+    """Return terminus-2's options for a proxy at `address`: its litellm base URL and token."""
     return {"api_base": address, "llm_call_kwargs": {"api_key": token}}
 
 
 def last_assistant_failed(text: str) -> bool:
-    """Return whether the last assistant `message_end` in pi's JSON log stopped on `error`.
-
-    pi writes that stop reason when it gives up on a call, and still exits 0."""
+    """Return whether the last assistant `message_end` in pi's JSON log stopped on `error`."""
     stop = None
     for line in text.splitlines():
         if '"message_end"' not in line:
@@ -108,8 +105,7 @@ def harness(named: str) -> Harness:
 
 
 def bare_name(harness: str) -> str:
-    """Return the harness name without its version: `pi@0.85.1` becomes `pi`. An import
-    path, which contains a colon (`acp:x.y:Z@1`), is returned whole."""
+    """Return the name without its version: `pi@0.85.1` is `pi`, an import path stays whole."""
     return harness if ":" in harness else harness.partition("@")[0]
 
 
@@ -119,8 +115,7 @@ def profile_for(harness: str) -> Profile:
 
 
 def slug_of(profile: Profile) -> str:
-    """Return the provider id a harness is configured for: the profile's `provider` if set,
-    else `anthropic` for the Anthropic dialect and `openai` otherwise."""
+    """Return the provider id: the profile's `provider`, else `anthropic` or `openai` by dialect."""
     if profile.provider:
         return profile.provider
     return "anthropic" if profile.dialect == "anthropic" else "openai"

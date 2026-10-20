@@ -20,7 +20,7 @@ from tinker_cookbook.rl.metrics import compute_kl_sample_train
 from tinker_cookbook.utils.misc_utils import split_list
 
 from shipyard.config import Blueprint, Recipe
-from shipyard.groups import Group, by_task, grouped
+from shipyard.groups import Group, grouped, merged
 from shipyard.jobs import harnesses
 from shipyard.jobs.engine import HarborEngine, Job
 from shipyard.jobs.modules import Modules, keep
@@ -32,7 +32,7 @@ from shipyard.models.clients.together import FROZEN, TOGETHER
 from shipyard.policy import Policy
 from shipyard.run import record
 from shipyard.run.data import Generator
-from shipyard.run.logs import AGENT, Logs, by_renderer
+from shipyard.run.logs import AGENT, Logs, breakdown
 from shipyard.state import State
 
 logger = logging.getLogger(__name__)
@@ -62,8 +62,7 @@ class Update:
 
 @dataclass(frozen=True)
 class Evaluation:
-    """What one `evaluate` rolled out, and the mean reward it measured. Its fields go in the row
-    of the step it belongs to, as `eval_` fields."""
+    """What one `evaluate` rolled out and measured; its step's row holds it as `eval_` fields."""
 
     step: int
     tasks: int
@@ -72,8 +71,8 @@ class Evaluation:
     masked: int
     #: Mean reward over the graded trials; None when none were graded.
     reward_mean: float | None
-    #: Each renderer's mean reward and sampled tokens, when several rendered the trials.
-    by_renderer: dict[str, float] = field(default_factory=dict)
+    #: Each harness's and each renderer's mean reward and sampled tokens, when there are several.
+    breakdown: dict[str, float] = field(default_factory=dict)
 
 
 class Trainer:
@@ -182,7 +181,7 @@ class Trainer:
         renderer: str | None = None,
         purpose: str = "training",
     ) -> list[Group]:
-        """Run the agent `attempts` times on each task, and return its trials grouped by task."""
+        """Run each task in groups of `attempts`, per renderer and, unless mixed, per harness."""
         cfg, tasks = self.config, list(tasks)
         carried = self.state.modules if modules is None else modules
         named = cfg.rollout.renderer
@@ -197,7 +196,6 @@ class Trainer:
             [harness] if harness else cfg.agent.harness,
             [renderer] if renderer else list(named) or [None],
             mix=cfg.agent.mix_harnesses,
-            turn=self.state.steps,
         )
         parts = await asyncio.gather(
             *(
@@ -206,7 +204,8 @@ class Trainer:
             )
         )
         first = {task: at for at, task in reversed(list(enumerate(tasks)))}
-        found = sorted(by_task([g for part in parts for g in part]), key=lambda g: first[g.task])
+        mixed = merged([g for part in parts for g in part], mix=cfg.agent.mix_harnesses)
+        found = sorted(mixed, key=lambda g: first[g.task])
         if purpose == "training":
             self._seen += found
         return found
@@ -220,8 +219,7 @@ class Trainer:
         modules: Modules | None,
         purpose: str,
     ) -> list[Group]:
-        """Run one judged job of `harness` on `tasks`, its calls rendered with `renderer`, write
-        its row, and return its groups."""
+        """Run and log a judged job of `harness` on `tasks` at `renderer`; return its groups."""
         endpoint = self._agent.endpoint
         job = Job(
             self.logs.reserve(),
@@ -335,8 +333,7 @@ class Trainer:
     # ------------------------------------------------------------------ the run
 
     async def train(self) -> None:
-        """Open the policies, take `[recipe] steps` steps, the last one evaluated, then save
-        `final`."""
+        """Open the policies, take `[recipe] steps` steps, the last evaluated, then save `final`."""
         self._current = self.state.steps
         self._bind()
         async with self._session if self._session is not None else nullcontext():
@@ -345,8 +342,7 @@ class Trainer:
             await self.checkpoint(FINAL, keep=True)
 
     async def _advance(self) -> None:
-        """Take a step, evaluate after it every `[recipe] evaluate_every` steps and after the
-        last one, write its row, and checkpoint it every `[checkpoints] every` steps."""
+        """Take a step, evaluate and checkpoint it on schedule, and write its row."""
         self._seen, self._update, self._evaluation, self.metrics = [], None, None, {}
         self._current = self.state.steps + 1
         await self.step()
@@ -360,17 +356,20 @@ class Trainer:
             await self.checkpoint(f"step-{steps}")
 
     async def evaluate(self) -> Evaluation | None:
-        """Roll the agent out on the test set at each renderer, and return its mean reward, and
-        each renderer's when there are several. It belongs to the step it runs in or follows,
-        whose row holds it as `eval_` fields."""
+        """Roll the agent out on every test task at each harness and renderer, unmixed."""
         tasks = list(self.generator.test)
         if not tasks:
             return None
         data = self.config.data
         attempts = data.test_group_size or data.group_size
-        # Named only when the run names renderers, so that a recipe's own `rollout`, which may
-        # take no `renderer`, is called as before.
-        pinned = [{"renderer": one} for one in self.config.rollout.renderer] or [{}]
+        # Each harness and renderer pinned, so no harnesses are mixed; named only when there are
+        # several, so that a recipe's own `rollout`, which may take neither, is called as before.
+        named = self.config.agent.harness
+        pinned = [
+            {**({"harness": one} if len(named) > 1 else {}), **({"renderer": it} if it else {})}
+            for one in named
+            for it in self.config.rollout.renderer or [None]
+        ]
         found: list[Group] = []
         for start in range(0, len(tasks), data.batch_size):
             batch = tasks[start : start + data.batch_size]
@@ -390,16 +389,13 @@ class Trainer:
             graded=len(measured),
             masked=trials - len(measured),
             reward_mean=fmean(one.reward or 0.0 for one in measured) if measured else None,
-            by_renderer=by_renderer(found),
+            breakdown=breakdown(found),
         )
         self.state.evaluated = self._current
         return self._evaluation
 
     async def checkpoint(self, tag: str, *, keep: bool = False) -> None:
-        """Save the run's state as `tag`, which a resume goes on from: the agent's training
-        state once an update has moved it, then the state after this step, as
-        `states/step-<n>.json`, then the row that names them. `keep` keeps the weights for good,
-        and saves them for sampling too."""
+        """Save the run's state as `tag`, which a resume goes on from; `keep` keeps the weights."""
         session, weights, saved = self._session, None, {"sampler": None}
         if session is not None and self.state.updates:
             hours = None if keep else self.config.checkpoints.ttl_hours
@@ -426,8 +422,7 @@ class Trainer:
         return into
 
     def restore(self, origin: Path, row: Mapping[str, Any]) -> None:
-        """Go on from checkpoint `row` of the run in `origin`: from the state it saved, and the
-        weights it names, which `train` loads."""
+        """Restore checkpoint `row` of `origin`: its state now, its weights once `train` opens."""
         tag, state = row["tag"], row.get("state")
         self._weights = row.get("weights")
         saved = record.read_json(Path(origin) / state) if state else {}
@@ -474,8 +469,7 @@ class Trainer:
         self._session = session
 
     def _held(self) -> list[tuple[str, Policy]]:
-        """Return every policy the trainer holds, the agent first, each with the role its spend
-        is filed under: `agent`, else where the trainer holds it, such as `teachers[0]`."""
+        """Return every policy the trainer holds, the agent first, each with its spend's role."""
         found = [(AGENT, self._agent)]
         for name, value in vars(self).items():
             if isinstance(value, dict):
@@ -497,40 +491,19 @@ def split(
     renderers: list[str | None],
     *,
     mix: bool,
-    turn: int,
 ) -> list[tuple[str, str | None, list[Path], int]]:
-    """Return the jobs a rollout runs, one per harness and renderer, as (harness, renderer,
-    tasks, attempts). The tasks take the renderers in turn, and the harnesses with them, unless
-    `mix` shares each task's attempts across the harnesses."""
-
-    def across[N](
-        names: list[N], tasks: list[Path], mixed: bool
-    ) -> list[tuple[N, list[Path], int]]:
-        """Return one job per name, as (name, tasks, attempts): with `mixed`, each task's
-        attempts shared across the names; otherwise the tasks taking the names in turn."""
-        count = len(names)
-        if mixed:
-            shares = [attempts // count + (at < attempts % count) for at in range(count)]
-            jobs = [(one, tasks, shares[at]) for at, one in enumerate(names)]
-        else:
-            turns = [(place + turn) % count for place in range(len(tasks))]
-            jobs = [
-                (one, [task for task, to in zip(tasks, turns, strict=True) if to == at], attempts)
-                for at, one in enumerate(names)
-            ]
-        return [job for job in jobs if job[1] and job[2]]
-
-    if mix:
-        return [
-            (one, renderer, part, count)
-            for renderer, share, _ in across(renderers, tasks, mixed=False)
-            for one, part, count in across(harnesses, share, mixed=True)
-        ]
-    # One turn over every pair, so that across steps a task meets each of them.
-    pairs = [(one, renderer) for one in harnesses for renderer in renderers]
+    """Return one job per harness and renderer: (harness, renderer, tasks, attempts)."""
+    count = len(harnesses)
+    shares = (
+        [attempts // count + (at < attempts % count) for at in range(count)]
+        if mix
+        else [attempts] * count
+    )
     return [
-        (one, renderer, part, count)
-        for (one, renderer), part, count in across(pairs, tasks, mixed=False)
+        (one, renderer, tasks, share)
+        for one, share in zip(harnesses, shares, strict=True)
+        if share and tasks
+        for renderer in renderers
     ]
 
 

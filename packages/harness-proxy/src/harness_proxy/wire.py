@@ -1,9 +1,3 @@
-"""Definitions shared by the proxy and its client, independent of the cookbook.
-
-These are the record, as stored and as sent over the wire, the routes, the env var names
-and the token. On the wire, a prompt that extends an earlier record is sent as that
-record's index plus the new tokens, and is rebuilt in full on read."""
-
 from __future__ import annotations
 
 import base64
@@ -39,10 +33,7 @@ def new_token() -> str:
 
 @dataclass(frozen=True)
 class Picture:
-    """An image as the model read it.
-
-    `offset` and `length` locate its tokens in the prompt ids. `data` is the bytes the renderer
-    sent, base64-encoded for the wire."""
+    """An image as the model read it: where its tokens sit in the prompt, and its bytes."""
 
     offset: int
     length: int
@@ -52,15 +43,7 @@ class Picture:
 
 @dataclass(frozen=True)
 class Record:
-    """One model call of a trial, as token ids.
-
-    A record with `error` set was refused or failed and produced nothing; it is kept so the
-    completeness check sees the call. `images` holds the pictures behind the prompt's
-    `IMAGE_TOKEN` runs, when the proxy had their bytes.
-
-    A sampling call that asks for several sequences writes one record each, in a row, all with
-    its prompt: `sample` is the record's index among the call's `samples`. The sampler read the
-    prompt once, so it is counted once, on `sample` 0, which alone carries `cached_tokens`."""
+    """A trial's model call, as token ids: one per sample, a failed call kept with its `error`."""
 
     seq: int
     at: float
@@ -99,10 +82,7 @@ def image_runs(ids: Sequence[int]) -> list[tuple[int, int]]:
 
 
 def pictured(record: Record) -> bool:
-    """Return whether every image in the record's prompt was kept.
-
-    Each `IMAGE_TOKEN` run must have a picture at exactly its offset and length, and the
-    completion must contain no `IMAGE_TOKEN`."""
+    """Return whether every image in the record's prompt was kept."""
     if IMAGE_TOKEN in record.completion_token_ids:
         return False
     kept = {(one.offset, one.length) for one in record.images}
@@ -110,10 +90,7 @@ def pictured(record: Record) -> bool:
 
 
 def extends(record: Record, earlier: Record) -> bool:
-    """Return whether `record`'s prompt begins with `earlier`'s prompt and completion.
-
-    The images count as well as the ids: two images of one size are runs of `IMAGE_TOKEN` of
-    one length, so the pictures inside the prefix must be `earlier`'s."""
+    """Return whether `record`'s prompt extends `earlier`'s prompt and completion, images too."""
     head = len(earlier.prompt_token_ids)
     end = head + len(earlier.completion_token_ids)
     prompt = record.prompt_token_ids
@@ -126,9 +103,7 @@ def extends(record: Record, earlier: Record) -> bool:
 
 
 def ids_of(prompt: Any) -> tuple[int, ...]:
-    """Return the prompt's token ids, with each non-text chunk as a run of `IMAGE_TOKEN`.
-
-    `ModelInput.to_ints` refuses image chunks, and the record must still show their length."""
+    """Return the prompt's token ids, with each non-text chunk as a run of `IMAGE_TOKEN`."""
     ids: list[int] = []
     for chunk in prompt.chunks:
         tokens = getattr(chunk, "tokens", None)
@@ -140,10 +115,7 @@ def ids_of(prompt: Any) -> tuple[int, ...]:
 
 
 def pictures_of(prompt: Any) -> tuple[Picture, ...]:
-    """Return the prompt's images, each at the offset of its `IMAGE_TOKEN` run in `ids_of`.
-
-    A chunk that carries no bytes (an asset pointer) yields no picture, and admission then
-    sets the rollout aside."""
+    """Return the prompt's images, each at the offset of its `IMAGE_TOKEN` run in `ids_of`."""
     found: list[Picture] = []
     at = 0
     for chunk in prompt.chunks:
@@ -162,19 +134,12 @@ def pictures_of(prompt: Any) -> tuple[Picture, ...]:
 
 @lru_cache(maxsize=256)
 def _encoded(data: bytes) -> str:
-    """Return the bytes as base64, cached so each distinct image yields one shared string.
-
-    A harness re-sends the same image with every call of a trial, and the records then share
-    one string instead of each holding a copy."""
+    """Return the bytes as base64, cached so each distinct image yields one shared string."""
     return base64.b64encode(data).decode("ascii")
 
 
 def model_input(tokens: Sequence[int], images: Sequence[Picture] = ()) -> Any:
-    """Build a `tinker.ModelInput` with an image chunk in place of each `IMAGE_TOKEN` run.
-
-    Without images this is `ModelInput.from_ints`. Raise ValueError when a run has no
-    picture, or a picture no run, since the model would then read a prompt the policy never
-    saw."""
+    """Build a `tinker.ModelInput` with an image chunk in place of each `IMAGE_TOKEN` run."""
     import tinker
 
     if not images:
@@ -207,10 +172,7 @@ def model_input(tokens: Sequence[int], images: Sequence[Picture] = ()) -> Any:
 
 
 def delta_encoded(records: Sequence[Record]) -> list[dict[str, Any]]:
-    """Encode records as dicts for the wire, sending prompts as deltas where possible.
-
-    A prompt that `extends` an earlier record is sent as `prompt_from` (the index of the
-    longest such record) plus the tokens after it."""
+    """Encode records as dicts for the wire, sending prompts as deltas where possible."""
     out: list[dict[str, Any]] = []
     for index, record in enumerate(records):
         row = asdict(record)
@@ -231,10 +193,7 @@ def delta_encoded(records: Sequence[Record]) -> list[dict[str, Any]]:
 
 
 def records_of(items: Sequence[Mapping[str, Any]]) -> list[Record]:
-    """Decode a trial's records from the wire, in either form the records route sends.
-
-    Delta-encoded prompts are rebuilt in full and the `prompt_from` link is dropped; the run
-    finds shared prefixes from the ids."""
+    """Decode a trial's records from the wire, in either form the records route sends."""
     made: list[Record] = []
     for item in items:
         record = record_of(item)
@@ -260,10 +219,7 @@ def records_of(items: Sequence[Mapping[str, Any]]) -> list[Record]:
 
 
 def record_of(payload: Mapping[str, Any]) -> Record:
-    """Decode one record from the wire.
-
-    The token ids are required, because empty defaults would give training a turn the policy
-    never took. Every other field is an annotation."""
+    """Decode one record from the wire; its token ids are required."""
     missing = [key for key in ("prompt_token_ids", "completion_token_ids") if key not in payload]
     if missing:
         raise ValueError(

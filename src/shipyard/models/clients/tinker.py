@@ -177,8 +177,7 @@ class TinkerClient:
 def shifted(
     tokens: Values[int], images: Values[Picture] = ()
 ) -> tuple[tinker.ModelInput, TensorData]:
-    """Shift a sequence by one into the model's input and its target tokens, as the cookbook
-    does."""
+    """Shift a sequence by one into the model's input and its targets, as the cookbook does."""
     read, targets = create_rightshifted_model_input_and_leftshifted_targets(
         list(model_input(tokens, images).chunks)
     )
@@ -188,8 +187,8 @@ def shifted(
 def datum(
     sequence: Sequence, *, logprobs: Values[float], advantages: Values[float]
 ) -> tinker.Datum:
-    """Build a Tinker datum from a sequence, with an advantage for each target token. Reproduced
-    from tinker-cookbook, rl/data_processing.py (Apache-2.0)."""
+    """Build a Tinker datum from a sequence, with an advantage per target token; reproduced from
+    tinker-cookbook's rl/data_processing.py (Apache-2.0)."""
     read, target_tokens = shifted(sequence.tokens, sequence.images)
     positions = sequence.targets
     if len(logprobs) != len(positions) or len(advantages) != len(positions):

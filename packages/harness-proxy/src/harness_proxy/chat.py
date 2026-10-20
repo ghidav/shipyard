@@ -1,10 +1,3 @@
-"""One harness call, whichever wire it came in on.
-
-A dialect reads a request into a `Call`; `complete` renders it, samples through the recorder and
-parses the reply into a `Reply`; the dialect writes that back. A request the proxy will not serve
-raises `Refused`, which the dialect answers with a 400 in its wire's shape. The checks that both
-wires share live here too."""
-
 from __future__ import annotations
 
 import re
@@ -32,17 +25,14 @@ class Refused(Exception):
 
 
 def too_long(message: str) -> tinker.BadRequestError:
-    """Return the error Tinker raises for a prompt that does not fit the context.
-
-    `complete` answers it, Tinker's own or the recorder's, with the "prompt is too long" 400."""
+    """Return the error Tinker raises for a prompt that does not fit the context."""
     request = httpx.Request("POST", "http://harness-proxy.invalid")
     return tinker.BadRequestError(message, response=httpx.Response(400, request=request), body=None)
 
 
 @dataclass
 class Call:
-    """A request as a dialect reads it: the conversation in the cookbook's message format, and
-    what the harness asked of the sample."""
+    """A request as its dialect reads it: the conversation, and what the harness asked for."""
 
     messages: list[Message]
     system: str | None = None
@@ -81,10 +71,7 @@ class Reply:
 
 
 async def complete(call: Call, renderer: Any, sampler: Any, default_max_tokens: int) -> Reply:
-    """Render the call, sample one reply, and parse it.
-
-    The renderer writes the tools into the system prompt; without tools, the system text is a
-    system message. Raise `Refused` for a request that cannot be sampled as asked."""
+    """Render the call, sample one reply, and parse it; raise `Refused` if it cannot be sampled."""
     if call.tools:
         try:
             prefix = renderer.create_conversation_prefix_with_tools(
@@ -182,10 +169,7 @@ def text_part(text: Any) -> dict[str, str]:
 
 
 def content_of(parts: Sequence[dict[str, Any]]) -> str | list[dict[str, Any]]:
-    """Return a message's content from its parts, in order.
-
-    Text alone is one string. Otherwise the parts are kept, with adjacent text joined and empty
-    text dropped."""
+    """Return a message's content from its parts, in order: text alone as one string."""
     if all(part.get("type") == "text" for part in parts):
         return "".join(str(part.get("text") or "") for part in parts)
     merged: list[dict[str, Any]] = []

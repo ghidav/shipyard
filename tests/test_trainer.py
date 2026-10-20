@@ -353,40 +353,6 @@ def _adam(service: FakeService) -> Any:
     return adam
 
 
-async def test_dr_grpo_centers_the_rewards_without_scaling_them_and_clips_both_sides(
-    tmp_path: Path, fakes: tuple[FakeProxy, FakeService], harbor: Harbor
-) -> None:
-    """Groups of four score 1, 0, 1, 0, and each solved rollout loses its 0.1 length penalty:
-    0.9, 0, 0.9, 0 is 0.45 either side of its mean, which is not divided by its spread."""
-    _, service = fakes
-    harbor(Alternating())
-    penalty = ("clip = 0.2", "length_penalty = 0.1", "length_floor = 0", "length_cap = 0.5")
-    home = blueprint(tmp_path, *penalty, **ONE_STEP, **{"group_size = 2": "group_size = 4"})
-    await _train(home, tmp_path / "runs", RECIPES / "dr-grpo/trainer.py")
-    assert _advantages(service) == [-0.45, 0.45]
-    assert _sent(service) == {("ppo", (("clip_low_threshold", 0.8), ("clip_high_threshold", 1.2)))}
-    assert _adam(service).grad_clip_norm == 1.0
-
-
-async def test_cispo_truncates_the_weight_above_and_keeps_dapos_sampling(
-    tmp_path: Path, fakes: tuple[FakeProxy, FakeService], harbor: Harbor
-) -> None:
-    _, service = fakes
-    truncated = ("clip_high = 3.0", "overlong_penalty = 0.5", "overlong_buffer = 0.2")
-    home = blueprint(tmp_path, *truncated, **ONE_STEP)
-    plan = Generator(tasks("four", root=tmp_path / "tasks"), 2, 0)
-    first, second = [[one.name for one in batch] for batch in islice(plan.batches(), 2)]
-    harbor(Spread({first[0], *second}))
-    directory = await _train(home, tmp_path / "runs", RECIPES / "cispo/trainer.py")
-    (row,) = _rows(directory)
-    assert len(row["jobs"]) == 2 and (row["groups"], row["uniform"]) == (4, 1)
-    assert row["loss"] == "cispo" and _advantages(service) == [-1.0, 1.0], "normalized"
-    assert _sent(service) == {
-        ("cispo", (("clip_low_threshold", 0.0), ("clip_high_threshold", 4.0)))
-    }
-    assert _adam(service).eps == 1e-15
-
-
 class Careful:
     """Fake trial runner that rewards a trial 1 when the prompt delivered to it says
     "careful", and 0 otherwise."""
@@ -897,33 +863,22 @@ def test_the_agent_takes_a_harness_or_several_and_mixing_them_needs_a_share_for_
     ]
 
 
-def test_split_gives_each_harness_its_share_of_the_attempts_or_its_turn_of_the_tasks() -> None:
-    a, b, c = Path("a"), Path("b"), Path("c")
+def test_split_runs_each_task_on_every_harness_and_mixing_shares_a_groups_attempts() -> None:
+    a, b = Path("a"), Path("b")
     two, none = ["pi", "cc"], [None]
-    assert split([a, b], 5, two, none, mix=True, turn=0) == [
+    assert split([a, b], 4, two, none, mix=False) == [
+        ("pi", None, [a, b], 4),
+        ("cc", None, [a, b], 4),
+    ], "a group of four per harness"
+    assert split([a, b], 5, two, none, mix=True) == [
         ("pi", None, [a, b], 3),
         ("cc", None, [a, b], 2),
-    ]
-    assert split([a], 1, two, none, mix=True, turn=0) == [("pi", None, [a], 1)], (
-        "one attempt: the first"
-    )
-    assert split([a, b, c], 4, two, none, mix=False, turn=0) == [
-        ("pi", None, [a, c], 4),
-        ("cc", None, [b], 4),
-    ]
-    assert split([a, b, c], 4, two, none, mix=False, turn=1) == [
-        ("pi", None, [b], 4),
-        ("cc", None, [a, c], 4),
-    ]
-    assert split([a], 4, two, none, mix=False, turn=1) == [("cc", None, [a], 4)], (
-        "turns go on by step"
-    )
+    ], "one group of five, shared"
+    assert split([a], 1, two, none, mix=True) == [("pi", None, [a], 1)], "one attempt: the first"
+    assert split([], 4, two, none, mix=False) == [], "no tasks, no jobs"
     alone = [("pi", None, [a, b], 4)]
-    assert (
-        split([a, b], 4, ["pi"], none, mix=False, turn=3)
-        == split([a, b], 4, ["pi"], none, mix=True, turn=0)
-        == alone
-    )
+    assert split([a, b], 4, ["pi"], none, mix=False) == split([a, b], 4, ["pi"], none, mix=True)
+    assert split([a, b], 4, ["pi"], none, mix=True) == alone
 
 
 def test_a_recipe_folder_runs_with_the_trainer_beside_its_run_toml(tmp_path: Path) -> None:

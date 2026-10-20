@@ -1,6 +1,3 @@
-"""Images and documents in requests, passed to the model as image parts. A PDF becomes one image
-per page."""
-
 from __future__ import annotations
 
 import base64
@@ -163,9 +160,7 @@ def fit(image: Any) -> Any:
 
 
 def pages(pdf: bytes, most: int) -> tuple[list[Any], int]:
-    """Render the first `most` pages of a PDF as images, in order, and return them with the
-    document's page count. Each page is rasterised at `PAGE_SCALE`, or smaller if that would
-    put its longest side past `MAX_SIDE`, so a page's size cannot blow up the image."""
+    """Render a PDF's first `most` pages as images, scaled to fit, with its page count."""
     import pypdfium2
 
     rendered: list[Any] = []

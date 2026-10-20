@@ -24,8 +24,7 @@ Tokens = dict[str, dict[str, dict[str, int]]]
 
 
 class Spend(Protocol):
-    """Where a policy's spend goes: `spend(provider, model, **counts)` files it in the run's
-    costs, under the policy's role."""
+    """Files a policy's spend, `spend(provider, model, **counts)`, under its role in the costs."""
 
     def __call__(self, provider: str, model: str, /, **counts: int) -> None: ...
 

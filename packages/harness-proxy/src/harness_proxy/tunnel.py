@@ -1,10 +1,3 @@
-"""Cloudflare quick tunnel to a local proxy, for sandboxes with no route back to this machine.
-
-It runs `cloudflared` from PATH, or else its image through Docker, in a container named for the
-process that opened it so that stopping the tunnel removes it. The serve process opens the
-tunnel and closes it when it stops. Without a tunnel, such a rollout cannot reach the proxy and
-records nothing."""
-
 from __future__ import annotations
 
 import asyncio
@@ -31,11 +24,7 @@ STARTUP_SECONDS = 60.0
 
 
 def found() -> tuple[str, list[str]] | None:
-    """Return how a tunnel can be opened on this machine, or None.
-
-    The result is the cloudflared binary and its command, else the docker binary and a command
-    that runs the cloudflared image. The command has a `{port}` placeholder, and Docker's a
-    `{name}` one for its container."""
+    """Return how a tunnel opens here: cloudflared, else docker running its image; or None."""
     binary = shutil.which("cloudflared")
     if binary:
         return binary, [binary, "tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:{port}"]
@@ -49,10 +38,7 @@ def found() -> tuple[str, list[str]] | None:
 
 
 def command(port: int, name: str = "") -> list[str]:
-    """Return the command that opens a tunnel to `port`, in a container named `name` when it
-    runs through Docker.
-
-    Raise RuntimeError when neither cloudflared nor docker is installed."""
+    """Return the command opening a tunnel to `port`, in container `name` when it runs in Docker."""
     located = found()
     if located is None:
         raise RuntimeError(
@@ -65,8 +51,7 @@ def command(port: int, name: str = "") -> list[str]:
 
 @dataclass
 class Tunnel:
-    """A running `cloudflared` process and the origin it answers at, and its Docker container's
-    name when it runs in one."""
+    """A running `cloudflared`, the origin it answers at, and its Docker container, if any."""
 
     origin: str
     process: subprocess.Popen[str] = field(repr=False)
@@ -76,9 +61,7 @@ class Tunnel:
     async def start(
         cls, port: int, *, seconds: float = STARTUP_SECONDS, log: IO[str] | None = None
     ) -> Tunnel:
-        """Open a tunnel to `127.0.0.1:<port>` and wait for the trycloudflare origin it prints.
-
-        The command is logged, and written to `log` before the tunnel's output."""
+        """Open a tunnel to `127.0.0.1:<port>` and wait for the trycloudflare origin it prints."""
         name = f"harness-proxy-tunnel-{os.getpid()}-{port}"
         made = command(port, name)
         logger.info("opening a quick tunnel: %s", shlex.join(made))
@@ -102,8 +85,7 @@ class Tunnel:
         return cls(origin=origin, process=process, container=name if name in made else None)
 
     def stop(self) -> None:
-        """Stop the tunnel, and remove its container: the Docker daemon keeps a container
-        running whatever becomes of the `docker run` that started it."""
+        """Stop the tunnel and remove its container, which Docker keeps running otherwise."""
         end(self.process)
         if self.container is None:
             return
@@ -126,12 +108,7 @@ async def started(
     log: IO[str] | None = None,
     pump: bool = True,
 ) -> re.Match[str]:
-    """Wait for a stdout line of `process` that matches `pattern`, and return the match.
-
-    Raise TimeoutError if none appears within `seconds`, or RuntimeError if the process exits
-    first. Every line is copied to `log`, and after the match a background thread keeps
-    draining the output so a full pipe does not stall the process; without `pump`, the caller
-    reads on, and waits for another line."""
+    """Wait for a line of `process`'s output matching `pattern`, and return the match."""
     assert process.stdout is not None
     stream, seen, deadline = process.stdout, [], time.monotonic() + seconds
     while True:
@@ -170,9 +147,7 @@ def _tail(lines: Sequence[str], count: int = 20) -> str:
 
 
 def end(process: Any, *, seconds: float = 10.0) -> None:
-    """Terminate `process` with SIGTERM, then SIGKILL if it is still running after `seconds`.
-
-    This keeps a process that ignores SIGTERM from holding up the run's exit."""
+    """Terminate `process` with SIGTERM, then SIGKILL if it is still running after `seconds`."""
     if process.poll() is not None:
         return
     process.terminate()

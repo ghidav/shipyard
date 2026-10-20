@@ -1,11 +1,3 @@
-"""`harness-proxy`: the proxy as a standalone process, for a run whose sandbox is elsewhere.
-
-It prints one line that the run parses, then serves until SIGTERM or SIGINT. With `--tunnel` it
-also opens a Cloudflare quick tunnel to itself and prints its address on a second line. With
-`--parent-pid` it stops once that process, the run that started it, is gone, however it ended:
-a run killed outright cannot stop it, and the proxy would keep its port, its Tinker session and
-its tunnel."""
-
 from __future__ import annotations
 
 import argparse
@@ -38,10 +30,7 @@ SET_HERE = frozenset(
 
 
 def advertised(bind: str, advertise: str | None) -> str:
-    """Return the hostname a sandbox uses to reach this proxy.
-
-    Raise ValueError for a wildcard bind without `--advertise`, because a URL with 0.0.0.0
-    reaches nothing and every harness request would fail."""
+    """Return the hostname a sandbox uses to reach this proxy; ValueError for a bare wildcard."""
     if advertise:
         return advertise
     if bind in WILDCARD_BINDS:
@@ -65,11 +54,7 @@ def server_for(
     token: str | None,
     control_token: str | None,
 ) -> Server:
-    """Build the server the command-line flags describe.
-
-    `renderer` is a renderer, or the several a trial's address picks from. `settings` carries
-    the run's other `Server` settings. Raise ValueError for a key that is not a `Server` field or
-    that a flag already sets."""
+    """Build the server the command-line flags and the run's `settings` describe."""
     named: dict[str, Any] = {
         "base_model": model,
         "model_path": weights or None,
@@ -94,10 +79,7 @@ def server_for(
 
 
 def configure_logging(stream: TextIO = sys.stderr) -> None:
-    """Log the proxy's messages at INFO to `stream`, which a run keeps as `proxy.log`.
-
-    Do nothing if logging is already configured, as it is under the CLI. aiohttp's
-    per-request access log stays off."""
+    """Log the proxy's messages at INFO to `stream`, which a run keeps as `proxy.log`."""
     if logging.getLogger().handlers:
         return
     handler = logging.StreamHandler(stream)
@@ -108,9 +90,7 @@ def configure_logging(stream: TextIO = sys.stderr) -> None:
 
 
 def banner(server: Server) -> str:
-    """Return the first line serve prints, which the run parses.
-
-    It names the served model, the address, and whether the control route is on."""
+    """Return the first line serve prints, which the run parses."""
     served = server.model_path or server.base_model
     control = "on" if server.control_token else "off"
     return f"serving {served} at http://{server.host}:{server.port} (control: {control})"
@@ -123,10 +103,7 @@ def say(line: str) -> None:
 
 @contextlib.contextmanager
 def stopping_on_signals(stop: asyncio.Event) -> Iterator[None]:
-    """Set `stop` on SIGINT or SIGTERM while the context is active.
-
-    The handlers are installed on the event loop so the wait wakes up, and are removed on exit
-    for a caller that keeps running."""
+    """Set `stop` on SIGINT or SIGTERM while the context is active."""
     loop = asyncio.get_running_loop()
     installed = []
     try:
@@ -148,13 +125,7 @@ async def serve(
     parent: int | None = None,
     tunnel: bool = False,
 ) -> int:
-    """Start the server, print the banner and any tokens generated here, and wait for `stop`.
-
-    With `tunnel`, open a quick tunnel to the server and print `tunnel at <origin>`. With
-    `parent`, stop once this process's parent is no longer that process. Stop as well if the
-    tunnel exits, since no sandbox can reach the server then. The tunnel, then the server
-    (socket and Tinker session), are closed on exit or error. Return 1 if the tunnel exited,
-    else 0."""
+    """Serve until `stop`, behind a tunnel if asked; return 1 if the tunnel exited, else 0."""
     stop = asyncio.Event() if stop is None else stop
     await server.start()
     opened: Tunnel | None = None
@@ -186,9 +157,7 @@ async def watching(
     tunnel: Tunnel | None,
     every: float = WATCH_SECONDS,
 ) -> str | None:
-    """Set `stop` once the run that started this process is gone, which hands this process to
-    another parent, or once the tunnel has exited. Return which, or None if `stop` was set
-    first."""
+    """Set `stop` once the run that started this process is gone or the tunnel exits; say which."""
     while not stop.is_set():
         if parent is not None and os.getppid() != parent:
             logger.warning("the run that started this proxy (pid %d) is gone; stopping", parent)
@@ -203,10 +172,7 @@ async def watching(
 
 
 def tokens_from_env(environ: Mapping[str, str] = os.environ) -> tuple[str, str, dict[str, str]]:
-    """Return `(token, control, generated)` for the harness and control tokens.
-
-    A token missing from the environment is generated here and also listed in `generated`,
-    so the caller can print it for the launcher to read."""
+    """Return `(token, control, generated)`: the tokens from the environment, else generated."""
     generated: dict[str, str] = {}
     token = environ.get(PROXY_TOKEN_ENV) or ""
     if not token:
@@ -256,9 +222,7 @@ def parser(prog: str = "harness-proxy") -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None, prog: str = "harness-proxy") -> int:
-    """Build the server and serve until signalled. Return 2 if the server cannot be built.
-
-    `prog` names the command in help and errors, for a CLI that wraps this one."""
+    """Build the server and serve until signalled; return 2 if the server cannot be built."""
     configure_logging()
     args = parser(prog).parse_args(argv)
     token, control, generated = tokens_from_env()

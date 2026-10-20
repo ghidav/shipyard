@@ -70,9 +70,7 @@ class Provider:
         self.budget: int | None = None
 
     async def sample(self, prompts: Values[str], **params: Any) -> list[str]:
-        """Return the model's reply to each prompt. `params` go to the provider as they are.
-        Each call is billed as it ends; if any failed, the first failure is raised once every
-        call has ended."""
+        """Return the reply to each prompt, each call billed as it ends; raise any failure last."""
 
         async def ask(prompt: str) -> str:
             reply, tokens = await self.endpoint.sample(
@@ -95,8 +93,7 @@ class Provider:
 
 
 class Session:
-    """The agent on Tinker or Together: its training client and the proxy its harnesses
-    call."""
+    """The agent on Tinker or Together: its training client and the proxy its harnesses call."""
 
     def __init__(
         self,

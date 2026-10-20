@@ -58,39 +58,24 @@ def test_a_providers_agent_takes_no_renderer(tmp_path: Path) -> None:
 # ------------------------------------------------------------------ the jobs a rollout runs
 
 
-def test_the_tasks_take_the_renderers_in_turn_so_each_group_is_one_renderers() -> None:
-    a, b, c = Path("a"), Path("b"), Path("c")
-    efforts = [LOW, HIGH]
-    assert split([a, b, c], 4, ["pi"], efforts, mix=False, turn=0) == [
-        ("pi", LOW, [a, c], 4),
-        ("pi", HIGH, [b], 4),
-    ]
-    assert split([a, b, c], 4, ["pi"], efforts, mix=False, turn=1) == [
-        ("pi", LOW, [b], 4),
-        ("pi", HIGH, [a, c], 4),
-    ], "turns go on by step"
-
-
-def test_unmixed_harnesses_and_renderers_take_one_turn_over_every_pair() -> None:
-    met = set()
-    for turn in range(4):
-        [(one, renderer, _, attempts)] = split(
-            [Path("a")], 2, ["pi", "cc"], [LOW, HIGH], mix=False, turn=turn
-        )
-        met.add((one, renderer, attempts))
-    assert met == {("pi", LOW, 2), ("pi", HIGH, 2), ("cc", LOW, 2), ("cc", HIGH, 2)}, (
-        "across steps, a task meets every harness at every renderer"
-    )
-
-
-def test_mixed_harnesses_share_a_tasks_attempts_at_its_renderer() -> None:
+def test_a_rollout_runs_every_task_at_every_harness_and_renderer() -> None:
     a, b = Path("a"), Path("b")
-    assert split([a, b], 4, ["pi", "cc"], [LOW, HIGH], mix=True, turn=0) == [
-        ("pi", LOW, [a], 2),
-        ("cc", LOW, [a], 2),
-        ("pi", HIGH, [b], 2),
-        ("cc", HIGH, [b], 2),
-    ]
+    assert split([a, b], 4, ["pi", "cc"], [LOW, HIGH], mix=False) == [
+        ("pi", LOW, [a, b], 4),
+        ("pi", HIGH, [a, b], 4),
+        ("cc", LOW, [a, b], 4),
+        ("cc", HIGH, [a, b], 4),
+    ], "a group per task, renderer and harness, of four"
+
+
+def test_mixed_harnesses_share_a_groups_attempts_at_each_renderer() -> None:
+    a, b = Path("a"), Path("b")
+    assert split([a, b], 4, ["pi", "cc"], [LOW, HIGH], mix=True) == [
+        ("pi", LOW, [a, b], 2),
+        ("pi", HIGH, [a, b], 2),
+        ("cc", LOW, [a, b], 2),
+        ("cc", HIGH, [a, b], 2),
+    ], "a group per task and renderer, of four, two from each harness"
 
 
 # ------------------------------------------------------------------ a run at two renderers
