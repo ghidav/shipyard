@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import logging
 import os
+import shlex
 import shutil
 import sys
 from collections.abc import Iterator, Mapping
@@ -11,9 +12,10 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
+import tomli_w
 from shortuuid import ShortUUID
 
-from shipyard.config import Blueprint, config_file, load
+from shipyard.config import Blueprint, config_file, load, parsed
 from shipyard.run import record
 from shipyard.trainer import CARRIED, Trainer
 
@@ -34,19 +36,27 @@ def open_run(
     root: Path | None = None,
     trainer: Path | None = None,
     origin: Mapping[str, Any] | None = None,
+    overrides: Mapping[str, str] | None = None,
 ) -> tuple[Path, Blueprint]:
     """Create a blueprint's run directory, noting its recipe and any `origin` in `run.json`."""
     source = config_file(blueprint)
     if trainer is None and (source.parent / record.TRAINER).is_file():
         trainer = source.parent / record.TRAINER
     made = trainer_in(trainer) if trainer is not None else Trainer
-    config = load(blueprint, made.Recipe)
+    config = load(blueprint, made.Recipe, overrides)
     # A run that goes on from another is named as that one is, without its id.
     named = source.parent.name.rsplit("__", 1)[0] if origin else source.parent.name
     stem = named[:32].rstrip("_-") or "run"
     directory = runs_root(root) / f"{stem}__{ShortUUID().random(length=7)}"
     directory.mkdir(parents=True)
-    shutil.copyfile(source, directory / record.CONFIG)
+    if overrides:
+        # The blueprint as the run has it, which a resume reads again.
+        given = " ".join(shlex.join([f"--{name}", text]) for name, text in overrides.items())
+        header = " ".join(f"# {source} with {given}".splitlines())
+        written = tomli_w.dumps(parsed(source, overrides))
+        (directory / record.CONFIG).write_text(f"{header}\n{written}", encoding="utf-8")
+    else:
+        shutil.copyfile(source, directory / record.CONFIG)
     noted: dict[str, Any] = {}
     if trainer is not None:
         trainer = Path(trainer).resolve()

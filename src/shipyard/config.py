@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tomllib
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Self
 
@@ -232,8 +233,22 @@ def config_file(path: Path) -> Path:
     return path if path.is_file() else path / record.CONFIG
 
 
-def load(path: Path, recipe: type[Recipe] = Recipe) -> Blueprint:
+def load(
+    path: Path, recipe: type[Recipe] = Recipe, overrides: Mapping[str, str] | None = None
+) -> Blueprint:
     """Load and validate the blueprint at `path`, raising `ConfigError` with every problem."""
+    file = config_file(path)
+    raw = parsed(file, overrides)
+    try:
+        blueprint = Blueprint[recipe].model_validate(raw)  # type: ignore[valid-type]
+    except ValidationError as error:
+        raise ConfigError([_problem(one) for one in error.errors()]) from error
+    blueprint._home = file.parent
+    return blueprint
+
+
+def parsed(path: Path, overrides: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """Return the blueprint at `path` as TOML, each `table.key` of `overrides` set in it."""
     file = config_file(path)
     try:
         raw = tomllib.loads(file.read_text(encoding="utf-8"))
@@ -241,12 +256,23 @@ def load(path: Path, recipe: type[Recipe] = Recipe) -> Blueprint:
         raise ConfigError([f"cannot read {file}: {error.strerror or error}"]) from error
     except tomllib.TOMLDecodeError as error:
         raise ConfigError([f"{file.name} is not readable TOML: {error}"]) from error
+    for name, text in (overrides or {}).items():
+        *tables, key = name.split(".")
+        table = raw
+        for one in tables:
+            table = table.setdefault(one, {})
+            if not isinstance(table, dict):
+                raise ConfigError([f"--{name}: {one} is a key, not a table"])
+        table[key] = value_of(text)
+    return raw
+
+
+def value_of(text: str) -> Any:
+    """Read an override as a TOML value, such as `2`, `true` or `["a", "b"]`; else as text."""
     try:
-        blueprint = Blueprint[recipe].model_validate(raw)  # type: ignore[valid-type]
-    except ValidationError as error:
-        raise ConfigError([_problem(one) for one in error.errors()]) from error
-    blueprint._home = file.parent
-    return blueprint
+        return tomllib.loads(f"value = {text}")["value"]
+    except tomllib.TOMLDecodeError:
+        return text
 
 
 def _problem(error: Any) -> str:

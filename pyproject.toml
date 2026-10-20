@@ -43,6 +43,7 @@ dependencies = [
     "tinker-cookbook>=0.5.5,<0.6",
     "harness-proxy",
     "litellm>=1.103",
+    "tomli-w>=1.0",
 ]
 
 [project.urls]

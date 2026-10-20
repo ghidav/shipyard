@@ -2,16 +2,6 @@
 
 Post-training framework for AI agents on Harbor tasks.
 
-```mermaid
-flowchart LR
-    recipe["recipe: a Trainer"] -->|tasks| harbor["Harbor sandboxes: the agent's harnesses"]
-    harbor -->|model calls| proxy["harness-proxy"]
-    proxy -->|samples| model["Tinker or Together"]
-    proxy -->|token records| recipe
-    recipe -->|update| model
-    harbor -.->|"or, for an agent on a provider"| api["a provider's API"]
-```
-
 ## Installation
 
 Requires **Python 3.12+** and [uv](https://github.com/astral-sh/uv):
@@ -23,17 +13,17 @@ uv tool install shipyard
 ## Quickstart
 
 ```sh
-shipyard init                                    # copy the recipes and .env.example here
-cp .env.example .env                             # then set your keys in .env
-uvx harbor datasets download <dataset> -o tasks  # tasks land in tasks/<dataset>/<task>/
-shipyard run recipes/dapo                        # the run writes runs/dapo__<id>/
+shipyard init                                     # copy the recipes and .env.example here
+cp .env.example .env                              # then set your keys in .env
+uvx harbor datasets download <dataset> -o tasks   # tasks land in tasks/<dataset>/<task>/
+shipyard run recipes/dapo --data.train <dataset>  # the run writes runs/dapo__<id>/
 ```
 
-Each recipe's `README.md` says what it needs: keys, dataset and sandbox.
+`--data.train` sets the dataset for this run, in place of the one the recipe's `run.toml` names. Each recipe's `README.md` says what else it needs: keys and sandbox.
 
 ## Customizing
 
-- **Settings:** a recipe's `run.toml` sets the model, harnesses, data, learning rate and LoRA rank.
+- **Settings:** a recipe's `run.toml` sets the model, harnesses, data, learning rate and LoRA rank; `--table.key VALUE` on `shipyard run` sets any of them for one run.
 - **Algorithm:** its `trainer.py` subclasses `Trainer`, whose `step` runs four primitives: `draw`, `rollout`, `score` and `update`. A recipe overrides `score`, `step`, or both (see [`src/shipyard`](src/shipyard/README.md)).
 - **Recipes:** DAPO, on-policy distillation and GEPA, in [`recipes/`](recipes/README.md).
 

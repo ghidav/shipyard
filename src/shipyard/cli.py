@@ -4,12 +4,13 @@ import asyncio
 import logging
 import shutil
 import signal
-from collections.abc import Coroutine, Mapping
+from collections.abc import Coroutine, Mapping, Sequence
 from pathlib import Path
 from typing import Annotated, Any
 
 import typer
 from dotenv import load_dotenv
+from typer.core import TyperCommand
 
 from shipyard.config import Blueprint, ConfigError
 from shipyard.run.directory import continued, open_run, reopened, running, trainer_class
@@ -23,6 +24,14 @@ next:
   cp .env.example .env                              # your keys
   uvx harbor datasets download <dataset> -o tasks   # the dataset a recipe's run.toml names
   shipyard run recipes/dapo                         # each recipe's README.md says what it needs"""
+
+#: Where `run` keeps the blueprint keys given as `--table.key VALUE`, in Click's context.
+OVERRIDES = "shipyard.overrides"
+#: What `run --help` says of them.
+SETTABLE = (
+    "Any key of the blueprint can be set for this run as --table.key VALUE, such as "
+    "--data.train swe-bench."
+)
 
 app = typer.Typer(
     help="Train with a recipe written from four primitives: draw, rollout, score, update.",
@@ -52,8 +61,20 @@ def init() -> None:
     typer.echo(NEXT)
 
 
-@app.command()
+class Overridable(TyperCommand):
+    """A command that takes blueprint keys as `--table.key VALUE`, before Typer parses the rest."""
+
+    def parse_args(self, ctx: typer.Context, args: list[str]) -> list[str]:
+        try:
+            ctx.meta[OVERRIDES], rest = overrides_in(args)
+        except ValueError as missing:
+            ctx.fail(str(missing))
+        return super().parse_args(ctx, rest)
+
+
+@app.command(cls=Overridable, epilog=SETTABLE)
 def run(
+    ctx: typer.Context,
     blueprint: Annotated[Path, typer.Argument(help="A run.toml, or the directory holding one.")],
     trainer: Annotated[
         Path | None,
@@ -66,7 +87,8 @@ def run(
 ) -> None:
     """Run BLUEPRINT, trained by TRAINER, the trainer.py beside it, or the base trainer."""
     try:
-        directory, config = open_run(blueprint, root=root, trainer=trainer)
+        overrides = ctx.meta.get(OVERRIDES)
+        directory, config = open_run(blueprint, root=root, trainer=trainer, overrides=overrides)
     except (ConfigError, ValueError) as refused:
         _refuse(refused)
     made = trainer_class(directory).__name__
@@ -189,6 +211,27 @@ def _until_stopped(work: Coroutine[Any, Any, None]) -> None:
 def _stop(task: asyncio.Task[Any], caught: list[str], name: str) -> None:
     caught.append(name)
     task.cancel()
+
+
+def overrides_in(args: Sequence[str]) -> tuple[dict[str, str], list[str]]:
+    """Return the `--table.key VALUE` and `--table.key=VALUE` flags in `args`, and the rest."""
+    found: dict[str, str] = {}
+    rest: list[str] = []
+    tokens = iter(args)
+    for one in tokens:
+        if one == "--":
+            rest += [one, *tokens]
+            break
+        name, given, value = one.partition("=")
+        if not (name.startswith("--") and "." in name):
+            rest.append(one)
+            continue
+        if not given:
+            value = next(tokens, "")
+            if not value or value.startswith("--"):
+                raise ValueError(f"{name} needs a value: {name} VALUE, or {name}=VALUE")
+        found[name.removeprefix("--")] = value
+    return found, rest
 
 
 def _refuse(refused: Exception) -> None:
