@@ -14,5 +14,6 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v7
-      - run: uv build
+      # Both packages: shipyard depends on harness-proxy, so a release publishes the two.
+      - run: uv build --all-packages
       - uses: pypa/gh-action-pypi-publish@release/v1
