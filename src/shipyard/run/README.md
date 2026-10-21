@@ -19,5 +19,5 @@ flowchart LR
 | `directory.py` | `open_run`, `continued`, `reopened`, `running`, and `trainer_in`, which imports a recipe's folder as its own package |
 | `logs.py` | `Logs`: the streams, and their `Wandb` mirror |
 | `costs.py` | `Costs`: tokens and sandbox time, totalled from the usage ledger |
-| `record.py` | atomic JSON writes and JSONL appends |
+| `files.py` | the names of the run directory's files, its atomic JSON writes and JSONL appends |
 | `data.py` | `tasks`, `Generator`: Harbor tasks, in resumable batches |

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import base64
+import re
 import secrets
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from functools import lru_cache
 from typing import Any
+from urllib.parse import quote, unquote
 
 #: Env vars holding the harness token and the run's control token. Secrets stay out of the
 #: config because the config is copied into the run directory.
@@ -43,7 +45,7 @@ class Picture:
 
 @dataclass(frozen=True)
 class Record:
-    """A trial's model call, as token ids: one per sample, a failed call kept with its `error`."""
+    """A trial's model call, as token ids, a failed call kept with its `error`."""
 
     seq: int
     at: float
@@ -62,8 +64,6 @@ class Record:
     reply_digest: str | None
     error: str | None
     images: tuple[Picture, ...] = ()
-    sample: int = 0
-    samples: int = 1
 
 
 def image_runs(ids: Sequence[int]) -> list[tuple[int, int]]:
@@ -244,8 +244,6 @@ def record_of(payload: Mapping[str, Any]) -> Record:
         reply_digest=_text(payload.get("reply_digest")),
         error=_text(payload.get("error")),
         images=tuple(_picture(item) for item in payload.get("images") or []),
-        sample=int(payload.get("sample") or 0),
-        samples=int(payload.get("samples") or 1),
     )
 
 
@@ -260,3 +258,188 @@ def _picture(payload: Mapping[str, Any]) -> Picture:
 
 def _text(value: Any) -> str | None:
     return str(value) if value else None
+
+
+# ---------------------------------------------------------------------- the address
+
+#: The names an address may give, in the order `Address.path` writes them.
+ADDRESS_KEYS = ("lane", "trial", "renderer")
+
+
+@dataclass(frozen=True)
+class Address:
+    """Where a trial's harness sends its calls: the trial they are recorded under, and the lane
+    and renderer that answer them, if it names them."""
+
+    trial: str
+    #: None for a proxy's only lane.
+    lane: str | None = None
+    #: None for the lane's first renderer.
+    renderer: str | None = None
+
+    def __post_init__(self) -> None:
+        """Refuse a name the path cannot hold."""
+        named = (("trial name", self.trial), ("lane", self.lane), ("renderer", self.renderer))
+        for what, name in named:
+            if name is not None and (not name or "/" in name):
+                raise ValueError(
+                    f"{name!r} cannot be addressed: a {what} goes in the URL path, "
+                    "so it must be non-empty and contain no '/'."
+                )
+
+    @property
+    def path(self) -> str:
+        """The path a harness's base URL ends in, each name percent-encoded:
+        `/r/lane/<lane>/trial/<trial>/renderer/<renderer>/v1`, less the names it leaves out."""
+        named = {"lane": self.lane, "trial": self.trial, "renderer": self.renderer}
+        keys = "".join(
+            f"/{key}/{quote(name, safe='')}" for key, name in named.items() if name is not None
+        )
+        return f"/r{keys}/v1"
+
+    @classmethod
+    def of(cls, path: str) -> Address:
+        """Read the address a raw request path starts with, as `path` writes it; `ValueError` for
+        one that names no trial, or a name no address gives."""
+        parts, named, at = path.split("/"), {}, 2
+        under = parts[:2] == ["", "r"]
+        while under and at + 1 < len(parts) and parts[at] in ADDRESS_KEYS:
+            if parts[at] in named:
+                break
+            named[parts[at]] = unquote(parts[at + 1])
+            at += 2
+        if not under or parts[at : at + 1] != ["v1"] or "trial" not in named:
+            raise ValueError(
+                f"{path!r} is no trial's address, which reads "
+                "/r/[lane/<lane>/]trial/<trial>/[renderer/<renderer>/]v1"
+            )
+        return cls(**named)
+
+
+# --------------------------------------------------------------------------- health
+
+
+@dataclass(frozen=True)
+class Served:
+    """A lane, as the proxy's `/healthz` reports it."""
+
+    #: The base model it serves.
+    model: str
+    #: What it serves: its weights, or its base model.
+    serving: str
+    #: Tokens one trial may sample; None when no budget is enforced.
+    budget: int | None
+    #: The renderers a trial's address may name; none for its model's default alone.
+    renderers: tuple[str, ...]
+
+    @classmethod
+    def of(cls, reported: Mapping[str, Any]) -> Served:
+        """Read a lane from `/healthz`, taking a budget that is not a positive count as none."""
+        budget = reported.get("budget")
+        known = isinstance(budget, int) and not isinstance(budget, bool) and budget > 0
+        named = reported.get("renderers")
+        return cls(
+            model=str(reported.get("model") or ""),
+            serving=str(reported.get("serving") or ""),
+            budget=budget if known else None,
+            renderers=tuple(str(one) for one in named) if isinstance(named, list) else (),
+        )
+
+
+def health(lanes: Mapping[str, Served]) -> dict[str, Any]:
+    """Return what `/healthz` answers: that the proxy is up, and each lane as it serves it."""
+    return {"status": "ok", "lanes": {name: asdict(one) for name, one in lanes.items()}}
+
+
+def lanes_in(answer: Mapping[str, Any]) -> dict[str, Served]:
+    """Read each lane back from what `/healthz` answered; none if it lists none."""
+    lanes = answer.get("lanes")
+    if not isinstance(lanes, Mapping):
+        return {}
+    return {str(name): Served.of(one) for name, one in lanes.items() if isinstance(one, Mapping)}
+
+
+# ---------------------------------------------------------------------- the weights
+
+
+@dataclass(frozen=True)
+class Swap:
+    """The run's request to point a lane at other weights, which `CONTROL_PATH` takes."""
+
+    #: The weights, under the lane's backend's prefix; None for its base model.
+    weights: str | None
+    #: The lane it points; None for a proxy's only lane.
+    lane: str | None = None
+
+    @property
+    def body(self) -> dict[str, Any]:
+        return {"weights": self.weights, **({"lane": self.lane} if self.lane else {})}
+
+    @classmethod
+    def of(cls, body: Any) -> Swap:
+        """Read a swap back from a request's JSON body; `ValueError` for one that is not."""
+        if not isinstance(body, dict) or "weights" not in body:
+            raise ValueError("expected a JSON object with 'weights'")
+        weights, lane = body["weights"], body.get("lane")
+        if weights is not None and not isinstance(weights, str):
+            raise ValueError("'weights' must be a path or null")
+        if lane is not None and not isinstance(lane, str):
+            raise ValueError("'lane' must be the name of a lane")
+        return cls(weights, lane or None)
+
+
+# -------------------------------------------------------------------------- records
+
+
+def records_path(trial: str) -> str:
+    """The path the run fetches a trial's records at, the trial percent-encoded."""
+    return f"{RECORDS_PATH}/{quote(trial, safe='')}"
+
+
+@dataclass(frozen=True)
+class Fetch:
+    """How a records fetch asks: for prompts as deltas of the record each extends, and, on a
+    retry, for the answer sent last, which the lost fetch had drained."""
+
+    delta: bool = False
+    again: bool = False
+
+    @property
+    def query(self) -> dict[str, str]:
+        return {key: "1" for key, asked in (("delta", self.delta), ("again", self.again)) if asked}
+
+    @classmethod
+    def of(cls, query: Mapping[str, str]) -> Fetch:
+        return cls(delta=query.get("delta") == "1", again=query.get("again") == "1")
+
+
+def records_answer(records: Sequence[Record], *, delta: bool) -> dict[str, Any]:
+    """Return what the records route answers: the records, their prompts as deltas if asked."""
+    return {"records": delta_encoded(records) if delta else [asdict(one) for one in records]}
+
+
+def records_in(answer: Mapping[str, Any]) -> list[Record]:
+    """Read the records back from what the records route answered."""
+    return records_of(answer.get("records") or [])
+
+
+# -------------------------------------------------------------------------- startup
+
+#: The first line serve prints, which names its lanes and the port the kernel chose.
+BANNER = re.compile(
+    r"^serving (?P<lanes>\S+) at http://(?P<host>[^:/]+):(?P<port>\d+) "
+    r"\(control: (?P<control>on|off)\)$"
+)
+#: The line serve prints once its tunnel is up, after the banner.
+TUNNEL_LINE = re.compile(r"^tunnel at (?P<origin>https://\S+)$")
+
+
+def banner(lanes: Sequence[str], host: str, port: int, *, control: bool) -> str:
+    """Return the first line serve prints, which `BANNER` reads."""
+    named, opened = ",".join(lanes), "on" if control else "off"
+    return f"serving {named} at http://{host}:{port} (control: {opened})"
+
+
+def tunnel_line(origin: str) -> str:
+    """Return the line serve prints once its tunnel is up, which `TUNNEL_LINE` reads."""
+    return f"tunnel at {origin}"

@@ -13,8 +13,8 @@ import tinker
 
 from harness_proxy.backends import together
 from harness_proxy.chat import Refused
-from harness_proxy.server import Server
-from proxies import MODEL, FakeRenderer, ask, control, ids
+from harness_proxy.server import Lane, Server
+from proxies import MODEL, FakeRenderer, ask, control, ids, only
 
 
 @dataclass
@@ -49,17 +49,16 @@ class FakeSession:
 
 
 def on_together(session: FakeSession) -> Server:
-    return Server(
-        base_model=MODEL,
+    lane = Lane(
+        name="agent",
+        model=MODEL,
         renderer=FakeRenderer(),
-        host="127.0.0.1",
-        bind="127.0.0.1",
-        control_token="ctl",
         backend="together",
         max_tokens=64,
         max_context=4096,
         _service=session,
     )
+    return Server(lanes=[lane], host="127.0.0.1", bind="127.0.0.1", control_token="ctl")
 
 
 async def test_a_together_proxy_samples_the_runs_session_and_records_as_on_tinker() -> None:
@@ -76,7 +75,7 @@ async def test_a_together_proxy_samples_the_runs_session_and_records_as_on_tinke
         assert (await control(started, "together://s1/sample-1")).status_code == 200
         assert (await control(started, "tinker://run/weights")).status_code == 400
         await ask(started, "t1")
-        first, second = started.records_for("t1")
+        first, second = only(started).records_for("t1")
     assert (first.served, second.served) == (None, "together://s1/sample-1")
     assert first.completion_token_ids == ids("hi") and first.inference_logprobs == (-0.5, -0.5)
     assert first.cached_tokens == 2 and first.stop_reason == "stop"
@@ -116,4 +115,4 @@ async def test_a_together_proxy_needs_the_runs_session_and_a_backend_it_knows() 
     with pytest.raises(ValueError, match="pass its id as `session`"):
         await together.connect(metadata=None, session=None)
     with pytest.raises(ValueError, match="no backend 'modal'"):
-        Server(base_model=MODEL, backend="modal")
+        Lane(name="agent", model=MODEL, backend="modal")

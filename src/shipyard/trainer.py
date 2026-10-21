@@ -1,47 +1,37 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Iterator, Mapping
+from collections.abc import Iterator, Mapping
 from collections.abc import Sequence as Values
-from contextlib import nullcontext
 from dataclasses import dataclass, field
-from functools import partial
 from pathlib import Path
-from statistics import fmean
 from types import TracebackType
 from typing import Any, Self
 
 import tinker
-import torch
 from pydantic import ValidationError
-from tinker_cookbook.rl.metrics import compute_kl_sample_train
 from tinker_cookbook.utils.misc_utils import split_list
 
 from shipyard.config import Blueprint, Recipe
-from shipyard.groups import Group, grouped, merged
-from shipyard.jobs import harnesses
-from shipyard.jobs.engine import HarborEngine, Job
-from shipyard.jobs.modules import Modules, keep
+from shipyard.groups import Group, Sequence
+from shipyard.jobs.engine import EVALUATION, HarborEngine
+from shipyard.jobs.harnesses import resolved
+from shipyard.jobs.modules import Modules, carried, keep
 from shipyard.jobs.secrets import Pool, Secrets
-from shipyard.models.agent import Frozen, Provider, Session
-from shipyard.models.clients import TRAINED
-from shipyard.models.clients.tinker import TINKER, datum
-from shipyard.models.clients.together import FROZEN, TOGETHER
-from shipyard.policy import Policy
-from shipyard.run import record
+from shipyard.model import Model
+from shipyard.models.backends import Session, connect
+from shipyard.models.clients.tinker import check_loss
+from shipyard.run import files
+from shipyard.run.checkpoint import Checkpoint
 from shipyard.run.data import Generator
-from shipyard.run.logs import AGENT, Logs, breakdown
+from shipyard.run.logs import AGENT, Logs, breakdown, tally
 from shipyard.state import State
 
 logger = logging.getLogger(__name__)
 
-SECONDS_PER_HOUR = 3600
 #: The checkpoint a run saves when it ends: the weights its updates moved to, kept for good.
 FINAL = "final"
-#: Where the run keeps the modules every job carries, under `<run>/modules/`.
-CARRIED = "carried"
 
 
 @dataclass(frozen=True)
@@ -79,7 +69,7 @@ class Trainer:
     """A run: the four primitives, and the `step` a recipe writes from them."""
 
     #: Adam settings from the cookbook's `train_step`. Its `learning_rate` is not read: each
-    #: update takes `[recipe] learning_rate`, warmed up over `[recipe] warmup` updates.
+    #: update takes the agent's, `[recipe] learning_rate`, warmed up over `[recipe] warmup`.
     ADAM = tinker.AdamParams(beta1=0.9, beta2=0.95, eps=1e-8)
     #: The `[recipe]` keys the trainer reads. A recipe with keys of its own declares them in a
     #: subclass, `class Recipe(Trainer.Recipe)`, and its run.toml sets every one.
@@ -89,10 +79,15 @@ class Trainer:
     State = State
 
     def __init__(self, config: Blueprint, directory: Path) -> None:
-        if config.rollout.renderer and config.agent.provider not in TRAINED:
+        # The agent trains unless a recipe that never updates sets `self.policy.training`
+        # False in its __init__; the run checks it can when it starts.
+        agent = Model(config.agent.model, provider=config.agent.provider, train=True)
+        # The proxy serves a model on Tinker or Together: one a run could train.
+        if config.rollout.renderer and not agent.trainable:
             raise ValueError(
-                "[rollout] renderer: the proxy renders the calls of a model the run trains, and "
-                f"{config.agent.provider} serves {config.agent.model} to its harnesses itself"
+                "[rollout] renderer: the proxy renders the calls of a model on Tinker or "
+                f"Together, and {config.agent.provider} serves {config.agent.model} to its "
+                "harnesses itself"
             )
         self.config = config
         self.recipe = config.recipe
@@ -102,18 +97,22 @@ class Trainer:
         #: What the run has done so far, which a checkpoint saves and a resume goes on from.
         self.state = self.State(modules=carried(config, self.directory))
         self.directory.mkdir(parents=True, exist_ok=True)
+        #: The run's record: job and step rows, checkpoints and costs.
+        self.logs = Logs(config, self.directory, step=lambda: self._current)
         table = config.rollout.secrets
         #: One engine, so every job shares one `[rollout] concurrency` limit.
         self.engine = HarborEngine(
             config.rollout,
+            logs=self.logs,
             env=config.agent.env,
             kwargs=config.agent.kwargs,
             secrets=Pool.of(table) if table else Secrets(),
+            mix=config.agent.mix_harnesses,
+            grade_timeouts=self.recipe.grade_timeouts,
         )
-        #: The run's record: job and step rows, checkpoints and costs.
-        self.logs = Logs(config, self.directory, step=lambda: self._current)
-        self._agent = Policy(config.agent.model, provider=config.agent.provider)
-        #: The agent on Tinker, made and opened when `train` starts; None for a provider's.
+        self._agent = agent
+        #: The agent on Tinker or Together, made and opened when `run` starts; None for a
+        #: provider's.
         self._session: Session | None = None
         #: The recipe's own numbers for this step's row, such as a KL it measured.
         self.metrics: dict[str, Any] = {}
@@ -141,8 +140,9 @@ class Trainer:
         self.logs.close(failed)
 
     @property
-    def policy(self) -> Policy:
-        """The agent: the run's own policy, made from `[agent]`."""
+    def policy(self) -> Model:
+        """The agent: the run's own model, made from `[agent]`. The run trains it, unless a
+        recipe that never updates sets `self.policy.training = False` in its __init__."""
         return self._agent
 
     # ------------------------------------------------------------------ what a recipe writes
@@ -180,60 +180,87 @@ class Trainer:
         harness: str | None = None,
         renderer: str | None = None,
         purpose: str = "training",
+        model: Model | None = None,
+        env: Mapping[str, str] | None = None,
+        kwargs: Mapping[str, Any] | None = None,
     ) -> list[Group]:
-        """Run each task in groups of `attempts`, per renderer and, unless mixed, per harness."""
-        cfg, tasks = self.config, list(tasks)
-        carried = self.state.modules if modules is None else modules
-        named = cfg.rollout.renderer
+        """Run each task in groups of `attempts`, per renderer and, unless mixed, per harness.
+        The agent runs by default, carrying the run's modules, through `[agent]`'s harnesses;
+        `model` runs another model the trainer holds, through `harness` with `env` and
+        `kwargs`, carrying `modules` alone. Only the agent's training rollouts count in the
+        step's row."""
+        if model is not None and model is not self._agent:
+            return await self._rollout(
+                model, list(tasks), attempts, modules, harness, renderer, purpose, env, kwargs
+            )
+        named = self.config.rollout.renderer
         if renderer is not None and renderer not in named:
             raise ValueError(
                 f"rollout(renderer={renderer!r}): the proxy renders with "
                 f"{', '.join(named) or 'the model default alone'}, from [rollout] renderer"
             )
-        jobs = split(
-            tasks,
-            attempts or cfg.data.group_size,
-            [harness] if harness else cfg.agent.harness,
-            [renderer] if renderer else list(named) or [None],
-            mix=cfg.agent.mix_harnesses,
+        harnesses = self.config.agent.harness
+        if harness is not None:
+            try:
+                harnesses = [resolved(harness, harnesses)]
+            except ValueError as refused:
+                raise ValueError(f"rollout(harness=...): {refused}") from None
+        found = await self.engine.rollout(
+            list(tasks),
+            attempts=attempts or self.config.data.group_size,
+            harnesses=harnesses,
+            renderers=[renderer] if renderer else list(named) or [None],
+            endpoint=self._agent.endpoint,
+            modules=self.state.modules if modules is None else modules,
+            purpose=purpose,
+            step=self._current,
+            env=env,
+            kwargs=kwargs,
         )
-        parts = await asyncio.gather(
-            *(
-                self._job(one, rendered, part, count, carried, purpose)
-                for one, rendered, part, count in jobs
-            )
-        )
-        first = {task: at for at, task in reversed(list(enumerate(tasks)))}
-        mixed = merged([g for part in parts for g in part], mix=cfg.agent.mix_harnesses)
-        found = sorted(mixed, key=lambda g: first[g.task])
         if purpose == "training":
             self._seen += found
         return found
 
-    async def _job(
+    async def _rollout(
         self,
-        harness: str,
-        renderer: str | None,
+        model: Model,
         tasks: list[Path],
-        attempts: int,
+        attempts: int | None,
         modules: Modules | None,
+        harness: str | None,
+        renderer: str | None,
         purpose: str,
+        env: Mapping[str, str] | None,
+        kwargs: Mapping[str, Any] | None,
     ) -> list[Group]:
-        """Run and log a judged job of `harness` on `tasks` at `renderer`; return its groups."""
-        endpoint = self._agent.endpoint
-        job = Job(
-            self.logs.reserve(),
+        """Run `model`, a model the trainer holds besides the agent, as `rollout` says."""
+        role = next((named for named, one in self._held() if one is model), None)
+        if role is None:
+            raise ValueError(
+                f"rollout(model={model!r}): keep the model on the trainer, as self.<name>"
+            )
+        if harness is None:
+            raise ValueError(f"rollout(model={role}): name the harness it runs through")
+        if renderer is not None:
+            raise ValueError(f"rollout(model={role}): the proxy renders the agent's calls alone")
+        if model.endpoint is None:
+            raise ValueError(
+                f"rollout(model={role}): {model!r} has nothing a harness could dial: it is "
+                "not connected yet"
+            )
+        return await self.engine.rollout(
+            tasks,
+            attempts=attempts or self.config.data.group_size,
+            harnesses=[harness],
+            renderers=[None],
+            endpoint=model.endpoint,
+            modules=modules,
             purpose=purpose,
             step=self._current,
-            modules=modules,
-            harness=harnesses.harness(harness),
-            renderer=renderer,
-            grade_timeouts=self.recipe.grade_timeouts,
+            role=role,
+            env=dict(env or {}),
+            kwargs=dict(kwargs or {}),
         )
-        await self.engine.run(job, tasks, attempts, endpoint=endpoint)
-        self.logs.job(job, endpoint)
-        endpoint.check(job.name, job.trials)
-        return grouped(job.trials)
 
     async def update(
         self,
@@ -242,101 +269,80 @@ class Trainer:
         loss: str = "importance_sampling",
         loss_config: Mapping[str, float] | None = None,
     ) -> Update | None:
-        """Train the agent on every sequence with advantages, and serve its new weights."""
-        policy, session = self._agent, self._session
-        if session is None:
+        """Train the agent on every sequence with advantages, and serve its new weights. Raise
+        `ValueError` for a loss Tinker does not have, or a setting it does not take, before
+        anything is scored or sent."""
+        check_loss(loss, loss_config)
+        policy, session, learning_rate = self._agent, self._session, self.recipe.learning_rate
+        if not policy.trainable:
             raise ValueError(
-                f"update trains the agent, and {policy.provider} serves {policy.model}: there "
+                f"update trains the agent, and {policy.provider} serves {policy.name}: there "
                 "are no weights to train"
             )
-        client = session.client
-        learning_rate = self.recipe.learning_rate
-        if learning_rate is None:
-            raise ValueError("[recipe] learning_rate: update needs it, and the blueprint sets none")
+        if not policy.training:
+            raise ValueError(
+                "update trains the agent, and this recipe set `self.policy.training = False`"
+            )
+        if session is None or learning_rate is None:
+            raise RuntimeError("update trains the agent, which opens when the run starts")
         kept = [group.scored for group in groups if group.is_scored]
         if not kept:
             return None
         began, recipe = time.monotonic(), self.recipe
         flat = [one for part in kept for one in part]
         unrecorded = [one for one in flat if one.sampled_logprobs is None]
-        scored = dict(zip(unrecorded, await policy.logprobs(unrecorded), strict=True))
-        parts = [
-            [
-                datum(
-                    one,
-                    logprobs=(
-                        one.sampled_logprobs
-                        if one.sampled_logprobs is not None
-                        else scored[one].tolist()  # type: ignore[union-attr]
-                    ),
-                    advantages=one.advantages.tolist(),  # type: ignore[union-attr]
-                )
-                for one in part
-            ]
-            for part in kept
-        ]
+        # Each ratio is taken against the sampler's logprobs, else the current weights' own.
+        logprobs: dict[Sequence, Values[float]] = {
+            one: one.sampled_logprobs for one in flat if one.sampled_logprobs is not None
+        }
+        for one, scored in zip(unrecorded, await policy.logprobs(unrecorded), strict=True):
+            logprobs[one] = scored.tolist()  # type: ignore[union-attr]
         # The papers' mini-batches are sets of prompts, so a group is not split across parts.
-        count = min(recipe.substeps, len(parts))
-        pieces = [[one for part in piece for one in part] for piece in split_list(parts, count)]
-        datums = [one for piece in pieces for one in piece]
-        tokens = sum(int(one.model_input.length) for one in datums)
+        count = min(recipe.substeps, len(kept))
+        parts = [[one for part in piece for one in part] for piece in split_list(kept, count)]
         rate = self._rate(learning_rate)
-        trained: list[torch.Tensor] = []
-        forward, optim = await self._submit(client, pieces[0], rate, loss, loss_config)
-        for index in range(count):
-            following = (
-                await self._submit(client, pieces[index + 1], rate, loss, loss_config)
-                if index + 1 < count
-                else None
-            )
-            trained.extend(torch.tensor(row) for row in await forward)
-            await optim
-            if following is not None:
-                forward, optim = following
-        session.count(train=tokens)
-        self.state.updates += 1
-        await session.serve(f"sample-{self.state.updates}")
-        drift = compute_kl_sample_train(datums, trained)
+        trained = await session.fit(
+            parts, logprobs=logprobs, adam=self.ADAM, rate=rate, loss=loss, loss_config=loss_config
+        )
+        made = self.state.updates[AGENT] = self.state.updates.get(AGENT, 0) + 1
+        await session.serve(f"sample-{made}")
         self._update = Update(
             sequences=len(flat),
-            train_tokens=tokens,
+            train_tokens=trained.tokens,
             substeps=count,
             learning_rate=rate,
             loss=loss,
             update_seconds=round(time.monotonic() - began, 3),
-            kl_v1=drift["optim/kl_sample_train_v1"],
-            kl_v2=drift["optim/kl_sample_train_v2"],
-            entropy=drift["optim/entropy"],
+            kl_v1=trained.kl_v1,
+            kl_v2=trained.kl_v2,
+            entropy=trained.entropy,
         )
         return self._update
 
     def _rate(self, learning_rate: float) -> float:
-        """Return the next update's learning rate, warmed up over `[recipe] warmup` updates."""
-        recipe = self.recipe
+        """Return the agent's next learning rate, warmed up over `[recipe] warmup` updates."""
+        recipe, made = self.recipe, self.state.updates.get(AGENT, 0)
         restored = self.config.agent.from_checkpoint and recipe.restore_optimizer
-        if restored or self.state.updates >= recipe.warmup:
+        if restored or made >= recipe.warmup:
             return learning_rate
-        return learning_rate * (self.state.updates + 1) / recipe.warmup
-
-    async def _submit(
-        self,
-        client: Any,
-        part: list[tinker.Datum],
-        rate: float,
-        loss: str,
-        loss_config: Mapping[str, float] | None,
-    ) -> tuple[Awaitable[list[list[float]]], Awaitable[None]]:
-        """Submit one substep's pass and optimizer step, before the one before is read."""
-        forward = await client.forward_backward(part, loss, loss_config)
-        return forward, await client.optim_step(self.ADAM, rate)
+        return learning_rate * (made + 1) / recipe.warmup
 
     # ------------------------------------------------------------------ the run
 
-    async def train(self) -> None:
-        """Open the policies, take `[recipe] steps` steps, the last evaluated, then save `final`."""
+    async def run(self) -> None:
+        """Open the models, take `[recipe] steps` steps, the last evaluated, then save `final`.
+        Raise `ValueError`, before anything opens, for a model the run cannot train or open."""
+        if self._agent.training and self.recipe.learning_rate is None:
+            raise ValueError(
+                "[recipe] learning_rate: the agent trains, and the blueprint sets no rate: set "
+                "it, or, in a recipe that never updates, set `self.policy.training = False`"
+            )
         self._current = self.state.steps
-        self._bind()
-        async with self._session if self._session is not None else nullcontext():
+        connected = connect(
+            self.config, self.directory, self._held(), self.logs.spend, weights=self._weights
+        )
+        self._session = connected.session
+        async with connected:
             while self.state.steps < self.recipe.steps:
                 await self._advance()
             await self.checkpoint(FINAL, keep=True)
@@ -362,72 +368,57 @@ class Trainer:
             return None
         data = self.config.data
         attempts = data.test_group_size or data.group_size
-        # Each harness and renderer pinned, so no harnesses are mixed; named only when there are
-        # several, so that a recipe's own `rollout`, which may take neither, is called as before.
-        named = self.config.agent.harness
-        pinned = [
-            {**({"harness": one} if len(named) > 1 else {}), **({"renderer": it} if it else {})}
-            for one in named
-            for it in self.config.rollout.renderer or [None]
-        ]
         found: list[Group] = []
         for start in range(0, len(tasks), data.batch_size):
             batch = tasks[start : start + data.batch_size]
-            parts = await asyncio.gather(
-                *(
-                    self.rollout(batch, attempts=attempts, purpose="evaluation", **one)
-                    for one in pinned
-                )
-            )
-            found += [group for part in parts for group in part]
-        measured = [one for group in found for one in group.measured]
-        trials = sum(len(group.trials) for group in found)
+            found += await self.rollout(batch, attempts=attempts, purpose=EVALUATION)
         self._evaluation = Evaluation(
             step=self._current,
             tasks=len({group.task for group in found}),
-            trials=trials,
-            graded=len(measured),
-            masked=trials - len(measured),
-            reward_mean=fmean(one.reward or 0.0 for one in measured) if measured else None,
+            **tally(found),
             breakdown=breakdown(found),
         )
         self.state.evaluated = self._current
         return self._evaluation
 
     async def checkpoint(self, tag: str, *, keep: bool = False) -> None:
-        """Save the run's state as `tag`, which a resume goes on from; `keep` keeps the weights."""
-        session, weights, saved = self._session, None, {"sampler": None}
-        if session is not None and self.state.updates:
-            hours = None if keep else self.config.checkpoints.ttl_hours
-            ttl = None if hours is None else int(hours * SECONDS_PER_HOUR)
-            weights, sampler = await session.save(tag, ttl_seconds=ttl, sampler=keep)
-            saved = {"sampler": sampler, "ttl_hours": hours}
-        state = f"{record.STATES}/step-{self.state.steps}.json"
-        record.write_json(self.directory / state, self.state.model_dump(mode="json"))
-        self.logs.checkpoint(
-            {
-                "tag": tag,
-                "step": self.state.steps,
-                "state": state,
-                "weights": weights,
-                **saved,
-            }
+        """Save the run's state as `tag`, which a resume goes on from; `keep` keeps the weights.
+        Its row names each trained model's weights by role, once an update has moved them."""
+        session = self._session
+        weights: dict[str, str] = {}
+        sampler: dict[str, str] = {}
+        hours: float | None = None
+        if session is not None and self.state.updates.get(AGENT):
+            made = await session.save(tag, keep=keep)
+            weights = {AGENT: made.state}
+            sampler = {AGENT: made.sampler} if made.sampler is not None else {}
+            hours = made.ttl_hours
+        saved = Checkpoint.save(
+            self.directory,
+            tag,
+            self.state.steps,
+            self.state.model_dump(mode="json"),
+            weights=weights,
+            sampler=sampler,
+            ttl_hours=hours,
         )
-        logger.info("checkpoint %s: %s", tag, state)
+        logger.info("checkpoint %s: %s", tag, saved.state)
 
     def keep(self, modules: Modules, name: str) -> Path:
         """Keep `modules` in the run as `modules/<name>/`, for a later run to carry."""
-        into = self.directory / record.MODULES / name
+        into = self.directory / files.MODULES / name
         keep(modules, into)
         return into
 
-    def restore(self, origin: Path, row: Mapping[str, Any]) -> None:
-        """Restore checkpoint `row` of `origin`: its state now, its weights once `train` opens."""
-        tag, state = row["tag"], row.get("state")
-        self._weights = row.get("weights")
-        saved = record.read_json(Path(origin) / state) if state else {}
+    def restore(self, origin: Path, checkpoint: Checkpoint) -> None:
+        """Restore `checkpoint` of `origin`: its state now, its weights once `run` opens."""
+        tag = checkpoint.tag
+        self._weights = checkpoint.weights.get(AGENT)
+        saved = checkpoint.saved_state(origin)
         if not saved:
-            raise ValueError(f"checkpoint {tag}: its state is missing or unreadable ({state})")
+            raise ValueError(
+                f"checkpoint {tag}: its state is missing or unreadable ({checkpoint.state})"
+            )
         named = f"{type(self).__name__}.State"
         dropped = sorted(set(saved) - set(self.State.model_fields))
         if dropped:
@@ -441,35 +432,8 @@ class Trainer:
 
     # ------------------------------------------------------------------ plumbing
 
-    def _bind(self) -> None:
-        """Give each policy the trainer holds its backend: `Session`, `Frozen` or `Provider`."""
-        agent, spend = self._agent, self.logs.spend
-        session = (
-            Session(self.config, self.directory, partial(spend, AGENT), weights=self._weights)
-            if agent.provider in TRAINED
-            else None
-        )
-        backend: Session | Frozen | Provider
-        for role, one in self._held():
-            if one is agent and session is not None:
-                backend = session
-            elif one.provider != TINKER:
-                backend = Provider(one.load, one.provider, partial(spend, role))
-            elif session is None:
-                raise ValueError(
-                    f"Policy({one.load!r}) opens in the agent's Tinker session, and the agent "
-                    f"is {agent.provider}'s model, which has none"
-                )
-            elif agent.provider == TOGETHER:
-                raise ValueError(f"Policy({one.load!r}): {FROZEN}")
-            else:
-                backend = Frozen(one.load, one.model, partial(spend, role))
-                session.frozen.append(backend)
-            one.bind(backend, reader=self.config.agent.model, limit=lambda: agent.budget)
-        self._session = session
-
-    def _held(self) -> list[tuple[str, Policy]]:
-        """Return every policy the trainer holds, the agent first, each with its spend's role."""
+    def _held(self) -> list[tuple[str, Model]]:
+        """Return every model the trainer holds, the agent first, each with its spend's role."""
         found = [(AGENT, self._agent)]
         for name, value in vars(self).items():
             if isinstance(value, dict):
@@ -479,41 +443,6 @@ class Trainer:
             else:
                 inner = [(name, value)]
             for role, one in inner:
-                if isinstance(one, Policy) and all(one is not seen for _, seen in found):
+                if isinstance(one, Model) and all(one is not seen for _, seen in found):
                     found.append((role, one))
         return found
-
-
-def split(
-    tasks: list[Path],
-    attempts: int,
-    harnesses: list[str],
-    renderers: list[str | None],
-    *,
-    mix: bool,
-) -> list[tuple[str, str | None, list[Path], int]]:
-    """Return one job per harness and renderer: (harness, renderer, tasks, attempts)."""
-    count = len(harnesses)
-    shares = (
-        [attempts // count + (at < attempts % count) for at in range(count)]
-        if mix
-        else [attempts] * count
-    )
-    return [
-        (one, renderer, tasks, share)
-        for one, share in zip(harnesses, shares, strict=True)
-        if share and tasks
-        for renderer in renderers
-    ]
-
-
-def carried(config: Blueprint, directory: Path) -> Modules | None:
-    """Return the modules every job carries, from the run's copy or `[agent] modules`."""
-    kept = directory / record.MODULES / CARRIED
-    if kept.is_dir():
-        return Modules.read(kept)
-    if not config.agent.modules:
-        return None
-    found = Modules.read(config.home / config.agent.modules)
-    keep(found, kept)
-    return found

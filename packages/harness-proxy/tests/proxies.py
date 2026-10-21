@@ -4,7 +4,7 @@ run a real server. The fake renderers map one character to one token."""
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any
 
 import httpx
@@ -12,10 +12,14 @@ import tinker
 from tinker_cookbook.renderers import ToolCall
 
 from harness_proxy.cookbook import ParseTermination
-from harness_proxy.server import Server
-from harness_proxy.wire import CONTROL_PATH, RECORDS_PATH, Picture, Record
+from harness_proxy.server import Lane, Server
+from harness_proxy.wire import CONTROL_PATH, RECORDS_PATH, Address, Picture, Record
 
 MODEL = "Qwen/Qwen3-8B"
+#: The name of the lane `server` serves, as `harness-proxy --model` names it.
+LANE = "agent"
+#: What `server` gives the server rather than its lane.
+SERVER_FIELDS = frozenset(one.name for one in fields(Server)) - {"lanes"}
 
 
 @dataclass
@@ -97,25 +101,36 @@ def text_of(content: Any) -> str:
 
 
 def server(
-    sampler: Any = None, *, by_path: Callable[[str | None], Any] | None = None, **overrides: Any
+    sampler: Any = None,
+    *,
+    by_path: Callable[[str | None], Any] | None = None,
+    others: Sequence[Lane] = (),
+    **overrides: Any,
 ) -> Server:
-    """Build a proxy `Server` on loopback with fake sampling clients. `sampler` serves every
-    weights path unless `by_path(path)` picks a client per path, which makes swaps
-    observable. Loopback keeps outside hosts away and avoids the macOS firewall prompt."""
+    """Build a proxy `Server` on loopback with one lane, `LANE`, on fake sampling clients, and
+    `others` after it. `sampler` serves every weights path unless `by_path(path)` picks a client
+    per path, which makes swaps observable. Each override goes to the server or to the lane,
+    whichever takes it. Loopback keeps outside hosts away and avoids the macOS firewall prompt."""
     fixed = sampler if sampler is not None else FakeSampler("hi")
 
     async def factory(path: str | None) -> Any:
         return by_path(path) if by_path is not None else fixed
 
-    fields: dict[str, Any] = {
-        "base_model": MODEL,
+    lane: dict[str, Any] = {
+        "name": LANE,
+        "model": MODEL,
         "renderer": FakeRenderer(),
-        "host": "127.0.0.1",
-        "bind": "127.0.0.1",
-        "control_token": "ctl",
         "client_factory": factory,
     }
-    return Server(**{**fields, **overrides})
+    served: dict[str, Any] = {"host": "127.0.0.1", "bind": "127.0.0.1", "control_token": "ctl"}
+    for key, value in overrides.items():
+        (served if key in SERVER_FIELDS else lane)[key] = value
+    return Server(lanes=[Lane(**lane), *others], **served)
+
+
+def only(started: Server) -> Lane:
+    """Return the server's one lane, which an address that names none reaches."""
+    return started.lane("")
 
 
 def by_path(path: str | None) -> FakeSampler:
@@ -133,8 +148,8 @@ def root(started: Server) -> str:
 
 
 def address(started: Server, trial: str) -> str:
-    """Return the base URL for `trial` on a started server, matching `Proxy.address_for`."""
-    return f"{root(started)}/r/trial/{trial}/v1"
+    """Return the base URL for `trial` on a started server, as `Proxy.address_for` makes it."""
+    return root(started) + Address(trial).path
 
 
 async def ask(
@@ -185,7 +200,7 @@ async def fetch(
 
 
 async def control(
-    started: Server, model_path: Any, *, token: str | None = None, raw: Any = None
+    started: Server, weights: Any, *, token: str | None = None, raw: Any = None
 ) -> httpx.Response:
     """Request a weights swap on the control route, authenticated with the control token
     unless `token` is given."""
@@ -194,7 +209,7 @@ async def control(
         return await client.post(
             f"{root(started)}{CONTROL_PATH}",
             headers={"Authorization": f"Bearer {bearer}"},
-            **({"content": raw} if raw is not None else {"json": {"model_path": model_path}}),
+            **({"content": raw} if raw is not None else {"json": {"weights": weights}}),
         )
 
 
@@ -281,8 +296,6 @@ def made(
     bridged: bool = False,
     request_id: str | None = None,
     images: tuple[Picture, ...] = (),
-    sample: int = 0,
-    samples: int = 1,
 ) -> Record:
     """Build a `Record` as the proxy would store it, rendering text one character per token."""
     prompt_ids = ids(prompt) if isinstance(prompt, str) else tuple(prompt)
@@ -307,6 +320,4 @@ def made(
         reply_digest=None,
         error=error,
         images=images,
-        sample=sample,
-        samples=samples,
     )

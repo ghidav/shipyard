@@ -7,12 +7,12 @@ from statistics import fmean, pstdev
 from typing import TYPE_CHECKING, Any
 
 from shipyard.groups import Group, merged
-from shipyard.run import record
+from shipyard.records import cached
+from shipyard.run import files
 from shipyard.run.costs import (
     UNKNOWN,
     Costs,
     billed_by,
-    cached,
     counted,
     filed,
     reported,
@@ -66,7 +66,7 @@ class Wandb:
         except ImportError:
             raise ImportError("[logging.wandb] needs wandb: install shipyard[wandb]") from None
         table = config.logging.wandb
-        origin = record.read_json(directory / record.RUN).get("origin") or {}
+        origin = files.read_json(directory / files.RUN).get("origin") or {}
         self.run = wandb.init(
             project=table.project,
             entity=table.entity,
@@ -128,7 +128,7 @@ class Logs:
     def job(self, job: Job, endpoint: Any) -> None:
         """Write a judged job's row and its model calls' rows, and add its tokens to the costs."""
         trials = job.trials
-        served = any(one.records is not None for one in trials)
+        served = any(one.records.recorded for one in trials)
         provider, model = endpoint.provider or UNKNOWN, endpoint.model or UNKNOWN
         if served:
             tokens, noted = sampled(trials, provider, model)
@@ -143,6 +143,7 @@ class Logs:
             "job": job.name,
             "dir": str((self.jobs_dir / job.name).resolve()),
             "purpose": job.purpose,
+            "role": job.role,
             **({"harness": job.harness.agent} if job.harness is not None else {}),
             **({"renderer": job.renderer} if job.renderer is not None else {}),
             "trials": len(job.trials),
@@ -153,19 +154,19 @@ class Logs:
             "masked": sum(masked.values()),
             **({"masked_by": dict(masked)} if masked else {}),
             **({"exceptions": dict(exceptions)} if exceptions else {}),
-            "backend": provider.split("@", 1)[0] if served else "provider",
+            "backend": endpoint.kind or UNKNOWN,
             **{key: value for key, value in noted.items() if value},
         }
-        record.append(self.directory / record.JOBS, row)
-        for trial in trials:
-            for item in trial.records or ():
-                record.append(self.directory / record.REQUESTS, request(job.name, trial, item))
-        about = {"step": job.step, "role": AGENT, "job": job.name}
+        files.append(self.directory / files.JOBS, row)
+        for trial in (one for one in trials if one.records.recorded):
+            for item in trial.records:
+                files.append(self.directory / files.REQUESTS, request(job.name, trial, item))
+        about = {"step": job.step, "role": job.role, "job": job.name}
         for billed, models in tokens.items():
             for name, counts in models.items():
                 self._spent(about, billed, name, counts)
         ran = {"sandbox": self.sandbox, "trials": timed, "seconds": seconds}
-        record.append(self.directory / record.USAGE, {**_known(about), **ran})
+        files.append(self.directory / files.USAGE, {**_known(about), **ran})
         self.costs.add_sandbox(self.sandbox, timed, seconds)
         self._write_costs()
 
@@ -183,7 +184,7 @@ class Logs:
             return False
         model = filed(provider, model)
         row = {**_known(about), "provider": provider, "model": model, **found}
-        record.append(self.directory / record.USAGE, row)
+        files.append(self.directory / files.USAGE, row)
         self.costs.add(provider, model, **found)
         return True
 
@@ -198,18 +199,14 @@ class Logs:
         """Write a step's row: its groups, update, evaluation as `eval_` fields, and `metrics`."""
         groups = merged(groups)
         measured = [one for group in groups for one in group.measured]
-        trials = sum(len(group.trials) for group in groups)
         spreads = [pstdev(group.rewards) for group in groups if len(group.rewards) > 1]
         row: dict[str, Any] = {
             "step": index,
             "trained": update is not None,
             "jobs": list(dict.fromkeys(one.job for group in groups for one in group.trials)),
             "groups": len(groups),
-            "trials": trials,
-            "graded": len(measured),
-            "masked": trials - len(measured),
+            **tally(groups),
             "uniform": sum(1 for group in groups if group.measured and not group.is_scored),
-            "reward_mean": fmean(one.reward or 0.0 for one in measured) if measured else None,
             "reward_spread": fmean(spreads) if spreads else None,
             "sampled_mean": fmean(one.sampled_tokens for one in measured) if measured else None,
             **(vars(update) if update is not None else {}),
@@ -226,13 +223,9 @@ class Logs:
             }
         own = {(f"recipe_{key}" if key in kept else key): value for key, value in metrics.items()}
         row = {**kept, **own}
-        record.append(self.directory / record.METRICS, row)
+        files.append(self.directory / files.METRICS, row)
         if self.wandb is not None:
             self.wandb.log(row)
-
-    def checkpoint(self, row: Mapping[str, Any]) -> None:
-        """Write a checkpoint's row: where its weights are saved and the trainer's counters."""
-        record.append(self.directory / record.CHECKPOINTS, dict(row))
 
     def close(self, error: BaseException | None) -> None:
         """Finish the wandb run, if any. `error` is what stopped the trainer, or None."""
@@ -240,13 +233,26 @@ class Logs:
             self.wandb.close(error)
 
     def _write_costs(self) -> None:
-        record.write_json(self.directory / record.COSTS, self.costs.to_dict())
+        files.write_json(self.directory / files.COSTS, self.costs.to_dict())
         if self.wandb is not None:
             self.wandb.costs(self.costs)
 
 
 def _known(about: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in about.items() if value is not None}
+
+
+def tally(groups: Sequence[Group]) -> dict[str, Any]:
+    """Return what the groups' trials came to: how many ran, were graded and were masked, and
+    the graded ones' mean reward, None when none was graded."""
+    measured = [one for group in groups for one in group.measured]
+    trials = sum(len(group.trials) for group in groups)
+    return {
+        "trials": trials,
+        "graded": len(measured),
+        "masked": trials - len(measured),
+        "reward_mean": fmean(one.reward or 0.0 for one in measured) if measured else None,
+    }
 
 
 def breakdown(groups: Sequence[Group]) -> dict[str, float]:
@@ -273,8 +279,6 @@ def request(job: str, trial: Trial, item: Record) -> dict[str, Any]:
         "job": job,
         "trial": trial.name,
         "call": item.seq,
-        "sample": item.sample,
-        "samples": item.samples,
         "prompt_tokens": len(item.prompt_token_ids),
         "cached_tokens": cached(item),
         "completion_tokens": len(item.completion_token_ids),

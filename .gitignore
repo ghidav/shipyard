@@ -15,3 +15,5 @@ build/
 /legacy/
 MAP.md
 experiments/
+.claude
+.agents

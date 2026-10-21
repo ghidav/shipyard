@@ -11,7 +11,7 @@ import pytest
 from proxies import MODEL
 from shipyard.jobs.engine import MODAL_IMAGE_BUILDER
 from tests.fakes import FakeProxy, Harbor
-from tests.trainers import FakeService, capable
+from tests.service import FakeService, capable
 
 SHELL_VARS = (
     "TINKER_API_KEY",
@@ -39,16 +39,22 @@ def harbor(monkeypatch: pytest.MonkeyPatch) -> Harbor:
     return standing
 
 
+#: A teacher the fake Tinker service serves beside the agent's model, for sampling alone.
+TEACHER = "Qwen/Qwen3-32B"
+
+
 @pytest.fixture
 def fakes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[FakeProxy, FakeService]:
-    """Install a fake proxy and a fake Tinker service in the proxy wrapper and the training
-    client, and change into `tmp_path`."""
+    """Install a fake proxy and a fake Tinker service, which every Tinker session the run opens
+    gets, and change into `tmp_path`. Every model reads the agent's token ids, as no
+    tokenizer is downloaded here."""
     monkeypatch.chdir(tmp_path)
     proxy = FakeProxy()
     monkeypatch.setattr("shipyard.models.endpoints.Proxy", proxy)
-    service = FakeService(capabilities=capable((MODEL, True)))
+    service = FakeService(capabilities=capable((MODEL, True), (TEACHER, False)))
     service.client.trained = -0.3
     monkeypatch.setattr(
         "shipyard.models.clients.tinker.service_client", lambda metadata=None: service
     )
+    monkeypatch.setattr("shipyard.models.context.shares_tokenizer", lambda model, other: True)
     return proxy, service

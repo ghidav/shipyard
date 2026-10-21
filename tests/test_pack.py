@@ -1,5 +1,5 @@
-"""Tests for packing a trial's records into sequences (`shipyard.groups`) and sequences
-into Tinker datums (`shipyard.models.clients.tinker`), checked against the cookbook."""
+"""Tests for the sequences `grouped` gives a trial (`shipyard.groups`) and the Tinker datums
+made of them (`shipyard.models.clients.tinker`), checked against the cookbook."""
 
 from __future__ import annotations
 
@@ -18,10 +18,11 @@ from tinker_cookbook.supervised.common import (
 )
 
 from harness_proxy.wire import IMAGE_TOKEN, Picture, Record, model_input
-from shipyard.groups import Sequence, Trial, chains, grouped
+from shipyard.groups import Sequence, Trial, grouped
 from shipyard.jobs.admit import ENV_ERROR, Verdict
 from shipyard.jobs.harnesses import harness
 from shipyard.models.clients.tinker import datum, shifted
+from shipyard.records import Records
 from tests.fakes import made
 
 P1, C1, T1, C2, T2, C3 = (1, 2, 3), (10, 11), (20,), (12,), (21, 22), (13, 14)
@@ -39,7 +40,7 @@ def _record(prompt: tuple[int, ...], completion: tuple[int, ...], seq: int, **na
 def _trial(*records: Record) -> Trial:
     """A graded trial holding `records`."""
     graded = Verdict(1.0, None, None)
-    return Trial("j", Path("t"), harness("pi"), Path("t"), list(records), graded)
+    return Trial("j", Path("t"), harness("pi"), Path("t"), Records(records), graded)
 
 
 def _packed(records: list[Record]) -> list[Sequence]:
@@ -61,81 +62,19 @@ def _written(sequence: Sequence) -> list[int]:
     return [sequence.tokens[at] for at in sequence.targets]
 
 
-# ---------------------------------------------------------------- the prefix rule
+# ------------------------------------------------------------- what a trial keeps
 
 
-def test_a_tool_loop_packs_into_one_sequence_with_three_target_spans() -> None:
-    [found] = _packed(_tool_loop())
-    assert found.tokens == (*P1, *C1, *T1, *C2, *T2, *C3)
-    assert found.spans == ((3, 5), (6, 7), (9, 11))
-    assert found.targets == (3, 4, 6, 9, 10)
-    assert _written(found) == [*C1, *C2, *C3]
-    assert found.sampled_logprobs == (-1.0, -1.1, -1.2, -1.3, -1.4)
+def test_grouped_gives_a_measured_trial_its_chains_and_any_other_trial_none() -> None:
+    measured = _trial(*_tool_loop())
     masked = replace(_trial(*_tool_loop()), verdict=Verdict(None, ENV_ERROR, None))
-    grouped([masked])
+    provided = Trial("j", Path("t"), harness("pi"), Path("t"), verdict=Verdict(1.0, None, None))
+    grouped([measured, masked, provided])
+    [found] = measured.sequences
+    assert found.trial is measured and found.targets == (3, 4, 6, 9, 10)
+    assert _written(found) == [*C1, *C2, *C3]
     assert masked.sequences == [], "a masked trial keeps no sequences"
-
-
-def test_a_prompt_that_does_not_extend_opens_a_second_sequence() -> None:
-    """The fourth call re-sends the history with thinking stripped, so its prompt shares a
-    prefix with the chain and then diverges. It starts a new sequence, and each completion
-    is still a target exactly once."""
-    stripped = _record((*P1, 10, 99, *T1, *C2, *T2, *C3, 23), (15,), 4)
-    found = _packed([*_tool_loop(), stripped])
-    assert len(found) == 2
-    assert found[1].tokens == (*stripped.prompt_token_ids, 15)
-    assert found[1].spans == ((len(stripped.prompt_token_ids), len(stripped.prompt_token_ids) + 1),)
-    assert sorted(token for one in found for token in _written(one)) == sorted([*C1, *C2, *C3, 15])
-    assert sum(len(one.targets) for one in found) == 6
-
-
-def test_a_side_question_is_filed_under_its_own_chain_and_the_longest_match_wins() -> None:
-    main1 = _record((1, 2), (3,), 1)
-    main2 = _record((1, 2, 3, 4), (5,), 2)
-    side = _record((7, 8), (9,), 3)
-    main3 = _record((1, 2, 3, 4, 5, 6), (10,), 4)
-    side2 = _record((7, 8, 9, 11), (12,), 5)
-    assert chains([main1, main2, side, main3, side2]) == [[main1, main2, main3], [side, side2]]
-    first = _record((1, 2), (3,), 1)
-    resampled = _record((1, 2), (4,), 2)
-    onward = _record((1, 2, 4, 5), (6,), 3)
-    summary = _record((20, 21), (22,), 4)
-    assert chains([first, resampled, onward, summary]) == [[first], [resampled, onward], [summary]]
-    assert chains([]) == [] and _packed([]) == []
-    shorter = _record((1, 2, 3), (4, 5), 1), _record((1, 2, 3, 4), (6,), 2)
-    assert chains(list(shorter)) == [[shorter[0]], [shorter[1]]]
-
-
-def test_error_records_and_images_without_their_picture_never_pack() -> None:
-    first, second, third = _tool_loop()
-    refused = _record((*P1, *C1, *T1), (), 9, error="context")
-    unkept = _record((IMAGE_TOKEN, IMAGE_TOKEN, 5), (6,), 10)
-    assert chains([refused]) == chains([unkept]) == [] and chains([first]) == [[first]]
-    found = _packed([first, refused, second, unkept, third])
-    assert len(found) == 1 and found[0].spans == ((3, 5), (6, 7), (9, 11))
-    assert _packed([refused, unkept]) == []
-
-
-def test_a_kept_image_packs_and_the_sequence_carries_the_picture() -> None:
-    seen = _record((1, IMAGE_TOKEN, IMAGE_TOKEN, IMAGE_TOKEN, 5), (6, 7), 1, images=(SHOT,))
-    assert chains([seen]) == [[seen]]
-    again = _record((*seen.prompt_token_ids, 6, 7, 8), (9,), 2, images=(SHOT,))
-    [found] = _packed([seen, again])
-    assert found.tokens == (1, -1, -1, -1, 5, 6, 7, 8, 9) and found.images == (SHOT,)
-    assert found.spans == ((5, 7), (8, 9))
-    shorter = replace(seen, images=(Picture(1, 2, "png", PNG),))
-    assert chains([shorter]) == [], "a picture of another length is not this image"
-
-
-def test_another_picture_in_the_prefix_starts_its_own_chain() -> None:
-    """Two images of one size are the same run of `IMAGE_TOKEN`, so the ids alone would chain
-    them, and the packed sequence would train the first call on the second call's image."""
-    seen = _record((1, IMAGE_TOKEN, IMAGE_TOKEN, IMAGE_TOKEN, 5), (6, 7), 1, images=(SHOT,))
-    other = Picture(1, 3, "png", "b3RoZXI=")
-    swapped = _record((*seen.prompt_token_ids, 6, 7, 8), (9,), 2, images=(other,))
-    assert chains([seen, swapped]) == [[seen], [swapped]]
-    kept = _record((*seen.prompt_token_ids, 6, 7, 8), (9,), 2, images=(SHOT,))
-    assert chains([seen, kept]) == [[seen, kept]]
+    assert provided.sequences == [], "a provider's trial: the proxy recorded nothing to train on"
 
 
 def _chunks(found: tinker.ModelInput) -> list[tuple[str, Any]]:
@@ -182,15 +121,6 @@ def test_model_input_refuses_an_image_without_its_picture_or_out_of_place() -> N
     with pytest.raises(ValueError, match="last chunk must be a text chunk"):
         shifted((1, IMAGE_TOKEN), (Picture(1, 1, "png", PNG),))
     assert model_input((1, 2, 3)).to_ints() == [1, 2, 3]
-
-
-def test_a_record_without_logprobs_leaves_the_sequence_with_no_mu() -> None:
-    first, second, third = _tool_loop()
-    bare = replace(second, inference_logprobs=())
-    [found] = _packed([first, bare, third])
-    assert found.sampled_logprobs is None and found.spans == ((3, 5), (6, 7), (9, 11))
-    silent = replace(first, completion_token_ids=(), inference_logprobs=())
-    assert _packed([silent]) == []
 
 
 # ------------------------------------------------------------ the datum convention

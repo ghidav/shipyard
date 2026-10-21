@@ -12,7 +12,8 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import fields
 from typing import Any, TextIO
 
-from harness_proxy.server import Server
+from harness_proxy import wire
+from harness_proxy.server import Lane, Server
 from harness_proxy.tunnel import Tunnel
 from harness_proxy.wire import CONTROL_TOKEN_ENV, PROXY_TOKEN_ENV, new_token
 
@@ -22,11 +23,14 @@ logger = logging.getLogger(__name__)
 WILDCARD_BINDS = frozenset({"0.0.0.0", "::", "*", ""})
 #: Seconds between checks that the run that started this process, and its tunnel, are there.
 WATCH_SECONDS = 1.0
-#: Server fields set by flags, which `--settings` may not name.
-SET_HERE = frozenset(
-    {"base_model", "model_path", "renderer", "host", "bind", "bind_port", "token"}
-    | {"control_token", "client_factory"}
-)
+#: The lane the flags start a proxy with, unless `--lane` names another: the run's agent's.
+LANE = "agent"
+#: The server's own settings a run's `--settings` may give, beside its `lanes`.
+SERVER_SETTINGS = ("keepalive_grace", "keepalive_every")
+#: What a lane's entry in `--settings` may name: a lane's every field but a test's client.
+LANE_KEYS = frozenset(f.name for f in fields(Lane) if not f.name.startswith("_")) - {
+    "client_factory"
+}
 
 
 def advertised(bind: str, advertise: str | None) -> str:
@@ -42,40 +46,81 @@ def advertised(bind: str, advertise: str | None) -> str:
     return bind
 
 
-def server_for(
-    model: str,
+def document(
+    settings: Mapping[str, Any] | None,
     *,
+    lane: str,
+    model: str | None,
     weights: str | None,
+    renderer: str | Sequence[str] | None,
+) -> dict[str, Any]:
+    """Return the run's `settings`, or, for a proxy started by hand with `--model`, the
+    document of its one lane, `lane`, which serves `weights` with `renderer`."""
+    given = dict(settings or {})
+    if not model:
+        if weights or renderer:
+            raise ValueError("--weights and --renderer describe the lane of a --model: name it")
+        return given
+    if "lanes" in given:
+        raise ValueError(
+            "--model starts the proxy with one lane, and --settings lists its lanes: give one"
+        )
+    one: dict[str, Any] = {"name": lane, "model": model}
+    if weights:
+        one["weights"] = weights
+    if renderer:
+        one["renderer"] = renderer if isinstance(renderer, str) else list(renderer)
+    return {**given, "lanes": [one]}
+
+
+def server_for(
+    given: Mapping[str, Any],
+    *,
     bind: str,
     port: int,
     advertise: str | None,
-    renderer: str | Sequence[str] | None,
-    settings: Mapping[str, Any] | None,
     token: str | None,
     control_token: str | None,
 ) -> Server:
-    """Build the server the command-line flags and the run's `settings` describe."""
-    named: dict[str, Any] = {
-        "base_model": model,
-        "model_path": weights or None,
-        "host": advertised(bind, advertise),
-        "bind": bind,
-        "bind_port": int(port),
-        "token": token or "",
-        "control_token": control_token or None,
-    }
-    if renderer:
-        named["renderer"] = renderer if isinstance(renderer, str) else list(renderer)
-    if settings:
-        taken = {f.name for f in fields(Server) if not f.name.startswith("_")} - SET_HERE
-        foreign = sorted(set(settings) - taken)
+    """Build the server the command-line flags and the run's document, `given`, describe: its
+    `lanes`, and any of the server's own settings."""
+    foreign = sorted(set(given) - {"lanes", *SERVER_SETTINGS})
+    if foreign:
+        laned = " A lane's settings go in its entry of lanes." if set(foreign) & LANE_KEYS else ""
+        raise ValueError(
+            f"--settings names {', '.join(foreign)}, which this server does not take from a "
+            f"run. It takes lanes, {', '.join(SERVER_SETTINGS)}.{laned}"
+        )
+    return Server(
+        lanes=lanes_of(given.get("lanes")),
+        host=advertised(bind, advertise),
+        bind=bind,
+        bind_port=int(port),
+        token=token or "",
+        control_token=control_token or None,
+        **{key: given[key] for key in SERVER_SETTINGS if key in given},
+    )
+
+
+def lanes_of(given: Any) -> list[Lane]:
+    """Build the lanes `--settings` lists, each complete: a `name`, a `model`, and any other
+    setting of its own, such as its `weights`, `renderer`, `temperature` or `backend`."""
+    if not isinstance(given, list) or not given:
+        raise ValueError(
+            "a proxy serves a --model, or the lanes --settings lists, each with a name and a model"
+        )
+    found: list[Lane] = []
+    for one in given:
+        if not isinstance(one, Mapping) or not one.get("name") or not one.get("model"):
+            raise ValueError("--settings lanes: each lane has a name and a model")
+        foreign = sorted(set(one) - LANE_KEYS)
         if foreign:
             raise ValueError(
-                f"--settings names {', '.join(foreign)}, which this server does not take "
-                f"from a run. It takes {', '.join(sorted(taken))}."
+                f"--settings lanes: {one['name']} names {', '.join(foreign)}, which a lane "
+                f"does not take. It takes {', '.join(sorted(LANE_KEYS))}."
             )
-        named.update(settings)
-    return Server(**named)
+        found.append(Lane(**one))
+    return found
 
 
 def configure_logging(stream: TextIO = sys.stderr) -> None:
@@ -90,10 +135,9 @@ def configure_logging(stream: TextIO = sys.stderr) -> None:
 
 
 def banner(server: Server) -> str:
-    """Return the first line serve prints, which the run parses."""
-    served = server.model_path or server.base_model
-    control = "on" if server.control_token else "off"
-    return f"serving {served} at http://{server.host}:{server.port} (control: {control})"
+    """Return the first line serve prints, which the run parses: the lanes, and the address."""
+    named = [lane.name for lane in server.lanes]
+    return wire.banner(named, server.host, server.port, control=bool(server.control_token))
 
 
 def say(line: str) -> None:
@@ -137,7 +181,7 @@ async def serve(
             out(f"{name} {value}")
         if tunnel:
             opened = await Tunnel.start(server.port, log=sys.stderr)
-            out(f"tunnel at {opened.origin}")
+            out(wire.tunnel_line(opened.origin))
         watch = asyncio.create_task(watching(stop, parent=parent, tunnel=opened))
         await stop.wait()
         ended = watch.result() if watch.done() else None
@@ -188,8 +232,14 @@ def parser(prog: str = "harness-proxy") -> argparse.ArgumentParser:
         prog=prog,
         description="Serve a Tinker model to a harness in a sandbox, recording what it sampled.",
     )
-    made.add_argument("--model", required=True, help="the base model the weights are of")
+    made.add_argument(
+        "--model",
+        help="the base model of the one lane this proxy serves; or list lanes in --settings",
+    )
     made.add_argument("--weights", help="a tinker:// path to serve (default: the base model)")
+    made.add_argument(
+        "--lane", default=LANE, help=f"the name an address gives that lane (default: {LANE})"
+    )
     made.add_argument("--bind", default="0.0.0.0", help="the interface to listen on")
     made.add_argument("--port", type=int, default=0, help="the port to listen on; 0 for any")
     made.add_argument("--advertise", help="the name a sandbox reaches this by (default: the bind)")
@@ -215,8 +265,9 @@ def parser(prog: str = "harness-proxy") -> argparse.ArgumentParser:
         "--settings",
         type=json.loads,
         metavar="JSON",
-        help="the run's other sampling settings as a JSON object: temperature, top_p, "
-        "top_k, max_tokens, max_context, fill_context",
+        help="the run's document, as a JSON object: its lanes, each a name, a model and its "
+        "own settings (weights, renderer, temperature, top_p, top_k, max_tokens, max_context, "
+        "fill_context, metadata, backend, session); and keepalive_grace, keepalive_every",
     )
     return made
 
@@ -227,14 +278,18 @@ def main(argv: list[str] | None = None, prog: str = "harness-proxy") -> int:
     args = parser(prog).parse_args(argv)
     token, control, generated = tokens_from_env()
     try:
-        server = server_for(
-            args.model,
+        given = document(
+            args.settings,
+            lane=args.lane,
+            model=args.model,
             weights=args.weights,
+            renderer=args.renderer,
+        )
+        server = server_for(
+            given,
             bind=args.bind,
             port=args.port,
             advertise=args.advertise,
-            renderer=args.renderer,
-            settings=args.settings,
             token=token,
             control_token=control,
         )

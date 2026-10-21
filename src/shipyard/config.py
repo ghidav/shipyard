@@ -15,7 +15,7 @@ from pydantic import (
     model_validator,
 )
 
-from shipyard.run import record
+from shipyard.run import files
 
 #: Minimum checkpoint TTL in hours, the SDK's floor: `TrainingClient.save_state` takes a TTL
 #: "between 1 hour (3600) and 10 years" (tinker/lib/public_interfaces/training_client.py).
@@ -43,6 +43,9 @@ class Agent(_Table):
     #: Who serves the model: `tinker` or `together`, which the run trains, or a provider such
     #: as `anthropic`.
     provider: str = "tinker"
+    #: The checkpoint the agent starts from: on Tinker, a training state (`.../weights/...`)
+    #: for a run that trains it, weights saved for sampling (`.../sampler_weights/...`) for one
+    #: that does not.
     from_checkpoint: str | None = None
     #: The harness, or the harnesses, that drive it: Harbor agents, each with an optional
     #: version, such as `pi@0.85.1`. Read as a list.
@@ -146,8 +149,9 @@ class Recipe(_Table):
     """The `[recipe]` table: the keys every run reads; a trainer declares its own in a subclass."""
 
     steps: int = Field(ge=1)
-    #: The rate `update` trains at, warmed up over `warmup` updates. A recipe that never
-    #: updates, such as a search over the modules, leaves it out; `update` refuses without it.
+    #: The rate `update` trains the agent at, warmed up over `warmup` updates. A run that
+    #: trains its agent needs it; a recipe that never updates, such as a search over the
+    #: modules, sets `self.policy.training = False` and leaves it out.
     learning_rate: float | None = Field(default=None, gt=0)
     #: Parts each update is split into, by prompt: one optimizer step each.
     substeps: int = Field(default=1, ge=1)
@@ -230,7 +234,7 @@ def _names(value: str | list[str] | None) -> list[str]:
 def config_file(path: Path) -> Path:
     """Return the `run.toml` for a blueprint path: the file itself, or the one inside it."""
     path = Path(path)
-    return path if path.is_file() else path / record.CONFIG
+    return path if path.is_file() else path / files.CONFIG
 
 
 def load(

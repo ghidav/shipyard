@@ -13,8 +13,14 @@ from harness_proxy.wire import Picture
 from proxies import MODEL
 from shipyard.groups import Sequence, Trial
 from shipyard.jobs.harnesses import harness
-from shipyard.models.clients.tinker import DEFAULT_LORA_RANK, SERVE_TTL, TinkerClient, datum
-from tests.trainers import FakeService, FakeTrainingClient, capable
+from shipyard.models.clients.tinker import (
+    DEFAULT_LORA_RANK,
+    SERVE_TTL,
+    TinkerClient,
+    datum,
+    sampling,
+)
+from tests.service import FakeService, FakeTrainingClient, capable
 
 #: The trial a test's sequences belong to; the client reads only their tokens and images.
 TRIAL = Trial("j", Path("t"), harness("pi"), Path("t"))
@@ -104,32 +110,19 @@ async def test_open_refuses_a_model_the_backend_lacks_or_cannot_train_before_spe
     assert service.closed == [("errored", "RuntimeError: no capacity for a new model")]
 
 
-async def test_the_anchor_is_a_sampling_client_on_the_weights_as_opened() -> None:
+async def test_a_model_sampled_alone_opens_a_session_of_its_own_billed_to_its_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     service = FakeService()
-    opened = TinkerClient(MODEL, service=service)
-    await opened.open()
-    assert await opened.anchor() is service.anchor
-    assert service.calls[-1] == ("sampling", MODEL, None) and service.client.calls == []
-    service = FakeService()
-    opened = TinkerClient(MODEL, from_checkpoint="tinker://s", service=service)
-    await opened.open()
-    await opened.anchor()
-    assert service.client.calls == [("save_weights_for_sampler", "anchor", SERVE_TTL)]
-    # A run passes its checkpoints' TTL, so a long run's anchor does not expire under it.
-    service = FakeService()
-    week = TinkerClient(MODEL, from_checkpoint="tinker://s", anchor_ttl=7 * 86400, service=service)
-    await week.open()
-    await week.anchor()
-    assert service.client.calls == [("save_weights_for_sampler", "anchor", 7 * 86400)]
-    assert service.calls[-1] == ("sampling", MODEL, "tinker://fake/sampler_weights/anchor")
-
-
-async def test_a_sampler_opens_on_a_base_model_or_on_a_checkpoints_sampler_weights() -> None:
-    service = FakeService()
-    opened = TinkerClient(MODEL, service=service)
-    await opened.open()
-    await opened.sampler("Qwen/Qwen3-32B")
-    await opened.sampler("tinker://r/sampler_weights/final")
+    monkeypatch.setattr(
+        "shipyard.models.clients.tinker.service_client", lambda metadata=None: service
+    )
+    monkeypatch.setenv("TINKER_BASE_URL", "https://api.fireworks.ai/inference/v1")
+    opened, sampler, model, billed = await sampling("Qwen/Qwen3-32B", run="r")
+    assert (opened, sampler, model) == (service, service.anchor, "Qwen/Qwen3-32B")
+    assert billed == "tinker@api.fireworks.ai"
+    _, _, model, _ = await sampling("tinker://r/sampler_weights/final")
+    assert model == service.anchor.base, "a path is priced as its base model"
     assert service.calls[-2:] == [
         ("sampling", "Qwen/Qwen3-32B", None),
         ("sampling", None, "tinker://r/sampler_weights/final"),
@@ -139,40 +132,43 @@ async def test_a_sampler_opens_on_a_base_model_or_on_a_checkpoints_sampler_weigh
 # -------------------------------------------------------------------- the step
 
 
-async def test_a_step_call_is_submitted_on_the_first_await_and_read_on_the_second() -> None:
+async def test_train_submits_each_part_before_reading_the_one_before() -> None:
     client, fake = await _client(trained=-0.3)
     adam = tinker.AdamParams(beta1=0.9, beta2=0.95, eps=1e-8, weight_decay=0.1, grad_clip_norm=1.0)
-    first = await client.forward_backward([_datum(), _datum(6)], "ppo", {"clip_low_threshold": 0.8})
-    stepped = await client.optim_step(adam, 2e-5)
-    second = await client.forward_backward([_datum()], "cispo", None)
-    assert [call[0] for call in fake.calls] == [
+    parts = [[_datum(), _datum(6)], [_datum()]]
+    trained = await client.fit(parts, adam, 2e-5, "ppo", {"clip_low_threshold": 0.8})
+    assert trained == [pytest.approx([-0.3] * n) for n in (3, 5, 3)]
+    assert [call[0] if call[0] != "consumed" else call[1] for call in fake.calls] == [
         "forward_backward",
         "optim_step",
         "forward_backward",
-    ]
-    assert await first == [pytest.approx([-0.3] * 3), pytest.approx([-0.3] * 5)]
-    assert await stepped is None and await second == [pytest.approx([-0.3] * 3)]
-    assert [call[1] for call in fake.calls if call[0] == "consumed"] == ["fb", "optim", "fb"]
-    ppo, cispo = [call for call in fake.calls if call[0] == "forward_backward"]
-    assert ppo[1:] == ([3, 5], "ppo", {"clip_low_threshold": 0.8}) and cispo[1:] == (
-        [3],
-        "cispo",
-        {},
-    )
-    (params,) = [call[1] for call in fake.calls if call[0] == "optim_step"]
-    assert isinstance(params, tinker.AdamParams)
-    assert (params.learning_rate, params.beta1, params.beta2, params.eps) == (2e-5, 0.9, 0.95, 1e-8)
-    assert (params.weight_decay, params.grad_clip_norm) == (0.1, 1.0)
+        "optim_step",
+        "fb",
+        "optim",
+        "fb",
+        "optim",
+    ], "the second part is in flight while the first is read"
+    first, second = [call for call in fake.calls if call[0] == "forward_backward"]
+    assert first[1:] == ([3, 5], "ppo", {"clip_low_threshold": 0.8})
+    assert second[1:] == ([3], "ppo", {"clip_low_threshold": 0.8})
+    for params in (call[1] for call in fake.calls if call[0] == "optim_step"):
+        assert isinstance(params, tinker.AdamParams)
+        assert (params.learning_rate, params.beta1, params.beta2) == (2e-5, 0.9, 0.95)
+        assert (params.eps, params.weight_decay, params.grad_clip_norm) == (1e-8, 0.1, 1.0)
     assert adam.learning_rate != 2e-5, "the recipe's settings are left as they were"
     for sent in fake.sent:
         assert set(sent.loss_fn_inputs) == {"target_tokens", "logprobs", "advantages"}, "no mask"
+    await client.fit([[_datum()]], adam, 2e-5, "cispo", None)
+    assert fake.calls[-4][1:] == ([3], "cispo", {}), "a loss without settings sends none"
 
 
 async def test_compute_logprobs_is_one_batched_forward_aligned_by_the_shift() -> None:
     client, fake = await _client(positional=True)
     chained = Sequence((1, 2, 3, 4, 5, 6, 7, 8), ((2, 3), (4, 6), (7, 8)), None, (), TRIAL)
     single = Sequence((1, 2, 9), ((2, 3),), None, (), TRIAL)
-    assert await client.compute_logprobs([chained, single]) == [[-3.0, -5.0, -6.0, -8.0], [-9.0]]
+    found, tokens = await client.compute_logprobs([chained, single])
+    assert found == [[-3.0, -5.0, -6.0, -8.0], [-9.0]]
+    assert tokens == {"train": 7 + 2}, "every token but each sequence's last is read"
     assert [call[0] for call in fake.calls] == ["forward"], "one batched pass"
     first, _ = fake.sent
     assert first.model_input.to_ints() == [1, 2, 3, 4, 5, 6, 7]
@@ -180,7 +176,7 @@ async def test_compute_logprobs_is_one_batched_forward_aligned_by_the_shift() ->
     assert first.loss_fn_inputs["weights"].tolist() == [1.0] * 7
     shot = (Picture(1, 2, "png", "cG5nIQ=="),)
     pictured = Sequence((1, -1, -1, 5, 6, 7), ((4, 6),), (-0.6, -0.7), shot, TRIAL)
-    assert await client.compute_logprobs([pictured]) == [[-6.0, -7.0]]
+    assert await client.compute_logprobs([pictured]) == ([[-6.0, -7.0]], {"train": 5})
     sent = fake.sent[-1]
     kinds = [(type(chunk).__name__, chunk.length) for chunk in sent.model_input.chunks]
     assert kinds == [("EncodedTextChunk", 1), ("ImageChunk", 2), ("EncodedTextChunk", 2)]

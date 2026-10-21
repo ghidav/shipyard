@@ -10,7 +10,7 @@ import tinker
 from tinker import TensorData
 
 from harness_proxy.backends.together import PREFIX, wire_input
-from shipyard.models.clients.tinker import DEFAULT_LORA_RANK, shifted
+from shipyard.models.clients.tinker import DEFAULT_LORA_RANK, sent, shifted
 
 if TYPE_CHECKING:
     from shipyard.groups import Sequence
@@ -19,13 +19,13 @@ logger = logging.getLogger(__name__)
 
 #: The provider of a model Together post-training serves, which the run trains.
 TOGETHER = "together"
-#: Tinker's loss names, as Together's loss type and the field its settings go in.
-LOSSES: dict[str, tuple[str, str | None]] = {
+#: Each of Tinker's `LOSSES` as Together's loss type, and the field its settings go in.
+LOSS_TYPES: dict[str, tuple[str, str | None]] = {
     "importance_sampling": ("LOSS_TYPE_IMPORTANCE_SAMPLING", None),
     "ppo": ("LOSS_TYPE_PPO", "ppo_params"),
     "cispo": ("LOSS_TYPE_CISPO", "cispo_params"),
     "dro": ("LOSS_TYPE_DRO", "dro_params"),
-    "cross_entropy": ("LOSS_TYPE_CROSS_ENTROPY", "cross_entropy_params"),
+    "cross_entropy": ("LOSS_TYPE_CROSS_ENTROPY", None),
 }
 #: Seconds the run waits for GPUs before giving up, as Together's own Tinker client does.
 PROVISION_SECONDS = 3600.0
@@ -35,7 +35,14 @@ Provision = Callable[[str], Awaitable[Any]]
 
 
 class TogetherClient:
-    """The agent's Together session, on a model resource provisioned on `open`."""
+    """The agent's Together session, on a model resource provisioned on `open`. It opens the
+    same whether the run trains the agent or not: the proxy samples it through the session."""
+
+    #: The backend it reaches, as a job's row names it.
+    kind = TOGETHER
+    #: Whether what it saves lives only the TTL it is given: Together keeps its checkpoints
+    #: until they are deleted.
+    expires = False
 
     def __init__(
         self,
@@ -45,10 +52,14 @@ class TogetherClient:
         from_checkpoint: str | None = None,
         lora_rank: int | None = None,
         restore_optimizer: bool = False,
+        trains: bool = True,
         provision: Provision | None = None,
     ) -> None:
         self.model = model
+        #: Who its tokens are billed to.
         self.provider = TOGETHER
+        #: Whether the run trains the model; its session opens either way.
+        self.trains = trains
         self.run = run
         self.from_checkpoint = from_checkpoint
         self.lora_rank = lora_rank
@@ -70,38 +81,41 @@ class TogetherClient:
         session = await self._session()
         return {"backend": TOGETHER, "session": str(session.session_id)}
 
-    async def anchor(self) -> Any:
-        raise NotImplementedError(FROZEN)
-
-    async def sampler(self, model: str) -> Any:
-        raise NotImplementedError(FROZEN)
-
-    async def forward_backward(
-        self, datums: Values[tinker.Datum], loss_fn: str, loss_config: Mapping[str, float] | None
-    ) -> Awaitable[list[list[float]]]:
-        """Run one training pass, and return what awaits its logprobs, once the pass is done."""
+    async def fit(
+        self,
+        parts: Values[Values[tinker.Datum]],
+        adam: tinker.AdamParams,
+        rate: float,
+        loss_fn: str,
+        loss_config: Mapping[str, float] | None,
+    ) -> list[list[float]]:
+        """Run a training pass and an optimizer step on each part in turn, at learning rate
+        `rate`, and return each datum's logprobs; Together runs one operation at a time."""
         session = await self._session()
-        result = await self._one(
-            session.trainer.forward_backward_async(
-                samples=[sample(one) for one in datums],
-                loss=loss(loss_fn, loss_config),
-                return_loss_fn_outputs=True,
+        chosen, params = loss(loss_fn, loss_config), adam_params(adam, rate)
+        trained: list[list[float]] = []
+        for part in parts:
+            result = await self._one(
+                session.trainer.forward_backward_async(
+                    samples=[sample(one, loss_fn) for one in part],
+                    loss=chosen,
+                    return_loss_fn_outputs=True,
+                )
             )
-        )
-        return _ready([_floats(row.tensors["logprobs"].data) for row in result.loss_fn_outputs])
+            trained += [_floats(row.tensors["logprobs"].data) for row in result.loss_fn_outputs]
+            await self._one(session.trainer.optim_step_async(adam_params=params))
+            self.moved = True
+        return trained
 
-    async def optim_step(self, adam: tinker.AdamParams, rate: float) -> Awaitable[None]:
-        """Run an optimizer step with `adam`'s settings at learning rate `rate`."""
-        session = await self._session()
-        await self._one(session.trainer.optim_step_async(adam_params=adam_params(adam, rate)))
-        self.moved = True
-        return _ready(None)
-
-    async def compute_logprobs(self, sequences: Values[Sequence]) -> list[list[float]]:
-        """Return each sequence's logprobs at its targets, from one forward pass."""
-        samples = []
+    async def compute_logprobs(
+        self, sequences: Values[Sequence]
+    ) -> tuple[list[list[float]], dict[str, int]]:
+        """Return each sequence's logprobs at its targets, from one forward pass, and the tokens
+        that pass read."""
+        samples, read_tokens = [], 0
         for one in sequences:
             read, target_tokens = shifted(one.tokens, one.images)
+            read_tokens += int(read.length)
             ones = TensorData(data=[1.0] * read.length, dtype="float32")
             inputs = {"target_tokens": tensor(target_tokens), "weights": tensor(ones)}
             samples.append({"model_input": wire_input(read), "loss_fn_inputs": inputs})
@@ -117,7 +131,7 @@ class TogetherClient:
         for one, row in zip(sequences, result.loss_fn_outputs, strict=True):
             scored = _floats(row.tensors["logprobs"].data)
             out.append([scored[at - 1] if at > 0 else 0.0 for at in one.targets])
-        return out
+        return out, {"train": read_tokens}
 
     async def publish(self, tag: str) -> str:
         """Point the generator at the weights the updates moved to, and return their name."""
@@ -184,13 +198,6 @@ class TogetherClient:
             return await work
 
 
-#: Why a frozen policy cannot open next to a Together agent.
-FROZEN = (
-    "a Together session samples only its own weights, so a frozen policy, such as INITIAL or a "
-    "teacher, needs an agent on Tinker"
-)
-
-
 async def provisioned(model: str) -> Any:
     """Provision a LoRA resource for `model` with one generator; ValueError if Together lacks it."""
     from together import AsyncTogether
@@ -208,12 +215,12 @@ async def provisioned(model: str) -> Any:
     )
 
 
-def sample(datum: tinker.Datum) -> dict[str, Any]:
-    """Return a Tinker datum as Together's training sample, its mask left out as on Tinker."""
-    inputs = datum.loss_fn_inputs
+def sample(datum: tinker.Datum, loss: str) -> dict[str, Any]:
+    """Return a Tinker datum as Together's training sample for `loss`, sent as on Tinker."""
+    read = sent(datum, loss)
     return {
-        "model_input": wire_input(datum.model_input),
-        "loss_fn_inputs": {key: tensor(value) for key, value in inputs.items() if key != "mask"},
+        "model_input": wire_input(read.model_input),
+        "loss_fn_inputs": {key: tensor(value) for key, value in read.loss_fn_inputs.items()},
     }
 
 
@@ -223,16 +230,9 @@ def tensor(value: TensorData) -> dict[str, Any]:
 
 
 def loss(name: str, config: Mapping[str, float] | None) -> dict[str, Any]:
-    """Return a Tinker loss and its settings as Together's loss config."""
-    if name not in LOSSES:
-        raise ValueError(f"no Together loss for {name!r}: it takes {', '.join(sorted(LOSSES))}")
-    kind, field = LOSSES[name]
-    found: dict[str, Any] = {"type": kind}
-    if config:
-        if field is None:
-            raise ValueError(f"the {name} loss takes no settings")
-        found[field] = dict(config)
-    return found
+    """Return a Tinker loss and its settings, as `check_loss` passed them, as Together's."""
+    kind, field = LOSS_TYPES[name]
+    return {"type": kind, **({field: dict(config)} if config and field else {})}
 
 
 def adam_params(adam: tinker.AdamParams, rate: float) -> dict[str, float]:
@@ -249,7 +249,3 @@ def adam_params(adam: tinker.AdamParams, rate: float) -> dict[str, float]:
 
 def _floats(values: Any) -> list[float]:
     return [float(one) for one in values]
-
-
-async def _ready[T](value: T) -> T:
-    return value

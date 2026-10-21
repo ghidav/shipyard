@@ -11,7 +11,8 @@ from shipyard.config import load
 from shipyard.groups import Trial
 from shipyard.jobs.engine import Job
 from shipyard.jobs.harnesses import harness
-from shipyard.run import record
+from shipyard.records import Records
+from shipyard.run import files
 from shipyard.run.costs import Costs
 from shipyard.run.logs import Logs
 from shipyard.trainer import Evaluation
@@ -44,15 +45,18 @@ def test_a_job_writes_its_row_and_a_row_per_model_call_the_proxy_served(
         Trial("j", Path(task), harness("pi"), tmp_path / "jobs" / "j" / f"{task}__1")
         for task in ("alpha", "beta")
     )
-    alpha.records = [
-        made("one", "ok", seq=1, request_id="r-1"),
-        made("oneoktwo", "fine", seq=2, cached=5, bridged=True),
-    ]
-    beta.records = [made("go", error="context", seq=1)]
-    logs.job(Job("j", trials=[alpha, beta]), SimpleNamespace(provider="tinker", model="m"))
-    [job] = list(record.read(logs.directory / record.JOBS))
-    assert (job["job"], job["trials"], job["backend"]) == ("j", 2, "tinker")
-    rows = list(record.read(logs.directory / record.REQUESTS))
+    alpha.records = Records(
+        [
+            made("one", "ok", seq=1, request_id="r-1"),
+            made("oneoktwo", "fine", seq=2, cached=5, bridged=True),
+        ]
+    )
+    beta.records = Records([made("go", error="context", seq=1)])
+    at_host = SimpleNamespace(provider="tinker@api.example.com", model="m", kind="tinker")
+    logs.job(Job("j", trials=[alpha, beta]), at_host)
+    [job] = list(files.read(logs.directory / files.JOBS))
+    assert (job["job"], job["trials"], job["backend"]) == ("j", 2, "tinker"), "named by its kind"
+    rows = list(files.read(logs.directory / files.REQUESTS))
     assert [row["trial"] for row in rows] == [alpha.name, alpha.name, beta.name]
     first = rows[0]
     assert set(first) == {
@@ -60,8 +64,6 @@ def test_a_job_writes_its_row_and_a_row_per_model_call_the_proxy_served(
         "job",
         "trial",
         "call",
-        "sample",
-        "samples",
         "prompt_tokens",
         "cached_tokens",
         "completion_tokens",
@@ -91,11 +93,12 @@ def test_a_job_writes_its_row_and_a_row_per_model_call_the_proxy_served(
         "",
     )
     # What the job spent is the agent's, filed under the job, and the costs are its totals.
-    spent = list(record.read(logs.directory / record.USAGE))
+    spent = list(files.read(logs.directory / files.USAGE))
     assert {(row["role"], row["job"]) for row in spent} == {("agent", "j")}
     assert [row["model"] for row in spent if "provider" in row] == ["m"]
-    totals = record.read_json(logs.directory / record.COSTS)
-    assert Costs.of(spent).to_dict() == totals and totals["tokens"]["tinker"]["m"]["sample"] == 6
+    totals = files.read_json(logs.directory / files.COSTS)
+    assert Costs.of(spent).to_dict() == totals
+    assert totals["tokens"]["tinker@api.example.com"]["m"]["sample"] == 6, "billed to the host"
 
 
 def test_every_spend_is_a_row_of_the_usage_ledger_and_on_disk_at_once(
@@ -108,7 +111,7 @@ def test_every_spend_is_a_row_of_the_usage_ledger_and_on_disk_at_once(
     logs.spend("embedder", "openai", "text-embedding-3-small", prefill=0)  # nothing spent
     with pytest.raises(ValueError, match="tokens are counted as prefill, cache, sample, train"):
         logs.spend("embedder", "openai", "text-embedding-3-small", embedded=5)
-    [row] = list(record.read(logs.directory / record.USAGE))
+    [row] = list(files.read(logs.directory / files.USAGE))
     assert {key: row[key] for key in ("step", "role", "provider", "model", "prefill")} == {
         "step": 3,
         "role": "embedder",
@@ -116,7 +119,7 @@ def test_every_spend_is_a_row_of_the_usage_ledger_and_on_disk_at_once(
         "model": "text-embedding-3-small",
         "prefill": 120,
     }
-    totals = record.read_json(logs.directory / record.COSTS)
+    totals = files.read_json(logs.directory / files.COSTS)
     assert totals["tokens"] == {"openai": {"text-embedding-3-small": {"prefill": 120}}}
 
 
@@ -131,7 +134,7 @@ def test_a_steps_row_holds_its_evaluation_and_the_recipes_numbers_beside_its_own
     )
     logs.step(1, [], None, evaluation, {"trials": 9, "own": 1})
     logs.step(2, [], None, None, {})
-    first, second = record.read(logs.directory / record.METRICS)
+    first, second = files.read(logs.directory / files.METRICS)
     assert (first["step"], first["trained"], first["trials"]) == (1, False, 0)
     evaluated = {key: value for key, value in first.items() if key.startswith("eval_")}
     assert evaluated == {

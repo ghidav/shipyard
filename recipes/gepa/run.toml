@@ -19,8 +19,14 @@ max_tokens = 8192
 
 [recipe]
 steps = 1
-reflector = "claude-sonnet-5-5"
-reflector_provider = "anthropic"
 budget = 600
 pareto = 30
 minibatch = 3
+
+# The reflector, rolled out through its own harness at a task written for each module it
+# rewrites: it reads the module and the agent's attempts as files, and rewrites the module in
+# place. Its `env` and `kwargs` go to its harness, as [agent]'s go to the agent's.
+[recipe.reflector]
+model = "claude-sonnet-5-5"
+provider = "anthropic"
+harness = "claude-code"

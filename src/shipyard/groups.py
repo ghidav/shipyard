@@ -14,10 +14,10 @@ import torch
 from harbor.models.trial.result import TrialResult
 from pydantic import ValidationError
 
-from harness_proxy.wire import extends, pictured
+from shipyard.records import Records
 
 if TYPE_CHECKING:
-    from harness_proxy.wire import Picture, Record
+    from harness_proxy.wire import Picture
     from shipyard.jobs.admit import Verdict
     from shipyard.jobs.harnesses import Harness
 
@@ -31,6 +31,30 @@ RESULT = "result.json"
 #: tests printed.
 TRAJECTORY = ("agent", "trajectory.json")
 TEST_OUTPUT = ("verifier", "test-stdout.txt")
+
+
+@dataclass(frozen=True)
+class Where:
+    """Where a trial's harness finds the run's proxy: its address as the trial's container
+    reaches it, the same address as this machine reaches it, the token, and the host."""
+
+    address: str
+    local: str
+    token: str
+    #: The proxy's host name, which a task in Harbor's allowlist network mode must allow.
+    host: str | None = None
+
+
+@dataclass
+class Connection:
+    """How a trial's harness reaches the model. For a provider's model, only `model` is set."""
+
+    model: str
+    env: dict[str, str] = field(default_factory=dict)
+    kwargs: dict[str, Any] = field(default_factory=dict)
+    #: The proxy's host name, added to the allowed hosts of a task in Harbor's allowlist
+    #: network mode.
+    host: str | None = None
 
 
 @dataclass(eq=False)
@@ -61,9 +85,8 @@ class Trial:
     task: Path
     harness: Harness
     dir: Path
-    #: The proxy's records of its model calls, in order; None when the model's provider served
-    #: it, since then nothing is recorded.
-    records: list[Record] | None = None
+    #: The proxy's records of its model calls; unrecorded when the model's provider served it.
+    records: Records = field(default_factory=Records.unrecorded)
     #: Its reward, or why it is masked; set when its job is judged.
     verdict: Verdict | None = None
     #: The chains of model calls it made, as token ids; none when it is masked.
@@ -95,8 +118,8 @@ class Trial:
 
     @property
     def sampled_tokens(self) -> int:
-        """Tokens the policy wrote in its model calls that did not fail."""
-        return sum(len(one.completion_token_ids) for one in self.records or () if one.error is None)
+        """Tokens the policy wrote in its answered model calls; 0 when none was recorded."""
+        return self.records.sampled_tokens if self.records.recorded else 0
 
     @property
     def instruction(self) -> str:
@@ -215,47 +238,14 @@ def grouped(trials: Values[Trial]) -> list[Group]:
     return found
 
 
-def chains(records: Values[Record]) -> list[list[Record]]:
-    """Link a trial's records into chains by the token-prefix rule."""
-    found: list[list[Record]] = []
-    for record in records:
-        if record.error is not None or not pictured(record):
-            continue
-        home: list[Record] | None = None
-        longest = -1
-        for chain in found:
-            last = chain[-1]
-            end = len(last.prompt_token_ids) + len(last.completion_token_ids)
-            if end > longest and extends(record, last):
-                home, longest = chain, end
-        if home is None:
-            found.append([record])
-        else:
-            home.append(record)
-    return found
-
-
 def _sequences(trial: Trial) -> list[Sequence]:
-    """Return one sequence per chain in which the policy wrote: its last call's tokens."""
-    found: list[Sequence] = []
-    for chain in chains(trial.records or ()):
-        last = chain[-1]
-        spans = tuple(_span(one) for one in chain if one.completion_token_ids)
-        if not spans:
-            continue
-        logprobs = tuple(value for one in chain for value in one.inference_logprobs)
-        complete = all(
-            len(one.inference_logprobs) == len(one.completion_token_ids) for one in chain
-        )
-        tokens = (*last.prompt_token_ids, *last.completion_token_ids)
-        found.append(Sequence(tokens, spans, logprobs if complete else None, last.images, trial))
-    return found
-
-
-def _span(record: Record) -> tuple[int, int]:
-    """Return where a record's completion sits in the chain: after its prompt."""
-    head = len(record.prompt_token_ids)
-    return head, head + len(record.completion_token_ids)
+    """Return one sequence per chain in which the policy wrote; none when none was recorded."""
+    if not trial.records.recorded:
+        return []
+    return [
+        Sequence(one.tokens, one.spans, one.sampled_logprobs, one.images, trial)
+        for one in trial.records.chains()
+    ]
 
 
 def _text(path: Path) -> str:

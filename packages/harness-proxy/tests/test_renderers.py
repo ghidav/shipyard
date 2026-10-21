@@ -11,7 +11,7 @@ import pytest
 import tinker
 
 from harness_proxy import cookbook, serve
-from harness_proxy.client import Proxy, serve_command
+from harness_proxy.client import Proxy
 from harness_proxy.server import Server
 from proxies import (
     MODEL,
@@ -22,6 +22,7 @@ from proxies import (
     FakeSequence,
     chars,
     ids,
+    only,
     root,
     server,
 )
@@ -83,7 +84,7 @@ async def test_each_trial_is_rendered_with_the_renderer_its_address_names() -> N
     async with server(sampler, renderer=efforts()) as started:
         for trial, renderer in (("a", "low"), ("b", "high"), ("c", None)):
             assert (await ask_at(started, trial, renderer)).status_code == 200
-        opened = {t: chars(started.records_for(t)[0].prompt_token_ids) for t in "abc"}
+        opened = {t: chars(only(started).records_for(t)[0].prompt_token_ids) for t in "abc"}
     assert opened == {"a": "[low]user:go\n>", "b": "[high]user:go\n>", "c": "[low]user:go\n>"}, (
         "an address that names none takes the first"
     )
@@ -95,7 +96,7 @@ async def test_a_renderer_the_proxy_was_not_given_is_refused_before_it_samples()
         refused = await ask_at(started, "t", "medium")
         assert refused.status_code == 400
         assert "does not render with 'medium': it renders with low" in refused.text
-        assert sampler.asked == [] and started.records_for("t") == []
+        assert sampler.asked == [] and only(started).records_for("t") == []
 
 
 async def test_each_renderer_bridges_its_own_trials_tool_loop() -> None:
@@ -111,7 +112,7 @@ async def test_each_renderer_bridges_its_own_trials_tool_loop() -> None:
             second = await ask_at(started, trial, renderer, messages=history, tools=TOOLS_OPENAI)
             assert second.status_code == 200, second.text
         for trial, renderer in (("a", "low"), ("b", "high")):
-            one, two = started.records_for(trial)
+            one, two = only(started).records_for(trial)
             assert (one.bridged, two.bridged) == (False, True)
             assert chars(one.prompt_token_ids).startswith(f"[{renderer}]system:")
             assert two.prompt_token_ids[: len(one.prompt_token_ids)] == one.prompt_token_ids
@@ -131,47 +132,29 @@ async def test_named_renderers_are_built_from_the_cookbook_in_the_order_given(
 
     monkeypatch.setattr(cookbook, "renderer_for", renderer_for)
     async with server(renderer=["low", "high"]) as started:
-        assert started.renderers == ["low", "high"] and built == ["low", "high"]
+        assert only(started).renderers == ["low", "high"] and built == ["low", "high"]
     built.clear()
     async with server(renderer=None) as started:
-        assert started.renderers == [] and built == [None], "the model's default, named by none"
+        assert only(started).renderers == [] and built == [None], (
+            "the model's default, named by none"
+        )
 
 
-async def test_healthz_names_the_renderers_and_the_client_reads_them() -> None:
+async def test_healthz_names_each_lanes_renderers_and_the_client_reads_them() -> None:
     async with server(renderer=efforts()) as started:
         proxy = Proxy(origin=root(started), token=started.token)
-        assert await proxy.ready(seconds=5) == MODEL
-        assert proxy.renderers == ["low", "high"]
+        (lane,) = (await proxy.ready(seconds=5)).values()
+        assert (lane.model, lane.renderers) == (MODEL, ("low", "high"))
     async with server() as plain:
         proxy = Proxy(origin=root(plain), token=plain.token)
         await proxy.ready(seconds=5)
-        assert proxy.renderers == [], "a proxy on its model's default names none"
+        assert proxy.lanes["agent"].renderers == (), "a lane on its model's default names none"
 
 
-async def test_a_proxy_that_says_nothing_of_renderers_reads_as_unknown() -> None:
-    answer = {"status": "ok", "serving": "m"}
-    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=answer))
-    proxy = Proxy(origin="http://proxy:1", token="t", transport=transport)
-    await proxy.ready(seconds=1)
-    assert proxy.renderers is None
-
-
-def test_the_serve_command_gives_each_renderer_its_own_flag() -> None:
+def test_the_renderer_flag_names_each_renderer_of_the_one_lane() -> None:
     args = serve.parser().parse_args(["--model", "m", "--renderer", "low", "--renderer", "high"])
     assert args.renderer == ["low", "high"]
-    made = serve.server_for(
-        "m",
-        weights=None,
-        bind="127.0.0.1",
-        port=0,
-        advertise=None,
-        renderer=args.renderer,
-        settings=None,
-        token="k",
-        control_token="c",
+    given = serve.document(
+        None, lane=args.lane, model=args.model, weights=None, renderer=args.renderer
     )
-    assert made.renderer == ["low", "high"]
-    command = serve_command({"model": "m", "renderer": ["low", "high"]}, host="h")
-    flagged = [at for at, one in enumerate(command) if one == "--renderer"]
-    assert [command[at + 1] for at in flagged] == ["low", "high"]
-    assert "--renderer" not in serve_command({"model": "m", "renderer": None}, host="h")
+    assert given == {"lanes": [{"name": "agent", "model": "m", "renderer": ["low", "high"]}]}

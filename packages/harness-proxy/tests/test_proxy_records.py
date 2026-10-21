@@ -11,9 +11,9 @@ import pytest
 import tinker
 
 from harness_proxy import server as server_module
-from harness_proxy.chat import Refused
-from harness_proxy.exchange import Exchange, exchange
-from harness_proxy.recorder import Recorder
+from harness_proxy.chat import Caller, Refused
+from harness_proxy.recorder import Recorder, Sampled
+from harness_proxy.rendering import Prompt
 from harness_proxy.wire import (
     BUDGET,
     CONTEXT,
@@ -28,7 +28,7 @@ from harness_proxy.wire import (
     record_of,
     records_of,
 )
-from proxies import FakeSampler, ask, fetch, ids, made, server
+from proxies import FakeSampler, ask, fetch, ids, made, only, server
 
 OK = ids("ok")
 EMPTY = {"records": []}
@@ -64,7 +64,10 @@ async def test_the_fetch_drains_and_an_unknown_trial_is_empty_not_an_error() -> 
         first = await fetch(served, "task-1")
         second = await fetch(served, "task-1")
         unknown = await fetch(served, "no-such-trial")
-        assert served.records_for("task-1") == [] and len(served.records_for("task-2")) == 1
+        assert (
+            only(served).records_for("task-1") == []
+            and len(only(served).records_for("task-2")) == 1
+        )
     assert len(first.json()["records"]) == 1
     assert second.json() == EMPTY
     assert unknown.status_code == 200 and unknown.json() == EMPTY
@@ -79,12 +82,12 @@ async def test_only_the_control_token_reads_records_and_a_refusal_leaves_them() 
         assert (await fetch(served, "task-1", headers=wrong)).status_code == 401
         for harness in ({"Authorization": f"Bearer {served.token}"}, {"x-api-key": served.token}):
             assert (await fetch(served, "task-1", headers=harness)).status_code == 401
-        assert len(served.records_for("task-1")) == 1
+        assert len(only(served).records_for("task-1")) == 1
     async with server(FakeSampler("ok"), control_token=None) as closed:
         await ask(closed, "task-1")
         harness = {"Authorization": f"Bearer {closed.token}"}
         assert (await fetch(closed, "task-1", headers=harness)).status_code == 404
-        assert len(closed.records_for("task-1")) == 1
+        assert len(only(closed).records_for("task-1")) == 1
 
 
 async def test_extending_prompts_cross_as_tails_compressed_and_come_back_whole() -> None:
@@ -144,8 +147,6 @@ def test_every_annotation_survives_the_wire() -> None:
         prompt_digests=("ab", "cd"),
         reply_digest="ef",
         error="context",
-        sample=1,
-        samples=2,
     )
     back = record_of(dataclasses.asdict(record))
     for found in dataclasses.fields(Record):
@@ -199,25 +200,22 @@ class Unasked:
         raise AssertionError("should not have been asked")
 
 
-async def under(trial: str, recorder: Recorder, prompt: Any, **params: Any) -> Any:
-    token = exchange.set(Exchange(trial=trial))
-    try:
-        return await recorder.sample_async(
-            prompt=prompt, num_samples=1, sampling_params=tinker.SamplingParams(**params)
-        )
-    finally:
-        exchange.reset(token)
+async def under(trial: str, recorder: Recorder, prompt: Any, **params: Any) -> Sampled:
+    caller, asked = Caller(trial=trial), tinker.SamplingParams(**params)
+    return await recorder.sample(caller, Prompt(prompt), asked)
 
 
 async def test_a_turn_that_does_not_fit_is_refused_before_it_is_paid_for() -> None:
     sampler = Unasked()
     recorder = Recorder(sampler, max_tokens=1000, max_context=2048)
     prompt = tinker.ModelInput.from_ints(list(range(1500)))
-    with pytest.raises(tinker.BadRequestError) as refused:
+    with pytest.raises(Refused) as refused:
         await under("t-1", recorder, prompt)
     assert sampler.asked == 0
-    assert "context window" in str(refused.value), "what `chat.complete` classifies an overflow by"
-    assert "1500 prompt tokens" in str(refused.value) and "2048" in str(refused.value)
+    assert str(refused.value) == (
+        "prompt is too long: 1500 prompt tokens plus 1000 max_tokens exceed the model's "
+        "context window"
+    ), "what a harness compacts its history on"
     (record,) = recorder.records_for("t-1")
     assert record.error == "context" and record.completion_token_ids == ()
     assert record.prompt_token_ids == tuple(range(1500)) and record.seq == 1
@@ -239,7 +237,7 @@ async def test_filling_the_context_gives_a_turn_what_is_left_of_it() -> None:
     with pytest.raises(AssertionError, match="should not have been asked"):
         await under("t-1", recorder, tinker.ModelInput.from_ints(list(range(1500))))
     assert sampler.params.max_tokens == 548 and refused(recorder, "t-1") == []
-    with pytest.raises(tinker.BadRequestError):
+    with pytest.raises(Refused, match="^prompt is too long"):
         await under("t-1", recorder, tinker.ModelInput.from_ints(list(range(2048))))
     assert refused(recorder, "t-1") == [CONTEXT]
 
@@ -315,7 +313,7 @@ async def test_a_reply_that_lands_after_its_trial_was_taken_is_dropped() -> None
     assert len(recorder.take("t")) == 1
     sampler.release.set()
     replied = await late
-    assert [list(s.tokens) for s in replied.sequences] == [list(ids("late"))]
+    assert replied.tokens == ids("late")
     recorder.reply("t", 1, "digest", ended_with_stop=True)
     assert recorder.records == {} and recorder.spoke == {} and recorder.indexes == {}
     assert not any(key[0] == "t" for key in recorder._replies)
@@ -341,55 +339,21 @@ async def test_a_failed_sample_is_a_500_and_a_retry_samples_fresh() -> None:
         assert (await ask(served, "t")).status_code == 500
         again = await ask(served, "t", headers={"x-stainless-retry-count": "1"})
         assert again.status_code == 200
-    assert [r.error for r in served.records_for("t")] == ["sampler: RuntimeError", None]
+    assert [r.error for r in only(served).records_for("t")] == ["sampler: RuntimeError", None]
 
 
 async def test_a_replayed_retry_leaves_no_second_record() -> None:
     sampler = FakeSampler("ok")
     recorder = Recorder(sampler)
-    prompt = tinker.ModelInput.from_ints([1, 2])
-    token = exchange.set(Exchange(trial="t"))
-    try:
-        first = await recorder.sample_async(
-            prompt=prompt, num_samples=1, sampling_params=tinker.SamplingParams()
-        )
-    finally:
-        exchange.reset(token)
-    token = exchange.set(Exchange(trial="t", retry=1))
-    try:
-        again = await recorder.sample_async(
-            prompt=prompt, num_samples=1, sampling_params=tinker.SamplingParams()
-        )
-        other = await recorder.sample_async(
-            prompt=tinker.ModelInput.from_ints([3]),
-            num_samples=1,
-            sampling_params=tinker.SamplingParams(),
-        )
-    finally:
-        exchange.reset(token)
-    assert again is first and other is not first
+    prompt, retried = tinker.ModelInput.from_ints([1, 2]), Caller(trial="t", retry=1)
+    first = await under("t", recorder, prompt)
+    again = await recorder.sample(retried, Prompt(prompt), tinker.SamplingParams())
+    other = await recorder.sample(
+        retried, Prompt(tinker.ModelInput.from_ints([3])), tinker.SamplingParams()
+    )
+    assert (first.seq, again.seq, other.seq) == (1, None, 2), "a replay makes no record"
+    assert again.tokens == first.tokens
     assert len(sampler.asked) == 2 and len(recorder.records_for("t")) == 2
-
-
-async def test_every_sequence_is_a_record_and_the_cache_hit_is_spent_once() -> None:
-    sampler = FakeSampler("ok", cached=5)
-    recorder = Recorder(sampler)
-    token = exchange.set(Exchange(trial="t"))
-    try:
-        await recorder.sample_async(
-            prompt=tinker.ModelInput.from_ints([1, 2, 3, 4, 5, 6]),
-            num_samples=3,
-            sampling_params=tinker.SamplingParams(),
-        )
-    finally:
-        exchange.reset(token)
-    records = recorder.records_for("t")
-    assert [r.seq for r in records] == [1, 2, 3]
-    assert [(r.sample, r.samples) for r in records] == [(0, 3), (1, 3), (2, 3)], "one call"
-    assert [r.cached_tokens for r in records] == [5, 0, 0]
-    assert recorder.spoke == {"t": 6}
-    sent = records_of(delta_encoded(records))
-    assert [(r.sample, r.samples) for r in sent] == [(0, 3), (1, 3), (2, 3)], "off the wire"
 
 
 def test_an_image_chunk_is_a_run_of_image_tokens_in_the_ids() -> None:
@@ -469,37 +433,11 @@ async def test_a_retry_of_the_turn_that_spent_the_budget_gets_its_reply() -> Non
     prompt = tinker.ModelInput.from_ints([1])
     first = await under("t", recorder, prompt)
     assert recorder.spoke == {"t": 4}, "the budget is spent to the last token"
-    token = exchange.set(Exchange(trial="t", retry=1))
-    try:
-        again = await recorder.sample_async(
-            prompt=prompt, num_samples=1, sampling_params=tinker.SamplingParams()
-        )
-    finally:
-        exchange.reset(token)
-    assert again is first and len(sampler.asked) == 1
+    again = await recorder.sample(
+        Caller(trial="t", retry=1), Prompt(prompt), tinker.SamplingParams()
+    )
+    assert again == dataclasses.replace(first, seq=None) and len(sampler.asked) == 1
     assert [r.error for r in recorder.records_for("t")] == [None]
-
-
-async def test_samples_asked_together_share_the_budget() -> None:
-    sampler = FakeSampler("ab")
-    recorder = Recorder(sampler, max_tokens=100, budget=9)
-    token = exchange.set(Exchange(trial="t"))
-    try:
-        await recorder.sample_async(
-            prompt=tinker.ModelInput.from_ints([1]),
-            num_samples=4,
-            sampling_params=tinker.SamplingParams(),
-        )
-        assert sampler.asked[0].max_tokens == 2, "nine tokens left, four samples"
-        with pytest.raises(Refused, match="spent its budget"):
-            await recorder.sample_async(
-                prompt=tinker.ModelInput.from_ints([1]),
-                num_samples=4,
-                sampling_params=tinker.SamplingParams(),
-            )
-    finally:
-        exchange.reset(token)
-    assert recorder.spoke == {"t": 8} and len(sampler.asked) == 1
 
 
 def test_a_record_with_another_picture_in_the_prefix_is_no_extension_and_keeps_its_own() -> None:

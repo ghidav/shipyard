@@ -31,8 +31,7 @@ class FakeEndpoint:
     """Fake `Server` with only the attributes `serve` uses. `called` records start and stop
     calls in order."""
 
-    base_model: str = "Qwen/Qwen3-8B"
-    model_path: str | None = None
+    lanes: list[Any] = field(default_factory=lambda: [SimpleNamespace(name="agent")])
     host: str = "proxy-host"
     control_token: str | None = "c"
     port: int | None = None
@@ -96,16 +95,17 @@ def test_a_wildcard_bind_with_nothing_named_is_refused() -> None:
 
 def test_the_flags_default_to_every_interface_and_any_port() -> None:
     args = serve.parser().parse_args(["--model", "a/b"])
-    assert (args.bind, args.port, args.advertise, args.weights, args.renderer) == (
+    assert (args.bind, args.port, args.advertise, args.weights, args.renderer, args.lane) == (
         "0.0.0.0",
         0,
         None,
         None,
         None,
+        "agent",
     )
     assert args.settings is None
-    parsed = serve.parser().parse_args(["--model", "a/b", "--settings", '{"top_p": 0.5}'])
-    assert parsed.settings == {"top_p": 0.5}
+    parsed = serve.parser().parse_args(["--settings", '{"lanes": []}'])
+    assert parsed.settings == {"lanes": []} and parsed.model is None
 
 
 def test_main_says_what_is_wrong_rather_than_serving_nowhere(capsys: Any) -> None:
@@ -136,29 +136,27 @@ def test_main_configures_the_proxys_logging_unless_it_is_configured(
 # ------------------------------------------------------------------- the server
 
 
-def build(**overrides: Any) -> Server:
-    named: dict[str, Any] = dict(
-        weights=None,
-        bind="127.0.0.1",
-        port=0,
-        advertise=None,
-        renderer=None,
-        settings=None,
-        token="k",
-        control_token="c",
+def build(*, weights: str | None = None, renderer: str | None = None, **overrides: Any) -> Server:
+    """Build the server `harness-proxy --model Qwen/Qwen3-8B` and the other flags describe."""
+    given = serve.document(
+        None, lane="agent", model="Qwen/Qwen3-8B", weights=weights, renderer=renderer
     )
-    return serve.server_for("Qwen/Qwen3-8B", **{**named, **overrides})
+    named: dict[str, Any] = dict(
+        bind="127.0.0.1", port=0, advertise=None, token="k", control_token="c"
+    )
+    return serve.server_for(given, **{**named, **overrides})
 
 
 def test_the_flags_reach_the_real_endpoint() -> None:
     made = build(weights="tinker://w/step-1", bind="0.0.0.0", port=8000, advertise="proxy")
     assert isinstance(made, Server)
-    assert (made.base_model, made.model_path) == ("Qwen/Qwen3-8B", "tinker://w/step-1")
+    (lane,) = made.lanes
+    assert (lane.name, lane.model, lane.weights) == ("agent", "Qwen/Qwen3-8B", "tinker://w/step-1")
     assert (made.bind, made.bind_port, made.host) == ("0.0.0.0", 8000, "proxy")
     assert (made.token, made.control_token) == ("k", "c")
     assert made.port is None, "nothing is bound yet"
-    assert build(renderer="qwen3_disable_thinking").renderer == "qwen3_disable_thinking"
-    assert build().renderer is None
+    assert build(renderer="qwen3_disable_thinking").lanes[0].renderer == "qwen3_disable_thinking"
+    assert build().lanes[0].renderer is None
 
 
 def test_an_empty_token_is_replaced_and_no_control_token_closes_the_route() -> None:
@@ -166,24 +164,20 @@ def test_an_empty_token_is_replaced_and_no_control_token_closes_the_route() -> N
     assert made.token and made.control_token is None
 
 
-def test_settings_carry_the_runs_other_keys_and_nothing_else() -> None:
-    made = build(
-        settings={
-            "temperature": 0.5,
-            "max_tokens": 64,
-            "max_context": 4096,
-            "fill_context": True,
-        }
-    )
+def test_a_lane_carries_its_own_settings_and_nothing_else() -> None:
+    def lane(**settings: Any) -> Any:
+        given = {"lanes": [{"name": "agent", "model": "Qwen/Qwen3-8B", **settings}]}
+        named = dict(bind="127.0.0.1", port=0, advertise=None, token="k", control_token="c")
+        (made,) = serve.server_for(given, **named).lanes
+        return made
+
+    made = lane(temperature=0.5, max_tokens=64, max_context=4096, fill_context=True)
     assert (made.temperature, made.max_tokens, made.max_context) == (0.5, 64, 4096)
     assert made.fill_context is True
-    assert build(settings={"metadata": {"run": "r"}}).metadata == {"run": "r"}
-    with pytest.raises(ValueError, match="graph_text"):
-        build(settings={"graph_text": True})
-    with pytest.raises(ValueError, match="bind"):
-        build(settings={"bind": "0.0.0.0"})
-    with pytest.raises(ValueError, match="client_factory"):
-        build(settings={"client_factory": None})
+    assert lane(metadata={"run": "r"}).metadata == {"run": "r"}
+    for foreign in ("graph_text", "bind", "client_factory"):
+        with pytest.raises(ValueError, match=foreign):
+            lane(**{foreign: None})
 
 
 def test_the_tokens_come_from_the_env_or_are_generated_and_said() -> None:
@@ -203,9 +197,9 @@ def test_the_tokens_come_from_the_env_or_are_generated_and_said() -> None:
 
 
 async def test_the_banner_is_the_first_line_and_the_generated_tokens_follow() -> None:
-    fake = FakeEndpoint(model_path="tinker://w/step-1")
+    fake = FakeEndpoint(lanes=[SimpleNamespace(name="agent"), SimpleNamespace(name="teacher")])
     printed = await run_briefly(fake, generated={"HARNESS_PROXY_TOKEN": "made-up"})
-    assert printed[0] == "serving tinker://w/step-1 at http://proxy-host:8000 (control: on)"
+    assert printed[0] == "serving agent,teacher at http://proxy-host:8000 (control: on)"
     assert printed[1] == "HARNESS_PROXY_TOKEN made-up"
     assert fake.called == ["start", "stop"]
 
@@ -219,7 +213,7 @@ async def test_a_token_the_caller_supplied_is_not_printed_back() -> None:
 async def test_the_banner_names_the_real_endpoints_port() -> None:
     async with server(control_token="c") as started:
         line, port = serve.banner(started), started.port
-    assert line == f"serving Qwen/Qwen3-8B at http://127.0.0.1:{port} (control: on)"
+    assert line == f"serving agent at http://127.0.0.1:{port} (control: on)"
 
 
 async def test_the_endpoint_closes_even_when_printing_raises() -> None:
@@ -266,7 +260,7 @@ async def test_a_tunnel_opens_after_the_banner_and_closes_before_the_server(
     asked = opening(monkeypatch, FakeTunnel(fake.called))
     printed = await run_briefly(fake, tunnel=True)
     assert printed == [
-        "serving Qwen/Qwen3-8B at http://proxy-host:8000 (control: on)",
+        "serving agent at http://proxy-host:8000 (control: on)",
         "tunnel at https://fake-words.trycloudflare.com",
     ]
     assert asked == [8000] and fake.called == ["start", "tunnel stop", "stop"]
@@ -310,7 +304,8 @@ built = serve.server_for
 
 def with_fakes(*args, **kwargs):
     server = built(*args, **kwargs)
-    server.client_factory, server.renderer = Echo.make, FakeRenderer()
+    for lane in server.lanes:
+        lane.client_factory, lane.renderer = Echo.make, FakeRenderer()
     return server
 
 
@@ -341,7 +336,7 @@ def test_serve_runs_for_real_on_a_fake_sampler(tmp_path: Path) -> None:
     )
     try:
         line = _first_line(process)
-        assert line.startswith("serving Qwen/Qwen3-8B at http://127.0.0.1:")
+        assert line.startswith("serving agent at http://127.0.0.1:")
         assert line.endswith("(control: on)")
         origin = line.split(" at ", 1)[1].split(" ", 1)[0]
         with httpx.Client(base_url=origin, timeout=10) as client:
@@ -366,7 +361,7 @@ def test_serve_runs_for_real_on_a_fake_sampler(tmp_path: Path) -> None:
             swapped = client.post(
                 "/control/weights",
                 headers={"Authorization": "Bearer control-token"},
-                json={"model_path": "tinker://run/sampler_weights/step-3"},
+                json={"weights": "tinker://run/sampler_weights/step-3"},
             )
             assert swapped.status_code == 200 and swapped.json()["serving"].endswith("step-3")
             later = client.post(
@@ -417,7 +412,8 @@ client.SERVE = [sys.executable, "-c", sys.argv[1]]
 
 
 async def main():
-    proxy = await client.Proxy.tunnelled({"model": "Qwen/Qwen3-8B", "bind": "127.0.0.1"})
+    lanes = [{"name": "agent", "model": "Qwen/Qwen3-8B"}]
+    proxy = await client.Proxy.tunnelled({"lanes": lanes, "bind": "127.0.0.1"})
     print(proxy.process.pid, flush=True)
     await asyncio.sleep(600)
 

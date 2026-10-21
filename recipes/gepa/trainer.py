@@ -3,9 +3,11 @@ modules the agent carries, its prompt and skills, that takes no gradient step.
 
 `gepa.optimize` runs the search. Each time it scores a candidate on some tasks, the agent is
 rolled out on them as one job carrying the candidate's modules, and a task scores its mean
-reward. A reflector, a provider's model, reads the trials of a few tasks and rewrites one
-module at a time. The best candidate is kept in the run as `modules/best/`, in the layout
-`[agent] modules` reads, and every job after the search carries it, the test set's included.
+reward. To propose a candidate, the reflector, `[recipe.reflector]`, is rolled out through its
+own harness at a task written for each module to rewrite (`reflect.py`): it reads the module
+and a few tasks' attempts as files, and rewrites the module in place. The best candidate is
+kept in the run as `modules/best/`, in the layout `[agent] modules` reads, and every job after
+the search carries it, the test set's included.
 
 It searches for any agent: one Tinker serves, which this run never trains, or a provider's,
 with `[agent] provider`. It needs the `gepa` extra, and `[recipe] steps = 1`."""
@@ -23,13 +25,12 @@ from typing import Any
 import gepa
 from gepa import EvaluationBatch
 
-from shipyard import Blueprint, Group, Inadmissible, Modules, Policy, Trainer
+from shipyard import Blueprint, Group, Inadmissible, Model, Modules, Trainer
 
-#: Characters of a trial's transcript and of its tests' output a reflection reads, from the end,
-#: where the attempt finished and the tests said what failed.
-TRANSCRIPT, TESTS = 3000, 2000
-#: Tokens the reflector may write: a rewritten module, with its reasoning.
-REFLECTION_TOKENS = 8192
+from .reflect import Reflector, reflection, rewritten
+
+#: Where the run keeps the reflector's tasks, under its `gepa/`: one folder per proposal.
+REFLECTIONS = "reflections"
 
 #: Waits on the run's event loop for a coroutine started from GEPA's thread.
 Wait = Callable[[Coroutine[Any, Any, Any]], Any]
@@ -37,9 +38,8 @@ Wait = Callable[[Coroutine[Any, Any, Any]], Any]
 
 class GEPATrainer(Trainer):
     class Recipe(Trainer.Recipe):
-        #: The model that rewrites the modules, and the provider that serves it.
-        reflector: str
-        reflector_provider: str
+        #: The model that rewrites the modules, and the harness it runs through.
+        reflector: Reflector
         #: The most task evaluations the search may run, each `[data] group_size` rollouts.
         budget: int
         #: How many tasks a reflection reads.
@@ -52,36 +52,30 @@ class GEPATrainer(Trainer):
         super().__init__(config, directory)
         if self.state.modules is None:
             raise ValueError("GEPA searches the modules the agent carries: set [agent] modules")
-        self.reflector = Policy(self.recipe.reflector, provider=self.recipe.reflector_provider)
+        # A search: the proxy serves the agent as it is, and no training client opens.
+        self.policy.training = False
+        held = self.recipe.reflector
+        self.reflector = Model(held.model, provider=held.provider)
 
     async def step(self) -> None:
         loop, seed = asyncio.get_running_loop(), self.state.modules
         assert seed is not None
 
-        # GEPA calls its adapter and its reflector synchronously, from the thread it runs in,
-        # while the rollouts and the reflector's calls run on the run's own event loop.
+        # GEPA calls its adapter synchronously, from the thread it runs in, while the
+        # rollouts run on the run's own event loop.
         def wait(work: Coroutine[Any, Any, Any]) -> Any:
             return asyncio.run_coroutine_threadsafe(work, loop).result()
-
-        def reflect(prompt: str | list[dict[str, Any]]) -> str:
-            text = (
-                prompt
-                if isinstance(prompt, str)
-                else "\n\n".join(str(m["content"]) for m in prompt)
-            )
-            [reply] = wait(self.reflector.sample([text], max_tokens=REFLECTION_TOKENS))
-            return reply
 
         feedback, pareto = split(
             self.generator.train, self.recipe.pareto, seed=self.config.data.seed
         )
+        adapter = Rollouts(self, seed, wait)
         result = await asyncio.to_thread(
             gepa.optimize,
             seed_candidate=seed.texts,
             trainset=feedback,
             valset=pareto,
-            adapter=Rollouts(self, seed, wait),
-            reflection_lm=reflect,
+            adapter=adapter,
             reflection_minibatch_size=self.recipe.minibatch,
             max_metric_calls=self.recipe.budget,
             run_dir=str(self.directory / "gepa"),
@@ -95,19 +89,19 @@ class GEPATrainer(Trainer):
             candidates=len(result.candidates),
             best_score=result.val_aggregate_scores[result.best_idx],
             task_evaluations=result.total_metric_calls,
+            reflections=adapter.proposed,
         )
 
 
 class Rollouts:
     """GEPA's adapter. A candidate's score on some tasks is a job of the agent's rollouts
-    carrying its modules; what a reflection reads is each trial's task, transcript, reward and
-    test output."""
+    carrying its modules; a proposal is a job of the reflector's, at a task per module to
+    rewrite, which holds each trial's task, transcript, reward and test output."""
 
-    #: None: GEPA proposes new texts itself, through the reflector.
-    propose_new_texts = None
-
-    def __init__(self, trainer: Trainer, seed: Modules, wait: Wait) -> None:
+    def __init__(self, trainer: GEPATrainer, seed: Modules, wait: Wait) -> None:
         self.trainer, self.seed, self.wait = trainer, seed, wait
+        #: Proposals made so far, each a folder of reflection tasks.
+        self.proposed = 0
 
     def evaluate(
         self, batch: list[Path], candidate: dict[str, str], capture_traces: bool = False
@@ -142,17 +136,53 @@ class Rollouts:
     ) -> Mapping[str, Sequence[Mapping[str, Any]]]:
         records = [
             {
-                "Inputs": {"task": trial.instruction},
-                "Generated Outputs": trial.transcript[-TRANSCRIPT:],
-                "Feedback": (
-                    f"Reward {trial.reward:.3f}. What the tests printed:\n"
-                    f"{trial.test_output[-TESTS:]}"
-                ),
+                "task": trial.instruction,
+                "reward": trial.reward or 0.0,
+                "transcript": trial.transcript,
+                "tests": trial.test_output,
             }
             for group in eval_batch.trajectories or []
             for trial in group.measured
         ]
         return {name: records for name in components_to_update}
+
+    def propose_new_texts(
+        self,
+        candidate: dict[str, str],
+        reflective_dataset: Mapping[str, Sequence[Mapping[str, Any]]],
+        components_to_update: list[str],
+    ) -> dict[str, str]:
+        """Roll the reflector out at a task per module to rewrite, all at once, and return
+        what it wrote; a module it left unwritten keeps its text."""
+        self.proposed += 1
+        home = self.trainer.directory / "gepa" / REFLECTIONS / f"{self.proposed:04d}"
+        tasks = {
+            reflection(home / f"{at:02d}", name, candidate[name], reflective_dataset[name]): name
+            for at, name in enumerate(components_to_update)
+        }
+        held = self.trainer.recipe.reflector
+        groups = self.wait(
+            self.trainer.rollout(
+                list(tasks),
+                attempts=1,
+                model=self.trainer.reflector,
+                harness=held.harness,
+                env=held.env,
+                kwargs=held.kwargs,
+                purpose="reflection",
+            )
+        )
+        texts = {name: candidate[name] for name in components_to_update}
+        for group in groups:
+            name = tasks[group.task]
+            found = next((t for one in group.trials if (t := rewritten(one)) is not None), None)
+            if found is None:
+                logging.getLogger("gepa").warning(
+                    "the reflector wrote no %s: it keeps its text", name
+                )
+            else:
+                texts[name] = found
+        return texts
 
 
 class Logged:

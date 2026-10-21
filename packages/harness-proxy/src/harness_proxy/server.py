@@ -7,26 +7,30 @@ import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from types import ModuleType
 from typing import Any
 
 from aiohttp import web
 
 from harness_proxy import backends, cookbook, keepalive
-from harness_proxy.chat import Refused, complete
+from harness_proxy.chat import Caller, Refused
 from harness_proxy.dialects import anthropic, openai
-from harness_proxy.exchange import Exchange, exchange, middleware
 from harness_proxy.keepalive import KEEPALIVE_EVERY, KEEPALIVE_GRACE
 from harness_proxy.recorder import Recorder
-from harness_proxy.rendering import Rendering
+from harness_proxy.rendering import complete
 from harness_proxy.wire import (
     CONTROL_PATH,
     HEALTH_PATH,
     RECORDS_PATH,
+    Address,
+    Fetch,
     Record,
-    delta_encoded,
+    Served,
+    Swap,
+    health,
     new_token,
+    records_answer,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,77 +44,70 @@ DEFAULT_MAX_TOKENS = 8192
 #: Largest request body the proxy reads, in bytes. aiohttp's default is 1 MiB.
 MAX_BODY_BYTES = 256 * 1024**2
 
+#: Retry count header sent by both the OpenAI and the Anthropic SDKs.
+RETRY_HEADER = "x-stainless-retry-count"
+
 #: Makes a sampling client on named weights, or on the base model for None.
 ClientFactory = Callable[[str | None], Awaitable[Any]]
 
 
 @dataclass
-class Server:
-    """Local server that stands in for a model provider."""
+class Lane:
+    """One model the proxy serves, which a call's address names: its weights, the backend that
+    samples them, its renderers, and the recorder its calls sample through, which keeps their
+    records."""
 
-    base_model: str
-    model_path: str | None = None
+    #: The name a call's address gives it: `/r/lane/<name>/...`.
+    name: str
+    #: The base model it serves.
+    model: str
+    #: The weights it serves, under its backend's prefix; None for the base model.
+    weights: str | None = None
     #: The renderers calls are rendered with: a cookbook renderer name, or a list of them that a
     #: trial's address picks from by name; a renderer object, or a dict of them by name (tests);
     #: or None for the model's default. A call whose address names none takes the first.
     renderer: Any = None
-    host: str = "host.docker.internal"
-    bind: str = "0.0.0.0"
-    bind_port: int = 0
     temperature: float | None = 1.0
     top_p: float | None = 1.0
     top_k: int | None = -1
     max_tokens: int = DEFAULT_MAX_TOKENS
     max_context: int | None = None
     fill_context: bool = False
-    #: Seconds a stream may stay silent before SSE keepalive frames start, one every
-    #: `keepalive_every` seconds until the reply. None turns them off.
-    keepalive_grace: float | None = KEEPALIVE_GRACE
-    keepalive_every: float = KEEPALIVE_EVERY
-    token: str = field(default_factory=new_token, repr=False)
-    control_token: str | None = field(default=None, repr=False)
     #: `user_metadata` of the Tinker session, naming the run and recipe it samples for.
     metadata: dict[str, str] | None = None
-    #: The backend that samples: `tinker`, or `together` for the run's Together session.
+    #: The backend that samples: `tinker`, or `together` for a session the run opened.
     backend: str = "tinker"
     #: The training session a `together` backend samples from, which the run opened.
     session: str | None = None
     #: Sampling client factory for tests. None uses the backend's service.
     client_factory: ClientFactory | None = field(default=None, repr=False)
 
-    #: The backend's service, opened on `start`; a test may pass a fake one.
+    #: The backend's service, opened on `open`; a test may pass a fake one.
     _service: Any = field(default=None, repr=False)
     _recorder: Recorder | None = field(default=None, repr=False)
     #: The renderers, by the name a trial's address gives each; "" for the model's default.
-    _renderings: dict[str, Rendering] = field(default_factory=dict, repr=False)
-    _runner: Any = field(default=None, repr=False)
-    _port: int | None = field(default=None, repr=False)
-    _served_last: dict[str, tuple[float, dict[str, Any]]] = field(default_factory=dict, repr=False)
+    _renderers: dict[str, Any] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
-        """Generate a token if it is empty, and refuse an unknown backend."""
-        if not self.token:
-            self.token = new_token()
+        """Refuse a name an address cannot hold, or an unknown backend."""
+        if not self.name or "/" in self.name:
+            raise ValueError(f"a lane is named in a call's address: {self.name!r} cannot be")
         backends.named(self.backend)
 
     @property
-    def port(self) -> int | None:
-        return self._port
-
-    @property
     def sampling(self) -> ModuleType:
-        """The backend module the proxy samples through."""
+        """The backend module the lane samples through."""
         return backends.named(self.backend)
 
     @property
     def serving(self) -> str:
         """The model a reply names: the served weights, or the base model."""
-        return self.model_path or self.base_model
+        return self.weights or self.model
 
     @property
     def renderers(self) -> list[str]:
         """The renderers a trial's address may name, in order; none for the model's default."""
-        return [name for name in self._renderings if name]
+        return [name for name in self._renderers if name]
 
     @property
     def recorder(self) -> Recorder:
@@ -121,16 +118,17 @@ class Server:
     def records_for(self, trial: str) -> list[Record]:
         return self.recorder.records_for(trial)
 
-    async def start(self) -> None:
-        """Build the renderers, sampling client, app and routes, then bind the socket."""
+    async def open(self) -> None:
+        """Build the renderers, the backend's service and the sampling client, and the recorder
+        that every call samples through."""
         renderers = self._built()
         if self.client_factory is None and self._service is None:
             self._service = await self.sampling.connect(
                 metadata=self.metadata, session=self.session
             )
-        client = await self._make(self.model_path)
+        client = await self._make(self.weights)
         if self.max_context is None and self._service is not None:
-            self.max_context = await self.sampling.context_of(self._service, self.base_model)
+            self.max_context = await self.sampling.context_of(self._service, self.model)
         self._recorder = Recorder(
             client,
             temperature=self.temperature,
@@ -140,14 +138,102 @@ class Server:
             max_context=self.max_context,
             budget=self.max_context,
             fill_context=self.fill_context,
-            served=self.model_path,
+            served=self.weights,
         )
-        self._renderings = {
-            name: Rendering(one, recorder=self._recorder) for name, one in renderers.items()
-        }
-        # Control outermost, so only the control token opens the control route. The exchange
-        # after auth, so a refused request opens none.
-        middlewares = [self._control_middleware(), self._auth_middleware(), middleware()]
+        self._renderers = renderers
+
+    async def close(self) -> None:
+        """Close the backend's service, if the lane opened one."""
+        service, self._service = self._service, None
+        if service is not None:
+            with contextlib.suppress(Exception):
+                await self.sampling.close(service)
+
+    async def swap(self, weights: str | None) -> None:
+        """Switch to a sampling client on `weights`, or on the base model for None."""
+        client = await self._make(weights)
+        self.weights = weights
+        if self._recorder is not None:
+            self._recorder.client, self._recorder.served = client, weights
+
+    def _built(self) -> dict[str, Any]:
+        """Return the renderers by the name a trial's address gives each, "" for the default."""
+        given = self.renderer
+        if isinstance(given, dict):
+            return dict(given)
+        names = (given if isinstance(given, list) else [given]) or [None]
+        if not all(one is None or isinstance(one, str) for one in names):
+            return {"": given}
+        return {one or "": cookbook.renderer_for(self.model, one or None) for one in names}
+
+    def renderer_for(self, named: str) -> Any:
+        """Return the renderer a call's address names, the first for ""; `Refused` if unknown."""
+        if not named:
+            return next(iter(self._renderers.values()))
+        renderer = self._renderers.get(named)
+        if renderer is None:
+            served = ", ".join(self.renderers) or "its model's default alone"
+            raise Refused(f"this proxy does not render with {named!r}: it renders with {served}")
+        return renderer
+
+    async def _make(self, weights: str | None) -> Any:
+        prefix = self.sampling.PREFIX
+        if weights is not None and not weights.startswith(prefix):
+            raise ValueError(f"{weights!r} is not a {prefix} path")
+        if self.client_factory is not None:
+            return await self.client_factory(weights)
+        return await self.sampling.sampler(self._service, self.model, weights)
+
+    def reported(self) -> Served:
+        """Return the lane as `/healthz` reports it: its model, what it serves, the tokens one
+        trial may sample, and the renderers an address may name."""
+        return Served(self.model, self.serving, self.max_context or None, tuple(self.renderers))
+
+
+@dataclass
+class Server:
+    """Local server that stands in for a model provider. It serves each of its `lanes` to the
+    calls whose address names it (`/r/lane/<name>/...`), and its only lane, if it has one, to a
+    call whose address names none."""
+
+    lanes: list[Lane]
+    host: str = "host.docker.internal"
+    bind: str = "0.0.0.0"
+    bind_port: int = 0
+    #: Seconds a stream may stay silent before SSE keepalive frames start, one every
+    #: `keepalive_every` seconds until the reply. None turns them off.
+    keepalive_grace: float | None = KEEPALIVE_GRACE
+    keepalive_every: float = KEEPALIVE_EVERY
+    token: str = field(default_factory=new_token, repr=False)
+    control_token: str | None = field(default=None, repr=False)
+
+    _runner: Any = field(default=None, repr=False)
+    _port: int | None = field(default=None, repr=False)
+    _served_last: dict[str, tuple[float, dict[str, Any]]] = field(default_factory=dict, repr=False)
+    #: The lanes, by name.
+    _named: dict[str, Lane] = field(default_factory=dict, repr=False)
+
+    def __post_init__(self) -> None:
+        """Generate a token if it is empty; refuse no lane, or two lanes of one name."""
+        if not self.token:
+            self.token = new_token()
+        if not self.lanes:
+            raise ValueError("a proxy serves at least one lane")
+        for one in self.lanes:
+            if one.name in self._named:
+                raise ValueError(f"two lanes are named {one.name!r}: an address names one")
+            self._named[one.name] = one
+
+    @property
+    def port(self) -> int | None:
+        return self._port
+
+    async def start(self) -> None:
+        """Open every lane, then build the app and its routes, and bind the socket."""
+        for lane in self.lanes:
+            await lane.open()
+        # Control outermost, so only the control token opens the control route.
+        middlewares = [self._control_middleware(), self._auth_middleware()]
         if self.keepalive_grace is not None:
             middlewares.append(keepalive.middleware(self.keepalive_grace, self.keepalive_every))
         # aiohttp answers a body over its 1 MiB default with a 413 before any handler, so the
@@ -163,53 +249,17 @@ class Server:
         await web.TCPSite(runner, self.bind, self.bind_port).start()
         self._runner = runner
         self._port = _bound_port(runner)
-        logger.info("serving %s on port %s as %s", self.serving, self._port, self.host)
-
-    async def swap(self, model_path: str | None) -> None:
-        """Switch to a sampling client on `model_path`, or on the base model for None."""
-        client = await self._make(model_path)
-        self.model_path = model_path
-        if self._recorder is not None:
-            self._recorder.client, self._recorder.served = client, model_path
-
-    def _built(self) -> dict[str, Any]:
-        """Return the renderers by the name a trial's address gives each, "" for the default."""
-        given = self.renderer
-        if isinstance(given, dict):
-            return dict(given)
-        names = (given if isinstance(given, list) else [given]) or [None]
-        if not all(one is None or isinstance(one, str) for one in names):
-            return {"": given}
-        return {one or "": cookbook.renderer_for(self.base_model, one or None) for one in names}
-
-    def _rendering_for(self, found: Exchange | None) -> Rendering:
-        """Return the renderer the call's address names, the first if none; `Refused` if unknown."""
-        named = found.renderer if found is not None else ""
-        if not named:
-            return next(iter(self._renderings.values()))
-        rendering = self._renderings.get(named)
-        if rendering is None:
-            served = ", ".join(self.renderers) or "its model's default alone"
-            raise Refused(f"this proxy does not render with {named!r}: it renders with {served}")
-        return rendering
-
-    async def _make(self, model_path: str | None) -> Any:
-        prefix = self.sampling.PREFIX
-        if model_path is not None and not model_path.startswith(prefix):
-            raise ValueError(f"{model_path!r} is not a {prefix} path")
-        if self.client_factory is not None:
-            return await self.client_factory(model_path)
-        return await self.sampling.sampler(self._service, self.base_model, model_path)
+        logger.info("listening on port %s as %s", self._port, self.host)
+        for lane in self.lanes:
+            logger.info("serving %s in lane %s", lane.serving, lane.name)
 
     async def stop(self) -> None:
         runner, self._runner = self._runner, None
         if runner is not None:
             await runner.cleanup()
         self._port = None
-        service, self._service = self._service, None
-        if service is not None:
-            with contextlib.suppress(Exception):
-                await self.sampling.close(service)
+        for lane in self.lanes:
+            await lane.close()
 
     async def __aenter__(self) -> Server:
         await self.start()
@@ -218,25 +268,37 @@ class Server:
     async def __aexit__(self, *exc: object) -> None:
         await self.stop()
 
+    def lane(self, name: str) -> Lane:
+        """Return the lane `name`, or the only lane for ""; `Refused` for any other, and for ""
+        when there are several."""
+        if not name and len(self.lanes) == 1:
+            return self.lanes[0]
+        found = self._named.get(name)
+        if found is None:
+            served = ", ".join(self._named)
+            if not name:
+                raise Refused(f"this proxy serves several lanes, so a call names one: {served}")
+            raise Refused(f"this proxy serves no lane {name!r}: it serves {served}")
+        return found
+
     def _serving(self, dialect: ModuleType) -> Callable[[web.Request], Awaitable[Any]]:
         """Return the handler for `dialect`'s route: read the call, complete it, write the reply."""
 
         async def serve(request: web.Request) -> Any:
             try:
-                found = exchange.get()
-                rendering = self._rendering_for(found)
+                caller = caller_of(request)
+                lane = self.lane(caller.lane)
+                renderer = lane.renderer_for(caller.renderer)
                 # Off the event loop: images and PDF pages decode here, and other trials wait
                 # on the loop.
                 call = await asyncio.to_thread(dialect.read, await _body(request))
-                if found is not None:
-                    found.requested_model = call.model
-                reply = await complete(call, rendering, self.recorder, int(self.max_tokens))
+                reply = await complete(call, caller, renderer, lane.recorder, int(lane.max_tokens))
             except Refused as refused:
                 logger.warning("refused a request to %s: %s", request.path, refused)
                 return dialect.error(400, str(refused))
             if not call.stream:
-                return web.json_response(dialect.answer(reply, self.serving, call))
-            return await keepalive.serve_sse(request, dialect.events(reply, self.serving, call))
+                return web.json_response(dialect.answer(reply, lane.serving, call))
+            return await keepalive.serve_sse(request, dialect.events(reply, lane.serving, call))
 
         return serve
 
@@ -260,11 +322,11 @@ class Server:
         for name, (at, _payload) in list(self._served_last.items()):
             if now - at > SERVED_KEPT_SECONDS:
                 del self._served_last[name]
-        kept = self._served_last.get(trial)
-        if request.query.get("again") == "1" and kept is not None:
+        kept, asked = self._served_last.get(trial), Fetch.of(request.query)
+        if asked.again and kept is not None:
             payload = kept[1]
         else:
-            payload = self._records_payload(trial, request.query.get("delta") == "1")
+            payload = self._records_payload(trial, asked.delta)
             self._served_last[trial] = (now, payload)
         response = web.json_response(payload, dumps=lambda data: json.dumps(data, default=str))
         response.enable_compression()
@@ -272,8 +334,9 @@ class Server:
 
     def _records_payload(self, trial: str, delta: bool) -> dict[str, Any]:
         """Take the trial's records and build the response payload; [] for an unknown trial."""
-        records = self.recorder.take(trial)
-        return {"records": delta_encoded(records) if delta else [asdict(r) for r in records]}
+        # A trial calls one lane; each lane's recorder takes, and drains, its own records.
+        records = [one for lane in self.lanes for one in lane.recorder.take(trial)]
+        return records_answer(records, delta=delta)
 
     def _control_middleware(self) -> Any:
         """Return the first middleware: health, then the run's routes behind the control token."""
@@ -281,9 +344,7 @@ class Server:
         @web.middleware
         async def control(request: Any, handler: Any) -> Any:
             if request.path == HEALTH_PATH and request.method == "GET":
-                answer = {"status": "ok", "model": self.serving, "serving": self.serving}
-                budget = self.max_context or None
-                return web.json_response({**answer, "budget": budget, "renderers": self.renderers})
+                return web.json_response(health({one.name: one.reported() for one in self.lanes}))
             weights = request.path == CONTROL_PATH
             if not weights and not request.path.startswith(f"{RECORDS_PATH}/"):
                 return await handler(request)
@@ -303,22 +364,53 @@ class Server:
         return control
 
     async def _serve_control(self, request: Any) -> Any:
-        """Switch to the body's `model_path`, under the backend's prefix or null; 400 otherwise."""
+        """Switch the lane the body's `lane` names, the only one if it names none, to the body's
+        `weights`, under its backend's prefix or null; 400 otherwise."""
         try:
             body = await request.json()
         except Exception:
-            raise web.HTTPBadRequest(reason="expected a JSON object with a 'model_path'") from None
-        if not isinstance(body, dict) or "model_path" not in body:
-            raise web.HTTPBadRequest(reason="expected a JSON object with a 'model_path'")
-        path, prefix = body["model_path"], self.sampling.PREFIX
-        if path is not None and (not isinstance(path, str) or not path.startswith(prefix)):
-            raise web.HTTPBadRequest(reason=f"'model_path' must be a {prefix} path or null")
+            body = None  # which `Swap.of` refuses as it does any body that is not a swap
         try:
-            await self.swap(path)
+            asked = Swap.of(body)
+            lane = self.lane(asked.lane or "")
+        except (ValueError, Refused) as refused:
+            raise web.HTTPBadRequest(reason=str(refused)) from None
+        path, prefix = asked.weights, lane.sampling.PREFIX
+        if path is not None and not path.startswith(prefix):
+            raise web.HTTPBadRequest(reason=f"'weights' must be a {prefix} path or null")
+        try:
+            await lane.swap(path)
         except Exception as refused:
             raise web.HTTPBadRequest(reason=f"cannot serve {path}: {refused}") from refused
-        logger.info("serving %s", path or self.base_model)
+        logger.info("serving %s in lane %s", path or lane.model, lane.name)
         return web.json_response({"serving": path})
+
+
+def caller_of(request: Any) -> Caller:
+    """Return who made a call: what its address names, its wire, and the SDK's retry headers;
+    `Refused` for an address that names no trial."""
+    address = None
+    if "address" in request.match_info:
+        try:
+            address = Address.of(request.rel_url.raw_path)
+        except ValueError as unread:
+            raise Refused(str(unread)) from None
+    return Caller(
+        trial=address.trial if address is not None else "",
+        lane=(address.lane if address is not None else None) or "",
+        renderer=(address.renderer if address is not None else None) or "",
+        wire="anthropic" if request.path.endswith("/messages") else "openai",
+        retry=_count(request.headers.get(RETRY_HEADER)),
+        idempotency_key=request.headers.get("Idempotency-Key") or None,
+        request_id=request.headers.get("x-request-id") or None,
+    )
+
+
+def _count(header: str | None) -> int:
+    try:
+        return int(header) if header else 0
+    except ValueError:
+        return 0
 
 
 def _bearer(request: Any) -> str | None:

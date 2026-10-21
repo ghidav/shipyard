@@ -21,7 +21,6 @@ from harness_proxy.bridge import (
     digests_of,
     tail_extends,
 )
-from harness_proxy.exchange import Exchange, exchange
 from harness_proxy.recorder import Recorder
 from harness_proxy.wire import IMAGE_TOKEN, Picture, ids_of, model_input, pictured, pictures_of
 from proxies import (
@@ -34,6 +33,7 @@ from proxies import (
     chars,
     fetch,
     ids,
+    only,
     server,
     text_of,
 )
@@ -215,15 +215,10 @@ def test_a_renderer_without_token_stops_cannot_be_bridged() -> None:
 
 def test_a_record_whose_image_was_not_kept_is_never_indexed_and_a_kept_one_is() -> None:
     recorder = Recorder(object())
-    found = Exchange(trial="t", prompt_digests=("a",))
-    token = exchange.set(found)
-    shot = Picture(1, 1, "png", "cG5n")
-    try:
-        recorder._add("t", (1, IMAGE_TOKEN), {}, None, completion=(3,))
-        recorder._add("t", (1, 2), {}, None, completion=(3,))
-        recorder._add("t", (1, IMAGE_TOKEN, 2), {}, None, completion=(3,), images=(shot,))
-    finally:
-        exchange.reset(token)
+    shot, made = Picture(1, 1, "png", "cG5n"), {"completion": (3,), "prompt_digests": ("a",)}
+    recorder._add("t", (1, IMAGE_TOKEN), {}, None, **made)
+    recorder._add("t", (1, 2), {}, None, **made)
+    recorder._add("t", (1, IMAGE_TOKEN, 2), {}, None, **made, images=(shot,))
     recorder.reply("t", 1, "r1", ended_with_stop=True)
     assert len(recorder.index_for("t")) == 0, "no picture, nothing rebuilds the prompt"
     recorder.reply("t", 2, "r2", ended_with_stop=True)
@@ -339,7 +334,7 @@ async def _tool_loop(answers: list[str], *, retitle: Any = None) -> tuple[Any, A
             retitle(history)
         third = await ask(started, "t", messages=history, tools=TOOLS_OPENAI)
         assert third.status_code == 200, third.text
-        return started.records_for("t"), sampler
+        return only(started).records_for("t"), sampler
 
 
 async def test_a_tool_loop_bridges_and_every_prompt_extends_the_last() -> None:
@@ -418,7 +413,7 @@ async def test_the_anthropic_wire_bridges_a_tool_loop_too() -> None:
         )
         second = await ask_anthropic(started, "t", messages=messages, stream=True, **body)
         assert second.status_code == 200, second.text
-        one, two = started.records_for("t")
+        one, two = only(started).records_for("t")
     assert two.bridged and two.prompt_token_ids[
         : len(one.prompt_token_ids) + len(one.completion_token_ids)
     ] == (
@@ -434,13 +429,13 @@ async def test_a_retry_replays_one_record_with_its_digest_and_the_index_drains_w
     async with server(sampler, renderer=BridgeRenderer()) as started:
         await ask(started, "t")
         await ask(started, "t", headers={"x-stainless-retry-count": "1"})
-        (record,) = started.records_for("t")
+        (record,) = only(started).records_for("t")
         assert record.reply_digest == digest(
             {"role": "assistant", "content": [{"type": "text", "text": "hi"}]}
         )
-        assert len(started.recorder.index_for("t")) == 1 and len(sampler.asked) == 1
+        assert len(only(started).recorder.index_for("t")) == 1 and len(sampler.asked) == 1
         fetched = await fetch(started, "t")
-        assert "t" not in started.recorder.indexes
+        assert "t" not in only(started).recorder.indexes
     assert fetched.json()["records"][0]["reply_digest"] == record.reply_digest
     assert fetched.json()["records"][0]["bridged"] is False
 
@@ -449,7 +444,7 @@ async def test_a_refused_request_leaves_a_record_with_its_digests_and_no_reply()
     async with server(FakeSampler("hi"), renderer=BridgeRenderer(), max_context=4) as started:
         refused = await ask(started, "t")
         assert refused.status_code == 400
-        (record,) = started.records_for("t")
+        (record,) = only(started).records_for("t")
     assert record.error == "context" and record.reply_digest is None
     assert record.prompt_digests == digests_of([{"role": "user", "content": "go"}])
 
@@ -475,7 +470,7 @@ async def test_an_image_prompt_bridges_over_the_wire_and_the_sampler_gets_the_ch
         history += [{"role": "assistant", "content": "hi"}, {"role": "user", "content": "more"}]
         second = await ask(started, "t", messages=history)
         assert second.status_code == 200, second.text
-        one, two = started.records_for("t")
+        one, two = only(started).records_for("t")
     assert [r.bridged for r in (one, two)] == [False, True]
     assert pictured(one) and pictured(two) and one.images == two.images
     assert one.images[0].offset == len(ids("user:")) and one.images[0].length == 3
@@ -497,7 +492,7 @@ async def test_a_bridged_prompt_is_what_the_sampler_is_given(stream: bool) -> No
         await ask(started, "t", messages=history, stream=stream)
         history += [{"role": "assistant", "content": "hi"}, {"role": "user", "content": "more"}]
         await ask(started, "t", messages=history, stream=stream)
-        one, two = started.records_for("t")
+        one, two = only(started).records_for("t")
     assert two.bridged and sampler.prompts[1].to_ints() == list(two.prompt_token_ids)
     assert two.prompt_token_ids == (*one.prompt_token_ids, *ids("hi"), STOP, *ids("\nuser:more\n>"))
 
@@ -534,7 +529,7 @@ async def test_an_echo_whose_arguments_the_harness_rewrote_still_bridges() -> No
         history: list[dict[str, Any]] = [{"role": "user", "content": "look"}]
         history += _echo(await _reply(started, history), '{"all": false, "p": "a"}', "alpha")
         await _reply(started, history)
-        one, two = started.records_for("t")
+        one, two = only(started).records_for("t")
     assert two.bridged and _extends(two, one)
     shown = chars(two.prompt_token_ids)
     assert 'CALL ls {"p": "a"}' in shown and '"ALL"' not in shown, "the call the model wrote"
@@ -551,7 +546,7 @@ async def test_of_two_replies_to_one_history_the_one_the_harness_kept_is_bridged
         assert a["tool_calls"][0]["id"] != b["tool_calls"][0]["id"]
         history += _echo(a, '{"p": "a", "n": 1}', "alpha")
         await _reply(started, history)
-        first, _, third = started.records_for("t")
+        first, _, third = only(started).records_for("t")
     assert third.bridged and _extends(third, first)
 
 
@@ -577,14 +572,30 @@ async def test_a_model_that_names_its_own_calls_keeps_its_ids_and_two_samples_fo
         assert a["tool_calls"][0]["id"] == b["tool_calls"][0]["id"] == "functions.ls:0"
         history += _echo(a, '{"p": "a", "n": 1}', "alpha")
         await _reply(started, history)
-        assert not started.records_for("t")[-1].bridged, "two replies fit: neither is spliced"
+        assert not only(started).records_for("t")[-1].bridged, "two replies fit: neither is spliced"
     answers = ['CALL ls {"p": "a"}', "done"]
     async with server(FakeSampler(answers), renderer=ModelNamedCalls()) as started:
         history = [{"role": "user", "content": "look"}]
         history += _echo(await _reply(started, history), '{"p": "a", "n": 1}', "alpha")
         await _reply(started, history)
-        one, two = started.records_for("t")
+        one, two = only(started).records_for("t")
     assert two.bridged and _extends(two, one), "one reply fits: its rewritten echo bridges"
+
+
+async def test_a_reply_the_harness_got_without_its_calls_is_never_indexed() -> None:
+    """Under `tool_choice: none` the proxy drops the calls the model wrote anyway, so the
+    harness cannot quote the reply as sampled: the next turn is rendered, not spliced."""
+    sampler = FakeSampler(["looking CALL ls {}", "done"])
+    async with server(sampler, renderer=BridgeRenderer()) as started:
+        history: list[dict[str, Any]] = [{"role": "user", "content": "look"}]
+        said = await ask(started, "t", messages=history, tools=TOOLS_OPENAI, tool_choice="none")
+        message = said.json()["choices"][0]["message"]
+        assert not message.get("tool_calls") and len(only(started).recorder.index_for("t")) == 0
+        history += [message, {"role": "user", "content": "go on"}]
+        assert (await _reply(started, history)) is not None
+        first, second = only(started).records_for("t")
+    assert first.reply_digest is not None, "its record still names the reply it parsed"
+    assert not second.bridged
 
 
 async def test_a_replayed_retry_carries_the_ids_its_first_answer_did() -> None:
@@ -608,7 +619,7 @@ async def test_a_sibling_the_trimmed_echo_of_a_kept_reply_digests_as_is_not_spli
         await _reply(started, history)
         history += _echo(a, '{"p": "a"}', "alpha")
         await _reply(started, history)
-        assert not started.records_for("t")[-1].bridged
+        assert not only(started).records_for("t")[-1].bridged
 
 
 async def test_two_turns_that_sample_the_same_call_get_their_own_ids() -> None:
@@ -636,7 +647,7 @@ async def test_an_anthropic_echo_that_drops_a_whitespace_only_block_bridges() ->
         messages.append({"role": "user", "content": [result]})
         second = await ask_anthropic(started, "t", messages=messages, **body)
         assert second.status_code == 200, second.text
-        one, two = started.records_for("t")
+        one, two = only(started).records_for("t")
     assert two.bridged and _extends(two, one)
 
 
@@ -661,7 +672,7 @@ async def test_a_reply_whose_text_renders_a_stop_token_is_rendered_afresh_not_sp
             {"role": "user", "content": "more"},
         ]
         await ask(started, "t", messages=history)
-        one, two = started.records_for("t")
+        one, two = only(started).records_for("t")
     shown = chars(two.prompt_token_ids)
     assert not two.bridged and shown.upper().count("OK") == 1
     assert shown == "user:go\n>SAY \x00 OK\x00\nuser:more\n>", "the fresh render"

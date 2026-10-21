@@ -7,15 +7,16 @@ from pathlib import Path
 
 import pytest
 
-from harness_proxy.wire import CONTROL_TOKEN_ENV, PROXY_TOKEN_ENV
+from harness_proxy.wire import CONTROL_TOKEN_ENV, PROXY_TOKEN_ENV, Served
 from shipyard import Trainer, load
 from shipyard.config import ConfigError
-from shipyard.models.endpoints import ProxyEndpoint
-from shipyard.run import record
-from shipyard.trainer import split
+from shipyard.jobs.engine import split
+from shipyard.run import files
+from shipyard.run.logs import AGENT
 from tests.fakes import Alternating, FakeProxy, Harbor
-from tests.test_trainer import ONE_STEP, _rows, _train, blueprint
-from tests.trainers import FakeService
+from tests.runs import ONE_STEP, blueprint, rows, train
+from tests.service import FakeService
+from tests.test_endpoints import agent
 
 LOW, HIGH = "qwen3_8_low_reasoning", "qwen3_8_xhigh_reasoning"
 ROLLOUT = "concurrency = 2"
@@ -50,7 +51,7 @@ def test_the_rollout_takes_a_renderer_or_several_each_named_once(tmp_path: Path)
 def test_a_providers_agent_takes_no_renderer(tmp_path: Path) -> None:
     claude = {'model = "Qwen/Qwen3-8B"': 'model = "claude-sonnet-5-5"\nprovider = "anthropic"'}
     config = load(blueprint(tmp_path, **claude, **EFFORTS))
-    with pytest.raises(ValueError, match="the proxy renders the calls of a model the run trains"):
+    with pytest.raises(ValueError, match="renders the calls of a model on Tinker or Together"):
         Trainer(config, tmp_path / "run")
     assert not (tmp_path / "run").exists(), "refused before the run directory is made"
 
@@ -88,9 +89,10 @@ async def test_a_run_trains_and_evaluates_at_each_renderer_and_says_which(
     trials = harbor(Alternating())
     with_test = {"group_size = 2": 'group_size = 2\ntest = "four"\ntest_group_size = 1'}
     home = blueprint(tmp_path, **EFFORTS, **ONE_STEP, **with_test)
-    directory = await _train(home, tmp_path / "runs")
-    assert proxy.placed[0][1]["renderer"] == [LOW, HIGH], "one proxy, started with both"
-    jobs = {job["job"]: job for job in record.read(directory / record.JOBS)}
+    directory = await train(home, tmp_path / "runs")
+    (lane,) = proxy.placed[0][1]["lanes"]
+    assert lane["renderer"] == [LOW, HIGH], "one proxy, the agent's lane started with both"
+    jobs = {job["job"]: job for job in files.read(directory / files.JOBS)}
     trained = [job["renderer"] for job in jobs.values() if job["purpose"] == "training"]
     assert trained == [LOW, HIGH], "the batch's two tasks, one at each"
     tested = [job["renderer"] for job in jobs.values() if job["purpose"] == "evaluation"]
@@ -99,7 +101,7 @@ async def test_a_run_trains_and_evaluates_at_each_renderer_and_says_which(
         renderer = jobs[Path(config.trials_dir).name]["renderer"]
         address = config.agent.env["OPENAI_BASE_URL"]
         assert address.endswith(f"/renderer/{renderer}/v1"), "each trial dials its own"
-    (row,) = _rows(directory)
+    (row,) = rows(directory)
     for one in (LOW, HIGH):
         assert (row[f"reward_mean_{one}"], row[f"sampled_mean_{one}"]) == (0.5, 2.0)
     assert (row["eval_tasks"], row["eval_trials"], row["eval_graded"]) == (4, 8, 8)
@@ -118,28 +120,35 @@ async def test_a_recipe_may_roll_out_at_one_renderer_and_no_other(
             with pytest.raises(ValueError, match=r"rollout\(renderer='medium'\): the proxy"):
                 await self.rollout(self.draw(), renderer="medium")
 
-    directory = await _train(blueprint(tmp_path, **EFFORTS, **ONE_STEP), tmp_path / "runs", Pinned)
-    assert [job["renderer"] for job in record.read(directory / record.JOBS)] == [HIGH]
-    (row,) = _rows(directory)
+    directory = await train(blueprint(tmp_path, **EFFORTS, **ONE_STEP), tmp_path / "runs", Pinned)
+    assert [job["renderer"] for job in files.read(directory / files.JOBS)] == [HIGH]
+    (row,) = rows(directory)
     assert not any(key.startswith("reward_mean_") for key in row), "one renderer: no breakdown"
 
 
 async def test_a_remote_proxy_that_lacks_a_named_renderer_is_refused_before_any_trial(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    proxy = FakeProxy(renderers=[LOW])
+    proxy = FakeProxy()
     monkeypatch.setattr("shipyard.models.endpoints.Proxy", proxy)
     remote = rendered(f'["{LOW}", "{HIGH}"]\nendpoint_url = "https://proxy.example"')
-    endpoint = ProxyEndpoint(
+    lane = agent(
         load(blueprint(tmp_path, **remote)),
         tmp_path,
         environ={PROXY_TOKEN_ENV: "t", CONTROL_TOKEN_ENV: "c"},
     )
-    with pytest.raises(RuntimeError, match=rf"renders with {LOW}, and \[rollout\] renderer names"):
+    endpoint = lane.proxy
+
+    def renders(*names: str) -> dict[str, Served]:
+        return {AGENT: Served(lane.model, lane.model, None, names)}
+
+    proxy.lanes = renders(LOW)
+    match = rf"renders lane agent with {LOW}, and \[rollout\] renderer names {HIGH}"
+    with pytest.raises(RuntimeError, match=match):
         await endpoint.open()
-    proxy.renderers = None
-    with pytest.raises(RuntimeError, match="does not say which renderers it renders with"):
+    proxy.lanes = renders()
+    with pytest.raises(RuntimeError, match="with its model's default alone"):
         await endpoint.open()
-    proxy.renderers = [HIGH, LOW, "other"]
+    proxy.lanes = renders(HIGH, LOW, "other")
     await endpoint.open()
     assert endpoint.proxy is proxy, "a proxy that renders with each of them is taken"

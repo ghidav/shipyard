@@ -15,7 +15,7 @@ from harbor.utils.templating import render_prompt_template
 from typer.testing import CliRunner
 
 from proxies import MODEL
-from shipyard import Group, Trainer
+from shipyard import Blueprint, Group, Trainer
 from shipyard.cli import app
 from shipyard.config import Rollout
 from shipyard.jobs.engine import DELIVERED, HarborEngine, Job, laid_over
@@ -32,6 +32,7 @@ from shipyard.jobs.modules import (
     Modules,
     Skill,
     Unsupported,
+    carried,
     deliver,
     keep,
     preamble,
@@ -39,11 +40,12 @@ from shipyard.jobs.modules import (
     write,
 )
 from shipyard.models.endpoints import ProviderEndpoint
-from shipyard.run import record
+from shipyard.run import files
+from shipyard.run.checkpoint import Checkpoint
 from shipyard.run.directory import open_run, reopened, running
-from shipyard.trainer import CARRIED, carried
+from shipyard.run.files import CARRIED
 from tests.fakes import Alternating, FakeProxy, FakeTrials, Harbor, dataset
-from tests.trainers import FakeService
+from tests.service import FakeService
 
 FIXTURES = Path(__file__).parent / "modules"
 VALID = FIXTURES / "valid"
@@ -377,14 +379,14 @@ def test_read_skips_the_incidental_and_write_refuses_an_escape(tmp_path: Path) -
     (source / "examples" / "worked.md").write_text("and one that is not")
     (source / "examples" / "__pycache__" / "cached.pyc").write_text("x")
     (source / ".DS_Store").write_text("x")
-    files = read(source)
-    assert files == {
+    found = read(source)
+    assert found == {
         SKILL_FILE: "the document",
         "examples/SKILL.md": "also named SKILL.md",
         "examples/worked.md": "and one that is not",
     }
-    write(files, into=tmp_path / "round-trip")
-    assert read(tmp_path / "round-trip") == files
+    write(found, into=tmp_path / "round-trip")
+    assert read(tmp_path / "round-trip") == found
     with pytest.raises(Inadmissible, match="inside the module"):
         write({"../escaped.md": "no"}, into=tmp_path / "solving")
     (source / "binary.bin").write_bytes(b"\xff\xfe\x00")
@@ -421,6 +423,10 @@ async def _roll(
     the keyword arguments of its `rollout`; with `update`, it scores and trains on each."""
 
     class Rolling(Trainer):
+        def __init__(self, config: Blueprint, directory: Path) -> None:
+            super().__init__(config, directory)
+            self.policy.training = update  # a rollout alone trains nothing
+
         async def step(self) -> None:
             for tasks, named in jobs:
                 groups = await self.rollout(tasks, **named)
@@ -430,12 +436,12 @@ async def _roll(
 
     directory, config = open_run(home, root=root)
     with running(directory), Rolling(config, directory) as trainer:
-        await trainer.train()
+        await trainer.run()
     return directory, trainer
 
 
 def _rows(directory: Path) -> list[dict[str, Any]]:
-    return list(record.read(directory / record.JOBS))
+    return list(files.read(directory / files.JOBS))
 
 
 async def test_a_run_keeps_the_carried_modules_once_and_each_job_delivers_them(
@@ -446,7 +452,7 @@ async def test_a_run_keeps_the_carried_modules_once_and_each_job_delivers_them(
     kept: list[Path] = []
     keeping = keep
     monkeypatch.setattr(
-        "shipyard.trainer.keep", lambda c, into: (kept.append(into), keeping(c, into))
+        "shipyard.jobs.modules.keep", lambda c, into: (kept.append(into), keeping(c, into))
     )
     runner = harbor(FakeTrials())
     directory, trainer = await _roll(
@@ -456,7 +462,7 @@ async def test_a_run_keeps_the_carried_modules_once_and_each_job_delivers_them(
         (_batch(tmp_path, "alpha"), {"attempts": 1}),
     )
     assert trainer.state.modules == Modules.read(home / "modules")
-    copy = directory / record.MODULES / CARRIED
+    copy = directory / files.MODULES / CARRIED
     assert kept == [copy] and _files(copy) == _files(VALID)
     assert Modules.read(copy).digest == trainer.state.modules.digest
     with Trainer(trainer.config, directory) as again:
@@ -471,8 +477,8 @@ async def test_a_run_keeps_the_carried_modules_once_and_each_job_delivers_them(
         assert _files(root / "solving") == _files(VALID / SKILLS_DIR / "solving")
     rows = _rows(directory)
     assert [row["modules"] for row in rows] == [trainer.state.modules.digest] * 2
-    head = ["at", "job", "dir", "purpose", "harness", "trials", "step", "tasks", "modules"]
-    assert list(rows[0])[:9] == head and rows[0]["harness"] == "pi@0.85.1"
+    head = ["at", "job", "dir", "purpose", "role", "harness", "trials", "step", "tasks", "modules"]
+    assert list(rows[0])[:10] == head and rows[0]["harness"] == "pi@0.85.1"
     assert sorted(p.name for p in (tmp_path / "jobs" / first).iterdir()) == sorted(
         [DELIVERED] + [config.trial_name for config in runner.configs[:4]]
     )
@@ -492,7 +498,7 @@ async def test_a_job_delivers_the_candidate_it_is_handed_and_nothing_otherwise(
         (alpha, {"attempts": 1}),
         (alpha, {"attempts": 1, "modules": handed}),
     )
-    assert trainer.state.modules is None and not (directory / record.MODULES).exists()
+    assert trainer.state.modules is None and not (directory / files.MODULES).exists()
     bare, carrying = f"{directory.name}-0000", f"{directory.name}-0001"
     assert runner.configs[0].agent.skills == []
     assert sorted(p.name for p in (tmp_path / "jobs" / bare).iterdir()) == [
@@ -533,12 +539,16 @@ async def _two(tmp_path: Path, text: str) -> tuple[Path, list[Group]]:
     found: list[Group] = []
 
     class Rolling(Trainer):
+        def __init__(self, config: Blueprint, directory: Path) -> None:
+            super().__init__(config, directory)
+            self.policy.training = False
+
         async def step(self) -> None:
             found.extend(await self.rollout(_batch(tmp_path, "alpha", "beta")))
 
     directory, config = open_run(_carrying(tmp_path, text, modules=None), root=tmp_path / "runs")
     with running(directory), Rolling(config, directory) as trainer:
-        await trainer.train()
+        await trainer.run()
     return directory, found
 
 
@@ -636,13 +646,13 @@ def test_a_run_carries_its_modules_and_keeps_a_candidate_in_the_layout_it_reads(
     monkeypatch.chdir(tmp_path)
     directory, config = open_run(_carrying(tmp_path), root=tmp_path / "runs")
     assert carried(config, directory) == Modules.read(VALID)
-    assert (directory / record.MODULES / CARRIED / SKILLS_DIR / "solving" / SKILL_FILE).is_file()
+    assert (directory / files.MODULES / CARRIED / SKILLS_DIR / "solving" / SKILL_FILE).is_file()
     best = Modules({**Modules.read(VALID).components, PROMPT: _prompt("Run the tests.\n")})
     with Trainer(config, directory) as trainer:
         kept = trainer.keep(best, "best")
-    assert kept == directory / record.MODULES / "best"
+    assert kept == directory / files.MODULES / "best"
     assert Modules.read(kept) == best, "a kept candidate seeds a later run"
-    assert Modules.read(directory / record.MODULES / CARRIED) == Modules.read(VALID), (
+    assert Modules.read(directory / files.MODULES / CARRIED) == Modules.read(VALID), (
         "the carried copy stays"
     )
 
@@ -657,11 +667,9 @@ def test_a_resumed_run_carries_the_modules_its_checkpoint_saved(
     trainer = Trainer(config, directory)
     later = Modules({"solving": _module(_skill("read it three times"))})
     saved = Trainer.State(steps=4, updates=4, drawn=4, modules=later).model_dump(mode="json")
-    record.write_json(directory / record.STATES / "step-4.json", saved)
+    files.write_json(directory / files.STATES / "step-4.json", saved)
     resumed = Trainer(config, directory)
-    resumed.restore(
-        directory, {"tag": "step-4", "step": 4, "state": f"{record.STATES}/step-4.json"}
-    )
+    resumed.restore(directory, Checkpoint("step-4", 4, f"{files.STATES}/step-4.json"))
     assert resumed.state.modules == later != trainer.state.modules
 
 
@@ -674,11 +682,11 @@ async def test_a_resumed_run_carries_the_modules_it_kept_not_the_blueprints(
     twice = (_batch(tmp_path, "alpha"), {"attempts": 2})  # scored 1 and 0, so it updates
     directory, _ = await _roll(home, tmp_path / "runs", twice, update=True)
     shutil.rmtree(home / "modules")
-    config, row = reopened(directory)
-    saved = Trainer.State.model_validate(record.read_json(directory / row["state"]))
-    assert row["tag"] == "final" and saved.modules == Modules.read(VALID), "in the state, whole"
+    config, checkpoint = reopened(directory)
+    saved = Trainer.State.model_validate(checkpoint.saved_state(directory))
+    assert checkpoint.tag == "final" and saved.modules == Modules.read(VALID), "in the state"
     with Trainer(config, directory) as resumed:
-        resumed.restore(directory, row)
+        resumed.restore(directory, checkpoint)
         assert resumed.state.modules == Modules.read(VALID)
 
 
@@ -703,12 +711,12 @@ def test_modules_the_run_cannot_read_fail_it_before_anything_is_kept_or_rolled_o
     result = CliRunner().invoke(app, ["run", str(home), "--root", str(tmp_path / "runs")])
     assert result.exit_code == 1 and isinstance(result.exception, Inadmissible)
     (directory,) = (tmp_path / "runs").iterdir()
-    note = record.read_json(directory / record.RUN)["process"]
+    note = files.read_json(directory / files.RUN)["process"]
     assert note["failed"] is True and note["error"].startswith("Inadmissible: ")
     assert reason in note["error"]
     if modules is None:
         assert str(home / "modules") in note["error"]
-    assert not (directory / record.MODULES).exists() and runner.configs == []
+    assert not (directory / files.MODULES).exists() and runner.configs == []
 
 
 def test_a_reserved_kind_stops_the_trainer_by_name(
@@ -723,4 +731,4 @@ def test_a_reserved_kind_stops_the_trainer_by_name(
     assert str(refused.value) == (
         "'tools' is for tool modules, and tool modules are not supported in this version"
     )
-    assert not (directory / record.MODULES).exists()
+    assert not (directory / files.MODULES).exists()

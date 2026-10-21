@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from harbor.agents.installed.base import (
     AgentAuthenticationError,
@@ -16,13 +14,11 @@ from harbor.agents.installed.base import (
 )
 from harbor.agents.installed.vibe import ApiConnectionError
 
-from harness_proxy.wire import BUDGET, CONTEXT, pictured
-
 if TYPE_CHECKING:
     from harbor.models.trial.result import TrialResult
 
-    from shipyard.groups import Trial
     from shipyard.jobs.engine import Job
+    from shipyard.records import Records
 
 #: Mask reasons.
 ENV_ERROR = "env_error"
@@ -81,7 +77,7 @@ class Verdict:
 def judge(job: Job) -> None:
     """Give each of the job's trials a verdict on whether its last model call failed."""
     for one in job.trials:
-        failed = one.records is not None and failed_last(one)
+        failed = one.records.recorded and one.harness.last_call_failed(one.dir)
         one.verdict = verdict(
             one.result, one.records, failed=failed, grade_timeouts=job.grade_timeouts
         )
@@ -89,7 +85,7 @@ def judge(job: Job) -> None:
 
 def verdict(
     result: TrialResult | None,
-    records: Sequence[Any] | None = None,
+    records: Records,
     *,
     failed: bool = False,
     grade_timeouts: bool = False,
@@ -97,7 +93,7 @@ def verdict(
     """Judge one trial from Harbor's with either the verifier's reward or a mask."""
     ended = result.exception_info if result is not None else None
     why = ended.exception_type if ended is not None else None
-    if records is not None:
+    if records.recorded:
         found = served_verdict(records, why, failed=failed)
         if found is not None:
             return found
@@ -114,42 +110,24 @@ def verdict(
     return Verdict(float(reward), None, why)
 
 
-def served_verdict(
-    records: Sequence[Any], why: str | None, *, failed: bool = False
-) -> Verdict | None:
+def served_verdict(records: Records, why: str | None, *, failed: bool = False) -> Verdict | None:
     """Return the verdict the proxy's records decide before the verifier is read."""
-    if not records:
+    if len(records) == 0:
         return Verdict(None, ENV_ERROR, why)
-    spoke = any(item.error is None for item in records)
-    if records[0].error == CONTEXT and not spoke:
+    if records.never_fit:
         return Verdict(None, CONTEXT_OVERFLOW, why)
-    if any(item.error == BUDGET for item in records):
+    if records.out_of_budget:
         return Verdict(0.0, None, why)
-    filled = spoke and any(item.error == CONTEXT for item in records)
-    if filled and why is not None and why != TIMED_OUT and why not in GRADER_FAILED:
+    quit_ = why is not None and why != TIMED_OUT and why not in GRADER_FAILED
+    if records.filled_context and quit_:
         return Verdict(0.0, None, why)
-    last = records[-1].error
-    if last is not None and last not in (BUDGET, CONTEXT):
+    if records.last_failed:
         return Verdict(None, API_ERROR, why)
-    if failed and last is None:
+    if failed and records.last_answered:
         return Verdict(None, API_ERROR, why)
-    if any(not pictured(item) for item in records if item.error is None):
+    if records.lost_an_image:
         return Verdict(None, MULTIMODAL, why)
     return None
-
-
-def failed_last(trial: Trial) -> bool:
-    """Return whether the trial's harness log says its last model call failed."""
-    reader = trial.harness.profile.failed_last
-    text = harness_log(trial.dir, trial.harness.name) if reader is not None else None
-    return reader is not None and text is not None and reader(text)
-
-
-def harness_log(trial: Path, harness: str) -> str | None:
-    try:
-        return (trial / "agent" / f"{harness}.txt").read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
 
 
 def endpoint_failed(why: str | None) -> bool:

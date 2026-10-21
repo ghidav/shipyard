@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
-from collections.abc import Awaitable, Mapping
+from collections.abc import Mapping
 from collections.abc import Sequence as Values
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
@@ -28,6 +30,63 @@ TINKER = "tinker"
 SERVE_TTL = 12 * 3600
 #: LoRA rank used when `[recipe] lora_rank` sets none (Tinker's default).
 DEFAULT_LORA_RANK = 32
+#: What names weights saved for sampling in a `tinker://` path: a run samples and scores them,
+#: and trains only from a training state (`tinker://.../weights/...`).
+SAMPLER_WEIGHTS = "/sampler_weights/"
+#: Most scoring requests sent to one sampling client at once.
+LOGPROB_CONCURRENCY = 16
+
+
+@dataclass(frozen=True)
+class Loss:
+    """One of Tinker's losses: the inputs it reads beside `target_tokens`, and its settings."""
+
+    reads: tuple[str, ...]
+    settings: frozenset[str] = frozenset()
+
+
+#: The ratio against the sampler's logprobs, and each target's advantage.
+_RATIO = ("logprobs", "advantages")
+_CLIPPED = frozenset({"clip_low_threshold", "clip_high_threshold"})
+#: Tinker's losses, which Together trains with too. `cross_entropy` weighs each target token by
+#: its advantage; the clip thresholds bound the ratio itself, as 0.8 and 1.2 do.
+LOSSES: dict[str, Loss] = {
+    "importance_sampling": Loss(_RATIO),
+    "ppo": Loss(_RATIO, _CLIPPED),
+    "cispo": Loss(_RATIO, _CLIPPED),
+    "dro": Loss(_RATIO, frozenset({"beta"})),
+    "cross_entropy": Loss(("weights",)),
+}
+
+
+def check_loss(loss: str, settings: Mapping[str, float] | None) -> None:
+    """Raise `ValueError` unless `loss` is one of Tinker's and takes each of `settings`."""
+    known = LOSSES.get(loss)
+    if known is None:
+        raise ValueError(f"no loss {loss!r}: the losses are {', '.join(LOSSES)}")
+    unknown = sorted(set(settings or {}) - known.settings)
+    if unknown:
+        takes = ", ".join(sorted(known.settings)) or "no settings"
+        raise ValueError(f"the {loss} loss takes {takes}; got {', '.join(unknown)}")
+
+
+def starts_from(checkpoint: str | None, *, trains: bool) -> None:
+    """Raise `ValueError` unless `[agent] from_checkpoint` fits the run: a training state for a
+    run that trains its agent, weights saved for sampling for one that only serves it."""
+    if checkpoint is None:
+        return
+    sampled = SAMPLER_WEIGHTS in checkpoint
+    if trains and sampled:
+        raise ValueError(
+            f"[agent] from_checkpoint: {checkpoint} holds weights saved for sampling, and "
+            "training goes on from a training state: name the checkpoint's `weights` path"
+        )
+    if not trains and not sampled:
+        raise ValueError(
+            f"[agent] from_checkpoint: a run that does not train its agent serves it from "
+            f"weights saved for sampling, and {checkpoint} is none: name a kept checkpoint's "
+            "`sampler` path"
+        )
 
 
 def backend() -> str:
@@ -47,7 +106,13 @@ def service_client(metadata: dict[str, str] | None = None) -> Any:
 
 
 class TinkerClient:
-    """The agent's Tinker training client, created on `open`."""
+    """The agent's Tinker session: its training client, created on `open` when the run trains
+    the agent, or else a sampling client on its weights, which scores it."""
+
+    #: The backend it reaches, as a job's row names it.
+    kind = TINKER
+    #: Whether what it saves lives only the TTL it is given.
+    expires = True
 
     def __init__(
         self,
@@ -57,25 +122,35 @@ class TinkerClient:
         from_checkpoint: str | None = None,
         lora_rank: int | None = None,
         restore_optimizer: bool = False,
-        anchor_ttl: int = SERVE_TTL,
+        trains: bool = True,
         service: Any = None,
     ) -> None:
+        """Raise `ValueError` for a `from_checkpoint` the run cannot start from."""
+        starts_from(from_checkpoint, trains=trains)
         self.model = model
-        #: Seconds the saved `INITIAL` weights of a run started from a checkpoint are kept.
-        self.anchor_ttl = anchor_ttl
+        #: Who its tokens are billed to: `tinker`, or `tinker@<host>`.
         self.provider = backend()
         self.from_checkpoint = from_checkpoint
         self.lora_rank = lora_rank
         self.restore_optimizer = restore_optimizer
+        #: Whether the run trains the model, so `open` creates a training client.
+        self.trains = trains
         self.metadata = tagged(run) if run else None
         self.service = service if service is not None else service_client(self.metadata)
         self.client: Any = None
+        #: What scores the model when no training client holds it: a sampling client on its
+        #: weights, `from_checkpoint`'s or the base model's.
+        self.scorer: Any = None
 
     async def open(self) -> None:
-        """Create the training client: a new LoRA on the model, or the checkpoint's weights."""
+        """Create the training client: a new LoRA on the model, or the checkpoint's weights.
+        A run that does not train the model opens a sampling client on its weights instead."""
         metadata, service = self.metadata, self.service
         try:
-            await _server_has(service, self.model)
+            await _server_has(service, self.model, trains=self.trains)
+            if not self.trains:
+                self.scorer = await _sampler(service, self.from_checkpoint or self.model)
+                return
             if self.from_checkpoint:
                 resume = (
                     service.create_training_client_from_state_with_optimizer_async
@@ -93,41 +168,44 @@ class TinkerClient:
             await _quietly_closed(service, failed)
             raise
 
-    async def anchor(self) -> Any:
-        """Return a sampling client on the weights as opened: the run's `INITIAL` weights."""
-        start = (
-            await self.save_weights_for_sampler("anchor", ttl_seconds=self.anchor_ttl)
-            if self.from_checkpoint
-            else None
-        )
-        return await self.service.create_sampling_client_async(
-            base_model=self.model, model_path=start
-        )
-
-    async def sampler(self, model: str) -> Any:
-        """Return a sampling client in this session on a base model or a `tinker://` path."""
-        if model.startswith("tinker://"):
-            return await self.service.create_sampling_client_async(model_path=model)
-        return await self.service.create_sampling_client_async(base_model=model)
-
-    async def forward_backward(
-        self, datums: Values[tinker.Datum], loss_fn: str, loss_config: Mapping[str, float] | None
-    ) -> Awaitable[list[list[float]]]:
-        """Submit one training pass, and return what awaits its logprobs."""
-        future = await self.client.forward_backward_async(
-            [_unmasked(one) for one in datums],
-            loss_fn=loss_fn,
-            loss_fn_config=dict(loss_config or {}) or None,
-        )
-        return _forward(future)
-
-    async def optim_step(self, adam: tinker.AdamParams, rate: float) -> Awaitable[None]:
-        """Submit an optimizer step with `adam`'s settings at learning rate `rate`."""
+    async def fit(
+        self,
+        parts: Values[Values[tinker.Datum]],
+        adam: tinker.AdamParams,
+        rate: float,
+        loss_fn: str,
+        loss_config: Mapping[str, float] | None,
+    ) -> list[list[float]]:
+        """Run a training pass and an optimizer step on each part in turn, at learning rate
+        `rate`, and return each datum's logprobs; each part is submitted before the one before
+        it is read, so Tinker runs them back to back."""
         params = adam.model_copy(update={"learning_rate": rate})
-        return _done(await self.client.optim_step_async(params))
+        config = dict(loss_config or {}) or None
 
-    async def compute_logprobs(self, sequences: Values[Sequence]) -> list[list[float]]:
-        """Return each sequence's logprobs at its targets, from one `cross_entropy` pass."""
+        async def submit(part: Values[tinker.Datum]) -> tuple[Any, Any]:
+            forward = await self.client.forward_backward_async(
+                [sent(one, loss_fn) for one in part], loss_fn=loss_fn, loss_fn_config=config
+            )
+            return forward, await self.client.optim_step_async(params)
+
+        trained: list[list[float]] = []
+        pending = await submit(parts[0])
+        for index in range(len(parts)):
+            following = await submit(parts[index + 1]) if index + 1 < len(parts) else None
+            forward, optim = pending
+            trained.extend(await _forward(forward))
+            await optim.result_async()
+            if following is not None:
+                pending = following
+        return trained
+
+    async def compute_logprobs(
+        self, sequences: Values[Sequence]
+    ) -> tuple[list[list[float]], dict[str, int]]:
+        """Return each sequence's logprobs at its targets, and the tokens that took by kind:
+        one `cross_entropy` pass of the training client, or the scorer's when there is none."""
+        if self.scorer is not None:
+            return await sampled(self.scorer, sequences)
         data: list[tinker.Datum] = []
         for one in sequences:
             read, target_tokens = shifted(one.tokens, one.images)
@@ -140,14 +218,18 @@ class TinkerClient:
         for one, row in zip(sequences, result.loss_fn_outputs, strict=True):
             scored = _floats(row["logprobs"])
             out.append([scored[at - 1] if at > 0 else 0.0 for at in one.targets])
-        return out
+        return out, {"train": sum(int(one.model_input.length) for one in data)}
 
     async def serving(self) -> dict[str, str]:
         """Return what the proxy samples through beyond its default: nothing, as it is Tinker."""
         return {}
 
-    async def publish(self, tag: str) -> str:
-        """Save the weights for sampling as `tag`, kept `SERVE_TTL`, and return their path."""
+    async def publish(self, tag: str) -> str | None:
+        """Save the weights for sampling as `tag`, kept `SERVE_TTL`, and return their path. With
+        no training client, return the weights served as they are: `from_checkpoint`'s, or None
+        for the base model."""
+        if self.client is None:
+            return self.from_checkpoint
         return await self.save_weights_for_sampler(tag, ttl_seconds=SERVE_TTL)
 
     async def save_weights_for_sampler(self, name: str, *, ttl_seconds: int | None) -> str:
@@ -166,12 +248,69 @@ class TinkerClient:
     async def close(self, status: str = "success", detail: str | None = None) -> None:
         """Finish the Tinker session with `status`; later calls do nothing."""
         service, self.service = self.service, None
-        if service is None:
-            return
-        try:
-            await service.close(status, detail)
-        except Exception:  # noqa: BLE001 - a session that will not finish is not a run failure
-            logger.warning("could not finish the Tinker session", exc_info=True)
+        if service is not None:
+            await finished(service, status, detail)
+
+
+async def sampling(load: str, *, run: str | None = None) -> tuple[Any, Any, str, str]:
+    """Open a Tinker session of its own for `load`, a model's name or a `tinker://` path, and
+    return the session, a sampling client on it, the base model its tokens are priced as, and
+    who they are billed to. Raise `ValueError` for a model the backend does not serve; a failed
+    open finishes the session as errored."""
+    service = service_client(tagged(run) if run else None)
+    try:
+        if load.startswith("tinker://"):
+            sampler = await _sampler(service, load)
+            model = str(await sampler.get_base_model_async())
+        else:
+            await _server_has(service, load, trains=False)
+            sampler, model = await _sampler(service, load), load
+    except BaseException as failed:
+        await _quietly_closed(service, failed)
+        raise
+    return service, sampler, model, backend()
+
+
+async def finished(service: Any, status: str = "success", detail: str | None = None) -> None:
+    """Finish a Tinker session with `status`: one that will not finish is not a run failure."""
+    try:
+        await service.close(status, detail)
+    except Exception:  # noqa: BLE001 - a session that will not finish is not a run failure
+        logger.warning("could not finish the Tinker session", exc_info=True)
+
+
+async def sampled(
+    sampler: Any, sequences: Values[Sequence]
+) -> tuple[list[list[float]], dict[str, int]]:
+    """Return a sampling client's logprobs at each sequence's targets, and the tokens it took."""
+    gate = asyncio.Semaphore(LOGPROB_CONCURRENCY)
+    took = {"prefill": 0, "cache": 0, "sample": 0}
+
+    async def one(sequence: Sequence) -> list[float]:
+        prompt = model_input(sequence.tokens, sequence.images)
+        async with gate:
+            reply = await sampler.sample_async(
+                prompt=prompt,
+                num_samples=1,
+                sampling_params=tinker.SamplingParams(max_tokens=1),
+                include_prompt_logprobs=True,
+            )
+        cache = min(int(reply.prompt_cache_hit_tokens or 0), prompt.length)
+        took["prefill"] += prompt.length - cache
+        took["cache"] += cache
+        took["sample"] += sum(len(drawn.tokens) for drawn in reply.sequences)
+        scored = list(reply.prompt_logprobs or [])
+        return [float(scored[at] or 0.0) for at in sequence.targets]
+
+    found = list(await asyncio.gather(*(one(sequence) for sequence in sequences)))
+    return found, took
+
+
+async def _sampler(service: Any, load: str) -> Any:
+    """Return a sampling client in `service`'s session on a base model or a `tinker://` path."""
+    if load.startswith("tinker://"):
+        return await service.create_sampling_client_async(model_path=load)
+    return await service.create_sampling_client_async(base_model=load)
 
 
 def shifted(
@@ -220,25 +359,22 @@ async def _forward(future: Any) -> list[list[float]]:
     return [_floats(output["logprobs"]) for output in result.loss_fn_outputs]
 
 
-async def _done(future: Any) -> None:
-    await future.result_async()
-
-
 def _floats(scored: Any) -> list[float]:
     found = scored.tolist() if hasattr(scored, "tolist") else list(scored)
     return [0.0 if one is None else float(one) for one in found]
 
 
-def _unmasked(datum: tinker.Datum) -> tinker.Datum:
-    """Return the datum without `mask`, which is used locally and not sent to Tinker."""
-    return tinker.Datum(
-        model_input=datum.model_input,
-        loss_fn_inputs={key: value for key, value in datum.loss_fn_inputs.items() if key != "mask"},
-    )
+def sent(datum: tinker.Datum, loss: str) -> tinker.Datum:
+    """Return the datum as `loss` reads it: its targets and the loss's own inputs, each target's
+    weight its advantage. The rest, such as `mask`, is used here and not sent."""
+    held = {**datum.loss_fn_inputs, "weights": datum.loss_fn_inputs["advantages"]}
+    inputs = {key: held[key] for key in ("target_tokens", *LOSSES[loss].reads)}
+    return tinker.Datum(model_input=datum.model_input, loss_fn_inputs=inputs)
 
 
-async def _server_has(service: Any, base_model: str) -> None:
-    """Raise `ValueError` if the backend does not list `base_model` or cannot train it."""
+async def _server_has(service: Any, base_model: str, *, trains: bool = True) -> None:
+    """Raise `ValueError` if the backend does not list `base_model`, or, when the run `trains`
+    it, cannot train it."""
     try:
         caps = await service.get_server_capabilities_async()
         models = list(caps.supported_models or [])
@@ -251,7 +387,7 @@ async def _server_has(service: Any, base_model: str) -> None:
     if found is None:
         names = sorted(str(one.model_name) for one in models)
         raise ValueError(f"the backend does not serve {base_model!r}; it serves {', '.join(names)}")
-    if found.trainable is False:
+    if trains and found.trainable is False:
         raise ValueError(
             f"{base_model!r} can be sampled but not trained; name the trainable variant "
             "under [agent] model"
@@ -259,7 +395,7 @@ async def _server_has(service: Any, base_model: str) -> None:
 
 
 async def _quietly_closed(service: Any, why: BaseException) -> None:
-    """Close a session as errored after its training client failed to open."""
+    """Close a session as errored after what it was opened for failed to open."""
     try:
         await service.close("errored", f"{type(why).__name__}: {why}")
     except Exception:  # noqa: BLE001 - the failure being reported is the caller's

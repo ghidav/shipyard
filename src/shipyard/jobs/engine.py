@@ -7,7 +7,7 @@ import os
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from harbor.models.task.config import NetworkMode
 from harbor.models.task.config import TaskConfig as TaskToml
@@ -19,16 +19,20 @@ from harbor.models.trial.config import (
     VerifierConfig,
 )
 
-from shipyard.groups import Trial
+from shipyard.groups import Group, Trial, grouped, merged
 from shipyard.jobs.admit import judge
-from shipyard.jobs.harnesses import Harness, bare_name
+from shipyard.jobs.harnesses import Harness, harness
 from shipyard.jobs.modules import Modules, deliver
 from shipyard.jobs.progress import Bars
 from shipyard.jobs.secrets import Secrets, scrub
+from shipyard.records import Records
+from shipyard.run.logs import AGENT
 
 if TYPE_CHECKING:
+    from harness_proxy.wire import Record
     from shipyard.config import Rollout
-    from shipyard.models.endpoints import Connection
+    from shipyard.groups import Connection
+    from shipyard.run.logs import Logs
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +42,30 @@ MODAL_IMAGE_BUILDER = "MODAL_IMAGE_BUILDER_VERSION"
 MODAL_IMAGE_BUILDER_VERSION = "2025.06"
 #: Directory under the job's directory, next to its trials, where its modules are delivered.
 DELIVERED = "modules"
+#: The purpose of a rollout of the test set, which never mixes harnesses.
+EVALUATION = "evaluation"
 
 #: Runs one trial: Harbor's `Trial` by default, or a stand-in in tests.
 TrialRunner = Callable[[TrialConfig], Awaitable[Any]]
+
+
+class Endpoint(Protocol):
+    """What a trial's harness dials, and who keeps its record: the run's proxy, or a
+    provider, which keeps none."""
+
+    @property
+    def provider(self) -> str: ...
+
+    @property
+    def model(self) -> str: ...
+
+    def connection(self, trial: Trial) -> Connection: ...
+
+    async def record(
+        self, job: str, trials: Sequence[Trial]
+    ) -> Mapping[str, list[Record]] | None: ...
+
+    def check(self, job: str, trials: Sequence[Trial]) -> None: ...
 
 
 @dataclass
@@ -51,6 +76,11 @@ class Job:
     modules: Modules | None = None
     #: The harness its trials run, such as `pi@0.85.1`.
     harness: Harness | None = None
+    #: The role of the model its trials run, which its spend is filed under.
+    role: str = AGENT
+    #: The harness's environment and keyword arguments; None for the engine's, `[agent]`'s.
+    env: Mapping[str, str] | None = None
+    kwargs: Mapping[str, Any] | None = None
     #: The renderer the proxy renders its trials' calls with; None for the model's own.
     renderer: str | None = None
     #: Grade a trial cut at its timeout by the verifier's reward, rather than mask it.
@@ -63,21 +93,89 @@ class HarborEngine:
         self,
         rollout: Rollout,
         *,
+        logs: Logs | None = None,
         env: Mapping[str, str] | None = None,
         kwargs: Mapping[str, Any] | None = None,
         secrets: Secrets | None = None,
+        mix: bool = False,
+        grade_timeouts: bool = False,
         run_trial: TrialRunner | None = None,
     ) -> None:
         self.sandbox = rollout.sandbox
         self.jobs_dir = Path(rollout.jobs_dir)
         self.setup_timeout, self.timeout = rollout.setup_timeout, rollout.timeout
+        #: The run's record, which names each job of a rollout and keeps its rows.
+        self.logs = logs
         self.env, self.kwargs = dict(env or {}), dict(kwargs or {})
         self.secrets = Secrets() if secrets is None else secrets
+        #: Share each task's attempts across the harnesses, so a group mixes them.
+        self.mix = mix
+        #: Grade a trial cut at its timeout by the verifier's reward, rather than mask it.
+        self.grade_timeouts = grade_timeouts
         self.run_trial = run_trial
         self.progress = Bars()
         self._limit = asyncio.Semaphore(rollout.concurrency)
 
-    async def run(self, job: Job, tasks: Sequence[Path], attempts: int, *, endpoint: Any) -> Job:
+    async def rollout(
+        self,
+        tasks: Sequence[Path],
+        *,
+        attempts: int,
+        harnesses: Sequence[str],
+        renderers: Sequence[str | None],
+        endpoint: Endpoint,
+        modules: Modules | None = None,
+        purpose: str = "training",
+        step: int | None = None,
+        role: str = AGENT,
+        env: Mapping[str, str] | None = None,
+        kwargs: Mapping[str, Any] | None = None,
+    ) -> list[Group]:
+        """Run each task `attempts` times at every harness and renderer, all at once, and
+        return one group per task and renderer, and per harness unless mixed, which an
+        evaluation never is, in the order of `tasks`. The trials run the model `role` names,
+        which `endpoint` reaches, each harness with `env` and `kwargs`, or the engine's when
+        None. Each job is named, judged and logged before this returns or raises. Raise
+        `ValueError` before any trial runs for a rollout no trial could run, and `ProxyGone` or
+        `NothingServed` once every job has ended, when the endpoint died or served the whole
+        rollout nothing."""
+        if self.logs is None:
+            raise RuntimeError("a rollout writes its jobs' rows: build the engine with `logs`")
+        if not harnesses:
+            raise ValueError("a rollout names no harness")
+        if attempts < 1:
+            raise ValueError(f"attempts must be at least 1; got {attempts}")
+        logs, tasks = self.logs, list(tasks)
+
+        async def one(named: str, renderer: str | None, part: list[Path], count: int) -> Job:
+            job = Job(
+                logs.reserve(),
+                purpose=purpose,
+                step=step,
+                modules=modules,
+                harness=harness(named),
+                renderer=renderer,
+                grade_timeouts=self.grade_timeouts,
+                role=role,
+                env=env,
+                kwargs=kwargs,
+            )
+            await self.run(job, part, count, endpoint=endpoint)
+            logs.job(job, endpoint)
+            return job
+
+        # An evaluation measures each harness on its own, so it never mixes them.
+        mix = self.mix and purpose != EVALUATION
+        planned = split(tasks, attempts, list(harnesses), list(renderers), mix=mix)
+        jobs = await asyncio.gather(*(one(*each) for each in planned))
+        endpoint.check(", ".join(job.name for job in jobs), [t for j in jobs for t in j.trials])
+        first = {task: at for at, task in reversed(list(enumerate(tasks)))}
+        found = merged([group for job in jobs for group in grouped(job.trials)], mix=mix)
+        return sorted(found, key=lambda group: first[group.task])
+
+    async def run(
+        self, job: Job, tasks: Sequence[Path], attempts: int, *, endpoint: Endpoint
+    ) -> Job:
         """Run and judge each task with the job's harness, then return the job, filled in."""
         harness = job.harness
         if harness is None:
@@ -88,10 +186,10 @@ class HarborEngine:
             raise ValueError(f"attempts must be at least 1; got {attempts}")
         trials_dir = self.jobs_dir / job.name
         delivered = deliver(job.modules, trials_dir / DELIVERED) if job.modules is not None else {}
-        agent = self._agent_config(harness, delivered)
+        agent = self._agent_config(harness, delivered, job)
         plan = [Path(task) for task in tasks for _ in range(attempts)]
         trials_dir.mkdir(parents=True, exist_ok=True)
-        if harness.profile.in_process is None:
+        if not harness.runs_without_network:
             cut = sorted({t.name for t in plan if network_mode(t) == NetworkMode.NO_NETWORK})
             if cut:
                 raise ValueError(
@@ -137,7 +235,11 @@ class HarborEngine:
         job.trials = list(await asyncio.gather(*(one(task) for task in plan)))
         recorded = await endpoint.record(job.name, job.trials)
         for trial in job.trials:
-            trial.records = None if recorded is None else list(recorded.get(trial.name) or [])
+            trial.records = (
+                Records.unrecorded()
+                if recorded is None
+                else Records(recorded.get(trial.name) or [])
+            )
         judge(job)
         self.progress.done(job.name, masked=sum(not one.measured for one in job.trials))
         return job
@@ -145,21 +247,49 @@ class HarborEngine:
     def close(self) -> None:
         self.progress.close()
 
-    def _agent_config(self, harness: Harness, delivered: Mapping[str, Any]) -> AgentConfig:
+    def _agent_config(
+        self, harness: Harness, delivered: Mapping[str, Any], job: Job
+    ) -> AgentConfig:
         if not harness.agent.strip():
             raise ValueError(
                 "name the harness under `[agent] harness`: Harbor reads an unnamed agent "
                 "as its oracle, which runs the task's reference solution instead of the policy"
             )
-        name, version = _harness_at_version(harness.agent)
+        version = harness.version
         fields: dict[str, Any] = {
-            "name": name,
-            "env": dict(self.env),
-            "kwargs": {**({"version": version} if version else {}), **self.kwargs},
+            "name": harness.name,
+            "env": dict(self.env if job.env is None else job.env),
+            "kwargs": {
+                **({"version": version} if version else {}),
+                **(self.kwargs if job.kwargs is None else job.kwargs),
+            },
             "override_setup_timeout_sec": self.setup_timeout,
             "override_timeout_sec": self.timeout,
         }
         return AgentConfig(**laid_over(fields, delivered))
+
+
+def split(
+    tasks: list[Path],
+    attempts: int,
+    harnesses: list[str],
+    renderers: list[str | None],
+    *,
+    mix: bool,
+) -> list[tuple[str, str | None, list[Path], int]]:
+    """Return one job per harness and renderer: (harness, renderer, tasks, attempts)."""
+    count = len(harnesses)
+    shares = (
+        [attempts // count + (at < attempts % count) for at in range(count)]
+        if mix
+        else [attempts] * count
+    )
+    return [
+        (one, renderer, tasks, share)
+        for one, share in zip(harnesses, shares, strict=True)
+        if share and tasks
+        for renderer in renderers
+    ]
 
 
 def quiet_litellm() -> None:
@@ -168,7 +298,7 @@ def quiet_litellm() -> None:
     litellm.suppress_debug_info = True
 
 
-def preflight(config: TrialConfig, endpoint: Any, harness: Harness, job: str) -> None:
+def preflight(config: TrialConfig, endpoint: Endpoint, harness: Harness, job: str) -> None:
     """Run Harbor's own check of the agent config a trial would run with."""
     from harbor.agents.factory import AgentFactory
 
@@ -249,10 +379,3 @@ def network_mode(task: Path) -> NetworkMode | None:
 def allowlisted(task: Path) -> bool:
     """Return whether the task's agent phase runs in Harbor's allowlist network mode."""
     return network_mode(task) == NetworkMode.ALLOWLIST
-
-
-def _harness_at_version(harness: str) -> tuple[str, str | None]:
-    """Split a harness into Harbor's agent name and its `version` kwarg."""
-    name = bare_name(harness)
-    version = harness[len(name) + 1 :] if name != harness else ""
-    return name, version or None

@@ -1,33 +1,33 @@
 from __future__ import annotations
 
-import re
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-import httpx
-import tinker
-
-from harness_proxy.cookbook import Message, ToolCall, ToolSpec, get_text_content
-
-#: What a 400 for a prompt that does not fit says, on a Tinker refusal or the recorder's. A
-#: harness compacts its history on exactly this, so no other refusal may say it.
-_OVERFLOW = (
-    re.compile(r"prompt length plus max_tokens exceeds", re.IGNORECASE),
-    re.compile(r"\d+\s*prompt tokens\s*\+\s*\d+\s*max_tokens\s*>\s*\d+", re.IGNORECASE),
-    re.compile(r"prompt is too long", re.IGNORECASE),
-)
+from harness_proxy.cookbook import Message, ToolCall, ToolSpec
 
 
 class Refused(Exception):
     """A request the proxy will not serve, answered with a 400 in the wire's own shape."""
 
 
-def too_long(message: str) -> tinker.BadRequestError:
-    """Return the error Tinker raises for a prompt that does not fit the context."""
-    request = httpx.Request("POST", "http://harness-proxy.invalid")
-    return tinker.BadRequestError(message, response=httpx.Response(400, request=request), body=None)
+@dataclass(frozen=True)
+class Caller:
+    """Who made a call: the trial, lane and renderer its address names, the wire it came on,
+    and the SDK's retry headers."""
+
+    trial: str = ""
+    #: The lane whose model answers the call; "" for a proxy's only lane.
+    lane: str = ""
+    #: The renderer that renders the call; "" for the lane's first.
+    renderer: str = ""
+    #: `anthropic` for a call on `/messages`, otherwise `openai`. Determines the form of the
+    #: tool call ids the proxy mints.
+    wire: str = "openai"
+    retry: int = 0
+    idempotency_key: str | None = None
+    request_id: str | None = None
 
 
 @dataclass
@@ -68,86 +68,6 @@ class Reply:
     #: Whether sampling ended on one of the call's own stop strings, and which one if known.
     client_stop: bool = False
     matched_stop: str | None = None
-
-
-async def complete(call: Call, renderer: Any, sampler: Any, default_max_tokens: int) -> Reply:
-    """Render the call, sample one reply, and parse it; raise `Refused` if it cannot be sampled."""
-    if call.tools:
-        try:
-            prefix = renderer.create_conversation_prefix_with_tools(
-                call.tools, system_prompt=call.system or ""
-            )
-        except (NotImplementedError, AttributeError):
-            raise Refused(
-                "the configured renderer does not support tool calling; omit 'tools'"
-            ) from None
-        messages = [*prefix, *call.messages]
-    elif call.system is not None:
-        messages = [Message(role="system", content=call.system), *call.messages]
-    else:
-        messages = list(call.messages)
-    prompt = renderer.build_generation_prompt(messages)
-    stop: list[str] | list[int] = renderer.get_stop_sequences()
-    string_stops = bool(stop) and isinstance(stop[0], str)
-    if call.stop:
-        if stop and not string_stops:
-            # SamplingParams.stop holds strings or ids, not both.
-            raise Refused(
-                "client stop sequences are not supported with this model's renderer, which "
-                "uses token-id stop conditions; omit stop/stop_sequences"
-            )
-        stop = [*[s for s in stop if isinstance(s, str)], *call.stop]
-    max_tokens = call.max_tokens or default_max_tokens
-    asked = {
-        "temperature": call.temperature,
-        "top_p": call.top_p,
-        "top_k": call.top_k,
-        "seed": call.seed,
-    }
-    try:
-        params = tinker.SamplingParams(
-            max_tokens=max_tokens,
-            stop=stop,
-            **{key: value for key, value in asked.items() if value is not None},
-        )
-    except (ValueError, TypeError) as bad:
-        raise Refused(f"invalid sampling parameters: {bad}") from None
-    try:
-        response = await sampler.sample_async(prompt=prompt, num_samples=1, sampling_params=params)
-    except tinker.BadRequestError as failed:
-        if any(pattern.search(str(failed)) for pattern in _OVERFLOW):
-            raise Refused(
-                f"prompt is too long: {prompt.length} prompt tokens plus {max_tokens} "
-                "max_tokens exceed the model's context window"
-            ) from failed
-        raise
-    sequence = response.sequences[0]
-    tokens = list(sequence.tokens)
-    message, termination = renderer.parse_response(tokens)
-    text = get_text_content(message)
-    calls = [] if call.no_tools else list(message.get("tool_calls") or [])
-    stop_reason = str(sequence.stop_reason or "stop")
-    client_stop, matched = False, None
-    if call.stop and not calls and stop_reason == "stop" and not termination.is_clean:
-        # A stop the sampler excluded parses as unclean too, so only a stop seen in the text,
-        # or the only kind of stop sampled with, says the harness's own stop fired.
-        hits = [(text.find(s), s) for s in call.stop if s in text]
-        if hits:
-            at, matched = min(hits)
-            text, client_stop = text[:at], True
-        elif not string_stops:
-            client_stop = True
-            matched = call.stop[0] if len(call.stop) == 1 else None
-    return Reply(
-        text=text,
-        thinking=thinking_of(message),
-        tool_calls=calls,
-        prompt_tokens=prompt.length,
-        completion_tokens=len(tokens),
-        stop_reason=stop_reason,
-        client_stop=client_stop,
-        matched_stop=matched,
-    )
 
 
 def thinking_of(message: Any) -> str:

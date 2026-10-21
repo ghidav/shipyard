@@ -1,16 +1,15 @@
 from shipyard.config import Blueprint, load
 from shipyard.groups import Group, Trial
 from shipyard.jobs.modules import Inadmissible, Modules
-from shipyard.policy import INITIAL, Policy
+from shipyard.model import Model
 from shipyard.trainer import Trainer
 
 __all__ = [
-    "INITIAL",
     "Blueprint",
     "Group",
     "Inadmissible",
+    "Model",
     "Modules",
-    "Policy",
     "Trainer",
     "Trial",
     "load",

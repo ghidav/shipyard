@@ -6,13 +6,11 @@ from typing import Any
 
 import httpx
 import pytest
-import tinker
 
 from harness_proxy import client
 from harness_proxy.client import CONTROL_TOKEN_ENV, Proxy, Unreachable
-from harness_proxy.exchange import Exchange, exchange
 from harness_proxy.wire import Record
-from proxies import FakeSampler, ask, by_path, ids, root, server
+from proxies import FakeSampler, ask, by_path, ids, only, root, server
 
 
 def of(started: Any, **named: Any) -> Proxy:
@@ -49,20 +47,11 @@ async def test_records_come_back_as_records_with_their_ids_and_the_counters() ->
 
 
 @pytest.mark.parametrize("trial", ["a b#c?d__x", "50%__y", "a%2Fb__z"])
-async def test_a_trial_name_with_reserved_characters_comes_back_whole(trial: str) -> None:
+async def test_a_trial_named_with_reserved_characters_is_served_whole(trial: str) -> None:
     async with server(FakeSampler("ok")) as started:
-        token = exchange.set(Exchange(trial=trial))
-        try:
-            await started.recorder.sample_async(
-                prompt=tinker.ModelInput.from_ints([1, 2]),
-                num_samples=1,
-                sampling_params=tinker.SamplingParams(),
-            )
-        finally:
-            exchange.reset(token)
-        proxy = of(started)
-        (record,) = await proxy.records(trial)
-        assert record.prompt_token_ids == (1, 2) and started.records_for(trial) == []
+        assert (await ask(started, trial)).status_code == 200, "its address carries it whole"
+        (record,) = await of(started).records(trial)
+        assert record.completion_token_ids == ids("ok") and only(started).records_for(trial) == []
 
 
 class LosingFirst(httpx.AsyncBaseTransport):
@@ -105,7 +94,7 @@ async def test_a_refused_token_is_not_retried_and_raises(monkeypatch: pytest.Mon
         with pytest.raises(httpx.HTTPStatusError):
             await of(started, control_token="not-it", transport=transport).records("t-1")
         assert len(transport.asked) == 2, "one request, then the 401 raised"
-        assert len(started.records_for("t-1")) == 1, "nothing was drained"
+        assert len(only(started).records_for("t-1")) == 1, "nothing was drained"
 
 
 async def test_records_need_the_control_token() -> None:
@@ -162,7 +151,7 @@ async def test_swap_goes_through_the_control_route_and_changes_what_answers() ->
         assert answered.json()["choices"][0]["message"]["content"] == "step-3"
         await proxy.swap(None)
         assert (await ask(started, "t")).json()["choices"][0]["message"]["content"] == "base"
-        assert [r.served for r in started.records_for("t")] == [
+        assert [r.served for r in only(started).records_for("t")] == [
             "tinker://run/sampler_weights/step-3",
             None,
         ]
@@ -176,4 +165,4 @@ async def test_swap_is_refused_without_the_control_token_and_on_a_wrong_one() ->
             await of(started, control_token="wrong").swap("tinker://w/step-1")
         with pytest.raises(RuntimeError, match="refused to serve"):
             await of(started).swap("not-a-path")
-        assert started.records_for("t") == []
+        assert only(started).records_for("t") == []

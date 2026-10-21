@@ -6,7 +6,12 @@ import shutil
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+from shipyard.run.files import CARRIED, MODULES
+
+if TYPE_CHECKING:
+    from shipyard.config import Blueprint
 
 #: The prompt file at the top of a modules directory, and its component name.
 PROMPT_FILE = "PROMPT.md"
@@ -256,6 +261,18 @@ def keep(modules: Modules, into: Path) -> None:
         kind = KINDS[module.kind]
         files = {kind.marker: module.text} if kind.alone else module.files
         write(files, into=Path(into) / kind.home(module.name))
+
+
+def carried(config: Blueprint, directory: Path) -> Modules | None:
+    """Return the modules every job carries, from the run's copy or `[agent] modules`."""
+    kept = Path(directory) / MODULES / CARRIED
+    if kept.is_dir():
+        return Modules.read(kept)
+    if not config.agent.modules:
+        return None
+    found = Modules.read(config.home / config.agent.modules)
+    keep(found, kept)
+    return found
 
 
 def deliver(modules: Modules, into: Path) -> dict[str, Any]:

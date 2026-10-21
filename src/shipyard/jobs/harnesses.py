@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
+
+from shipyard.groups import Connection, Where
 
 
 @dataclass(frozen=True)
@@ -91,17 +94,77 @@ PROFILES: dict[str, Profile] = {
 
 @dataclass(frozen=True)
 class Harness:
-    """The agent program a trial runs."""
+    """The agent program a trial runs: what it dials to reach the model, whether it can run
+    with no network, and whether its log says its last model call failed."""
 
     name: str
     #: The Harbor agent to install: a name with an optional version, or an import path.
     agent: str
     profile: Profile = field(default_factory=Profile)
 
+    @property
+    def version(self) -> str | None:
+        """The version `agent` pins, such as `0.85.1` of `pi@0.85.1`; None for none."""
+        bare = bare_name(self.agent)
+        return (self.agent[len(bare) + 1 :] or None) if bare != self.agent else None
+
+    @property
+    def runs_without_network(self) -> bool:
+        """Whether it can run in a task with no network: its model calls leave from this
+        machine, not from the trial's container."""
+        return self.profile.in_process is not None
+
+    def dial(self, where: Where, model: str, *, fill_context: bool) -> Connection:
+        """Return what a trial of it dials to reach `model` at the proxy `where` is: the model
+        under the provider id it routes by, and the env and kwargs that point it there. With
+        `fill_context`, it is also told to leave its context uncompacted."""
+        profile = self.profile
+        address = where.address if profile.in_process is None else where.local
+        if profile.strip_v1:
+            address = address.removesuffix("/v1")
+        slug = slug_of(profile)
+        env = {
+            **(dict(profile.env) if fill_context else {}),
+            f"{slug.upper()}_BASE_URL": address,
+            f"{slug.upper()}_API_KEY": where.token,
+        }
+        kwargs = dict(profile.kwargs)
+        if profile.in_process is not None:
+            kwargs |= profile.in_process(address, where.token)
+        return Connection(model=f"{slug}/{model}", env=env, kwargs=kwargs, host=where.host)
+
+    def last_call_failed(self, trial: Path) -> bool:
+        """Return whether the log it kept in the trial directory `trial` says its last model
+        call failed; False for a harness whose log is not read."""
+        reader = self.profile.failed_last
+        if reader is None:
+            return False
+        try:
+            text = (trial / "agent" / f"{self.name}.txt").read_text(
+                encoding="utf-8", errors="replace"
+            )
+        except OSError:
+            return False
+        return reader(text)
+
 
 def harness(named: str) -> Harness:
     """Return the harness for a name as `[agent] harness` gives it, such as `pi@0.85.1`."""
     return Harness(bare_name(named).strip(), named, profile_for(named))
+
+
+def resolved(named: str, harnesses: Sequence[str]) -> str:
+    """Return the harness `named` runs as, beside `harnesses` as `[agent] harness` lists them: a
+    bare name of one of them as that one, at its version, such as `pi@0.85.1` for `pi`; any
+    other as it is. Raise `ValueError` for a bare name of two of them."""
+    if named in harnesses:
+        return named
+    found = [one for one in harnesses if bare_name(one).strip() == named.strip()]
+    if len(found) > 1:
+        raise ValueError(
+            f"harness {named!r} names {' and '.join(found)} of [agent] harness: give its version"
+        )
+    return found[0] if found else named
 
 
 def bare_name(harness: str) -> str:

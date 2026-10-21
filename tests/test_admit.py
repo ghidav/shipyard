@@ -23,11 +23,11 @@ from shipyard.jobs.admit import (
     TIMEOUT,
     Verdict,
     endpoint_failed,
-    failed_last,
     judge,
 )
 from shipyard.jobs.engine import Job
-from shipyard.jobs.harnesses import PROFILES, harness, last_assistant_failed
+from shipyard.jobs.harnesses import harness, last_assistant_failed
+from shipyard.records import Records
 from tests.fakes import made, write_result
 
 
@@ -38,8 +38,10 @@ def verdict(
     failed: bool = False,
     grade_timeouts: bool = False,
 ) -> Verdict:
-    """Judge the trial directory `trial` from the result Harbor left in it, as `judge` does."""
-    return admit.verdict(result_in(trial), records, failed=failed, grade_timeouts=grade_timeouts)
+    """Judge the trial directory `trial` from the result Harbor left in it and the proxy's
+    `records`, none when None, as `judge` does."""
+    held = Records.unrecorded() if records is None else Records(records)
+    return admit.verdict(result_in(trial), held, failed=failed, grade_timeouts=grade_timeouts)
 
 
 #: Harbor `ApiError` subclasses caused by the policy itself, which keep the verifier's reward.
@@ -140,7 +142,7 @@ def test_judge_gives_each_trial_its_verdict_in_plan_order(tmp_path: Path) -> Non
         TIMEOUT,
     ]
     served = _job(won, lost)
-    served.trials[0].records, served.trials[1].records = [made()], []
+    served.trials[0].records, served.trials[1].records = Records([made()]), Records([])
     judge(served)
     assert [one.verdict for one in served.trials] == [
         verified(1.0),
@@ -210,7 +212,6 @@ def _pi_log(*stops: str) -> str:
 
 
 def test_pi_says_its_last_call_failed_only_when_its_last_assistant_message_did() -> None:
-    assert PROFILES["pi"].failed_last is last_assistant_failed
     assert last_assistant_failed(_pi_log("toolUse", "error")) is True
     assert last_assistant_failed(_pi_log("toolUse", "error", "stop")) is False, "pi recovered"
     assert last_assistant_failed(_pi_log("toolUse", "stop")) is False
@@ -228,7 +229,7 @@ def test_judge_masks_a_served_pi_trial_whose_log_ends_on_a_failed_call(tmp_path:
         (one / "agent" / "pi.txt").write_text(_pi_log("toolUse", stop))
     served = _job(failed, settled, unlogged)
     for one in served.trials:
-        one.records = [made()]
+        one.records = Records([made()])
     judge(served)
     assert [one.verdict for one in served.trials] == [
         Verdict(None, API_ERROR, None),
@@ -238,8 +239,8 @@ def test_judge_masks_a_served_pi_trial_whose_log_ends_on_a_failed_call(tmp_path:
     provided = _job(failed)
     judge(provided)
     assert provided.trials[0].verdict == verified(0.0), "no records: the provider served it"
-    claude = Trial("j", Path("t"), harness("claude-code"), failed, [made()])
-    assert not failed_last(claude), "only a harness with a reader says so"
+    assert harness("pi").last_call_failed(failed), "pi reads its own log"
+    assert not harness("claude-code").last_call_failed(failed), "only a harness with a reader"
 
 
 def test_an_image_the_record_did_not_keep_masks_the_rollout_multimodal(tmp_path: Path) -> None:

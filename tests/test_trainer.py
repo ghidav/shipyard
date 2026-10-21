@@ -11,31 +11,33 @@ import signal
 from dataclasses import replace
 from itertools import islice
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from typer.testing import CliRunner
 
 from proxies import MODEL, made
-from shipyard import INITIAL, Blueprint, Policy, Trainer, Trial, load
+from shipyard import Blueprint, Model, Trainer, Trial, load
 from shipyard.cli import app
 from shipyard.config import ConfigError
+from shipyard.jobs.engine import split
 from shipyard.jobs.harnesses import harness
 from shipyard.jobs.modules import PROMPT, PROMPT_FILE, Module, Modules
+from shipyard.models.backends import connect
 from shipyard.models.endpoints import NothingServed
-from shipyard.run import record
+from shipyard.run import files
+from shipyard.run.checkpoint import Checkpoint
 from shipyard.run.costs import Costs
 from shipyard.run.data import Generator, tasks
 from shipyard.run.directory import (
     continued,
     open_run,
     reopened,
+    resumed,
     running,
     trainer_class,
     trainer_in,
 )
-from shipyard.trainer import split
 from tests.fakes import (
     INPUT_TOKENS,
     SEQUENCE_TOKENS,
@@ -45,64 +47,14 @@ from tests.fakes import (
     FakeTrials,
     Harbor,
     Spread,
-    dataset,
     write_result,
 )
-from tests.trainers import FakeService, FlatAnchor
+from tests.runs import ONE_STEP, blueprint, rows, train
+from tests.service import FakeService, FlatAnchor
 
 RECIPES = Path(__file__).parents[1] / "recipes"
-BLUEPRINT = """[agent]
-model = "Qwen/Qwen3-8B"
-harness = "pi@0.85.1"
-
-[data]
-train = "four"
-batch_size = 2
-group_size = 2
-
-[rollout]
-concurrency = 2
-
-[recipe]
-steps = 2
-learning_rate = 2e-5
-lora_rank = 32
-"""
-ONE_STEP = {"steps = 2": "steps = 1"}
 #: DAPO's own `[recipe]` keys, at the paper's values.
 DAPO = ("clip_low = 0.2", "clip_high = 0.28", "overlong_penalty = 0.5", "overlong_buffer = 0.2")
-
-
-def blueprint(tmp_path: Path, *keys: str, **replacements: str) -> Path:
-    """Write a blueprint over the four-task dataset, with `keys` added to `[recipe]`."""
-    if not (tmp_path / "tasks" / "four").is_dir():
-        dataset(tmp_path / "tasks", "four", *"abcd")
-    text = BLUEPRINT + "".join(f"{one}\n" for one in keys)
-    for old, new in replacements.items():
-        text = text.replace(old, new)
-    home = tmp_path / "bp" / "four"
-    home.mkdir(parents=True, exist_ok=True)
-    (home / "run.toml").write_text(text, encoding="utf-8")
-    return home
-
-
-async def _train(home: Path, root: Path, made_by: type[Trainer] | Path = Trainer) -> Path:
-    """Open a run of `home` and train it with `made_by`: a trainer class, or a recipe's trainer
-    file, which the run copies and reads its `[recipe]` for, as `shipyard run` does."""
-    if isinstance(made_by, Path):
-        directory, config = open_run(home, root=root, trainer=made_by)
-        made_by = trainer_class(directory)
-    else:
-        directory, config = open_run(home, root=root)
-    trainer = made_by(config, directory)
-    with running(directory), trainer:
-        await trainer.train()
-    return directory
-
-
-def _rows(directory: Path) -> list[dict[str, Any]]:
-    """Return the run's step rows, one per step."""
-    return list(record.read(directory / record.METRICS))
 
 
 def _advantages(service: FakeService) -> list[float]:
@@ -127,7 +79,7 @@ async def test_the_base_step_draws_rolls_out_scores_and_updates(
 ) -> None:
     proxy, service = fakes
     harbor(Alternating())
-    directory = await _train(blueprint(tmp_path), tmp_path / "runs")
+    directory = await train(blueprint(tmp_path), tmp_path / "runs")
     client = service.client
     assert service.calls == [("lora", MODEL, 32)]
     # No reference pass: the sampler's logprobs are the old policy's. Then the pass and the
@@ -137,41 +89,41 @@ async def test_the_base_step_draws_rolls_out_scores_and_updates(
     assert _old(service) == {-0.5}, "the sampler's logprobs, as the proxy recorded them"
     assert _advantages(service) == [-0.5, 0.5], "each reward less its group's mean"
     assert proxy.swapped == [START] + [f"tinker://fake/sampler_weights/sample-{n}" for n in (1, 2)]
-    for row in _rows(directory):
+    for row in rows(directory):
         assert row["trained"] is True and (row["groups"], row["trials"]) == (2, 4)
         assert (row["uniform"], row["sequences"]) == (0, 4)
         assert row["train_tokens"] == 4 * INPUT_TOKENS and row["loss"] == "importance_sampling"
         assert row["kl_v1"] == pytest.approx(-0.2, abs=1e-5), (
             "the sampler's -0.5, the trainer's -0.3"
         )
-    saved = list(record.read(directory / record.CHECKPOINTS))
+    saved = list(files.read(directory / files.CHECKPOINTS))
     assert [(c["tag"], c["step"], c["weights"]) for c in saved] == [
-        ("step-1", 1, "tinker://fake/weights/step-1"),
-        ("step-2", 2, "tinker://fake/weights/step-2"),
-        ("final", 2, "tinker://fake/weights/final"),
-    ]
+        ("step-1", 1, {"agent": "tinker://fake/weights/step-1"}),
+        ("step-2", 2, {"agent": "tinker://fake/weights/step-2"}),
+        ("final", 2, {"agent": "tinker://fake/weights/final"}),
+    ], "each trained model's weights, by its role"
     assert [c["state"] for c in saved] == [
-        f"{record.STATES}/step-1.json",
-        f"{record.STATES}/step-2.json",
-        f"{record.STATES}/step-2.json",
+        f"{files.STATES}/step-1.json",
+        f"{files.STATES}/step-2.json",
+        f"{files.STATES}/step-2.json",
     ], "final is the state after the last step, with weights of its own"
-    states = [record.read_json(directory / c["state"]) for c in saved]
+    states = [files.read_json(directory / c["state"]) for c in saved]
     assert [(s["steps"], s["updates"], s["drawn"]) for s in states] == [
-        (1, 1, 1),
-        (2, 2, 2),
-        (2, 2, 2),
+        (1, {"agent": 1}, 1),
+        (2, {"agent": 2}, 2),
+        (2, {"agent": 2}, 2),
     ]
-    assert [row["step"] for row in _rows(directory)] == [1, 2], "a step's row, counted from 1"
-    jobs = list(record.read(directory / record.JOBS))
+    assert [row["step"] for row in rows(directory)] == [1, 2], "a step's row, counted from 1"
+    jobs = list(files.read(directory / files.JOBS))
     assert [(job["step"], Path(job["dir"]).name) for job in jobs] == [
         (1, f"{directory.name}-0000"),
         (2, f"{directory.name}-0001"),
     ], "each job's row says its step and where its trials are"
     assert all(Path(job["dir"]).is_absolute() and Path(job["dir"]).is_dir() for job in jobs)
-    costs = record.read_json(directory / record.COSTS)
+    costs = files.read_json(directory / files.COSTS)
     # Two jobs of four "go" prompts and "ok" replies, and the two training passes.
     assert costs["tokens"] == {"tinker": {MODEL: {"prefill": 16, "sample": 16, "train": 24}}}
-    usage = list(record.read(directory / record.USAGE))
+    usage = list(files.read(directory / files.USAGE))
     assert Costs.of(usage).to_dict() == costs, "the costs are the usage ledger's totals"
     tokens = [(row["step"], row.get("job"), "train" in row) for row in usage if "provider" in row]
     assert tokens == [
@@ -181,7 +133,7 @@ async def test_the_base_step_draws_rolls_out_scores_and_updates(
         (2, None, True),
     ], "each step's rollouts, by job, then its training pass"
     assert {row["role"] for row in usage} == {"agent"}
-    note = record.read_json(directory / record.RUN)["process"]
+    note = files.read_json(directory / files.RUN)["process"]
     assert note["failed"] is False
 
 
@@ -191,7 +143,7 @@ async def test_a_sequence_recorded_without_logprobs_is_scored_at_the_current_wei
     proxy, service = fakes
     proxy.default = [replace(made(), inference_logprobs=())]
     harbor(Alternating())
-    await _train(blueprint(tmp_path, **ONE_STEP), tmp_path / "runs")
+    await train(blueprint(tmp_path, **ONE_STEP), tmp_path / "runs")
     steps = [c[0] for c in service.client.calls if c[0] in ("forward", "forward_backward")]
     assert steps == ["forward", "forward_backward"], "a reference pass for what the proxy missed"
     assert _forwards(service) == [[INPUT_TOKENS] * 4]
@@ -202,39 +154,35 @@ async def test_a_step_with_nothing_to_teach_takes_no_gradient(
 ) -> None:
     _, service = fakes
     harbor(FakeTrials())
-    directory = await _train(blueprint(tmp_path, **ONE_STEP), tmp_path / "runs")
-    (row,) = _rows(directory)
+    directory = await train(blueprint(tmp_path, **ONE_STEP), tmp_path / "runs")
+    (row,) = rows(directory)
     assert row["trained"] is False and row["uniform"] == 2 and "sequences" not in row
     assert not any(c[0] in ("forward", "forward_backward") for c in service.client.calls)
-    saved = [c["weights"] for c in record.read(directory / record.CHECKPOINTS)]
-    assert saved == [None, None], "no update, so no weights to keep: the state alone"
+    saved = [c["weights"] for c in files.read(directory / files.CHECKPOINTS)]
+    assert saved == [{}, {}], "no update, so no weights to keep: the state alone"
 
 
-async def test_a_run_without_a_learning_rate_is_refused_at_its_first_update(
-    tmp_path: Path,
-    fakes: tuple[FakeProxy, FakeService],
-    harbor: Harbor,
-    caplog: pytest.LogCaptureFixture,
+async def test_a_run_that_trains_its_agent_with_no_learning_rate_is_refused_before_it_opens(
+    tmp_path: Path, fakes: tuple[FakeProxy, FakeService], harbor: Harbor
 ) -> None:
-    _, service = fakes
+    proxy, service = fakes
     harbor(Alternating())
     home = blueprint(tmp_path, **ONE_STEP, **{"learning_rate = 2e-5\n": ""})
     assert load(home).recipe.learning_rate is None, "a recipe that never updates leaves it out"
-    with pytest.raises(ValueError, match=r"^\[recipe\] learning_rate: update needs it"):
-        await _train(home, tmp_path / "runs", Trainer)
-    assert "learning_rate" not in caplog.text, "no warning first: a search never needs it"
-    assert not any(c[0] == "forward_backward" for c in service.client.calls)
+    with pytest.raises(ValueError, match=r"^\[recipe\] learning_rate: the agent trains"):
+        await train(home, tmp_path / "runs", Trainer)
+    assert service.calls == [] and proxy.placed == [], "nothing opened"
 
 
 async def test_a_recipe_can_grade_the_rollouts_that_ran_out_of_time(
     tmp_path: Path, fakes: tuple[FakeProxy, FakeService], harbor: Harbor
 ) -> None:
     harbor(FakeTrials(default={"reward": 1.0, "exception": "AgentTimeoutError"}))
-    masked = await _train(blueprint(tmp_path, **ONE_STEP), tmp_path / "runs")
-    graded = await _train(
+    masked = await train(blueprint(tmp_path, **ONE_STEP), tmp_path / "runs")
+    graded = await train(
         blueprint(tmp_path, "grade_timeouts = true", **ONE_STEP), tmp_path / "runs"
     )
-    counted = [(row["graded"], row["masked"]) for row in (*_rows(masked), *_rows(graded))]
+    counted = [(row["graded"], row["masked"]) for row in (*rows(masked), *rows(graded))]
     assert counted == [(0, 4), (4, 0)], "masked by default; graded when the recipe says so"
 
 
@@ -247,13 +195,13 @@ async def test_a_job_nothing_reached_stops_the_run_before_training_and_closes_it
     directory, config = open_run(blueprint(tmp_path), root=tmp_path / "runs")
     with pytest.raises(NothingServed, match="no trial reached the proxy"):
         with running(directory), Trainer(config, directory) as trainer:
-            await trainer.train()
+            await trainer.run()
     assert not any(c[0] == "forward_backward" for c in service.client.calls)
     dead = "no trial reached the proxy; the endpoint is dead or unreachable"
     assert service.closed == [("errored", f"NothingServed: job {directory.name}-0000: {dead}")]
-    assert len(list(record.read(directory / record.JOBS))) == 1, "the job's row comes first"
-    assert not (directory / record.METRICS).exists()
-    assert not (directory / record.CHECKPOINTS).exists(), "no final checkpoint"
+    assert len(list(files.read(directory / files.JOBS))) == 1, "the job's row comes first"
+    assert not (directory / files.METRICS).exists()
+    assert not (directory / files.CHECKPOINTS).exists(), "no final checkpoint"
     assert proxy.closed == 1
 
 
@@ -263,16 +211,16 @@ async def test_the_opd_example_trains_every_rollout_on_the_teachers_gap(
     _, service = fakes
     teacher = service.teachers["Qwen/Qwen3-32B"] = FlatAnchor(-0.2)
     harbor(FakeTrials())
-    home = blueprint(tmp_path, 'teacher = "Qwen/Qwen3-32B"', "teacher_coef = 1.0", **ONE_STEP)
-    directory = await _train(home, tmp_path / "runs", RECIPES / "opd/trainer.py")
+    home = blueprint(tmp_path, 'teacher = "Qwen/Qwen3-32B"', **ONE_STEP)
+    directory = await train(home, tmp_path / "runs", RECIPES / "opd/trainer.py")
     assert ("sampling", "Qwen/Qwen3-32B", None) in service.calls and len(teacher.asked) == 4
     assert _advantages(service) == [0.3], "equal rewards, and the teacher's gap on every token"
-    (row,) = _rows(directory)
+    (row,) = rows(directory)
     assert row["trained"] is True and row["uniform"] == 0
     assert row["teacher_kl"] == pytest.approx(-0.3, abs=1e-5)
-    spent = record.read_json(directory / record.COSTS)["tokens"]["tinker"]["Qwen/Qwen3-32B"]
+    spent = files.read_json(directory / files.COSTS)["tokens"]["tinker"]["Qwen/Qwen3-32B"]
     assert spent == {"prefill": 4 * SEQUENCE_TOKENS, "sample": 4}
-    usage = list(record.read(directory / record.USAGE))
+    usage = list(files.read(directory / files.USAGE))
     assert {row["role"] for row in usage if row.get("model") == "Qwen/Qwen3-32B"} == {"teacher"}
 
 
@@ -319,8 +267,8 @@ async def test_dapo_keeps_drawing_until_a_batchs_worth_of_groups_have_spread(
     plan = Generator(tasks("four", root=tmp_path / "tasks"), 2, 0)
     first, second = [[one.name for one in batch] for batch in islice(plan.batches(), 2)]
     harbor(Spread({first[0], *second}))
-    directory = await _train(home, tmp_path / "runs", RECIPES / "dapo/trainer.py")
-    (row,) = _rows(directory)
+    directory = await train(home, tmp_path / "runs", RECIPES / "dapo/trainer.py")
+    (row,) = rows(directory)
     assert len(row["jobs"]) == 2 and (row["groups"], row["uniform"]) == (4, 1)
     assert row["sequences"] == 6 and row["loss"] == "ppo"
 
@@ -353,102 +301,99 @@ def _adam(service: FakeService) -> Any:
     return adam
 
 
-class Careful:
-    """Fake trial runner that rewards a trial 1 when the prompt delivered to it says
-    "careful", and 0 otherwise."""
-
-    def __init__(self) -> None:
-        self.prompts: list[str] = []
-
-    async def __call__(self, config: Any) -> None:
-        template = (config.agent.kwargs or {}).get("prompt_template_path")
-        said = Path(template).read_text(encoding="utf-8") if template else ""
-        self.prompts.append(said)
-        reward = float("careful" in said.lower())
-        write_result(Path(config.trials_dir) / config.trial_name, reward=reward)
-
-
 #: The prompt the agent starts from, and the one the fake reflector rewrites any prompt to.
 SEED, CAREFUL = "Solve the task.", "Be careful: check the answer, then finish."
 #: Has the agent carry the modules in the blueprint's `modules/`.
 CARRIED = {'harness = "pi@0.85.1"': 'harness = "pi@0.85.1"\nmodules = "modules"'}
+#: The file a reflection task holds the module in, and its trial's tests keep it in.
+REFLECTED = "module.md"
+#: A GEPA search of the four tasks, its reflector a provider's model through `pi`.
+SEARCH = (
+    "budget = 12",
+    "pareto = 2",
+    "minibatch = 2",
+    'reflector = { model = "claude-sonnet-5-5", provider = "anthropic", harness = "pi" }',
+)
 
 
-def _reflected(monkeypatch: pytest.MonkeyPatch, home: Path, answer: str = CAREFUL) -> list[str]:
-    """Seed the modules in `home` with the prompt `SEED`, and fake the reflector's provider,
-    which answers `answer`. Return what the reflector is asked."""
+class Careful:
+    """Fake trial runner. An agent's trial is rewarded 1 when the prompt delivered to it says
+    "careful", and 0 otherwise. A reflector's trial, at a task that holds a module, notes the
+    text it was handed and rewrites it to `answer`, which its tests keep."""
+
+    def __init__(self, answer: str = CAREFUL) -> None:
+        self.answer = answer
+        self.prompts: list[str] = []
+        self.handed: list[str] = []
+
+    async def __call__(self, config: Any) -> None:
+        trial = Path(config.trials_dir) / config.trial_name
+        module = Path(str(config.task.path)) / "environment" / REFLECTED
+        if module.is_file():
+            self.handed.append(module.read_text(encoding="utf-8"))
+            write_result(trial, reward=1.0, tokens=(100, 0, 10))
+            (trial / "verifier").mkdir(exist_ok=True)
+            (trial / "verifier" / REFLECTED).write_text(self.answer, encoding="utf-8")
+            return
+        template = (config.agent.kwargs or {}).get("prompt_template_path")
+        said = Path(template).read_text(encoding="utf-8") if template else ""
+        self.prompts.append(said)
+        write_result(trial, reward=float("careful" in said.lower()))
+
+
+def _seeded(home: Path) -> None:
+    """Seed the modules in `home` with the prompt `SEED`."""
     (home / "modules").mkdir()
     (home / "modules" / "PROMPT.md").write_text(f"{SEED}\n", encoding="utf-8")
-    asked: list[str] = []
-
-    async def acompletion(model: str, messages: list[Any], **params: Any) -> Any:
-        asked.append(messages[0]["content"])
-        usage = SimpleNamespace(prompt_tokens=100, completion_tokens=10)
-        message = SimpleNamespace(content=f"```\n{answer}\n```")
-        return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=usage)
-
-    monkeypatch.setattr("litellm.acompletion", acompletion)
-    return asked
 
 
 async def test_the_gepa_example_searches_the_prompt_and_keeps_the_best(
-    tmp_path: Path,
-    fakes: tuple[FakeProxy, FakeService],
-    harbor: Harbor,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, fakes: tuple[FakeProxy, FakeService], harbor: Harbor
 ) -> None:
     pytest.importorskip("gepa")
     trials = harbor(Careful())
-    search = [
-        'reflector = "claude-sonnet-5-5"',
-        'reflector_provider = "anthropic"',
-        "budget = 12",
-        "pareto = 2",
-        "minibatch = 2",
-    ]
     unrated = {"learning_rate = 2e-5\n": ""}  # a search takes no gradient step
-    home = blueprint(tmp_path, *search, **CARRIED, **ONE_STEP, **unrated)
-    asked = _reflected(monkeypatch, home)
-    directory = await _train(home, tmp_path / "runs", RECIPES / "gepa/trainer.py")
+    home = blueprint(tmp_path, *SEARCH, **CARRIED, **ONE_STEP, **unrated)
+    _seeded(home)
+    directory = await train(home, tmp_path / "runs", RECIPES / "gepa/trainer.py")
     best = (directory / "modules" / "best" / "PROMPT.md").read_text(encoding="utf-8")
     assert best.strip() == CAREFUL
-    assert asked and SEED in asked[0], "the reflector read the seed's text"
+    assert trials.handed and SEED in trials.handed[0], "the reflector read the seed's text"
+    task = directory / "gepa" / "reflections" / "0001" / "00"
+    assert (task / "environment" / "attempts").is_dir() and (task / "tests" / "test.sh").is_file()
     assert any(SEED in one for one in trials.prompts), "the seed was rolled out"
     assert any("careful" in one for one in trials.prompts), "and so was its rewrite"
-    jobs = list(record.read(directory / record.JOBS))
-    assert jobs and {job["purpose"] for job in jobs} == {"search"}
-    (row,) = _rows(directory)
+    jobs = list(files.read(directory / files.JOBS))
+    assert {(job["purpose"], job["role"]) for job in jobs} == {
+        ("search", "agent"),
+        ("reflection", "reflector"),
+    }
+    (row,) = rows(directory)
     assert row["best_score"] == 1.0 and row["candidates"] == 2
-    spent = record.read_json(directory / record.COSTS)["tokens"]
-    assert spent["anthropic"]["claude-sonnet-5-5"]["sample"] == 10 * len(asked)
-    saved = list(record.read(directory / record.CHECKPOINTS))
-    assert [(c["tag"], c["weights"]) for c in saved] == [("step-1", None), ("final", None)], (
+    assert row["reflections"] == len(trials.handed)
+    spent = files.read_json(directory / files.COSTS)["tokens"]
+    assert spent["anthropic"]["claude-sonnet-5-5"]["sample"] == 10 * len(trials.handed)
+    usage = list(files.read(directory / files.USAGE))
+    asked = {one["role"] for one in usage if one.get("provider") == "anthropic"}
+    assert asked == {"reflector"}, "the reflector's spend is filed under its role"
+    saved = list(files.read(directory / files.CHECKPOINTS))
+    assert [(c["tag"], c["weights"]) for c in saved] == [("step-1", {}), ("final", {})], (
         "a search moves no weights, and saves the modules it found"
     )
-    state = Trainer.State.model_validate(record.read_json(directory / saved[-1]["state"]))
+    state = Trainer.State.model_validate(files.read_json(directory / saved[-1]["state"]))
     assert state.modules is not None and state.modules.texts[PROMPT].strip() == CAREFUL
 
 
 async def test_a_gepa_proposal_that_cannot_be_delivered_scores_nothing_and_the_search_goes_on(
-    tmp_path: Path,
-    fakes: tuple[FakeProxy, FakeService],
-    harbor: Harbor,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, fakes: tuple[FakeProxy, FakeService], harbor: Harbor
 ) -> None:
     pytest.importorskip("gepa")
-    trials = harbor(Careful())
-    search = [
-        'reflector = "claude-sonnet-5-5"',
-        'reflector_provider = "anthropic"',
-        "budget = 12",
-        "pareto = 2",
-        "minibatch = 2",
-    ]
+    trials = harbor(Careful(answer=f"{CAREFUL} {{% endraw %}}"))
     unrated = {"learning_rate = 2e-5\n": ""}
-    home = blueprint(tmp_path, *search, **CARRIED, **ONE_STEP, **unrated)
-    asked = _reflected(monkeypatch, home, answer=f"{CAREFUL} {{% endraw %}}")
-    directory = await _train(home, tmp_path / "runs", RECIPES / "gepa/trainer.py")
-    assert asked, "the reflector proposed"
+    home = blueprint(tmp_path, *SEARCH, **CARRIED, **ONE_STEP, **unrated)
+    _seeded(home)
+    directory = await train(home, tmp_path / "runs", RECIPES / "gepa/trainer.py")
+    assert trials.handed, "the reflector proposed"
     assert trials.prompts and not any("careful" in one for one in trials.prompts), (
         "no proposal was rolled out"
     )
@@ -471,26 +416,27 @@ async def test_a_run_that_stopped_goes_on_as_a_new_run_from_its_last_checkpoint(
     origin, config = open_run(blueprint(tmp_path), root=tmp_path / "runs")
     with pytest.raises(RuntimeError, match="went away"):
         with running(origin), Crashing(config, origin) as crashing:
-            await crashing.train()
-    assert record.read_json(origin / record.RUN)["process"]["failed"] is True
-    files = (record.METRICS, record.CHECKPOINTS, record.USAGE, record.COSTS)
-    before = {name: (origin / name).read_bytes() for name in files}
+            await crashing.run()
+    assert files.read_json(origin / files.RUN)["process"]["failed"] is True
+    written = (files.METRICS, files.CHECKPOINTS, files.USAGE, files.COSTS)
+    before = {name: (origin / name).read_bytes() for name in written}
 
-    config, row = reopened(origin)
-    assert row["tag"] == "step-1"
-    directory, config = continued(origin, row)
+    going = resumed(origin)
+    assert going is not None
+    directory, config, checkpoint = going
+    assert checkpoint.tag == "step-1"
     assert directory.parent == origin.parent and directory.name.startswith("four__")
     trainer = Trainer(config, directory)
-    trainer.restore(origin, row)
+    trainer.restore(origin, checkpoint)
     with running(directory), trainer:
-        await trainer.train()
-    noted = record.read_json(directory / record.RUN)
+        await trainer.run()
+    noted = files.read_json(directory / files.RUN)
     assert noted["origin"] == {"run": str(origin.resolve()), "tag": "step-1", "first": origin.name}
     assert noted["process"]["failed"] is False
-    assert [one["step"] for one in _rows(directory)] == [2], "its own rows, from where it went on"
-    assert [c["tag"] for c in record.read(directory / record.CHECKPOINTS)] == ["step-2", "final"]
-    assert {row["step"] for row in record.read(directory / record.USAGE)} == {2}, "its own costs"
-    assert {name: (origin / name).read_bytes() for name in files} == before, (
+    assert [one["step"] for one in rows(directory)] == [2], "its own rows, from where it went on"
+    assert [c["tag"] for c in files.read(directory / files.CHECKPOINTS)] == ["step-2", "final"]
+    assert {row["step"] for row in files.read(directory / files.USAGE)} == {2}, "its own costs"
+    assert {name: (origin / name).read_bytes() for name in written} == before, (
         "the other is as it was"
     )
     loaded = service.client.calls.index(
@@ -526,7 +472,7 @@ async def test_a_run_that_moves_no_weights_saves_its_state_and_a_resume_goes_on_
 ) -> None:
     _, service = fakes
     longer = {"steps = 2": "steps = 3"}
-    whole = await _train(blueprint(tmp_path, **longer), tmp_path / "runs", Noting)
+    whole = await train(blueprint(tmp_path, **longer), tmp_path / "runs", Noting)
 
     class Stopping(Noting):
         stop = 2
@@ -534,24 +480,25 @@ async def test_a_run_that_moves_no_weights_saves_its_state_and_a_resume_goes_on_
     origin, config = open_run(blueprint(tmp_path, **longer), root=tmp_path / "runs")
     with pytest.raises(RuntimeError, match="went away"):
         with running(origin), Stopping(config, origin) as stopping:
-            await stopping.train()
-    config, row = reopened(origin)
-    assert (row["tag"], row["weights"]) == ("step-2", None), "a state, and no weights to save"
-    directory, config = continued(origin, row)
-    resumed = Noting(config, directory)
-    resumed.restore(origin, row)
-    assert (resumed.state.steps, resumed.state.drawn, len(resumed.state.seen)) == (2, 2, 4)
-    assert resumed.state.modules is not None and resumed.state.modules.texts[PROMPT] == "1.\n"
-    with running(directory), resumed:
-        await resumed.train()
-    tags = [c["tag"] for c in record.read(directory / record.CHECKPOINTS)]
+            await stopping.run()
+    going = resumed(origin)
+    assert going is not None
+    directory, config, checkpoint = going
+    assert (checkpoint.tag, checkpoint.weights) == ("step-2", {}), "a state, no weights to save"
+    trainer = Noting(config, directory)
+    trainer.restore(origin, checkpoint)
+    assert (trainer.state.steps, trainer.state.drawn, len(trainer.state.seen)) == (2, 2, 4)
+    assert trainer.state.modules is not None and trainer.state.modules.texts[PROMPT] == "1.\n"
+    with running(directory), trainer:
+        await trainer.run()
+    tags = [c["tag"] for c in files.read(directory / files.CHECKPOINTS)]
     assert tags == ["step-3", "final"]
-    done = record.read_json(whole / record.STATES / "step-3.json")
-    assert resumed.state == Noting.State.model_validate(done), "as if it had never stopped"
+    done = files.read_json(whole / files.STATES / "step-3.json")
+    assert trainer.state == Noting.State.model_validate(done), "as if it had never stopped"
     assert not [c for c in service.client.calls if "state" in c[0]], "nothing to save or load"
     _, step = reopened(directory, tag="step-3")
     again, _ = continued(directory, step)
-    noted = record.read_json(again / record.RUN)["origin"]
+    noted = files.read_json(again / files.RUN)["origin"]
     assert (noted["run"], noted["first"]) == (str(directory), origin.name), "a chain's first run"
 
 
@@ -561,11 +508,11 @@ async def test_a_run_checkpoints_every_few_steps_and_saves_weights_once_updates_
     _, service = fakes
     harbor(FakeTrials())  # every reward 1, so no group teaches anything, and nothing updates
     every = {"steps = 2": "steps = 3", "[recipe]": "[checkpoints]\nevery = 2\n\n[recipe]"}
-    directory = await _train(blueprint(tmp_path, **every), tmp_path / "runs")
-    saved = list(record.read(directory / record.CHECKPOINTS))
+    directory = await train(blueprint(tmp_path, **every), tmp_path / "runs")
+    saved = list(files.read(directory / files.CHECKPOINTS))
     assert [(c["tag"], c["step"], c["weights"]) for c in saved] == [
-        ("step-2", 2, None),
-        ("final", 3, None),
+        ("step-2", 2, {}),
+        ("final", 3, {}),
     ]
     assert not [c for c in service.client.calls if c[0] == "save_state"]
 
@@ -575,20 +522,20 @@ def test_a_checkpoints_state_must_fit_the_recipes_and_drops_what_the_recipe_no_l
 ) -> None:
     monkeypatch.chdir(tmp_path)
     directory, config = open_run(blueprint(tmp_path), root=tmp_path / "runs")
-    saved = directory / record.STATES / "step-1.json"
-    row = {"tag": "step-1", "step": 1, "state": f"{record.STATES}/step-1.json", "weights": None}
-    record.write_json(saved, {"steps": 1, "drawn": 1, "seen": ["a", "b"], "gone": 3})
+    saved = directory / files.STATES / "step-1.json"
+    row = Checkpoint("step-1", 1, f"{files.STATES}/step-1.json")
+    files.write_json(saved, {"steps": 1, "drawn": 1, "seen": ["a", "b"], "gone": 3})
     trainer = Noting(config, directory)
     with caplog.at_level("WARNING"):
         trainer.restore(directory, row)
     assert (trainer.state.steps, trainer.state.drawn, trainer.state.seen) == (1, 1, ["a", "b"])
     assert "gone" in caplog.text, "a field the recipe dropped is said to be dropped"
-    record.write_json(saved, {"steps": 1, "seen": "a, b"})
+    files.write_json(saved, {"steps": 1, "seen": "a, b"})
     with pytest.raises(ValueError, match="does not fit Noting.State"):
         Noting(config, directory).restore(directory, row)
     with pytest.raises(ValueError, match="its state is missing or unreadable"):
         Noting(config, directory).restore(
-            directory, {**row, "state": f"{record.STATES}/step-9.json"}
+            directory, replace(row, state=f"{files.STATES}/step-9.json")
         )
 
 
@@ -606,13 +553,13 @@ def test_resuming_a_finished_run_opens_none_and_one_with_more_steps_goes_on_from
     assert again.exit_code == 0 and "nothing is left to run" in again.output
     assert [one.name for one in runs.iterdir()] == [directory.name] and len(service.calls) == calls
     # Given more steps, the finished run is a checkpoint like any other.
-    toml = directory / record.CONFIG
+    toml = directory / files.CONFIG
     toml.write_text(toml.read_text().replace("steps = 1", "steps = 2"))
     more = runner.invoke(app, ["resume", str(directory)])
     assert more.exit_code == 0, more.output
     (other,) = [one for one in runs.iterdir() if one != directory]
     assert f"run {other.name} goes on from {directory.name} at final" in more.output
-    assert [one["step"] for one in _rows(other)] == [2], "the step after the one it went on from"
+    assert [one["step"] for one in rows(other)] == [2], "the step after the one it went on from"
 
 
 async def test_a_tasks_trials_count_as_one_group_whatever_jobs_they_ran_in(
@@ -627,8 +574,8 @@ async def test_a_tasks_trials_count_as_one_group_whatever_jobs_they_ran_in(
             for _ in range(2):
                 await self.rollout(batch, attempts=1)
 
-    directory = await _train(blueprint(tmp_path, **ONE_STEP), tmp_path / "runs", Twice)
-    (row,) = _rows(directory)
+    directory = await train(blueprint(tmp_path, **ONE_STEP), tmp_path / "runs", Twice)
+    (row,) = rows(directory)
     assert len(row["jobs"]) == 2 and (row["groups"], row["trials"]) == (2, 4)
     assert row["reward_spread"] == 0.5, "each task's 1 and 0, across the jobs"
 
@@ -643,8 +590,8 @@ async def test_a_recipe_metric_named_like_a_row_key_is_logged_beside_it(
             await super().step()
             self.metrics.update(entropy=1.5, trials=9, own=1)
 
-    directory = await _train(blueprint(tmp_path, **ONE_STEP), tmp_path / "runs", Measuring)
-    (row,) = _rows(directory)
+    directory = await train(blueprint(tmp_path, **ONE_STEP), tmp_path / "runs", Measuring)
+    (row,) = rows(directory)
     assert row["entropy"] != 1.5 and row["trials"] == 4, "the run's own keys are kept"
     assert (row["recipe_entropy"], row["recipe_trials"], row["own"]) == (1.5, 9, 1)
 
@@ -655,10 +602,10 @@ async def test_the_test_set_is_evaluated_every_few_steps_and_not_again_at_the_en
     harbor(Alternating())
     with_test = {"group_size = 2": 'group_size = 2\ntest = "four"\ntest_group_size = 1'}
     home = blueprint(tmp_path, "evaluate_every = 1", **ONE_STEP, **with_test)
-    directory = await _train(home, tmp_path / "runs")
-    (row,) = _rows(directory)
+    directory = await train(home, tmp_path / "runs")
+    (row,) = rows(directory)
     assert (row["step"], row["eval_tasks"], row["eval_trials"]) == (1, 4, 4), "in its step's row"
-    jobs = [one["purpose"] for one in record.read(directory / record.JOBS)]
+    jobs = [one["purpose"] for one in files.read(directory / files.JOBS)]
     assert jobs == ["training", "evaluation", "evaluation"]
     assert row["groups"] == 2, "an evaluation's groups are not the step's"
 
@@ -718,90 +665,58 @@ def test_the_recipe_table_holds_the_keys_its_trainer_declares_and_every_table_is
 
 
 class Holding(Trainer):
-    """A trainer holding a policy of every kind: as attributes, in a dict and in a list."""
+    """A trainer holding a model of every kind: as attributes, in a dict and in a list."""
 
     def __init__(self, config: Blueprint, directory: Path) -> None:
         super().__init__(config, directory)
-        self.anchor = Policy(INITIAL)
-        self.critics = {"main": Policy("claude-sonnet-5-5", provider="anthropic")}
-        self.teachers = [Policy("Qwen/Qwen3-32B"), Policy("tinker://r/sampler_weights/final")]
+        self.critics = {"main": Model("claude-sonnet-5-5", provider="anthropic")}
+        self.teachers = [Model("Qwen/Qwen3-32B"), Model("tinker://r/sampler_weights/final")]
 
 
-def test_the_run_makes_its_agent_and_finds_the_policies_a_recipe_holds(
+def test_the_run_makes_its_agent_and_finds_the_models_a_recipe_holds(
     tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
 ) -> None:
     directory, config = open_run(blueprint(tmp_path), root=tmp_path / "runs")
     trainer = Holding(config, directory)
     agent = trainer.policy
-    assert (agent.provider, agent.model) == ("tinker", MODEL)
-    assert not agent.trains, "a description until the run connects it"
+    assert (agent.provider, agent.name) == ("tinker", MODEL)
+    assert agent.training, "the run trains its agent unless its recipe says otherwise"
     held = trainer._held()
     assert held == [
         ("agent", agent),
-        ("anchor", trainer.anchor),
         ("critics[main]", trainer.critics["main"]),
         ("teachers[0]", trainer.teachers[0]),
         ("teachers[1]", trainer.teachers[1]),
     ], "each named for where the trainer holds it, as its spend is filed"
-    assert all(one.endpoint is None and not one.trains for _, one in held), "nothing built yet"
-    assert trainer.anchor.model is None and trainer.teachers[1].model is None, "known once open"
-    assert trainer.teachers[0].model == "Qwen/Qwen3-32B"
+    assert all(one.endpoint is None for _, one in held), "nothing built yet"
+    assert not any(one.training for _, one in held[1:]), "the run trains its agent alone"
     with pytest.raises(AttributeError):
-        trainer.policy = Policy("Qwen/Qwen3-32B")  # type: ignore[misc]
-    with pytest.raises(ValueError, match="needs its model"):
-        Policy("")
-    with pytest.raises(ValueError, match="INITIAL is the agent's weights"):
-        Policy(INITIAL, provider="anthropic")
+        trainer.policy = Model("Qwen/Qwen3-32B")  # type: ignore[misc]
 
 
-async def test_a_policy_is_used_once_the_run_binds_it_to_what_it_runs_on(
+async def test_a_model_is_used_once_the_run_binds_it_to_what_it_runs_on(
     tmp_path: Path, fakes: tuple[FakeProxy, FakeService]
 ) -> None:
     directory, config = open_run(blueprint(tmp_path), root=tmp_path / "runs")
     trainer = Holding(config, directory)
-    agent, anchor, critic = trainer.policy, trainer.anchor, trainer.critics["main"]
+    agent, teacher = trainer.policy, trainer.teachers[0]
     with pytest.raises(RuntimeError, match="not connected yet"):
-        await agent.sample(["hello"])
-    trainer._bind()
-    assert agent.trains and not anchor.trains and not critic.trains
-    assert agent.endpoint is not None and anchor.endpoint is None, "only the agent is served"
-    assert anchor.model is None, "a frozen policy opens with the agent, when the steps start"
-    with pytest.raises(NotImplementedError, match="sampled by its harness"):
-        await agent.sample(["hello"])
-    with pytest.raises(RuntimeError, match="no endpoint to sample through"):
-        await anchor.sample(["hello"])
-
-
-async def test_each_provider_call_is_billed_as_it_ends_even_when_its_batch_and_step_fail(
-    tmp_path: Path, fakes: tuple[FakeProxy, FakeService], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    async def acompletion(model: str, messages: list[Any], **params: Any) -> Any:
-        if messages[0]["content"] == "fail":
-            raise RuntimeError("the provider is down")
-        usage = SimpleNamespace(prompt_tokens=100, completion_tokens=10)
-        message = SimpleNamespace(content="fine")
-        return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=usage)
-
-    monkeypatch.setattr("litellm.acompletion", acompletion)
-
-    class Critiqued(Trainer):
-        def __init__(self, config: Blueprint, directory: Path) -> None:
-            super().__init__(config, directory)
-            self.critic = Policy("claude-sonnet-5-5", provider="anthropic")
-
-        async def step(self) -> None:
-            await self.critic.sample(["one", "fail", "two"])
-
-    directory, config = open_run(blueprint(tmp_path, **ONE_STEP), root=tmp_path / "runs")
-    with pytest.raises(RuntimeError, match="the provider is down"):
-        with running(directory), Critiqued(config, directory) as trainer:
-            await trainer.train()
-    usage = list(record.read(directory / record.USAGE))
-    assert [(row["step"], row["role"], row["prefill"], row["sample"]) for row in usage] == [
-        (1, "critic", 100, 10)
-    ] * 2, "the two calls that answered, though their batch then failed"
-    spent = record.read_json(directory / record.COSTS)["tokens"]
-    assert spent == {"anthropic": {"claude-sonnet-5-5": {"prefill": 200, "sample": 20}}}
+        await agent.logprobs([])
+    connected = connect(config, directory, trainer._held(), trainer.logs.spend)
+    assert connected.session is not None and connected.session.trains
+    assert agent.endpoint is not None and teacher.endpoint is not None
+    assert list(agent.endpoint.proxy.lanes) == ["agent", "teachers-0", "teachers-1"], (
+        "the agent's lane, then a lane for each other model on Tinker"
+    )
+    document = teacher.endpoint.document
+    assert (document["name"], document["model"]) == ("teachers-0", "Qwen/Qwen3-32B")
+    assert "weights" not in document, "its base model, until the run points it"
+    assert [(one.role, one.load) for one in connected.others] == [
+        ("teachers[0]", "Qwen/Qwen3-32B"),
+        ("teachers[1]", "tinker://r/sampler_weights/final"),
+    ], "each model on Tinker opens a session of its own"
+    with pytest.raises(RuntimeError, match="already open"):
+        teacher.training = True
 
 
 async def test_a_providers_agent_is_rolled_out_by_its_harness_and_never_trained(
@@ -811,37 +726,44 @@ async def test_a_providers_agent_is_rolled_out_by_its_harness_and_never_trained(
     trials = harbor(FakeTrials(default={"reward": 1.0, "tokens": (100, 40, 10)}))
     claude = {'model = "Qwen/Qwen3-8B"': 'model = "claude-sonnet-5-5"\nprovider = "anthropic"'}
     home = blueprint(tmp_path, **claude, **ONE_STEP)
+    with pytest.raises(ValueError, match="anthropic serves it, .* `self.policy.training = False`"):
+        await train(home, tmp_path / "runs", Trainer)
+    assert service.calls == [] and proxy.placed == [] and trials.configs == [], "nothing opened"
 
     class Measured(Trainer):
+        def __init__(self, config: Blueprint, directory: Path) -> None:
+            super().__init__(config, directory)
+            self.policy.training = False
+
         async def step(self) -> None:
             groups = await self.rollout(self.draw())
             with pytest.raises(ValueError, match="no weights to train"):
                 await self.update(groups)
 
-    directory = await _train(home, tmp_path / "runs", Measured)
+    directory = await train(home, tmp_path / "runs", Measured)
     assert service.calls == [] and proxy.placed == [], "no Tinker session and no proxy"
     named = [one.agent.model_name for one in trials.configs]
     assert named == ["anthropic/claude-sonnet-5-5"] * 4, "the harness calls the provider"
-    [job] = list(record.read(directory / record.JOBS))
+    [job] = list(files.read(directory / files.JOBS))
     assert job["backend"] == "provider" and job["graded"] == 4
-    spent = record.read_json(directory / record.COSTS)["tokens"]
+    spent = files.read_json(directory / files.COSTS)["tokens"]
     assert spent == {
         "anthropic": {"claude-sonnet-5-5": {"prefill": 240, "cache": 160, "sample": 40}}
     }
-    saved = list(record.read(directory / record.CHECKPOINTS))
-    assert [(c["tag"], c["weights"]) for c in saved] == [("step-1", None), ("final", None)], (
+    saved = list(files.read(directory / files.CHECKPOINTS))
+    assert [(c["tag"], c["weights"]) for c in saved] == [("step-1", {}), ("final", {})], (
         "no weights to save, but a state to go on from"
     )
-    (row,) = _rows(directory)
+    (row,) = rows(directory)
     assert row["trained"] is False
 
-    class Anchored(Trainer):
+    class Taught(Measured):
         def __init__(self, config: Blueprint, directory: Path) -> None:
             super().__init__(config, directory)
-            self.anchor = Policy(INITIAL)
+            self.teacher = Model("Qwen/Qwen3-32B")
 
-    with pytest.raises(ValueError, match="which has none"):
-        await _train(home, tmp_path / "runs", Anchored)
+    await train(home, tmp_path / "runs", Taught)
+    assert service.calls == [("sampling", "Qwen/Qwen3-32B", None)], "its own session, alone"
 
 
 def test_the_agent_takes_a_harness_or_several_and_mixing_them_needs_a_share_for_each(
@@ -891,7 +813,7 @@ def test_a_recipe_folder_runs_with_the_trainer_beside_its_run_toml(tmp_path: Pat
     assert [one.name for one in runs.iterdir()] == [plain.name], "a refused blueprint opens no run"
     beside, _ = open_run(blueprint(tmp_path, *DAPO), root=runs)
     assert trainer_class(beside).__name__ == "DAPOTrainer"
-    taught = blueprint(tmp_path, 'teacher = "Qwen/Qwen3-32B"', "teacher_coef = 1.0")
+    taught = blueprint(tmp_path, 'teacher = "Qwen/Qwen3-32B"')
     named, _ = open_run(taught / "run.toml", root=runs, trainer=RECIPES / "opd" / "trainer.py")
     assert trainer_class(named).__name__ == "OPDTrainer", "a trainer named outright wins"
 
@@ -919,10 +841,10 @@ def test_a_run_keeps_its_recipes_place_and_a_resume_runs_the_code_as_it_is(
 ) -> None:
     trainer = _recipe(tmp_path / "recipe", 0.25)
     directory, _ = open_run(blueprint(tmp_path), root=tmp_path / "runs", trainer=trainer)
-    assert not (directory / record.TRAINER).exists(), "the code stays in the recipe's folder"
-    assert record.read_json(directory / record.RUN)["recipe"]["trainer"] == str(trainer.resolve())
+    assert not (directory / files.TRAINER).exists(), "the code stays in the recipe's folder"
+    assert files.read_json(directory / files.RUN)["recipe"]["trainer"] == str(trainer.resolve())
     row = {"tag": "step-1", "step": 1, "updates": 1, "drawn": 1, "state_path": "tinker://s"}
-    record.append(directory / record.CHECKPOINTS, row)
+    files.append(directory / files.CHECKPOINTS, row)
     reopened(directory)
     assert "changed since the run started" not in caplog.text
     (trainer.parent / "helpers.py").write_text("BONUS = 0.75\n")
@@ -971,7 +893,7 @@ def test_a_run_sent_sigterm_or_sighup_unwinds_closes_what_it_opened_and_records_
     assert f"stopped: {name}" in stopped.output
     assert signal.getsignal(signum) is before, "the shell's handler is back"
     (directory,) = (tmp_path / "r").iterdir()
-    note = record.read_json(directory / record.RUN)["process"]
+    note = files.read_json(directory / files.RUN)["process"]
     assert note["failed"] is True and note["error"] == f"stopped: {name}"
     assert proxy.closed == 1, "the proxy, and its tunnel, are stopped"
     assert service.closed and service.closed[-1][0] == "interrupted"
@@ -987,9 +909,9 @@ def test_the_cli_runs_a_blueprint_and_refuses_to_resume_with_no_checkpoint(
     )
     assert done.exit_code == 0, done.output
     (directory,) = (tmp_path / "r").iterdir()
-    assert record.read_json(directory / record.RUN)["process"]["failed"] is False
+    assert files.read_json(directory / files.RUN)["process"]["failed"] is False
     empty = tmp_path / "r" / "empty"
     empty.mkdir()
-    (empty / record.CONFIG).write_text((directory / record.CONFIG).read_text())
+    (empty / files.CONFIG).write_text((directory / files.CONFIG).read_text())
     refused = runner.invoke(app, ["resume", str(empty)])
     assert refused.exit_code == 1 and "has no checkpoint 'last'" in refused.output

@@ -12,7 +12,7 @@ from proxies import ids
 from shipyard.groups import Sequence, Trial
 from shipyard.jobs.harnesses import harness
 from shipyard.models.context import boundary, insert, placed
-from tests.trainers import CharTokenizer
+from tests.service import CharTokenizer
 
 
 def _sequence(*parts: str | int, completions: tuple[str, ...], task: Path = Path(".")) -> Sequence:

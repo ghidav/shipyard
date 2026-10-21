@@ -16,8 +16,8 @@ from urllib.parse import urlsplit
 import httpx
 from harbor.models.trial.config import TrialConfig
 
-from harness_proxy.wire import Record
-from proxies import MODEL, made
+from harness_proxy.wire import Address, Record, Served
+from proxies import made
 
 FIXTURES = Path(__file__).parent / "tasks"
 T0 = datetime(2026, 1, 1, tzinfo=UTC)
@@ -201,12 +201,13 @@ class FakeProxy:
     placed: list[tuple[str, Any, dict[str, Any]]] = field(default_factory=list)
     addressed: list[str] = field(default_factory=list)
     fetched: list[str] = field(default_factory=list)
+    #: The weights of each swap, in order, whichever lane it pointed.
     swapped: list[str | None] = field(default_factory=list)
-    #: Token budget reported by `/healthz`; None means no budget is enforced.
-    budget: int | None = None
-    #: Renderers reported by `/healthz`: the ones the run started it with, or a test's for a
-    #: remote one; None for a proxy that does not say.
-    renderers: list[str] | None = field(default_factory=list)
+    #: Lanes reported by `/healthz`: the ones the run started it with, or a test's for a
+    #: remote one.
+    lanes: dict[str, Served] = field(default_factory=dict)
+    #: Each swap: the lane it named, and the weights.
+    lane_swaps: list[tuple[str | None, str | None]] = field(default_factory=list)
     closed: int = 0
     #: Number of times `/healthz` was probed.
     probed: int = 0
@@ -219,14 +220,26 @@ class FakeProxy:
 
     async def local(self, settings: Any, *, host: str, **named: Any) -> FakeProxy:
         self.placed.append(("local", dict(settings), {"host": host, **named}))
-        self.renderers = list(settings.get("renderer") or [])
+        self._started(settings)
         return self
 
     async def tunnelled(self, settings: Any, **named: Any) -> FakeProxy:
         self.placed.append(("tunnel", dict(settings), named))
         self.origin = "https://fake-words.trycloudflare.com"
-        self.renderers = list(settings.get("renderer") or [])
+        self._started(settings)
         return self
+
+    def _started(self, settings: Any) -> None:
+        """Serve the lanes the run started it with, as `/healthz` would report them."""
+        self.lanes = {
+            one["name"]: Served(
+                model=one["model"],
+                serving=one.get("weights") or one["model"],
+                budget=one.get("max_context"),
+                renderers=tuple(one.get("renderer") or ()),
+            )
+            for one in settings["lanes"]
+        }
 
     def remote(self, url: str, token: str, control_token: str | None = None) -> FakeProxy:
         if not token:
@@ -235,15 +248,15 @@ class FakeProxy:
         self.origin, self.token, self.control_token = url.rstrip("/"), token, control_token
         return self
 
-    def address_for(self, trial: str, renderer: str | None = None) -> str:
+    def address_for(self, trial: str, renderer: str | None = None, lane: str | None = None) -> str:
         self.addressed.append(trial)
-        named = f"/renderer/{renderer}" if renderer is not None else ""
-        return f"{self.origin}/r/trial/{trial}{named}/v1"
+        return self.origin + Address(trial, lane, renderer).path
 
-    async def swap(self, model_path: str | None) -> None:
+    async def swap(self, weights: str | None, lane: str | None = None) -> None:
         if self.control_token is None:
             raise RuntimeError("no control route")
-        self.swapped.append(model_path)
+        self.swapped.append(weights)
+        self.lane_swaps.append((lane, weights))
 
     async def records(self, trial: str) -> list[Record]:
         if self.control_token is None:
@@ -255,9 +268,9 @@ class FakeProxy:
         found = self.answers.get(task, self.default)
         return list(found if found is not None else [made()])
 
-    async def ready(self, seconds: float = 30.0) -> str:
+    async def ready(self, seconds: float = 30.0) -> dict[str, Served]:
         self.probed += 1
-        return MODEL
+        return self.lanes
 
     def gone(self) -> str | None:
         return self.exited

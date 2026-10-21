@@ -20,7 +20,6 @@ learning_rate = 2e-5
 steps = 100
 lora_rank = 32
 teacher = "Qwen/Qwen3-32B"
-teacher_coef = 1.0
 
 [checkpoints]
 every = 10

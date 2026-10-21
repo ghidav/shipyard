@@ -89,6 +89,11 @@ def spliced(sequence: Sequence, at: int, inserted: tuple[int, ...]) -> Sequence:
     )
 
 
+def shares_tokenizer(model: str, other: str) -> bool:
+    """Return whether two models read the same token ids: the same vocabulary, id for id."""
+    return model == other or tokenizer(model).get_vocab() == tokenizer(other).get_vocab()
+
+
 def tokenizer(model: str) -> Any:
     """Return the model's tokenizer, as the Tinker cookbook loads and caches it."""
     from tinker_cookbook.tokenizer_utils import get_tokenizer

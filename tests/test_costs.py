@@ -12,6 +12,7 @@ import pytest
 
 from shipyard.groups import Trial
 from shipyard.jobs.harnesses import harness
+from shipyard.records import Records
 from shipyard.run.costs import Costs, billed_by, reported, sampled, sandbox_seconds
 from tests.fakes import made, write_result
 
@@ -21,7 +22,7 @@ def _trials(*dirs: Path, records: Mapping[str, Sequence[Any]] | None = None) -> 
     found = [Trial("j", Path(one.name), harness("pi"), one) for one in dirs]
     if records is not None:
         for one in found:
-            one.records = list(records.get(one.name) or [])
+            one.records = Records(records.get(one.name) or [])
     return found
 
 
@@ -55,35 +56,18 @@ def test_reported_counts_each_model_a_trial_names_and_its_steps(tmp_path: Path) 
     }, "the totals beside a breakdown are not counted twice; the prefix is the provider's"
 
 
-def test_sampled_counts_each_trials_records_as_the_endpoints_model(tmp_path: Path) -> None:
+def test_sampled_adds_up_each_trials_records_as_the_endpoints_model(tmp_path: Path) -> None:
     graded = write_result(tmp_path / "graded", reward=1.0)
     gone = tmp_path / "gone"
     records = {
-        graded.name: [
-            made("one", "ok", seq=1),
-            made("oneoktwo", "fine", seq=2, cached=5, bridged=True),
-        ],
-        gone.name: [
-            made("go", error="context", seq=1),
-            made("go", error="budget", seq=2, cached=9),
-            made(seq=3, error="sampler: ConnectError"),
-        ],
+        graded.name: [made("one", "ok", seq=1, bridged=True)],
+        gone.name: [made("go", error="context", seq=1), made("go", "fine", seq=2, cached=1)],
     }
     tokens, noted = sampled(_trials(graded, gone, records=records), "tinker", "Qwen/Qwen3-8B")
-    # 13 prompt tokens reached the sampler, 5 of them cached; the two refusals never did.
-    assert tokens == {"tinker": {"Qwen/Qwen3-8B": {"prefill": 8, "cache": 5, "sample": 6}}}
-    assert noted == {"turned_away": 2, "bridged": 1}, "a sampler failure is not a refusal"
+    assert tokens == {"tinker": {"Qwen/Qwen3-8B": {"prefill": 3 + 1, "cache": 1, "sample": 6}}}
+    assert noted == {"turned_away": 1, "bridged": 1}
     empty = _trials(gone, records={})
     assert sampled(empty, "tinker", "m") == ({}, {"turned_away": 0, "bridged": 0})
-
-
-def test_a_call_that_sampled_several_sequences_bills_its_prompt_once(tmp_path: Path) -> None:
-    graded = write_result(tmp_path / "graded", reward=1.0)
-    three = [made("go", "ok", seq=n + 1, sample=n, samples=3) for n in range(3)]
-    three[0] = made("go", "ok", seq=1, samples=3, cached=1)  # the first carries the cache hit
-    tokens, _ = sampled(_trials(graded, records={graded.name: three}), "tinker", "m")
-    # One prompt of 2 tokens, 1 of them cached, and three completions of 2.
-    assert tokens == {"tinker": {"m": {"prefill": 1, "cache": 1, "sample": 6}}}
 
 
 def test_billed_by_needs_every_trial_that_recorded_a_provider_to_agree(tmp_path: Path) -> None:

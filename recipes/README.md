@@ -2,13 +2,6 @@
 
 Each folder is a recipe: a `run.toml` with every setting, and a `trainer.py` whose `Trainer` subclass holds the algorithm. `shipyard init` copies them into `./recipes`.
 
-```mermaid
-flowchart LR
-    toml["run.toml: the settings"] --> run["shipyard run recipes/dapo"]
-    trainer["trainer.py: the algorithm"] --> run
-    run --> dir["runs/dapo__id/"]
-```
-
 | Recipe | Algorithm | Overrides | Loss |
 | --- | --- | --- | --- |
 | [`dapo`](dapo/) | DAPO: an overlong penalty, rewards normalized in the group, every prompt weighing the same, dynamic sampling | `step`, `score` | `ppo`, clipped asymmetrically |

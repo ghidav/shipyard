@@ -24,6 +24,8 @@ TRAINER = "trainer.py"
 #: Directory, not a file: the modules the run carried (`carried/`), and a search's `seed/`
 #: and `best/`.
 MODULES = "modules"
+#: Directory under `modules/`: the modules every job of the run carries.
+CARRIED = "carried"
 #: Directory, not a file: the state after each step a checkpoint was taken at, as
 #: `step-<n>.json`.
 STATES = "states"

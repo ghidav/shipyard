@@ -18,6 +18,8 @@ SERVE_STUB = textwrap.dedent(
     import json, os, signal, sys, time
     from pathlib import Path
 
+    from harness_proxy.wire import banner, tunnel_line
+
     args = sys.argv[1:]
     flag = lambda name: args[args.index(name) + 1] if name in args else None
     mode = os.environ.get("STUB_MODE", "serve")
@@ -32,21 +34,25 @@ SERVE_STUB = textwrap.dedent(
         time.sleep(30)
         sys.exit(0)
     port = os.environ.get("STUB_PORT", "8765")
-    line = f"serving {flag('--model')} at http://{flag('--advertise')}:{port} (control: on)"
-    print(line, flush=True)
+    named = [one["name"] for one in json.loads(flag("--settings"))["lanes"]]
+    print(banner(named, flag("--advertise"), int(port), control=True), flush=True)
     print("serving on", file=sys.stderr, flush=True)
     if "--tunnel" in args:
         if mode == "no-tunnel":
             print("RuntimeError: cloudflared is not installed", file=sys.stderr, flush=True)
             sys.exit(1)
         print("INF |  https://fake-words.trycloudflare.com  |", file=sys.stderr, flush=True)
-        print("tunnel at https://fake-words.trycloudflare.com", flush=True)
+        print(tunnel_line("https://fake-words.trycloudflare.com"), flush=True)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     while True:
         time.sleep(0.1)
     """
 )
-SETTINGS = {"model": "Qwen/Qwen3-8B", "weights": None, "bind": "127.0.0.1", "bind_port": 0}
+SETTINGS = {
+    "lanes": [{"name": "agent", "model": "Qwen/Qwen3-8B"}],
+    "bind": "127.0.0.1",
+    "bind_port": 0,
+}
 
 
 @pytest.fixture
@@ -63,24 +69,15 @@ def stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 # ------------------------------------------------------------------- the command
 
 
-def test_the_serve_command_carries_the_flags_and_the_rest_as_settings() -> None:
+def test_the_serve_command_carries_the_process_as_flags_and_the_lanes_as_settings() -> None:
+    lanes = [{"name": "agent", "model": "a/b", "weights": "tinker://w/step-1", "renderer": "q"}]
     made = serve_command(
-        {
-            "model": "a/b",
-            "weights": "tinker://w/step-1",
-            "renderer": "qwen3",
-            "bind": "0.0.0.0",
-            "bind_port": 8000,
-            "temperature": 0.5,
-            "max_context": 4096,
-        },
+        {"lanes": lanes, "bind": "0.0.0.0", "bind_port": 8000, "keepalive_every": 5.0},
         host="proxy",
     )
     assert made[: len(client.SERVE)] == client.SERVE
     rest = made[len(client.SERVE) :]
-    assert rest[:10] == [
-        "--model",
-        "a/b",
+    assert rest[:8] == [
         "--bind",
         "0.0.0.0",
         "--port",
@@ -90,15 +87,12 @@ def test_the_serve_command_carries_the_flags_and_the_rest_as_settings() -> None:
         "--parent-pid",
         str(os.getpid()),
     ]
-    assert rest[10:14] == ["--weights", "tinker://w/step-1", "--renderer", "qwen3"]
-    assert rest[14] == "--settings" and json.loads(rest[15]) == {
-        "temperature": 0.5,
-        "max_context": 4096,
+    assert rest[8] == "--settings" and json.loads(rest[9]) == {
+        "lanes": lanes,
+        "keepalive_every": 5.0,
     }
-    bare = serve_command({"model": "a/b"}, host="h", tunnel=True)[len(client.SERVE) :]
-    assert bare == [
-        "--model",
-        "a/b",
+    bare = serve_command({"lanes": lanes}, host="h", tunnel=True)[len(client.SERVE) :]
+    assert bare[:9] == [
         "--bind",
         "0.0.0.0",
         "--port",
@@ -131,18 +125,18 @@ async def test_local_reads_the_port_off_the_first_line_and_hands_the_tokens_down
             assert seen["env"][PROXY_TOKEN_ENV] == proxy.token
             assert seen["env"][CONTROL_TOKEN_ENV] == proxy.control_token
             assert seen["argv"][:6] == [
-                "--model",
-                "Qwen/Qwen3-8B",
                 "--bind",
                 "127.0.0.1",
                 "--port",
                 "0",
+                "--advertise",
+                "host.docker.internal",
             ]
             assert proxy.process is not None and proxy.process.poll() is None
         finally:
             proxy.close()
     assert proxy.process is None
-    assert "warming up" in log.read_text() and "serving Qwen/Qwen3-8B" in log.read_text()
+    assert "warming up" in log.read_text() and "serving agent" in log.read_text()
 
 
 async def test_the_tokens_from_the_environment_are_the_ones_handed_down(

@@ -18,7 +18,7 @@ from harbor.utils.env import redact_sensitive_value
 
 from proxies import MODEL, made
 from shipyard.config import Blueprint, Rollout
-from shipyard.groups import Trial
+from shipyard.groups import Connection, Trial
 from shipyard.jobs.admit import ENV_ERROR
 from shipyard.jobs.engine import (
     DELIVERED,
@@ -26,18 +26,18 @@ from shipyard.jobs.engine import (
     MODAL_IMAGE_BUILDER_VERSION,
     HarborEngine,
     Job,
-    _harness_at_version,
     _trial_config,
     allowlisted,
     connected,
     laid_over,
     quiet_litellm,
 )
-from shipyard.jobs.harnesses import PROFILES, harness
+from shipyard.jobs.harnesses import harness
 from shipyard.jobs.modules import PROMPT_TEMPLATE, Module, Modules
 from shipyard.jobs.secrets import Pool, Secrets
-from shipyard.models.endpoints import Connection, ProviderEndpoint, ProxyEndpoint
+from shipyard.models.endpoints import ProviderEndpoint
 from tests.fakes import FakeProxy, FakeTrials, write_result
+from tests.test_endpoints import agent
 
 NAME = "BAUPLAN_API_KEY"
 #: Pool keys longer than eight characters, so Harbor's redacted form of each is distinct.
@@ -326,16 +326,16 @@ async def test_each_trial_holds_the_endpoints_records_of_it_and_is_judged_with_t
     proxy = FakeProxy(
         answers={"alpha": [made("one", "ok"), made("oneok", "two", seq=2)], "beta": []}
     )
-    endpoint = ProxyEndpoint(served(), tmp_path, proxy=proxy)
+    endpoint = agent(served(), tmp_path, proxy=proxy)
     batch = _batch(tmp_path, "alpha", "beta")
     job = await _run(_engine(tmp_path, FakeTrials()), "j", batch, 1, endpoint=endpoint)
     alpha, beta = job.trials
     assert proxy.fetched == [alpha.name, beta.name]
-    assert [one.seq for one in alpha.records or ()] == [1, 2] and beta.records == []
+    assert [one.seq for one in alpha.records] == [1, 2] and list(beta.records) == []
     assert alpha.reward == 1.0, "graded by its result.json"
     assert beta.verdict is not None and beta.verdict.mask == ENV_ERROR, "it never reached the proxy"
     unrecorded = await _run(_engine(tmp_path, FakeTrials()), "p", batch, 1)
-    assert [(one.records, one.reward) for one in unrecorded.trials] == [(None, 1.0)] * 2
+    assert [(one.records.recorded, one.reward) for one in unrecorded.trials] == [(False, 1.0)] * 2
 
 
 async def test_a_jobs_modules_are_delivered_beside_its_trials_and_laid_into_the_agent(
@@ -511,11 +511,10 @@ def _task_toml(tmp_path: Path, name: str, text: str) -> Path:
 
 
 def _config(tmp_path: Path, task: str, deployed: str = "pi", **agent: Any) -> TrialConfig:
-    name, _ = _harness_at_version(deployed)
     return _trial_config(
         tmp_path / "tasks" / task,
         trials_dir=tmp_path / "jobs" / "j",
-        agent=AgentConfig(name=name, model_name="m", **agent),
+        agent=AgentConfig(name=harness(deployed).name, model_name="m", **agent),
         sandbox="docker",
     )
 
@@ -527,7 +526,7 @@ def _dialled(
     trial = Trial(
         "j", Path(config.task.path), harness(deployed), tmp_path / "jobs" / "j" / config.trial_name
     )
-    return ProxyEndpoint(served(**rollout), tmp_path, proxy=proxy).connection(trial)
+    return agent(served(**rollout), tmp_path, proxy=proxy).connection(trial)
 
 
 async def test_every_trial_is_pointed_at_the_address_that_names_it(tmp_path: Path) -> None:
@@ -538,7 +537,7 @@ async def test_every_trial_is_pointed_at_the_address_that_names_it(tmp_path: Pat
         harbor,
         env={"OPENAI_BASE_URL": "https://api.openai.com/v1", "HTTPS_PROXY": "corp"},
     )
-    endpoint = ProxyEndpoint(served(), tmp_path, proxy=proxy)
+    endpoint = agent(served(), tmp_path, proxy=proxy)
     batch = _batch(tmp_path, "alpha", "beta")
     job = await _run(engine, "j", batch, 2, deployed="pi@0.85.1", endpoint=endpoint)
     assert len(harbor.configs) == 4
@@ -547,7 +546,9 @@ async def test_every_trial_is_pointed_at_the_address_that_names_it(tmp_path: Pat
     named = [c.trial_name for c in harbor.configs]
     assert len(set(addresses)) == 4 and sorted(proxy.addressed) == sorted([*named, "preflight"])
     for config, address in zip(harbor.configs, addresses, strict=True):
-        assert address == f"http://host.docker.internal:8000/r/trial/{config.trial_name}/v1"
+        assert (
+            address == f"http://host.docker.internal:8000/r/lane/agent/trial/{config.trial_name}/v1"
+        )
         assert config.agent.env["OPENAI_API_KEY"] == "secret"
         assert config.agent.env["HTTPS_PROXY"] == "corp", "the job's other env survives"
         assert config.agent.kwargs == {"version": "0.85.1", "model_api": "openai-completions"}
@@ -564,7 +565,7 @@ async def test_a_job_lets_the_trials_of_an_allowlisted_task_reach_the_proxys_hos
     )
     public = _task_toml(tmp_path, "public", '[environment]\nnetwork_mode = "public"\n')
     harbor = FakeTrials()
-    endpoint = ProxyEndpoint(served(), tmp_path, proxy=FakeProxy(origin="https://p.example:8443"))
+    endpoint = agent(served(), tmp_path, proxy=FakeProxy(origin="https://p.example:8443"))
     await _run(_engine(tmp_path, harbor), "j", [allow, public], 1, endpoint=endpoint)
     hosts = {c.task.path.name: c.agent.extra_allowed_hosts for c in harbor.configs}
     assert hosts == {"allow": ["p.example"], "public": []}
@@ -581,7 +582,7 @@ def test_terminus_2_whose_calls_harbor_makes_here_dials_the_proxys_own_address(
     proxy = FakeProxy(origin="https://x.trycloudflare.com", token="k")
     config = _config(tmp_path, "alpha", deployed="terminus-2")
     dialled = _dialled(tmp_path, proxy, config, "terminus-2")
-    address = f"http://127.0.0.1:8000/r/trial/{config.trial_name}/v1"
+    address = f"http://127.0.0.1:8000/r/lane/agent/trial/{config.trial_name}/v1"
     assert dialled.kwargs == {"api_base": address, "llm_call_kwargs": {"api_key": "k"}}
 
 
@@ -617,7 +618,7 @@ def test_claude_code_is_handed_the_anthropic_wire_without_the_v1(tmp_path: Path)
         "KEEP": "1",
         "DISABLE_COMPACT": "1",
         "DISABLE_AUTO_COMPACT": "1",
-        "ANTHROPIC_BASE_URL": f"https://x.trycloudflare.com/r/trial/{config.trial_name}",
+        "ANTHROPIC_BASE_URL": f"https://x.trycloudflare.com/r/lane/agent/trial/{config.trial_name}",
         "ANTHROPIC_API_KEY": "k",
     }
     assert pointed.agent.kwargs == {} and pointed.agent.name == "claude-code"
@@ -639,7 +640,7 @@ def test_opencode_gets_its_providers_env_and_keeps_a_blueprints_own_config(
     }
     config = _config(tmp_path, "alpha", deployed="opencode", kwargs={"opencode_config": mine})
     pointed = connected(config, _dialled(tmp_path, proxy, config, "opencode"))
-    address = f"http://host.docker.internal:8000/r/trial/{config.trial_name}/v1"
+    address = f"http://host.docker.internal:8000/r/lane/agent/trial/{config.trial_name}/v1"
     assert pointed.agent.env == {"SHIPYARD_BASE_URL": address, "SHIPYARD_API_KEY": "k"}
     merged = pointed.agent.kwargs["opencode_config"]
     assert merged["provider"]["shipyard"] == {
@@ -651,9 +652,11 @@ def test_opencode_gets_its_providers_env_and_keeps_a_blueprints_own_config(
     assert merged["agent"] == {"title": {"disable": True}, "build": {"steps": 40}}
     assert "npm" not in str(config.agent.kwargs) and "npm" not in str(mine), "nothing written into"
     merged["agent"]["title"]["disable"] = False
-    assert PROFILES["opencode"].kwargs["opencode_config"]["agent"]["title"]["disable"] is True
-    profile_env = PROFILES["opencode"].kwargs["opencode_config"]["provider"]["shipyard"]["env"]
-    assert merged["provider"]["shipyard"]["env"] is not profile_env, "a list is copied too"
+    merged["provider"]["shipyard"]["env"].append("LEAKED")
+    again = connected(config, _dialled(tmp_path, proxy, config, "opencode")).agent.kwargs
+    assert again["opencode_config"]["agent"]["title"]["disable"] is True, "the profile is intact"
+    shipyard = again["opencode_config"]["provider"]["shipyard"]
+    assert shipyard["env"] == ["SHIPYARD_API_KEY"], "a list is copied too"
 
 
 def test_tables_are_laid_over_key_by_key_and_anything_else_is_replaced() -> None:

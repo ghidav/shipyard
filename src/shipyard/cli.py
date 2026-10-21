@@ -4,7 +4,7 @@ import asyncio
 import logging
 import shutil
 import signal
-from collections.abc import Coroutine, Mapping, Sequence
+from collections.abc import Coroutine, Sequence
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -13,7 +13,8 @@ from dotenv import load_dotenv
 from typer.core import TyperCommand
 
 from shipyard.config import Blueprint, ConfigError
-from shipyard.run.directory import continued, open_run, reopened, running, trainer_class
+from shipyard.run.checkpoint import Checkpoint
+from shipyard.run.directory import open_run, resumed, running, trainer_class
 
 #: Where `init` copies the recipes, and the env template it writes, in the directory it runs in.
 RECIPES = "recipes"
@@ -104,35 +105,32 @@ def resume(
     """Go on from checkpoint TAG of the run in DIRECTORY, the last by default, in a new run."""
     origin = Path(directory)
     try:
-        config, row = reopened(origin, tag=tag)
+        going = resumed(origin, tag=tag)
     except (ConfigError, ValueError) as refused:
         _refuse(refused)
-    if row["step"] >= config.recipe.steps:
-        typer.echo(f"run {origin.name} finished at step {row['step']}: nothing is left to run")
+    if going is None:
+        typer.echo(f"run {origin.name} finished at checkpoint {tag}: nothing is left to run")
         return
-    try:
-        directory, config = continued(origin, row)
-    except (ConfigError, ValueError) as refused:
-        _refuse(refused)
-    typer.echo(f"run {directory.name} goes on from {origin.name} at {row['tag']}")
-    _train(directory, config, origin, row)
+    directory, config, checkpoint = going
+    typer.echo(f"run {directory.name} goes on from {origin.name} at {checkpoint.tag}")
+    _train(directory, config, origin, checkpoint)
 
 
 def _train(
     directory: Path,
     config: Blueprint,
     origin: Path | None = None,
-    row: Mapping[str, Any] | None = None,
+    checkpoint: Checkpoint | None = None,
 ) -> None:
-    """Train the run, from checkpoint `row` of `origin` if given; exit 130 if a signal stops it."""
+    """Train the run, from `checkpoint` of `origin` if given; exit 130 if a signal stops it."""
     made = trainer_class(directory)
     try:
         # The trainer is made inside the process note, so a recipe's `__init__` that fails,
         # such as on a missing [recipe] key, is recorded as the run's error.
         with running(directory, trainer=made.__name__), made(config, directory) as trainer:
-            if origin is not None and row is not None:
-                trainer.restore(origin, row)
-            _until_stopped(trainer.train())
+            if origin is not None and checkpoint is not None:
+                trainer.restore(origin, checkpoint)
+            _until_stopped(trainer.run())
     except KeyboardInterrupt as stopped:
         typer.echo(f"run {directory.name} stopped: {str(stopped) or 'SIGINT'}", err=True)
         raise typer.Exit(130) from None

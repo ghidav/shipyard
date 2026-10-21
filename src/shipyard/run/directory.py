@@ -16,8 +16,9 @@ import tomli_w
 from shortuuid import ShortUUID
 
 from shipyard.config import Blueprint, config_file, load, parsed
-from shipyard.run import record
-from shipyard.trainer import CARRIED, Trainer
+from shipyard.run import files
+from shipyard.run.checkpoint import Checkpoint, found
+from shipyard.trainer import Trainer
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +41,8 @@ def open_run(
 ) -> tuple[Path, Blueprint]:
     """Create a blueprint's run directory, noting its recipe and any `origin` in `run.json`."""
     source = config_file(blueprint)
-    if trainer is None and (source.parent / record.TRAINER).is_file():
-        trainer = source.parent / record.TRAINER
+    if trainer is None and (source.parent / files.TRAINER).is_file():
+        trainer = source.parent / files.TRAINER
     made = trainer_in(trainer) if trainer is not None else Trainer
     config = load(blueprint, made.Recipe, overrides)
     # A run that goes on from another is named as that one is, without its id.
@@ -54,43 +55,54 @@ def open_run(
         given = " ".join(shlex.join([f"--{name}", text]) for name, text in overrides.items())
         header = " ".join(f"# {source} with {given}".splitlines())
         written = tomli_w.dumps(parsed(source, overrides))
-        (directory / record.CONFIG).write_text(f"{header}\n{written}", encoding="utf-8")
+        (directory / files.CONFIG).write_text(f"{header}\n{written}", encoding="utf-8")
     else:
-        shutil.copyfile(source, directory / record.CONFIG)
+        shutil.copyfile(source, directory / files.CONFIG)
     noted: dict[str, Any] = {}
     if trainer is not None:
         trainer = Path(trainer).resolve()
         noted["recipe"] = {"trainer": str(trainer), "fingerprint": fingerprint(trainer.parent)}
     if origin is not None:
         noted["origin"] = dict(origin)
-    record.write_json(directory / record.RUN, noted)
+    files.write_json(directory / files.RUN, noted)
     return directory, config
 
 
-def continued(origin: Path, row: Mapping[str, Any]) -> tuple[Path, Blueprint]:
-    """Open a run beside `origin` that goes on from its checkpoint `row`, noting the chain."""
+def resumed(origin: Path, *, tag: str = "last") -> tuple[Path, Blueprint, Checkpoint] | None:
+    """Open a run beside `origin` that goes on from its checkpoint `tag`, the last by default,
+    and return its directory, its blueprint and that checkpoint; None when the checkpoint is
+    at the run's last step, so nothing is left to run."""
+    config, checkpoint = reopened(origin, tag=tag)
+    if checkpoint.step >= config.recipe.steps:
+        return None
+    directory, config = continued(origin, checkpoint)
+    return directory, config, checkpoint
+
+
+def continued(origin: Path, checkpoint: Checkpoint) -> tuple[Path, Blueprint]:
+    """Open a run beside `origin` that goes on from its `checkpoint`, noting the chain."""
     origin = Path(origin).resolve()
-    noted = record.read_json(origin / record.RUN)
+    noted = files.read_json(origin / files.RUN)
     trainer = (noted.get("recipe") or {}).get("trainer")
     first = (noted.get("origin") or {}).get("first", origin.name)
     directory, config = open_run(
-        origin / record.CONFIG,
+        origin / files.CONFIG,
         root=origin.parent,
         trainer=Path(trainer) if trainer else None,
-        origin={"run": str(origin), "tag": row["tag"], "first": first},
+        origin={"run": str(origin), "tag": checkpoint.tag, "first": first},
     )
-    carried = origin / record.MODULES / CARRIED
+    carried = origin / files.MODULES / files.CARRIED
     if carried.is_dir():
-        shutil.copytree(carried, directory / record.MODULES / CARRIED)
+        shutil.copytree(carried, directory / files.MODULES / files.CARRIED)
     return directory, config
 
 
-def reopened(directory: Path, *, tag: str = "last") -> tuple[Blueprint, Mapping[str, Any]]:
-    """Return a run's blueprint and its checkpoint row `tag`, the last one by default."""
+def reopened(directory: Path, *, tag: str = "last") -> tuple[Blueprint, Checkpoint]:
+    """Return a run's blueprint and its checkpoint `tag`, the last one by default."""
     directory = Path(directory)
-    if not (directory / record.CONFIG).is_file():
+    if not (directory / files.CONFIG).is_file():
         raise ValueError(f"no run at {directory}")
-    recipe = record.read_json(directory / record.RUN).get("recipe")
+    recipe = files.read_json(directory / files.RUN).get("recipe")
     if recipe and Path(recipe["trainer"]).is_file():
         now = fingerprint(Path(recipe["trainer"]).parent)
         if now != recipe.get("fingerprint"):
@@ -100,21 +112,14 @@ def reopened(directory: Path, *, tag: str = "last") -> tuple[Blueprint, Mapping[
                 directory.name,
                 Path(recipe["trainer"]).parent,
             )
-    rows = list(record.read(directory / record.CHECKPOINTS))
-    if tag == "last":
-        row = rows[-1] if rows else None
-    else:
-        row = next((r for r in reversed(rows) if r["tag"] == tag), None)
-    if row is None:
-        tags = ", ".join(r["tag"] for r in rows) or "none"
-        raise ValueError(f"{directory.name} has no checkpoint {tag!r}; it has {tags}")
-    return load(directory, trainer_class(directory).Recipe), row
+    checkpoint = found(directory, tag)
+    return load(directory, trainer_class(directory).Recipe), checkpoint
 
 
 def trainer_class(directory: Path) -> type[Trainer]:
     """Return the run's trainer: its recipe's, else its own copy's, else the base `Trainer`."""
     directory = Path(directory)
-    recipe = record.read_json(directory / record.RUN).get("recipe")
+    recipe = files.read_json(directory / files.RUN).get("recipe")
     if recipe:
         path = Path(recipe["trainer"])
         if not path.is_file():
@@ -123,7 +128,7 @@ def trainer_class(directory: Path) -> type[Trainer]:
                 "where it was"
             )
         return trainer_in(path)
-    kept = directory / record.TRAINER
+    kept = directory / files.TRAINER
     return trainer_in(kept) if kept.is_file() else Trainer
 
 
@@ -173,15 +178,15 @@ def trainer_in(path: Path) -> type[Trainer]:
 @contextmanager
 def running(directory: Path, **about: Any) -> Iterator[None]:
     """Note the process that runs the run in its `run.json`, and how it ended."""
-    path = Path(directory) / record.RUN
-    noted = record.read_json(path)
+    path = Path(directory) / files.RUN
+    noted = files.read_json(path)
     note: dict[str, Any] = {
         "pid": os.getpid(),
-        "started_at": record.now(),
+        "started_at": files.now(),
         "tinker_base_url": tinker_base_url(),
         **{key: value for key, value in about.items() if value},
     }
-    record.write_json(path, {**noted, "process": note})
+    files.write_json(path, {**noted, "process": note})
     error: str | None = None
     try:
         yield
@@ -192,8 +197,8 @@ def running(directory: Path, **about: Any) -> Iterator[None]:
         error = f"{type(failed).__name__}: {failed}"
         raise
     finally:
-        note.update(finished_at=record.now(), failed=error is not None, error=error)
-        record.write_json(path, {**noted, "process": note})
+        note.update(finished_at=files.now(), failed=error is not None, error=error)
+        files.write_json(path, {**noted, "process": note})
 
 
 def tinker_base_url() -> str:

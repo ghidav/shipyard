@@ -14,7 +14,7 @@ import pytest
 from harbor.models.trial.config import TrialConfig
 from harbor.utils.env import redact_sensitive_value
 
-from shipyard import Trainer, Trial
+from shipyard import Blueprint, Trainer, Trial
 from shipyard.config import Rollout
 from shipyard.jobs.engine import HarborEngine, Job
 from shipyard.jobs.harnesses import harness
@@ -22,7 +22,7 @@ from shipyard.jobs.secrets import Pool, Secrets, scrub
 from shipyard.models.endpoints import ProviderEndpoint
 from shipyard.run.directory import open_run
 from tests.fakes import FakeProxy, Harbor, dataset
-from tests.trainers import FakeService
+from tests.service import FakeService
 
 NAME = "BAUPLAN_API_KEY"
 #: Pool keys longer than eight characters, so Harbor's redacted form of each is distinct.
@@ -208,6 +208,10 @@ def _home(tmp_path: Path, secrets: str = "") -> Path:
 class RollingOut(Trainer):
     """A trainer whose step only rolls the agent out, as a provider's agent cannot update."""
 
+    def __init__(self, config: Blueprint, directory: Path) -> None:
+        super().__init__(config, directory)
+        self.policy.training = False
+
     async def step(self) -> None:
         await self.rollout(self.draw())
 
@@ -215,7 +219,7 @@ class RollingOut(Trainer):
 async def _rolled_out(home: Path, root: Path) -> None:
     directory, config = open_run(home, root=root)
     with RollingOut(config, directory) as trainer:
-        await trainer.train()
+        await trainer.run()
 
 
 async def test_a_trainer_leases_the_blueprints_pool_to_its_trials_or_gives_them_none(

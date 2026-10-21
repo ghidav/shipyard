@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 from collections.abc import Mapping, Sequence
@@ -9,9 +8,10 @@ from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any
 
 from harness_proxy.client import Proxy
-from harness_proxy.wire import CONTROL_TOKEN_ENV, PROXY_TOKEN_ENV, SAMPLER_FAILED
-from shipyard.jobs.harnesses import slug_of
-from shipyard.models.clients.tinker import backend, tagged
+from harness_proxy.wire import CONTROL_TOKEN_ENV, PROXY_TOKEN_ENV, Served
+from shipyard.groups import Connection, Where
+from shipyard.models.clients.tinker import tagged
+from shipyard.records import Records, served_nothing
 
 if TYPE_CHECKING:
     from harness_proxy.wire import Record
@@ -34,18 +34,6 @@ class NothingServed(RuntimeError):
     """Raised when the proxy served a job nothing."""
 
 
-@dataclass
-class Connection:
-    """How a trial's harness reaches the model. For a provider's model, only `model` is set."""
-
-    model: str
-    env: dict[str, str] = field(default_factory=dict)
-    kwargs: dict[str, Any] = field(default_factory=dict)
-    #: The proxy's host name, added to the allowed hosts of a task in Harbor's allowlist
-    #: network mode.
-    host: str | None = None
-
-
 def placement(rollout: Rollout) -> str:
     """Return where the proxy runs: `remote`, `local` or `tunnel`."""
     if rollout.endpoint_url.strip():
@@ -53,19 +41,14 @@ def placement(rollout: Rollout) -> str:
     return "local" if rollout.sandbox in LOCAL_SANDBOXES else "tunnel"
 
 
-def settings(config: Blueprint, run: str) -> dict[str, Any]:
-    """Return the settings a proxy the run starts is given."""
+def sampling(config: Blueprint, run: str) -> dict[str, Any]:
+    """Return the sampling settings `[rollout]` gives each lane of the proxy the run starts."""
     rollout = config.rollout
     return {
-        "model": config.agent.model,
-        "renderer": list(rollout.renderer) or None,
-        "bind": rollout.bind,
-        "bind_port": rollout.bind_port,
         "temperature": rollout.temperature,
         "top_p": rollout.top_p,
         "top_k": rollout.top_k,
         "max_tokens": rollout.max_tokens,
-        "max_context": rollout.max_context or None,
         "fill_context": rollout.fill_context,
         "metadata": tagged(run),
     }
@@ -73,34 +56,51 @@ def settings(config: Blueprint, run: str) -> dict[str, Any]:
 
 @dataclass
 class ProxyEndpoint:
-    """The run's proxy, which the agent's harnesses call."""
+    """The run's proxy. It serves each model on Tinker or Together in a lane of its own, which
+    `lane` makes and a trial's address names. It starts once every model's session has opened,
+    and stops with the run."""
 
     config: Blueprint
     directory: Path
     environ: Mapping[str, str] = field(default_factory=lambda: os.environ, repr=False)
     proxy: Proxy | None = None
-    #: The weights the run last pointed the proxy at; None for the base model.
-    told: str | None = None
-    #: The proxy's backend settings beyond Tinker's: for Together, the backend and the
-    #: session, which the agent's client opens before the proxy starts.
-    backend: dict[str, str] = field(default_factory=dict)
+    #: The models it serves, by the name of each one's lane.
+    lanes: dict[str, LaneEndpoint] = field(default_factory=dict)
     _logs: list[IO[str]] = field(default_factory=list, repr=False)
 
-    @property
-    def budget(self) -> int | None:
-        """Most tokens one rollout may sample, as the proxy reports it."""
-        return self.proxy.budget if self.proxy is not None else None
+    def lane(
+        self,
+        name: str,
+        load: str,
+        *,
+        opened: Any = None,
+        renderers: Sequence[str] = (),
+        max_context: int | None = None,
+    ) -> LaneEndpoint:
+        """Make the lane `name`, which serves `load`, a model's name or a `tinker://` path, and
+        return what a trial's harness dials to reach it. `opened`, a model the run opens,
+        knows a path's base model once open; `renderers` are the ones its calls may name, and
+        `max_context` caps what one trial may sample, its model's context if None."""
+        if name in self.lanes:
+            raise ValueError(f"two models would serve in the proxy's lane {name!r}: rename one")
+        made = LaneEndpoint(self, name, load, opened, list(renderers), max_context)
+        self.lanes[name] = made
+        return made
 
-    @property
-    def provider(self) -> str:
-        return self.backend.get("backend") or backend()
+    async def __aenter__(self) -> ProxyEndpoint:
+        try:
+            await self.open()
+        except BaseException:
+            self.close()
+            raise
+        return self
 
-    @property
-    def model(self) -> str:
-        return self.config.agent.model
+    async def __aexit__(self, *exc: object) -> None:
+        self.close()
 
     async def open(self) -> None:
-        """Start the proxy, or connect to the remote one, and wait until it answers."""
+        """Start the proxy with every lane, or connect to the remote one, and wait until it
+        answers. Raise `RuntimeError` unless it serves each lane as the run made it."""
         rollout = self.config.rollout
         where = placement(rollout)
         if where == "remote":
@@ -117,7 +117,11 @@ class ProxyEndpoint:
                 )
             self.proxy = proxy
         else:
-            given = {**settings(self.config, self.directory.name), **self.backend}
+            given = {
+                "bind": rollout.bind,
+                "bind_port": rollout.bind_port,
+                "lanes": [one.document for one in self.lanes.values()],
+            }
             log = self._log(PROXY_LOG)
             if where == "local":
                 self.proxy = await Proxy.local(
@@ -125,67 +129,24 @@ class ProxyEndpoint:
                 )
             else:
                 self.proxy = await Proxy.tunnelled(given, environ=self.environ, log=log)
-        self.told = None
         served = await self.proxy.ready()
-        renders_each(self.proxy, rollout.renderer)
-        logger.info("the proxy at %s answers (%s), serving %s", self.proxy.origin, where, served)
+        for one in self.lanes.values():
+            serves(self.proxy.origin, one, served.get(one.name))
+        logger.info("the proxy at %s answers (%s)", self.proxy.origin, where)
+        for name, one in served.items():
+            logger.info("lane %s serves %s", name, one.serving)
+
+    def client(self) -> Proxy:
+        """Return the proxy's client; `RuntimeError` before the proxy opens."""
+        if self.proxy is None:
+            raise RuntimeError("the run's proxy is not open: it opens when the run starts")
+        return self.proxy
 
     def alive(self) -> None:
         """Raise `ProxyGone` if the proxy is no longer reachable."""
         why = self.proxy.gone() if self.proxy is not None else None
         if why:
             raise ProxyGone(f"the proxy is no longer reachable: {why}")
-
-    async def serve(self, path: str | None) -> None:
-        """Point the proxy at the sampler weights at `path`, or at the base model for None."""
-        self.alive()
-        await self.proxy.swap(path)
-        self.told = path
-
-    def connection(self, trial: Trial) -> Connection:
-        """Return what a trial's harness dials: its address, naming its renderer, and the token."""
-        profile = trial.harness.profile
-        address = self.proxy.address_for(trial.name, trial.renderer)
-        if profile.in_process is not None:
-            # Its calls leave from this machine, not the container: the proxy's own address.
-            address = self.proxy.loopback + address.removeprefix(self.proxy.origin)
-        if profile.strip_v1:
-            address = address.removesuffix("/v1")
-        slug = slug_of(profile)
-        env = {
-            **(dict(profile.env) if self.config.rollout.fill_context else {}),
-            f"{slug.upper()}_BASE_URL": address,
-            f"{slug.upper()}_API_KEY": self.proxy.token,
-        }
-        kwargs = dict(profile.kwargs)
-        if profile.in_process is not None:
-            kwargs |= profile.in_process(address, self.proxy.token)
-        return Connection(
-            model=f"{slug}/{self.config.agent.model}",
-            env=env,
-            kwargs=kwargs,
-            host=self.proxy.host or None,
-        )
-
-    async def record(self, job: str, trials: Sequence[Trial]) -> dict[str, list[Record]]:
-        """Drain the trials' records from the proxy, by trial name, and check who served them."""
-        proxy = self.proxy
-        taken: dict[str, list[Record]] = {}
-        for trial in trials:
-            try:
-                taken[trial.name] = await proxy.records(trial.name)
-            except Exception:
-                self.alive()  # a fetch that failed because the proxy died says so
-                raise
-        answered_by_ours(job, taken, self.told)
-        return taken
-
-    def check(self, job: str, trials: Sequence[Trial]) -> None:
-        """Raise if the proxy died during the job or served it nothing."""
-        self.alive()
-        why = served_nothing(trials)
-        if why:
-            raise NothingServed(f"job {job}: {why}")
 
     def _log(self, name: str) -> IO[str]:
         opened = (self.directory / name).open("a", encoding="utf-8")
@@ -201,51 +162,147 @@ class ProxyEndpoint:
         self._logs.clear()
 
 
-def served_nothing(trials: Sequence[Trial]) -> str | None:
-    """Return why the proxy served the trials nothing, or None if it served them."""
-    if not trials:
-        return None
-    made = [item for one in trials for item in one.records or ()]
-    if not made:
-        return "no trial reached the proxy; the endpoint is dead or unreachable"
-    failed = sorted({item.error or "" for item in made})
-    if not all(error.startswith(SAMPLER_FAILED) for error in failed):
-        return None
-    return (
-        f"every request failed at the sampler ({', '.join(failed)}); the weights it serves "
-        "are gone or the backend refuses them"
-    )
+@dataclass
+class LaneEndpoint:
+    """A model the run's proxy serves, in a lane of its own: what a trial's harness dials when
+    `rollout` runs it, and where the run points the model's weights."""
+
+    proxy: ProxyEndpoint
+    #: The lane's name, which a trial's address gives.
+    name: str
+    #: What it loads: a model's name, or a `tinker://` path.
+    load: str
+    #: The model the run opened for it, the agent's session or a model on Tinker: it knows a
+    #: path's base model once open, and who the lane's tokens are billed to.
+    opened: Any = None
+    #: The renderers its calls may name; none for its model's own.
+    renderers: list[str] = field(default_factory=list)
+    #: Most tokens one trial may sample; None for its model's context.
+    max_context: int | None = None
+    #: The proxy's backend settings for the lane beyond Tinker's: for Together, the backend
+    #: and the session, which the model's client opens before the proxy starts.
+    backend: dict[str, str] = field(default_factory=dict)
+    #: The weights the run last pointed the lane at; None for the base model.
+    told: str | None = None
+
+    def __post_init__(self) -> None:
+        """Serve a `tinker://` path from the start."""
+        if self.told is None and self.load.startswith("tinker://"):
+            self.told = self.load
+
+    @property
+    def provider(self) -> str | None:
+        """Who its tokens are billed to: the model it serves', once that is opened."""
+        return getattr(self.opened, "provider", None)
+
+    @property
+    def kind(self) -> str | None:
+        """The backend it reaches, as a job's row names it: the model it serves'."""
+        return getattr(self.opened, "kind", None)
+
+    @property
+    def model(self) -> str:
+        """The base model it serves, which its tokens are priced as."""
+        return str(getattr(self.opened, "model", None) or self.load)
+
+    @property
+    def document(self) -> dict[str, Any]:
+        """The lane, as the proxy is started with it: its name, model and weights, its own
+        renderers and context, the run's sampling, and its backend beyond Tinker's."""
+        own = {"weights": self.told, "renderer": self.renderers, "max_context": self.max_context}
+        return {
+            **sampling(self.proxy.config, self.proxy.directory.name),
+            "name": self.name,
+            "model": self.model,
+            **{key: value for key, value in own.items() if value},
+            **self.backend,
+        }
+
+    @property
+    def budget(self) -> int | None:
+        """Most tokens one rollout may sample, as the proxy reports it for the lane."""
+        proxy = self.proxy.proxy
+        served = proxy.lanes.get(self.name) if proxy is not None else None
+        return served.budget if served is not None else None
+
+    async def serve(self, path: str | None) -> None:
+        """Point the lane at the sampler weights at `path`, or at its base model for None."""
+        self.proxy.alive()
+        await self.proxy.client().swap(path, lane=self.name)
+        self.told = path
+
+    def connection(self, trial: Trial) -> Connection:
+        """Return what a trial's harness dials: the lane's address, naming the trial's
+        renderer, and the token, as the harness reaches them."""
+        proxy = self.proxy.client()
+        address = proxy.address_for(trial.name, trial.renderer, lane=self.name)
+        where = Where(
+            address,
+            # The same address from this machine, for a harness whose calls leave from here.
+            local=proxy.loopback + address.removeprefix(proxy.origin),
+            token=proxy.token,
+            host=proxy.host or None,
+        )
+        return trial.harness.dial(
+            where, self.model, fill_context=self.proxy.config.rollout.fill_context
+        )
+
+    async def record(self, job: str, trials: Sequence[Trial]) -> dict[str, list[Record]]:
+        """Drain the trials' records from the proxy, by trial name, and check that the lane's
+        weights served them."""
+        proxy = self.proxy.client()
+        taken: dict[str, list[Record]] = {}
+        for trial in trials:
+            try:
+                taken[trial.name] = await proxy.records(trial.name)
+            except Exception:
+                self.proxy.alive()  # a fetch that failed because the proxy died says so
+                raise
+        answered_by_ours(job, taken, self.told, lane=self.name)
+        return taken
+
+    def check(self, job: str, trials: Sequence[Trial]) -> None:
+        """Raise if the proxy died during the job or served it nothing."""
+        self.proxy.alive()
+        why = served_nothing(one.records for one in trials)
+        if why:
+            raise NothingServed(f"job {job}: {why}")
 
 
-def answered_by_ours(job: str, taken: Mapping[str, Sequence[Record]], told: str | None) -> None:
-    """Raise `ValueError` unless every record of `job` was served from `told`."""
-    answered = {item.served for records in taken.values() for item in records if item.served}
+def answered_by_ours(
+    job: str, taken: Mapping[str, Sequence[Record]], told: str | None, *, lane: str
+) -> None:
+    """Raise `ValueError` unless every record of `job` was served from `told`, the weights the
+    run pointed `lane` at."""
+    answered = {name for one in taken.values() for name in Records(one).weights}
     if answered - {told}:
         raise ValueError(
-            f"job {job} was served from {sorted(answered)}, but this run pointed its proxy "
-            f"at {told}. Something re-pointed it while the batch was in flight."
+            f"job {job} was served from {sorted(answered)} in lane {lane}, and the run pointed "
+            f"that lane at {told}: something re-pointed it while the batch was in flight, or a "
+            "remote proxy was started on other weights"
         )
 
 
-def renders_each(proxy: Any, named: Sequence[str]) -> None:
-    """Raise `RuntimeError` unless the proxy renders with each renderer `named`."""
-    known = proxy.renderers
-    missing = [one for one in named if one not in (known or ())]
-    if not missing:
-        return
-    has = (
-        "does not say which renderers it renders with"
-        if known is None
-        else f"renders with {', '.join(known) or 'its model default alone'}"
-    )
-    raise RuntimeError(
-        f"the proxy at {proxy.origin} {has}, and [rollout] renderer names {', '.join(missing)}: "
-        f"start it with a --renderer for each of {', '.join(named)}"
-    )
-
-
-#: Calls to a provider in flight at once, and LiteLLM's retries of one that failed.
-PROVIDER_CALLS, PROVIDER_RETRIES = 8, 4
+def serves(origin: str, lane: LaneEndpoint, served: Served | None) -> None:
+    """Raise `RuntimeError` unless the proxy at `origin`, which reports `served` for `lane`,
+    serves it as the run made it: its model, rendered with each of its renderers."""
+    if served is None:
+        raise RuntimeError(
+            f"the proxy at {origin} serves no lane for {lane.name}: start it with a lane for "
+            "each model on Tinker the trainer holds"
+        )
+    if served.model != lane.model:
+        raise RuntimeError(
+            f"the proxy at {origin} serves {served.model} in lane {lane.name}, and the run "
+            f"serves {lane.model} there: start it with that model"
+        )
+    missing = [one for one in lane.renderers if one not in served.renderers]
+    if missing:
+        has = ", ".join(served.renderers) or "its model's default alone"
+        raise RuntimeError(
+            f"the proxy at {origin} renders lane {lane.name} with {has}, and [rollout] renderer "
+            f"names {', '.join(missing)}: start it with each of {', '.join(lane.renderers)}"
+        )
 
 
 @dataclass(frozen=True)
@@ -254,10 +311,11 @@ class ProviderEndpoint:
 
     model: str
     provider: str
-    #: Calls `sample` has in flight at once, so a search's burst meets no rate limit at once.
-    _calls: asyncio.Semaphore = field(
-        default_factory=lambda: asyncio.Semaphore(PROVIDER_CALLS), compare=False, repr=False
-    )
+
+    @property
+    def kind(self) -> str:
+        """The backend it reaches, as a job's row names it: a provider's own."""
+        return "provider"
 
     @property
     def budget(self) -> None:
@@ -281,23 +339,3 @@ class ProviderEndpoint:
     def check(self, job: str, trials: Sequence[Trial]) -> None:
         """Do nothing: the run keeps no proxy for a provider's model, so none can fail it."""
         return None
-
-    async def sample(
-        self, messages: Sequence[Mapping[str, Any]], **params: Any
-    ) -> tuple[str, dict[str, int]]:
-        """Return the model's reply to `messages`, through LiteLLM, and the tokens it took."""
-        import litellm
-
-        asked = {"num_retries": PROVIDER_RETRIES, **params}
-        async with self._calls:
-            reply = await litellm.acompletion(model=self.routed, messages=list(messages), **asked)
-        usage = reply.usage
-        prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
-        details = getattr(usage, "prompt_tokens_details", None)
-        cache = min(int(getattr(details, "cached_tokens", 0) or 0), prompt)
-        took = {
-            "prefill": prompt - cache,
-            "cache": cache,
-            "sample": int(getattr(usage, "completion_tokens", 0) or 0),
-        }
-        return reply.choices[0].message.content or "", took

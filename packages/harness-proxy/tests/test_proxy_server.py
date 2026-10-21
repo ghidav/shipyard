@@ -11,17 +11,18 @@ import pytest
 import tinker
 
 from harness_proxy.backends.tinker import context_of
-from harness_proxy.exchange import Exchange, exchange
+from harness_proxy.chat import Caller
 from harness_proxy.recorder import Recorder
-from harness_proxy.server import DEFAULT_MAX_TOKENS, Server
-from proxies import FakeSampler, address, ask, ask_anthropic, by_path, control, ids, server
+from harness_proxy.rendering import Prompt
+from harness_proxy.server import DEFAULT_MAX_TOKENS, Lane, Server
+from proxies import FakeSampler, address, ask, ask_anthropic, by_path, control, ids, only, server
 
 # ------------------------------------------------------------------ before it starts
 
 
 def test_nothing_is_recorded_before_start() -> None:
     with pytest.raises(RuntimeError):
-        server().records_for("task-1")
+        only(server()).records_for("task-1")
 
 
 def test_each_endpoint_has_its_own_token_and_an_empty_one_is_replaced() -> None:
@@ -61,7 +62,7 @@ async def test_a_request_is_served_and_recorded_under_its_trial() -> None:
         answered = await ask(started, "task-1")
         assert answered.status_code == 200
         assert answered.json()["choices"][0]["message"]["content"] == "ok"
-        (record,) = started.records_for("task-1")
+        (record,) = only(started).records_for("task-1")
     assert record.completion_token_ids == ids("ok")
     assert record.prompt_token_ids == ids("go")
     assert record.requested_model == "gpt-oss-20b"
@@ -74,7 +75,7 @@ async def test_a_request_over_aiohttps_default_body_size_is_served_and_recorded(
     async with server(FakeSampler("ok")) as started:
         answered = await ask(started, "task-1", metadata={"pad": "x" * (2 * 1024**2)})
         assert answered.status_code == 200
-        assert len(started.records_for("task-1")) == 1
+        assert len(only(started).records_for("task-1")) == 1
 
 
 async def test_the_anthropic_wire_is_served_and_recorded_too() -> None:
@@ -82,7 +83,7 @@ async def test_the_anthropic_wire_is_served_and_recorded_too() -> None:
         answered = await ask_anthropic(started, "task-1")
         assert answered.status_code == 200
         assert answered.json()["content"][0]["text"] == "ok"
-        assert started.records_for("task-1")[0].requested_model == "claude-sonnet-4-5"
+        assert only(started).records_for("task-1")[0].requested_model == "claude-sonnet-4-5"
 
 
 async def test_two_trials_keep_separate_records_and_seq_counts_per_trial() -> None:
@@ -90,9 +91,9 @@ async def test_two_trials_keep_separate_records_and_seq_counts_per_trial() -> No
         await ask(started, "task-1")
         await ask(started, "task-2")
         await ask(started, "task-2")
-        assert [r.seq for r in started.records_for("task-1")] == [1]
-        assert [r.seq for r in started.records_for("task-2")] == [1, 2]
-        assert started.records_for("task-3") == []
+        assert [r.seq for r in only(started).records_for("task-1")] == [1]
+        assert [r.seq for r in only(started).records_for("task-2")] == [1, 2]
+        assert only(started).records_for("task-3") == []
 
 
 async def test_a_request_with_no_trial_in_its_address_is_recorded_under_nothing() -> None:
@@ -105,14 +106,14 @@ async def test_a_request_with_no_trial_in_its_address_is_recorded_under_nothing(
                 json={"model": "m", "messages": [{"role": "user", "content": "go"}]},
             )
         assert answered.status_code == 200
-        assert len(started.records_for("")) == 1
-        assert len(started.records_for("task-1")) == 1
+        assert len(only(started).records_for("")) == 1
+        assert len(only(started).records_for("task-1")) == 1
 
 
 async def test_the_token_is_the_gate() -> None:
     async with server(FakeSampler("ok")) as started:
         assert (await ask(started, "task-1", key="not-the-token")).status_code == 401
-        assert started.records_for("task-1") == []
+        assert only(started).records_for("task-1") == []
 
 
 # ------------------------------------------------------------------------- swapping
@@ -121,13 +122,13 @@ async def test_the_token_is_the_gate() -> None:
 async def test_swap_changes_what_is_served_and_every_record_says_who_answered() -> None:
     async with server(by_path=by_path) as started:
         assert (await ask(started, "t")).json()["choices"][0]["message"]["content"] == "base"
-        await started.swap("tinker://run/sampler_weights/step-1")
+        await only(started).swap("tinker://run/sampler_weights/step-1")
         answered = await ask(started, "t")
         assert answered.json()["choices"][0]["message"]["content"] == "step-1"
         assert answered.json()["model"] == "tinker://run/sampler_weights/step-1"
-        await started.swap(None)
+        await only(started).swap(None)
         assert (await ask(started, "t")).json()["choices"][0]["message"]["content"] == "base"
-        assert [r.served for r in started.records_for("t")] == [
+        assert [r.served for r in only(started).records_for("t")] == [
             None,
             "tinker://run/sampler_weights/step-1",
             None,
@@ -136,15 +137,15 @@ async def test_swap_changes_what_is_served_and_every_record_says_who_answered() 
 
 
 async def test_a_path_given_before_start_is_what_start_serves() -> None:
-    async with server(by_path=by_path, model_path="tinker://w/step-7") as started:
+    async with server(by_path=by_path, weights="tinker://w/step-7") as started:
         assert (await ask(started, "t")).json()["choices"][0]["message"]["content"] == "step-7"
-        assert started.records_for("t")[0].served == "tinker://w/step-7"
+        assert only(started).records_for("t")[0].served == "tinker://w/step-7"
 
 
 async def test_a_bare_name_is_not_a_path() -> None:
     async with server(by_path=by_path) as started:
         with pytest.raises(ValueError, match="tinker://"):
-            await started.swap("step-1")
+            await only(started).swap("step-1")
 
 
 async def test_a_record_is_stamped_with_the_weights_that_answered_it() -> None:
@@ -166,15 +167,8 @@ async def test_a_record_is_stamped_with_the_weights_that_answered_it() -> None:
     swapping = Swapping()
     recorder = Recorder(swapping, served="tinker://mine/step-1")
     swapping.recorder = recorder
-    token = exchange.set(Exchange(trial="t-1"))
-    try:
-        await recorder.sample_async(
-            prompt=tinker.ModelInput.from_ints([1, 2]),
-            num_samples=1,
-            sampling_params=tinker.SamplingParams(),
-        )
-    finally:
-        exchange.reset(token)
+    prompt = Prompt(tinker.ModelInput.from_ints([1, 2]))
+    await recorder.sample(Caller(trial="t-1"), prompt, tinker.SamplingParams())
     (record,) = recorder.take("t-1")
     assert record.served == "tinker://mine/step-1"
 
@@ -187,7 +181,7 @@ async def test_the_runs_temperature_overrides_the_harnesses() -> None:
     async with server(sampler, temperature=0.7) as started:
         await ask(started, "t", temperature=0.0)
         assert sampler.asked[0].temperature == 0.7
-        assert started.records_for("t")[0].sampling_params["temperature"] == 0.7
+        assert only(started).records_for("t")[0].sampling_params["temperature"] == 0.7
 
 
 async def test_what_the_run_did_not_name_is_left_to_the_harness() -> None:
@@ -225,9 +219,19 @@ def test_every_knob_that_shapes_the_distribution_is_pinned_and_the_object_left_a
 
 
 def test_the_endpoint_defaults_to_truncating_nothing() -> None:
-    made = Server(base_model="a/b")
-    assert (made.temperature, made.top_p, made.top_k, made.max_tokens) == (1.0, 1.0, -1, 8192)
-    assert made.control_token is None
+    lane = Lane(name="agent", model="a/b")
+    assert (lane.temperature, lane.top_p, lane.top_k, lane.max_tokens) == (1.0, 1.0, -1, 8192)
+    assert Server(lanes=[lane]).control_token is None
+
+
+def test_a_server_serves_lanes_each_named_once_by_a_name_an_address_can_hold() -> None:
+    with pytest.raises(ValueError, match="at least one lane"):
+        Server(lanes=[])
+    with pytest.raises(ValueError, match="two lanes are named 'agent'"):
+        Server(lanes=[Lane(name="agent", model="a/b"), Lane(name="agent", model="c/d")])
+    for name in ("", "a/b"):
+        with pytest.raises(ValueError, match="cannot be"):
+            Lane(name=name, model="a/b")
 
 
 # ------------------------------------------------------------------ the control route
@@ -248,7 +252,7 @@ async def test_the_control_route_opens_to_the_control_token_and_not_the_harnesse
         back = await control(started, None)
         assert back.status_code == 200 and back.json() == {"serving": None}
         assert (await ask(started, "t")).json()["choices"][0]["message"]["content"] == "base"
-        assert [r.served for r in started.records_for("t")] == ["tinker://w/step-1", None]
+        assert [r.served for r in only(started).records_for("t")] == ["tinker://w/step-1", None]
 
 
 async def test_the_control_route_refuses_what_is_not_a_path() -> None:
@@ -257,7 +261,7 @@ async def test_the_control_route_refuses_what_is_not_a_path() -> None:
         assert (await control(started, 7)).status_code == 400
         assert (await control(started, None, raw=b"{not json")).status_code == 400
         assert (await control(started, None, raw=b'{"path": "tinker://x"}')).status_code == 400
-        assert started.model_path is None
+        assert only(started).weights is None
 
 
 # ------------------------------------------------------------------ the context length
@@ -316,7 +320,7 @@ async def test_the_proxy_closes_its_tinker_session_once_on_the_way_out() -> None
             assert started.port and service.closed == []
             raise KeyError("the run failed")
     assert service.closed == ["success"]
-    assert started._service is None and started.port is None
+    assert only(started)._service is None and started.port is None
 
 
 async def test_a_close_that_fails_still_stops_the_proxy() -> None:

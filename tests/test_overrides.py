@@ -13,8 +13,9 @@ from typer.testing import CliRunner
 
 from shipyard.cli import app, overrides_in
 from shipyard.config import ConfigError, load
+from shipyard.run.checkpoint import Checkpoint
 from shipyard.run.directory import continued, open_run
-from tests.test_trainer import blueprint
+from tests.runs import blueprint
 
 #: A color code, which rich writes around what it highlights once a terminal is forced, as on CI.
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -78,7 +79,7 @@ def test_the_run_keeps_its_overrides_in_its_blueprint_and_a_resume_reads_them(
     first = f"# {home / 'run.toml'} with --data.train swe-bench --recipe.steps 3"
     assert written.splitlines()[0] == first
     assert tomllib.loads(written)["data"]["train"] == "swe-bench"
-    resumed, again = continued(directory, {"tag": "step-1", "step": 1})
+    resumed, again = continued(directory, Checkpoint("step-1", 1))
     assert (again.data.train, again.recipe.steps) == ("swe-bench", 3)
     assert (resumed / "run.toml").read_text(encoding="utf-8") == written
 

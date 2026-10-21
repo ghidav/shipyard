@@ -12,12 +12,12 @@ import pytest
 import tinker
 
 from proxies import MODEL
-from shipyard import INITIAL, Blueprint, Policy, Trainer
+from shipyard import Blueprint, Model, Trainer
 from shipyard.models.clients.together import TogetherClient, adam_params, loss, sample
-from shipyard.run import record
+from shipyard.run import files
 from tests.fakes import Alternating, FakeProxy, Harbor
-from tests.test_trainer import ONE_STEP, _train, blueprint
-from tests.trainers import FakeService
+from tests.runs import ONE_STEP, blueprint, train
+from tests.service import FakeService
 
 #: The blueprint's agent, on Together.
 ON_TOGETHER = {'harness = "pi@0.85.1"': 'provider = "together"\nharness = "pi@0.85.1"'}
@@ -112,13 +112,14 @@ async def test_a_run_on_together_trains_its_session_and_its_proxy_samples_it(
     proxy, service = fakes
     harbor(Alternating())
     home = blueprint(tmp_path, **ONE_STEP, **ON_TOGETHER)
-    directory = await _train(home, tmp_path / "runs")
+    directory = await train(home, tmp_path / "runs")
     (resources,) = provisioned
     ((asked, session),) = resources.sessions
     assert resources.model == MODEL and service.calls == [], "Tinker is never asked"
     assert asked == {"display_name": directory.name, "lora_config": {"rank": 32}}
     ((_, settings, _),) = proxy.placed
-    assert (settings["backend"], settings["session"]) == ("together", "s1")
+    (lane,) = settings["lanes"]
+    assert (lane["backend"], lane["session"]) == ("together", "s1")
     assert proxy.swapped == ["together://s1/start", "together://s1/sample-1"]
     assert [name for name, _ in resources.trainer.calls] == [
         "forward_backward",
@@ -131,35 +132,44 @@ async def test_a_run_on_together_trains_its_session_and_its_proxy_samples_it(
     assert inputs == {"target_tokens", "logprobs", "advantages"}, "the mask stays local"
     adam = resources.trainer.calls[1][1]
     assert adam["learning_rate"] == 2e-5 and adam["grad_clip_norm"] == 0.0
-    (job,) = record.read(directory / record.JOBS)
+    (job,) = files.read(directory / files.JOBS)
     assert job["backend"] == "together"
-    rows = list(record.read(directory / record.CHECKPOINTS))
+    rows = list(files.read(directory / files.CHECKPOINTS))
     assert [(row["tag"], row["sampler"]) for row in rows] == [
-        ("step-1", None),
-        ("final", "inference-3"),
+        ("step-1", {}),
+        ("final", {"agent": "inference-3"}),
     ]
-    assert all(row["weights"].startswith("training-") for row in rows)
+    assert all(row["weights"]["agent"].startswith("training-") for row in rows)
+    assert [row["ttl_hours"] for row in rows] == [None, None], "Together keeps them until deleted"
     assert session.stopped and resources.stopped, "the session and its GPUs stop with the run"
-    spent = record.read_json(directory / record.COSTS)["tokens"]["together"][MODEL]
+    spent = files.read_json(directory / files.COSTS)["tokens"]["together"][MODEL]
     assert spent["train"] > 0 and spent["sample"] > 0
 
 
-async def test_a_frozen_policy_is_refused_before_together_provisions_anything(
+async def test_a_model_on_tinker_opens_a_session_of_its_own_beside_a_together_agent(
     tmp_path: Path,
     fakes: tuple[FakeProxy, FakeService],
     harbor: Harbor,
     provisioned: list[FakeResources],
 ) -> None:
-    class Anchored(Trainer):
-        def __init__(self, config: Blueprint, directory: Path) -> None:
-            super().__init__(config, directory)
-            self.anchor = Policy(INITIAL)
+    _, service = fakes
+
+    def taught(teacher: str) -> type[Trainer]:
+        class Taught(Trainer):
+            def __init__(self, config: Blueprint, directory: Path) -> None:
+                super().__init__(config, directory)
+                self.teacher = Model(teacher)
+
+        return Taught
 
     harbor(Alternating())
     home = blueprint(tmp_path, **ONE_STEP, **ON_TOGETHER)
-    with pytest.raises(ValueError, match="samples only its own weights"):
-        await _train(home, tmp_path / "runs", Anchored)
-    assert provisioned == [], "no GPU is provisioned for a run that cannot start"
+    await train(home, tmp_path / "runs", taught("Qwen/Qwen3-32B"))
+    assert ("sampling", "Qwen/Qwen3-32B", None) in service.calls and len(provisioned) == 1
+    assert [status for status, _ in service.closed] == ["success"], "its session ends with the run"
+    with pytest.raises(ValueError, match="^teacher = Model.*does not serve 'Qwen/Qwen3-33B'"):
+        await train(home, tmp_path / "runs", taught("Qwen/Qwen3-33B"))
+    assert len(provisioned) == 1, "no GPU is provisioned for a run its teacher refuses"
 
 
 async def test_a_resumed_together_run_opens_its_session_on_the_checkpoint() -> None:
@@ -182,20 +192,25 @@ def test_together_takes_tinkers_losses_and_adam_settings_as_its_own() -> None:
     clipped = {"clip_low_threshold": 0.8, "clip_high_threshold": 1.28}
     assert loss("ppo", clipped) == {"type": "LOSS_TYPE_PPO", "ppo_params": clipped}
     assert loss("importance_sampling", None) == {"type": "LOSS_TYPE_IMPORTANCE_SAMPLING"}
-    with pytest.raises(ValueError, match="takes no settings"):
-        loss("importance_sampling", {"clip_low_threshold": 0.8})
-    with pytest.raises(ValueError, match="no Together loss for 'grpo'"):
-        loss("grpo", None)
+    assert loss("cross_entropy", None) == {"type": "LOSS_TYPE_CROSS_ENTROPY"}
     adam = adam_params(tinker.AdamParams(beta1=0.9, beta2=0.95, eps=1e-8), 1e-4)
     assert adam["learning_rate"] == 1e-4 and adam["grad_clip_norm"] == 0.0
     datum = tinker.Datum(
         model_input=tinker.ModelInput.from_ints([1, 2]),
         loss_fn_inputs={
             "target_tokens": tinker.TensorData(data=[2, 3], dtype="int64"),
+            "logprobs": tinker.TensorData(data=[0.0, -0.5], dtype="float32"),
+            "advantages": tinker.TensorData(data=[0.0, 1.0], dtype="float32"),
             "mask": tinker.TensorData(data=[0.0, 1.0], dtype="float32"),
         },
     )
-    assert sample(datum) == {
+    weighed = {"data": [0.0, 1.0], "dtype": "float32"}
+    assert sample(datum, "cross_entropy") == {
         "model_input": {"chunks": [{"encoded_text": {"tokens": [1, 2]}}]},
-        "loss_fn_inputs": {"target_tokens": {"data": [2, 3], "dtype": "int64"}},
+        "loss_fn_inputs": {"target_tokens": {"data": [2, 3], "dtype": "int64"}, "weights": weighed},
+    }, "each target weighed by its advantage, as on Tinker; the mask stays local"
+    assert set(sample(datum, "ppo")["loss_fn_inputs"]) == {
+        "target_tokens",
+        "logprobs",
+        "advantages",
     }

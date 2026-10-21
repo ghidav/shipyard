@@ -6,8 +6,6 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from harbor.models.agent.context import ModelUsage
 
-from harness_proxy.wire import BUDGET, CONTEXT
-
 if TYPE_CHECKING:
     from harbor.models.trial.result import TimingInfo, TrialResult
 
@@ -101,27 +99,14 @@ class Costs:
 
 def sampled(trials: Sequence[Trial], provider: str, model: str) -> tuple[Tokens, dict[str, int]]:
     """Count a served job's tokens from its records, and its refusals and bridged prompts."""
-    calls = [item for one in trials for item in one.records or ()]
-    sent = [item for item in calls if item.error not in (BUDGET, CONTEXT)]
-    read = [item for item in sent if item.sample == 0]
     costs = Costs()
-    costs.add(
-        provider,
-        model,
-        prefill=sum(len(item.prompt_token_ids) - cached(item) for item in read),
-        cache=sum(cached(item) for item in read),
-        sample=sum(len(item.completion_token_ids) for item in sent),
-    )
+    for one in trials:
+        costs.add(provider, model, **one.records.billed)
     noted = {
-        "turned_away": sum(item.error in (BUDGET, CONTEXT) for item in calls),
-        "bridged": sum(item.bridged for item in calls),
+        "turned_away": sum(one.records.turned_away for one in trials),
+        "bridged": sum(one.records.bridged for one in trials),
     }
     return costs.tokens, noted
-
-
-def cached(item: Any) -> int:
-    """Return a record's cached prompt tokens, capped at the prompt's length."""
-    return min(int(item.cached_tokens or 0), len(item.prompt_token_ids))
 
 
 def reported(trials: Sequence[Trial], provider: str, model: str) -> Tokens:
