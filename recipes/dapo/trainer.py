@@ -1,4 +1,4 @@
-"""DAPO (Yu et al., arXiv 2503.14476). Each rollout's reward, less a soft penalty for running
+"""DAPO (Yu et al., arXiv 2503.14476). Each trial's reward, less a soft penalty for running
 into the end of its token budget (Eq. 13), is normalized within its group; the loss is `ppo`
 clipped asymmetrically and averaged per prompt; and a step keeps drawing batches until a
 batch's worth of groups have something to teach (dynamic sampling)."""
@@ -25,8 +25,8 @@ class DAPOTrainer(Trainer):
         #: over which it grows to it.
         overlong_penalty: float
         overlong_buffer: float
-        #: Tokens a rollout should stay under, its model calls together. Unset, the proxy's
-        #: per-rollout budget, which is the model's context length.
+        #: Tokens a trial should stay under, its model calls together. Unset, the proxy's
+        #: per-trial budget, which is the model's context length.
         overlong_budget: int | None = None
 
     async def step(self) -> None:
@@ -54,18 +54,18 @@ class DAPOTrainer(Trainer):
                 continue
             shaped = [
                 r + self.overlong(t.sampled_tokens)
-                for t, r in zip(group.measured, group.rewards, strict=True)
+                for t, r in zip(group.graded, group.rewards, strict=True)
             ]
             mean, spread = fmean(shaped), pstdev(shaped)
-            for t, r in zip(group.measured, shaped, strict=True):
+            for t, r in zip(group.graded, shaped, strict=True):
                 t.set_advantage((r - mean) / (spread + 1e-6))
 
     def overlong(self, tokens: int) -> float:
-        """Return the soft overlong punishment (Eq. 13) of a rollout that sampled `tokens`:
+        """Return the soft overlong punishment (Eq. 13) of a trial that sampled `tokens`:
         nothing until the last `overlong_buffer` of the token budget, `overlong_budget`, then
         down linearly to -`overlong_penalty` at the budget."""
         penalty = self.recipe.overlong_penalty
-        budget = self.recipe.overlong_budget or self.policy.budget
+        budget = self.recipe.overlong_budget or self.agent.budget
         if not penalty or not budget:
             return 0.0
         cache = self.recipe.overlong_buffer * budget

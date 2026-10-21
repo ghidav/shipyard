@@ -37,7 +37,7 @@ async def test_each_model_is_bound_by_its_provider_and_each_lane_bills_as_what_i
     assert agent.endpoint is session.endpoint and session.endpoint.opened is session
     assert (agent.endpoint.provider, agent.endpoint.kind) == ("tinker", "tinker")
     assert teacher.endpoint is sampling.endpoint and sampling.endpoint.opened is sampling
-    assert (critic.endpoint.provider, critic.endpoint.kind) == ("anthropic", "provider")
+    assert (critic.endpoint.provider, critic.endpoint.kind) == ("anthropic", "api")
     assert service.calls == [] and proxy.placed == [], "nothing opens until the run starts"
 
 
@@ -46,7 +46,7 @@ async def test_a_model_on_tinker_opens_beside_a_providers_agent(
 ) -> None:
     agent, teacher = Model(CLAUDE, provider="anthropic"), Model("Qwen/Qwen3-32B")
     connected = _connected(tmp_path, [("agent", agent), ("teacher", teacher)], **ON_ANTHROPIC)
-    assert connected.session is None and agent.endpoint.kind == "provider"
+    assert connected.session is None and agent.endpoint.kind == "api"
     assert list(connected.proxy.lanes) == ["teacher"], "the proxy serves the model on Tinker"
     (sampling,) = connected.others
     assert sampling.reader is None, "a provider's agent writes no token ids to score"

@@ -234,13 +234,13 @@ def test_a_cache_hit_bills_no_more_than_its_prompt() -> None:
 def test_the_weights_that_served_its_calls() -> None:
     held = Records(
         [
-            made(served="tinker://w/step-2"),
-            made(seq=2, served="tinker://w/step-2", error=BUDGET),
+            made(weights="tinker://w/step-2"),
+            made(seq=2, weights="tinker://w/step-2", error=BUDGET),
             made(seq=3),
         ]
     )
     assert held.weights == {"tinker://w/step-2"}
-    assert Records([made(served=None)]).weights == frozenset(), "the base model names none"
+    assert Records([made(weights=None)]).weights == frozenset(), "the base model names none"
 
 
 # ----------------------------------------------------------- what a job was served

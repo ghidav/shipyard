@@ -1,4 +1,4 @@
-# DAPO on Reasoning Gym's easy split: 16 problems a step, 8 rollouts each. Run it with trainer.py.
+# DAPO on Reasoning Gym's easy split: 16 tasks a step, 8 trials each. Run it with trainer.py.
 [agent]
 model = "Qwen/Qwen3-8B"
 harness = "pi@0.85.1"

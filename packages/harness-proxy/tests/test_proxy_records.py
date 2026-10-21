@@ -140,7 +140,7 @@ def test_every_annotation_survives_the_wire() -> None:
         sampling_params={"temperature": 1.0},
         requested_model="openrouter/a/b",
         sample_ms=12.5,
-        served="tinker://run/sampler_weights/step-3",
+        weights="tinker://run/sampler_weights/step-3",
         cached_tokens=3,
         request_id="req-9",
         bridged=True,
@@ -282,11 +282,11 @@ async def test_a_failed_sample_leaves_a_record_and_re_raises() -> None:
         async def sample_async(self, **_: Any) -> Any:
             raise RuntimeError("the sampler went away")
 
-    recorder = Recorder(Failing(), served="tinker://w/step-1")
+    recorder = Recorder(Failing(), weights="tinker://w/step-1")
     with pytest.raises(RuntimeError, match="went away"):
         await under("t", recorder, tinker.ModelInput.from_ints([1, 2]))
     (record,) = recorder.records_for("t")
-    assert record.error == "sampler: RuntimeError" and record.served == "tinker://w/step-1"
+    assert record.error == "sampler: RuntimeError" and record.weights == "tinker://w/step-1"
     assert record.prompt_token_ids == (1, 2) and record.completion_token_ids == ()
 
 

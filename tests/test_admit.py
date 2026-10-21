@@ -44,8 +44,8 @@ def verdict(
     return admit.verdict(result_in(trial), held, failed=failed, grade_timeouts=grade_timeouts)
 
 
-#: Harbor `ApiError` subclasses caused by the policy itself, which keep the verifier's reward.
-POLICY_OWN = frozenset(
+#: Harbor `ApiError` subclasses caused by the agent itself, which keep the verifier's reward.
+AGENT_OWN = frozenset(
     {"OutputTokenExceededError", "ContextWindowExceededError", "AgentSafetyRefusalError"}
 )
 
@@ -76,7 +76,7 @@ def test_harbors_clock_cut_is_a_timeout_whatever_the_verifier_wrote(tmp_path: Pa
 
 @pytest.mark.parametrize("named", sorted(ENDPOINT_FAILED))
 def test_every_failure_the_endpoint_causes_is_masked(tmp_path: Path, named: str) -> None:
-    """Harbor runs the verifier after these too, so the reward it wrote is not the policy's."""
+    """Harbor runs the verifier after these too, so the reward it wrote is not the agent's."""
     trial = write_result(tmp_path / "t", reward=0.0, exception=named)
     assert verdict(trial) == Verdict(None, API_ERROR, named)
 
@@ -88,7 +88,7 @@ def test_an_api_error_harbor_has_not_named_yet_is_masked_by_its_suffix(tmp_path:
     assert verdict(trial).mask == API_ERROR
 
 
-@pytest.mark.parametrize("named", sorted(POLICY_OWN))
+@pytest.mark.parametrize("named", sorted(AGENT_OWN))
 def test_an_api_error_the_policy_caused_keeps_the_verifiers_number(
     tmp_path: Path, named: str
 ) -> None:
@@ -97,7 +97,7 @@ def test_an_api_error_the_policy_caused_keeps_the_verifiers_number(
 
 
 def test_harbors_error_tree_decides_which_agent_failures_are_the_endpoints() -> None:
-    """Every `ApiError` but the policy's own, and the agent's CLI unable to log in, find the
+    """Every `ApiError` but the agent's own, and the agent's CLI unable to log in, find the
     model or reach the network, are the endpoint's; a bare non-zero exit is the agent's. Fails
     when Harbor adds an agent error that is neither."""
     from harbor.agents.installed import base
@@ -109,9 +109,9 @@ def test_harbors_error_tree_decides_which_agent_failures_are_the_endpoints() -> 
 
     beside = {"AgentAuthenticationError", "ModelNotFoundError", "NetworkConnectionError"}
     vibes = {"ApiConnectionError"}  # harbor.agents.installed.vibe's own network failure
-    assert ENDPOINT_FAILED == (under(base.ApiError) - POLICY_OWN) | beside | vibes
-    assert not ENDPOINT_FAILED & POLICY_OWN
-    left = under(base.NonZeroAgentExitCodeError) - ENDPOINT_FAILED - POLICY_OWN
+    assert ENDPOINT_FAILED == (under(base.ApiError) - AGENT_OWN) | beside | vibes
+    assert not ENDPOINT_FAILED & AGENT_OWN
+    left = under(base.NonZeroAgentExitCodeError) - ENDPOINT_FAILED - AGENT_OWN
     assert left == {"NonZeroAgentExitCodeError"}
 
 
@@ -190,7 +190,7 @@ def test_a_harness_that_quit_on_a_failed_call_is_an_api_error(tmp_path: Path) ->
 def test_a_last_call_the_harness_logged_as_failed_and_the_proxy_never_saw_is_masked(
     tmp_path: Path,
 ) -> None:
-    """The call failed on the way, not in the model: the verifier's 0 is not the policy's."""
+    """The call failed on the way, not in the model: the verifier's 0 is not the agent's."""
     graded = write_result(tmp_path / "t", reward=0.0)
     clean = [made(seq=1), made(seq=2)]
     assert verdict(graded, clean, failed=True) == Verdict(None, API_ERROR, None)

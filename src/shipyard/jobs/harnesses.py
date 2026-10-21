@@ -80,7 +80,7 @@ PROFILES: dict[str, Profile] = {
                         "options": {"baseURL": "${SHIPYARD_BASE_URL}"},
                     }
                 },
-                # Its title call would be sampled from the policy and trained as a chain
+                # Its title call would be sampled from the agent and trained as a chain
                 # of its own, though no turn reads it.
                 "agent": {"title": {"disable": True}},
             }

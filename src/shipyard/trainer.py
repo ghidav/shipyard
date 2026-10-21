@@ -79,7 +79,7 @@ class Trainer:
     State = State
 
     def __init__(self, config: Blueprint, directory: Path) -> None:
-        # The agent trains unless a recipe that never updates sets `self.policy.training`
+        # The agent trains unless a recipe that never updates sets `self.agent.training`
         # False in its __init__; the run checks it can when it starts.
         agent = Model(config.agent.model, provider=config.agent.provider, train=True)
         # The proxy serves a model on Tinker or Together: one a run could train.
@@ -97,7 +97,7 @@ class Trainer:
         #: What the run has done so far, which a checkpoint saves and a resume goes on from.
         self.state = self.State(modules=carried(config, self.directory))
         self.directory.mkdir(parents=True, exist_ok=True)
-        #: The run's record: job and step rows, checkpoints and costs.
+        #: The run's logs: its job, step and request rows, its usage ledger and its costs.
         self.logs = Logs(config, self.directory, step=lambda: self._current)
         table = config.rollout.secrets
         #: One engine, so every job shares one `[rollout] concurrency` limit.
@@ -120,7 +120,7 @@ class Trainer:
         #: after it, until the next starts, the step just taken.
         self._current = 0
         #: The training state of the checkpoint the run went on from, which the session opens.
-        self._weights: str | None = None
+        self._training_state: str | None = None
         self._stream: Iterator[list[Path]] | None = None
         self._seen: list[Group] = []
         self._update: Update | None = None
@@ -140,28 +140,28 @@ class Trainer:
         self.logs.close(failed)
 
     @property
-    def policy(self) -> Model:
+    def agent(self) -> Model:
         """The agent: the run's own model, made from `[agent]`. The run trains it, unless a
-        recipe that never updates sets `self.policy.training = False` in its __init__."""
+        recipe that never updates sets `self.agent.training = False` in its __init__."""
         return self._agent
 
     # ------------------------------------------------------------------ what a recipe writes
 
     async def step(self) -> None:
-        """Draw a batch, roll the policy out on it, score the rollouts, and update."""
+        """Draw a batch, roll the agent out on it, score its groups, and update."""
         groups = await self.rollout(self.draw())
         await self.score(groups)
         await self.update(groups)
 
     async def score(self, groups: Values[Group]) -> None:
-        """Give each rollout its reward minus its group's mean, skipping groups of equal rewards."""
+        """Give each trial its reward minus its group's mean, skipping groups of equal rewards."""
         for group in groups:
             if group.reward_variance == 0:
                 continue
-            for trial, advantage in zip(group.measured, group.centered_rewards, strict=True):
+            for trial, advantage in zip(group.graded, group.centered_rewards, strict=True):
                 trial.set_advantage(advantage)
 
-    # ------------------------------------------------------------------ the primitives
+    # ------------------------------------------------------------------ the other primitives
 
     def draw(self) -> list[Path]:
         """Return the next batch of `[data] batch_size` training tasks."""
@@ -273,15 +273,15 @@ class Trainer:
         `ValueError` for a loss Tinker does not have, or a setting it does not take, before
         anything is scored or sent."""
         check_loss(loss, loss_config)
-        policy, session, learning_rate = self._agent, self._session, self.recipe.learning_rate
-        if not policy.trainable:
+        agent, session, learning_rate = self._agent, self._session, self.recipe.learning_rate
+        if not agent.trainable:
             raise ValueError(
-                f"update trains the agent, and {policy.provider} serves {policy.name}: there "
+                f"update trains the agent, and {agent.provider} serves {agent.name}: there "
                 "are no weights to train"
             )
-        if not policy.training:
+        if not agent.training:
             raise ValueError(
-                "update trains the agent, and this recipe set `self.policy.training = False`"
+                "update trains the agent, and this recipe set `self.agent.training = False`"
             )
         if session is None or learning_rate is None:
             raise RuntimeError("update trains the agent, which opens when the run starts")
@@ -295,7 +295,7 @@ class Trainer:
         logprobs: dict[Sequence, Values[float]] = {
             one: one.sampled_logprobs for one in flat if one.sampled_logprobs is not None
         }
-        for one, scored in zip(unrecorded, await policy.logprobs(unrecorded), strict=True):
+        for one, scored in zip(unrecorded, await agent.logprobs(unrecorded), strict=True):
             logprobs[one] = scored.tolist()  # type: ignore[union-attr]
         # The papers' mini-batches are sets of prompts, so a group is not split across parts.
         count = min(recipe.substeps, len(kept))
@@ -335,11 +335,15 @@ class Trainer:
         if self._agent.training and self.recipe.learning_rate is None:
             raise ValueError(
                 "[recipe] learning_rate: the agent trains, and the blueprint sets no rate: set "
-                "it, or, in a recipe that never updates, set `self.policy.training = False`"
+                "it, or, in a recipe that never updates, set `self.agent.training = False`"
             )
         self._current = self.state.steps
         connected = connect(
-            self.config, self.directory, self._held(), self.logs.spend, weights=self._weights
+            self.config,
+            self.directory,
+            self._held(),
+            self.logs.spend,
+            training_state=self._training_state,
         )
         self._session = connected.session
         async with connected:
@@ -383,23 +387,24 @@ class Trainer:
 
     async def checkpoint(self, tag: str, *, keep: bool = False) -> None:
         """Save the run's state as `tag`, which a resume goes on from; `keep` keeps the weights.
-        Its row names each trained model's weights by role, once an update has moved them."""
+        Its row names each trained model's training state by role, once an update has moved it."""
         session = self._session
-        weights: dict[str, str] = {}
-        sampler: dict[str, str] = {}
+        training_state: dict[str, str] = {}
+        sampler_weights: dict[str, str] = {}
         hours: float | None = None
         if session is not None and self.state.updates.get(AGENT):
             made = await session.save(tag, keep=keep)
-            weights = {AGENT: made.state}
-            sampler = {AGENT: made.sampler} if made.sampler is not None else {}
+            training_state = {AGENT: made.training_state}
+            if made.sampler_weights is not None:
+                sampler_weights = {AGENT: made.sampler_weights}
             hours = made.ttl_hours
         saved = Checkpoint.save(
             self.directory,
             tag,
             self.state.steps,
             self.state.model_dump(mode="json"),
-            weights=weights,
-            sampler=sampler,
+            training_state=training_state,
+            sampler_weights=sampler_weights,
             ttl_hours=hours,
         )
         logger.info("checkpoint %s: %s", tag, saved.state)
@@ -411,9 +416,9 @@ class Trainer:
         return into
 
     def restore(self, origin: Path, checkpoint: Checkpoint) -> None:
-        """Restore `checkpoint` of `origin`: its state now, its weights once `run` opens."""
+        """Restore `checkpoint` of `origin`: its state now, its training state once `run` opens."""
         tag = checkpoint.tag
-        self._weights = checkpoint.weights.get(AGENT)
+        self._training_state = checkpoint.training_state.get(AGENT)
         saved = checkpoint.saved_state(origin)
         if not saved:
             raise ValueError(

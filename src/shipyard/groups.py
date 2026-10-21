@@ -105,7 +105,7 @@ class Trial:
         return result_in(self.dir)
 
     @property
-    def measured(self) -> bool:
+    def graded(self) -> bool:
         """Whether the trial counts: a masked one has no reward and no sequences."""
         return self.verdict is not None and self.verdict.mask is None
 
@@ -118,7 +118,7 @@ class Trial:
 
     @property
     def sampled_tokens(self) -> int:
-        """Tokens the policy wrote in its answered model calls; 0 when none was recorded."""
+        """Tokens the agent wrote in its answered model calls; 0 when none was recorded."""
         return self.records.sampled_tokens if self.records.recorded else 0
 
     @property
@@ -184,13 +184,13 @@ class Group:
         return ran.pop() if len(ran) == 1 else None
 
     @property
-    def measured(self) -> list[Trial]:
-        return [one for one in self.trials if one.measured]
+    def graded(self) -> list[Trial]:
+        return [one for one in self.trials if one.graded]
 
     @property
     def rewards(self) -> list[float]:
-        """The measured trials' rewards."""
-        return [float(one.reward or 0.0) for one in self.measured]
+        """The graded trials' rewards."""
+        return [float(one.reward or 0.0) for one in self.graded]
 
     @property
     def reward_variance(self) -> float:
@@ -200,7 +200,7 @@ class Group:
 
     @property
     def centered_rewards(self) -> list[float]:
-        """Each measured trial's reward minus the group's mean."""
+        """Each graded trial's reward minus the group's mean."""
         rewards = self.rewards
         mean = fmean(rewards) if rewards else 0.0
         return [one - mean for one in rewards]
@@ -208,7 +208,7 @@ class Group:
     @property
     def scored(self) -> list[Sequence]:
         """Its sequences that have advantages, the ones `update` trains on."""
-        return [one for t in self.measured for one in t.sequences if one.advantages is not None]
+        return [one for t in self.graded for one in t.sequences if one.advantages is not None]
 
     @property
     def is_scored(self) -> bool:
@@ -226,10 +226,10 @@ def merged(groups: Values[Group], *, mix: bool = False) -> list[Group]:
 
 
 def grouped(trials: Values[Trial]) -> list[Group]:
-    """Group judged trials by task, and give each measured trial its sequences."""
+    """Group judged trials by task, and give each graded trial its sequences."""
     found: list[Group] = []
     for trial in trials:
-        if trial.measured:
+        if trial.graded:
             trial.sequences = _sequences(trial)
         if found and found[-1].task == trial.task:
             found[-1].trials.append(trial)
@@ -239,7 +239,7 @@ def grouped(trials: Values[Trial]) -> list[Group]:
 
 
 def _sequences(trial: Trial) -> list[Sequence]:
-    """Return one sequence per chain in which the policy wrote; none when none was recorded."""
+    """Return one sequence per chain in which the agent wrote; none when none was recorded."""
     if not trial.records.recorded:
         return []
     return [

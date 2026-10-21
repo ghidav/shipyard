@@ -19,13 +19,13 @@ CONTROL_PATH = "/control/weights"
 HEALTH_PATH = "/healthz"
 #: Prefix of `error` on a record whose sampling call failed, as `sampler: <type>`.
 SAMPLER_FAILED = "sampler: "
-#: `error` on a record the proxy refused because of the policy's own output: a spent
+#: `error` on a record the proxy refused because of the model's own output: a spent
 #: budget or a full context.
 BUDGET = "budget"
 CONTEXT = "context"
 #: Placeholder id for image tokens in a record's prompt ids, one per token of the image
 #: chunk, so the record keeps the prompt's length. The image itself is a `Picture` on
-#: the record. Admission sets aside a rollout whose record did not keep one.
+#: the record. Admission sets aside a trial whose record did not keep one.
 IMAGE_TOKEN = -1
 
 
@@ -56,7 +56,7 @@ class Record:
     sampling_params: dict[str, Any]
     requested_model: str | None
     sample_ms: float
-    served: str | None
+    weights: str | None
     cached_tokens: int
     request_id: str | None
     bridged: bool
@@ -236,7 +236,7 @@ def record_of(payload: Mapping[str, Any]) -> Record:
         sampling_params=dict(payload.get("sampling_params") or {}),
         requested_model=_text(payload.get("requested_model")),
         sample_ms=float(payload.get("sample_ms") or 0.0),
-        served=_text(payload.get("served")),
+        weights=_text(payload.get("weights", payload.get("served"))),
         cached_tokens=int(payload.get("cached_tokens") or 0),
         request_id=_text(payload.get("request_id")),
         bridged=bool(payload.get("bridged") or False),

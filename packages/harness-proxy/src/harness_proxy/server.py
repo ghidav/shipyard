@@ -138,7 +138,7 @@ class Lane:
             max_context=self.max_context,
             budget=self.max_context,
             fill_context=self.fill_context,
-            served=self.weights,
+            weights=self.weights,
         )
         self._renderers = renderers
 
@@ -154,7 +154,7 @@ class Lane:
         client = await self._make(weights)
         self.weights = weights
         if self._recorder is not None:
-            self._recorder.client, self._recorder.served = client, weights
+            self._recorder.client, self._recorder.weights = client, weights
 
     def _built(self) -> dict[str, Any]:
         """Return the renderers by the name a trial's address gives each, "" for the default."""

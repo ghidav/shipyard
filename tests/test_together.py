@@ -135,11 +135,11 @@ async def test_a_run_on_together_trains_its_session_and_its_proxy_samples_it(
     (job,) = files.read(directory / files.JOBS)
     assert job["backend"] == "together"
     rows = list(files.read(directory / files.CHECKPOINTS))
-    assert [(row["tag"], row["sampler"]) for row in rows] == [
+    assert [(row["tag"], row["sampler_weights"]) for row in rows] == [
         ("step-1", {}),
         ("final", {"agent": "inference-3"}),
     ]
-    assert all(row["weights"]["agent"].startswith("training-") for row in rows)
+    assert all(row["training_state"]["agent"].startswith("training-") for row in rows)
     assert [row["ttl_hours"] for row in rows] == [None, None], "Together keeps them until deleted"
     assert session.stopped and resources.stopped, "the session and its GPUs stop with the run"
     spent = files.read_json(directory / files.COSTS)["tokens"]["together"][MODEL]

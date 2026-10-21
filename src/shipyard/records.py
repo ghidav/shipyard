@@ -60,7 +60,7 @@ class Records:
 
     @property
     def out_of_budget(self) -> bool:
-        """Whether a call was turned away because the rollout's token budget was spent."""
+        """Whether a call was turned away because the trial's token budget was spent."""
         return any(one.error == BUDGET for one in self._held)
 
     @property
@@ -114,7 +114,7 @@ class Records:
     @property
     def weights(self) -> frozenset[str]:
         """The sampler weights the proxy served its calls from; the base model names none."""
-        return frozenset(one.served for one in self._held if one.served)
+        return frozenset(one.weights for one in self._held if one.weights)
 
     def chains(self) -> list[Chain]:
         """Return each chain of its answered calls in which the model wrote, in order."""

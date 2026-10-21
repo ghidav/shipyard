@@ -40,7 +40,7 @@ class GEPATrainer(Trainer):
     class Recipe(Trainer.Recipe):
         #: The model that rewrites the modules, and the harness it runs through.
         reflector: Reflector
-        #: The most task evaluations the search may run, each `[data] group_size` rollouts.
+        #: The most task evaluations the search may run, each `[data] group_size` trials.
         budget: int
         #: How many tasks a reflection reads.
         minibatch: int
@@ -53,7 +53,7 @@ class GEPATrainer(Trainer):
         if self.state.modules is None:
             raise ValueError("GEPA searches the modules the agent carries: set [agent] modules")
         # A search: the proxy serves the agent as it is, and no training client opens.
-        self.policy.training = False
+        self.agent.training = False
         held = self.recipe.reflector
         self.reflector = Model(held.model, provider=held.provider)
 
@@ -94,7 +94,7 @@ class GEPATrainer(Trainer):
 
 
 class Rollouts:
-    """GEPA's adapter. A candidate's score on some tasks is a job of the agent's rollouts
+    """GEPA's adapter. A candidate's score on some tasks is a job of the agent's trials
     carrying its modules; a proposal is a job of the reflector's, at a task per module to
     rewrite, which holds each trial's task, transcript, reward and test output."""
 
@@ -142,7 +142,7 @@ class Rollouts:
                 "tests": trial.test_output,
             }
             for group in eval_batch.trajectories or []
-            for trial in group.measured
+            for trial in group.graded
         ]
         return {name: records for name in components_to_update}
 

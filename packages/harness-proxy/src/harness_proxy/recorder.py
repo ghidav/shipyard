@@ -48,17 +48,17 @@ class Recorder:
         max_context: int | None = None,
         budget: int | None = None,
         fill_context: bool = False,
-        served: str | None = None,
+        weights: str | None = None,
     ) -> None:
         self.client = client
-        self.served = served
+        self.weights = weights
         self.temperature, self.top_p, self.top_k = temperature, top_p, top_k
-        #: Maximum tokens a turn may sample. A request asking for more is capped to this.
+        #: Maximum tokens a call may sample. A call asking for more is capped to this.
         self.max_tokens = max_tokens
         self.max_context = max_context
         #: Total tokens a trial may sample. None for no limit.
         self.budget = budget
-        #: Whether a turn that would overrun the context gets the remaining context as its
+        #: Whether a call that would overrun the context gets the remaining context as its
         #: limit instead of being refused.
         self.fill_context = fill_context
         self.records: dict[str, list[Record]] = {}
@@ -136,7 +136,7 @@ class Recorder:
             answered = await stored if stored is not None else None
             if answered is not None:
                 return replace(answered, seq=None)  # the SDK sent this before: one record
-        # Fit after the replay, so a retry of the turn that spent the budget gets its reply.
+        # Fit after the replay, so a retry of the call that spent the budget gets its reply.
         wanted = int(getattr(sampling_params, "max_tokens", None) or 0)
         pinned = self._fitting(trial, prompt, prompt_ids, pinned, wanted, stamp)
         params = _params_dict(pinned)
@@ -145,7 +145,7 @@ class Recorder:
             self._replies[key] = pending
         # Read together before the await, so a swap in flight does not stamp the record
         # with weights that did not answer it.
-        client, served = self.client, self.served
+        client, weights = self.client, self.weights
         started = time.perf_counter()
         try:
             response = await client.sample_async(
@@ -159,7 +159,7 @@ class Recorder:
             if not pending.done():
                 pending.set_result(None)  # a retry waiting on it samples for itself
             failure = f"{SAMPLER_FAILED}{type(failed).__name__}"
-            self._add(trial, prompt_ids, params, served, **stamp, error=failure, images=pictures)
+            self._add(trial, prompt_ids, params, weights, **stamp, error=failure, images=pictures)
             raise
         tokens = tuple(int(token) for token in sequence.tokens)
         stop_reason = str(getattr(sequence, "stop_reason", "") or "")
@@ -167,7 +167,7 @@ class Recorder:
             trial,
             prompt_ids,
             params,
-            served,
+            weights,
             **stamp,
             completion=tokens,
             logprobs=tuple(float(x) for x in (getattr(sequence, "logprobs", None) or [])),
@@ -198,8 +198,8 @@ class Recorder:
             if spent >= self.budget:
                 self._refuse(trial, prompt_ids, pinned, BUDGET, stamp)
                 raise Refused(
-                    f"This rollout has spent its budget: {spent} sampled tokens of "
-                    f"{self.budget}, the model's context length. No further requests are served."
+                    f"This trial has spent its budget: {spent} sampled tokens of "
+                    f"{self.budget}, the model's context length. No further calls are answered."
                 )
             if int(getattr(pinned, "max_tokens", 0) or 0) > self.budget - spent:
                 pinned = pinned.model_copy(update={"max_tokens": int(self.budget - spent)})
@@ -225,14 +225,14 @@ class Recorder:
         why: str,
         stamp: dict[str, Any],
     ) -> None:
-        self._add(trial, prompt_ids, _params_dict(pinned), self.served, **stamp, error=why)
+        self._add(trial, prompt_ids, _params_dict(pinned), self.weights, **stamp, error=why)
 
     def _add(
         self,
         trial: str,
         prompt_ids: tuple[int, ...],
         params: dict[str, Any],
-        served: str | None,
+        weights: str | None,
         *,
         completion: tuple[int, ...] = (),
         logprobs: tuple[float, ...] = (),
@@ -258,7 +258,7 @@ class Recorder:
             sampling_params=params,
             requested_model=requested_model,
             sample_ms=sample_ms,
-            served=served,
+            weights=weights,
             cached_tokens=cached_tokens,
             request_id=request_id,
             bridged=bridged,
@@ -322,5 +322,5 @@ def _params_dict(sampling_params: Any) -> dict[str, Any]:
         return {}
     try:
         return {key: value for key, value in dump().items() if value is not None}
-    except Exception:  # noqa: BLE001 - a failed annotation must not fail a rollout
+    except Exception:  # noqa: BLE001 - a failed annotation must not fail the call
         return {}

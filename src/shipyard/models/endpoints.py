@@ -41,7 +41,7 @@ def placement(rollout: Rollout) -> str:
     return "local" if rollout.sandbox in LOCAL_SANDBOXES else "tunnel"
 
 
-def sampling(config: Blueprint, run: str) -> dict[str, Any]:
+def sampling_params(config: Blueprint, run: str) -> dict[str, Any]:
     """Return the sampling settings `[rollout]` gives each lane of the proxy the run starts."""
     rollout = config.rollout
     return {
@@ -211,7 +211,7 @@ class LaneEndpoint:
         renderers and context, the run's sampling, and its backend beyond Tinker's."""
         own = {"weights": self.told, "renderer": self.renderers, "max_context": self.max_context}
         return {
-            **sampling(self.proxy.config, self.proxy.directory.name),
+            **sampling_params(self.proxy.config, self.proxy.directory.name),
             "name": self.name,
             "model": self.model,
             **{key: value for key, value in own.items() if value},
@@ -220,7 +220,7 @@ class LaneEndpoint:
 
     @property
     def budget(self) -> int | None:
-        """Most tokens one rollout may sample, as the proxy reports it for the lane."""
+        """Most tokens one trial may sample, as the proxy reports it for the lane."""
         proxy = self.proxy.proxy
         served = proxy.lanes.get(self.name) if proxy is not None else None
         return served.budget if served is not None else None
@@ -314,8 +314,8 @@ class ProviderEndpoint:
 
     @property
     def kind(self) -> str:
-        """The backend it reaches, as a job's row names it: a provider's own."""
-        return "provider"
+        """The backend it reaches, as a job's row names it: the provider's API."""
+        return "api"
 
     @property
     def budget(self) -> None:

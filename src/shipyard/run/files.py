@@ -21,8 +21,8 @@ COSTS = "costs.json"
 #: The trainer file a recipe folder holds. A run started before runs kept their recipe's
 #: place, rather than a copy of its code, holds its own copy under this name.
 TRAINER = "trainer.py"
-#: Directory, not a file: the modules the run carried (`carried/`), and a search's `seed/`
-#: and `best/`.
+#: Directory, not a file: the modules the run carried (`carried/`), and any a recipe kept,
+#: such as a search's `best/`.
 MODULES = "modules"
 #: Directory under `modules/`: the modules every job of the run carries.
 CARRIED = "carried"

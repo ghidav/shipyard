@@ -5,7 +5,7 @@ Each folder is a recipe: a `run.toml` with every setting, and a `trainer.py` who
 | Recipe | Algorithm | Overrides | Loss |
 | --- | --- | --- | --- |
 | [`dapo`](dapo/) | DAPO: an overlong penalty, rewards normalized in the group, every prompt weighing the same, dynamic sampling | `step`, `score` | `ppo`, clipped asymmetrically |
-| [`opd`](opd/) | On-policy distillation: each token's advantage is the teacher's logprob minus the policy's | `score` | `importance_sampling` |
+| [`opd`](opd/) | On-policy distillation: each token's advantage is the teacher's logprob minus the agent's | `score` | `importance_sampling` |
 | [`gepa`](gepa/) | GEPA: a search over the prompt and skills, with no weight update; needs `shipyard[gepa]` | `step` | none |
 
 Each folder's `README.md` says what its recipe needs. A folder without a `trainer.py` runs the base `Trainer`: GRPO with `importance_sampling`.

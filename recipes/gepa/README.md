@@ -5,7 +5,7 @@ GEPA ([Agrawal et al., 2025](https://arxiv.org/abs/2507.19457)), through the `ge
 | | |
 | --- | --- |
 | **Agent** | `Qwen/Qwen3-8B` on Tinker, through `pi`, which it never trains; for a provider's agent, set `provider = "anthropic"`, a Claude model and `harness = "claude-code"` |
-| **Data** | `reasoning-gym-easy`: 2 rollouts a task; one step, the whole search |
+| **Data** | `reasoning-gym-easy`: 2 trials a task; one step, the whole search |
 | **Sandbox** | Modal (set `[rollout] sandbox = "docker"` to run trials on this machine) |
 | **Needs** | `TINKER_API_KEY`, `ANTHROPIC_API_KEY` (the reflector's harness); Modal credentials; the `gepa` extra and `harbor[modal]`, in one install: `uv tool install "shipyard[gepa]" --with "harbor[modal]"` |
 | **`[recipe]`** | `budget`, `minibatch`; `pareto` (optional: unset, two thirds of the tasks); and `[recipe.reflector]`: `model`, `provider`, `harness`, with `env` and `kwargs` for its harness (optional) |

@@ -210,7 +210,7 @@ class RollingOut(Trainer):
 
     def __init__(self, config: Blueprint, directory: Path) -> None:
         super().__init__(config, directory)
-        self.policy.training = False
+        self.agent.training = False
 
     async def step(self) -> None:
         await self.rollout(self.draw())

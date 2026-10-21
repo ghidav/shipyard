@@ -30,8 +30,8 @@ MULTIMODAL = "multimodal"
 
 #: Harbor's exception type for a trial that hit its timeout.
 TIMED_OUT = "AgentTimeoutError"
-#: The `ApiError`s the policy causes itself: an output too long, a context too full, a refusal.
-POLICY_CAUSED = (OutputTokenExceededError, ContextWindowExceededError, AgentSafetyRefusalError)
+#: The `ApiError`s the agent causes itself: an output too long, a context too full, a refusal.
+AGENT_CAUSED = (OutputTokenExceededError, ContextWindowExceededError, AgentSafetyRefusalError)
 
 
 def _below(*roots: type) -> frozenset[str]:
@@ -44,7 +44,7 @@ def _below(*roots: type) -> frozenset[str]:
 
 
 #: Harbor's exception types that indicate an endpoint failure, read from its class tree: an
-#: `ApiError` the policy did not cause, or the agent's CLI unable to log in, find the model or
+#: `ApiError` the agent did not cause, or the agent's CLI unable to log in, find the model or
 #: reach the network, which Harbor raises beside `ApiError` rather than under it. A type Harbor
 #: adds later is classified by its place in the tree, and `endpoint_failed` also takes any
 #: name ending in "ApiError".
@@ -54,7 +54,7 @@ ENDPOINT_FAILED = _below(
     ModelNotFoundError,
     NetworkConnectionError,
     ApiConnectionError,
-) - _below(*POLICY_CAUSED)
+) - _below(*AGENT_CAUSED)
 #: Harbor's verifier-side exception types: the agent finished but grading failed. After the
 #: context fills, these are not treated as the harness giving up.
 GRADER_FAILED = frozenset(

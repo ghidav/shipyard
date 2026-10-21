@@ -1,4 +1,4 @@
-"""Tests for `shipyard.models.clients.tinker`, the trained policy's training client, using a fake
+"""Tests for `shipyard.models.clients.tinker`, the trained agent's training client, using a fake
 Tinker SDK client."""
 
 from __future__ import annotations

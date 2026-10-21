@@ -13,10 +13,10 @@ from shipyard.run.costs import (
     UNKNOWN,
     Costs,
     billed_by,
+    billed_tokens,
     counted,
     filed,
     reported,
-    sampled,
     sandbox_seconds,
 )
 
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from shipyard.jobs.engine import Job
 
 #: The role the agent's own spend is filed under: its rollouts, and its passes on Tinker.
-#: Another policy's is the name the trainer holds it by, such as `teacher`.
+#: Another model's is the name the trainer holds it by, such as `teacher`.
 AGENT = "agent"
 #: Keys of a step's row, in order, before its evaluation's and the recipe's own `metrics`. A
 #: key with no value is left out.
@@ -96,7 +96,7 @@ class Wandb:
 
 
 class Logs:
-    """The run's record: the rows of its jobs, steps and checkpoints, and its costs."""
+    """The run's logs: the rows of its jobs, steps and requests, its usage ledger, and its costs."""
 
     def __init__(
         self,
@@ -131,7 +131,7 @@ class Logs:
         served = any(one.records.recorded for one in trials)
         provider, model = endpoint.provider or UNKNOWN, endpoint.model or UNKNOWN
         if served:
-            tokens, noted = sampled(trials, provider, model)
+            tokens, noted = billed_tokens(trials, provider, model)
         else:
             tokens, noted = reported(trials, billed_by(trials) or provider, model), {}
         timed, seconds = sandbox_seconds(trials)
@@ -198,7 +198,7 @@ class Logs:
     ) -> None:
         """Write a step's row: its groups, update, evaluation as `eval_` fields, and `metrics`."""
         groups = merged(groups)
-        measured = [one for group in groups for one in group.measured]
+        graded = [one for group in groups for one in group.graded]
         spreads = [pstdev(group.rewards) for group in groups if len(group.rewards) > 1]
         row: dict[str, Any] = {
             "step": index,
@@ -206,9 +206,9 @@ class Logs:
             "jobs": list(dict.fromkeys(one.job for group in groups for one in group.trials)),
             "groups": len(groups),
             **tally(groups),
-            "uniform": sum(1 for group in groups if group.measured and not group.is_scored),
+            "uniform": sum(1 for group in groups if group.graded and not group.is_scored),
             "reward_spread": fmean(spreads) if spreads else None,
-            "sampled_mean": fmean(one.sampled_tokens for one in measured) if measured else None,
+            "sampled_mean": fmean(one.sampled_tokens for one in graded) if graded else None,
             **(vars(update) if update is not None else {}),
         }
         kept = {key: value for key in ROW if (value := row.get(key)) is not None}
@@ -245,13 +245,13 @@ def _known(about: Mapping[str, Any]) -> dict[str, Any]:
 def tally(groups: Sequence[Group]) -> dict[str, Any]:
     """Return what the groups' trials came to: how many ran, were graded and were masked, and
     the graded ones' mean reward, None when none was graded."""
-    measured = [one for group in groups for one in group.measured]
+    graded = [one for group in groups for one in group.graded]
     trials = sum(len(group.trials) for group in groups)
     return {
         "trials": trials,
-        "graded": len(measured),
-        "masked": trials - len(measured),
-        "reward_mean": fmean(one.reward or 0.0 for one in measured) if measured else None,
+        "graded": len(graded),
+        "masked": trials - len(graded),
+        "reward_mean": fmean(one.reward or 0.0 for one in graded) if graded else None,
     }
 
 
@@ -263,7 +263,7 @@ def breakdown(groups: Sequence[Group]) -> dict[str, float]:
         graded: dict[str, list[Trial]] = {}
         for name, one in zip(named, trials, strict=True):
             if name is not None:
-                graded.setdefault(name, []).extend([one] if one.measured else [])
+                graded.setdefault(name, []).extend([one] if one.graded else [])
         if len(graded) < 2:
             continue
         for name, kept in graded.items():
@@ -284,7 +284,7 @@ def request(job: str, trial: Trial, item: Record) -> dict[str, Any]:
         "completion_tokens": len(item.completion_token_ids),
         "stop_reason": item.stop_reason,
         "sample_ms": round(float(item.sample_ms), 1),
-        "weights": item.served,
+        "weights": item.weights,
         "request_id": item.request_id,
         "bridged": item.bridged,
         "error": item.error,

@@ -104,7 +104,7 @@ class HarborEngine:
         self.sandbox = rollout.sandbox
         self.jobs_dir = Path(rollout.jobs_dir)
         self.setup_timeout, self.timeout = rollout.setup_timeout, rollout.timeout
-        #: The run's record, which names each job of a rollout and keeps its rows.
+        #: The run's logs, which name each job of a rollout and keep its rows.
         self.logs = logs
         self.env, self.kwargs = dict(env or {}), dict(kwargs or {})
         self.secrets = Secrets() if secrets is None else secrets
@@ -241,7 +241,7 @@ class HarborEngine:
                 else Records(recorded.get(trial.name) or [])
             )
         judge(job)
-        self.progress.done(job.name, masked=sum(not one.measured for one in job.trials))
+        self.progress.done(job.name, masked=sum(not one.graded for one in job.trials))
         return job
 
     def close(self) -> None:
@@ -253,7 +253,7 @@ class HarborEngine:
         if not harness.agent.strip():
             raise ValueError(
                 "name the harness under `[agent] harness`: Harbor reads an unnamed agent "
-                "as its oracle, which runs the task's reference solution instead of the policy"
+                "as its oracle, which runs the task's reference solution instead of the agent"
             )
         version = harness.version
         fields: dict[str, Any] = {

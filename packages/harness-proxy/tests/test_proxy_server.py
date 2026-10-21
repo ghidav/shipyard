@@ -67,7 +67,7 @@ async def test_a_request_is_served_and_recorded_under_its_trial() -> None:
     assert record.prompt_token_ids == ids("go")
     assert record.requested_model == "gpt-oss-20b"
     assert len(record.inference_logprobs) == len(record.completion_token_ids)
-    assert record.served is None and record.error is None and record.bridged is False
+    assert record.weights is None and record.error is None and record.bridged is False
     assert record.seq == 1 and record.sampling_params["temperature"] == 1.0
 
 
@@ -128,7 +128,7 @@ async def test_swap_changes_what_is_served_and_every_record_says_who_answered() 
         assert answered.json()["model"] == "tinker://run/sampler_weights/step-1"
         await only(started).swap(None)
         assert (await ask(started, "t")).json()["choices"][0]["message"]["content"] == "base"
-        assert [r.served for r in only(started).records_for("t")] == [
+        assert [r.weights for r in only(started).records_for("t")] == [
             None,
             "tinker://run/sampler_weights/step-1",
             None,
@@ -139,7 +139,7 @@ async def test_swap_changes_what_is_served_and_every_record_says_who_answered() 
 async def test_a_path_given_before_start_is_what_start_serves() -> None:
     async with server(by_path=by_path, weights="tinker://w/step-7") as started:
         assert (await ask(started, "t")).json()["choices"][0]["message"]["content"] == "step-7"
-        assert only(started).records_for("t")[0].served == "tinker://w/step-7"
+        assert only(started).records_for("t")[0].weights == "tinker://w/step-7"
 
 
 async def test_a_bare_name_is_not_a_path() -> None:
@@ -149,7 +149,7 @@ async def test_a_bare_name_is_not_a_path() -> None:
 
 
 async def test_a_record_is_stamped_with_the_weights_that_answered_it() -> None:
-    """The served path is read before the sample is awaited, so a swap mid-flight does not
+    """The weights are read before the sample is awaited, so a swap mid-flight does not
     change the record's stamp."""
 
     class Swapping:
@@ -158,19 +158,19 @@ async def test_a_record_is_stamped_with_the_weights_that_answered_it() -> None:
 
         async def sample_async(self, **_: Any) -> Any:
             assert self.recorder is not None
-            self.recorder.client, self.recorder.served = object(), "tinker://intruder/step-9"
+            self.recorder.client, self.recorder.weights = object(), "tinker://intruder/step-9"
             return SimpleNamespace(
                 sequences=[SimpleNamespace(tokens=[3], logprobs=[-0.1], stop_reason="stop")],
                 prompt_cache_hit_tokens=0,
             )
 
     swapping = Swapping()
-    recorder = Recorder(swapping, served="tinker://mine/step-1")
+    recorder = Recorder(swapping, weights="tinker://mine/step-1")
     swapping.recorder = recorder
     prompt = Prompt(tinker.ModelInput.from_ints([1, 2]))
     await recorder.sample(Caller(trial="t-1"), prompt, tinker.SamplingParams())
     (record,) = recorder.take("t-1")
-    assert record.served == "tinker://mine/step-1"
+    assert record.weights == "tinker://mine/step-1"
 
 
 # --------------------------------------------------------------- the run's parameters
@@ -252,7 +252,7 @@ async def test_the_control_route_opens_to_the_control_token_and_not_the_harnesse
         back = await control(started, None)
         assert back.status_code == 200 and back.json() == {"serving": None}
         assert (await ask(started, "t")).json()["choices"][0]["message"]["content"] == "base"
-        assert [r.served for r in only(started).records_for("t")] == ["tinker://w/step-1", None]
+        assert [r.weights for r in only(started).records_for("t")] == ["tinker://w/step-1", None]
 
 
 async def test_the_control_route_refuses_what_is_not_a_path() -> None:

@@ -151,7 +151,7 @@ async def test_swap_goes_through_the_control_route_and_changes_what_answers() ->
         assert answered.json()["choices"][0]["message"]["content"] == "step-3"
         await proxy.swap(None)
         assert (await ask(started, "t")).json()["choices"][0]["message"]["content"] == "base"
-        assert [r.served for r in only(started).records_for("t")] == [
+        assert [r.weights for r in only(started).records_for("t")] == [
             "tinker://run/sampler_weights/step-3",
             None,
         ]

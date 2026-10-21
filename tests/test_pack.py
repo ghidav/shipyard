@@ -66,12 +66,12 @@ def _written(sequence: Sequence) -> list[int]:
 
 
 def test_grouped_gives_a_measured_trial_its_chains_and_any_other_trial_none() -> None:
-    measured = _trial(*_tool_loop())
+    graded = _trial(*_tool_loop())
     masked = replace(_trial(*_tool_loop()), verdict=Verdict(None, ENV_ERROR, None))
     provided = Trial("j", Path("t"), harness("pi"), Path("t"), verdict=Verdict(1.0, None, None))
-    grouped([measured, masked, provided])
-    [found] = measured.sequences
-    assert found.trial is measured and found.targets == (3, 4, 6, 9, 10)
+    grouped([graded, masked, provided])
+    [found] = graded.sequences
+    assert found.trial is graded and found.targets == (3, 4, 6, 9, 10)
     assert _written(found) == [*C1, *C2, *C3]
     assert masked.sequences == [], "a masked trial keeps no sequences"
     assert provided.sequences == [], "a provider's trial: the proxy recorded nothing to train on"

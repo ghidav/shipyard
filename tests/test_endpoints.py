@@ -1,4 +1,4 @@
-"""Tests for `shipyard.models.endpoints`: the run's proxy, which the trained policy's harnesses
+"""Tests for `shipyard.models.endpoints`: the run's proxy, which the trained agent's harnesses
 call, and a provider's model, which code asks through LiteLLM."""
 
 from __future__ import annotations
@@ -118,7 +118,7 @@ def test_the_agents_lane_takes_the_rollout_knobs_and_its_sessions_tags(tmp_path:
         "max_context": 32768,
         "fill_context": True,
         "metadata": {"shipyard_run": "dapo__abc"},
-    }, "a checkpoint is not served from the start: the trained policy points the proxy next"
+    }, "a checkpoint is not served from the start: the trained agent points the proxy next"
     bare = agent(served(), tmp_path).document
     assert "renderer" not in bare and "max_context" not in bare and "weights" not in bare
     assert bare["max_tokens"] == 8192
@@ -136,7 +136,7 @@ def test_a_lanes_tokens_are_billed_as_the_client_it_serves_was_made(
     assert held.provider == "tinker", "fixed when the client was made"
     held.opened = TinkerClient(MODEL, service=FakeService())
     assert (held.provider, held.kind) == ("tinker@api.fireworks.ai", "tinker"), "named by kind"
-    assert ProviderEndpoint(MODEL, "anthropic").kind == "provider"
+    assert ProviderEndpoint(MODEL, "anthropic").kind == "api"
 
 
 # ------------------------------------------------------------------- open and close
@@ -269,22 +269,22 @@ async def test_a_two_trial_job_is_dialled_and_recorded_under_two_names(
 async def test_records_served_from_weights_the_run_did_not_point_at_are_refused(
     fake: FakeProxy, tmp_path: Path
 ) -> None:
-    fake.answers = {"alpha": [made(served="tinker://theirs/step-5")]}
+    fake.answers = {"alpha": [made(weights="tinker://theirs/step-5")]}
     held = agent(served(), tmp_path)
     await held.proxy.open()
     with pytest.raises(ValueError, match="re-pointed"):
         await held.record("j", trials(tmp_path, "alpha"))
     await held.serve("tinker://w/step-2")
     fake.answers = {
-        "alpha": [made(served="tinker://w/step-2")],
-        "beta": [made(served="tinker://intruder/step-9")],
+        "alpha": [made(weights="tinker://w/step-2")],
+        "beta": [made(weights="tinker://intruder/step-9")],
     }
     with pytest.raises(ValueError, match="intruder"):
         await held.record("j", trials(tmp_path, "alpha", "beta"))
     assert len(await held.record("j", trials(tmp_path, "alpha"))) == 1
-    answered_by_ours("j", {"t": [made(served=None)]}, None, lane=AGENT)
+    answered_by_ours("j", {"t": [made(weights=None)]}, None, lane=AGENT)
     with pytest.raises(ValueError, match="in lane agent, and the run pointed that lane at None"):
-        answered_by_ours("j", {"t": [made(served="tinker://x/step-1")]}, None, lane=AGENT)
+        answered_by_ours("j", {"t": [made(weights="tinker://x/step-1")]}, None, lane=AGENT)
 
 
 async def test_a_fetch_that_fails_fails_the_job_rather_than_masking_a_trial(

@@ -76,7 +76,7 @@ async def test_a_together_proxy_samples_the_runs_session_and_records_as_on_tinke
         assert (await control(started, "tinker://run/weights")).status_code == 400
         await ask(started, "t1")
         first, second = only(started).records_for("t1")
-    assert (first.served, second.served) == (None, "together://s1/sample-1")
+    assert (first.weights, second.weights) == (None, "together://s1/sample-1")
     assert first.completion_token_ids == ids("hi") and first.inference_logprobs == (-0.5, -0.5)
     assert first.cached_tokens == 2 and first.stop_reason == "stop"
     assert session.detached, "the proxy lets the session go and leaves it to the run"

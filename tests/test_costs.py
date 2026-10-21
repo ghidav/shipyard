@@ -13,7 +13,7 @@ import pytest
 from shipyard.groups import Trial
 from shipyard.jobs.harnesses import harness
 from shipyard.records import Records
-from shipyard.run.costs import Costs, billed_by, reported, sampled, sandbox_seconds
+from shipyard.run.costs import Costs, billed_by, billed_tokens, reported, sandbox_seconds
 from tests.fakes import made, write_result
 
 
@@ -63,11 +63,11 @@ def test_sampled_adds_up_each_trials_records_as_the_endpoints_model(tmp_path: Pa
         graded.name: [made("one", "ok", seq=1, bridged=True)],
         gone.name: [made("go", error="context", seq=1), made("go", "fine", seq=2, cached=1)],
     }
-    tokens, noted = sampled(_trials(graded, gone, records=records), "tinker", "Qwen/Qwen3-8B")
+    tokens, noted = billed_tokens(_trials(graded, gone, records=records), "tinker", "Qwen/Qwen3-8B")
     assert tokens == {"tinker": {"Qwen/Qwen3-8B": {"prefill": 3 + 1, "cache": 1, "sample": 6}}}
     assert noted == {"turned_away": 1, "bridged": 1}
     empty = _trials(gone, records={})
-    assert sampled(empty, "tinker", "m") == ({}, {"turned_away": 0, "bridged": 0})
+    assert billed_tokens(empty, "tinker", "m") == ({}, {"turned_away": 0, "bridged": 0})
 
 
 def test_billed_by_needs_every_trial_that_recorded_a_provider_to_agree(tmp_path: Path) -> None:

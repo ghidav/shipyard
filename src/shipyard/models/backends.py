@@ -46,8 +46,8 @@ class Saved:
     """A checkpoint `Session.save` made: its training state, its weights for sampling if kept,
     and how long both live, None for good."""
 
-    state: str
-    sampler: str | None
+    training_state: str
+    sampler_weights: str | None
     ttl_hours: float | None
 
 
@@ -85,7 +85,7 @@ class Sampling:
 
     @property
     def budget(self) -> int | None:
-        """Most tokens one rollout may sample, as the proxy reports it for its lane."""
+        """Most tokens one trial may sample, as the proxy reports it for its lane."""
         return self.endpoint.budget if self.endpoint is not None else None
 
     async def __aenter__(self) -> Sampling:
@@ -120,18 +120,18 @@ class Sampling:
         if service is not None:
             await finished(service, *ended(failed))
 
-    async def score(self, sequences: Values[Sequence]) -> list[list[float]]:
+    async def logprobs(self, sequences: Values[Sequence]) -> list[list[float]]:
         """Return the logprob at each target of each sequence, through the sampling client."""
         if self.sampler is None:
-            raise RuntimeError("this model cannot score yet: it opens when the run starts")
+            raise RuntimeError("this model gives no logprobs yet: it opens when the run starts")
         found, tokens = await sampled(self.sampler, sequences)
         self.spend(self.provider or UNKNOWN, self.model or UNKNOWN, **tokens)
         return found
 
 
-class Provider:
+class API:
     """A provider's model, which a harness calls with its own credentials when `rollout` runs
-    it. It cannot score."""
+    it. It gives no logprobs."""
 
     def __init__(self, model: str, provider: str, spend: Spend) -> None:
         self.model, self.provider, self.spend = model, provider, spend
@@ -140,10 +140,8 @@ class Provider:
         #: The provider's limits apply, not a budget of the run's.
         self.budget: int | None = None
 
-    async def score(self, sequences: Values[Sequence]) -> list[list[float]]:
-        raise RuntimeError(
-            f"this model cannot score: {self.provider}'s model gives no logprobs of a sequence"
-        )
+    async def logprobs(self, sequences: Values[Sequence]) -> list[list[float]]:
+        raise RuntimeError(f"{self.provider}'s model gives no logprobs of a sequence")
 
 
 class Session:
@@ -159,7 +157,7 @@ class Session:
         lane: LaneEndpoint,
         *,
         trains: bool = True,
-        weights: str | None = None,
+        training_state: str | None = None,
     ) -> None:
         self.client: Client = client_for(config, directory, trains=trains)
         #: Its lane in the run's proxy, which its harnesses call.
@@ -170,8 +168,8 @@ class Session:
         #: Hours a checkpoint not kept for good lives.
         self.ttl_hours = config.checkpoints.ttl_hours
         #: The training state the session opens on, from the checkpoint a run resumes from;
-        #: None opens the initial weights.
-        self.weights = weights
+        #: None opens the model's own weights.
+        self.training_state = training_state
 
     @property
     def provider(self) -> str:
@@ -189,7 +187,7 @@ class Session:
 
     @property
     def budget(self) -> int | None:
-        """Most tokens one rollout may sample, as the proxy reports it once open."""
+        """Most tokens one trial may sample, as the proxy reports it once open."""
         return self.endpoint.budget
 
     async def __aenter__(self) -> Session:
@@ -197,8 +195,8 @@ class Session:
         samples it through; the proxy starts once every session has opened."""
         try:
             await self.client.open()
-            if self.weights is not None:
-                await self.client.load_state(self.weights)
+            if self.training_state is not None:
+                await self.client.load_state(self.training_state)
             self.endpoint.backend = await self.client.serving()
         except BaseException as failed:
             await self.__aexit__(type(failed), failed, failed.__traceback__)
@@ -214,7 +212,7 @@ class Session:
         """Finish the session with how the run ended."""
         await self.client.close(*ended(failed))
 
-    async def score(self, sequences: Values[Sequence]) -> list[list[float]]:
+    async def logprobs(self, sequences: Values[Sequence]) -> list[list[float]]:
         """Return the agent's logprob at each target of each sequence, as its client scores
         it, and file the tokens that took."""
         found, tokens = await self.client.compute_logprobs(sequences)
@@ -270,11 +268,11 @@ class Session:
         ttl = None if hours is None else int(hours * SECONDS_PER_HOUR)
         if not keep:
             return Saved(await self.client.save_state(tag, ttl_seconds=ttl), None, hours)
-        state, weights = await asyncio.gather(
+        training_state, sampler_weights = await asyncio.gather(
             self.client.save_state(tag, ttl_seconds=ttl),
             self.client.save_weights_for_sampler(tag, ttl_seconds=ttl),
         )
-        return Saved(state, weights, hours)
+        return Saved(training_state, sampler_weights, hours)
 
     def count(self, **tokens: int) -> None:
         """File tokens the agent spent, by kind, in the run's costs."""
@@ -282,7 +280,7 @@ class Session:
 
 
 #: What a model runs on, once the run binds it.
-Backend = Session | Sampling | Provider
+Backend = Session | Sampling | API
 
 
 def ended(failed: BaseException | None) -> tuple[str, str | None]:
@@ -309,7 +307,7 @@ class Connected:
         self._open: AsyncExitStack | None = None
 
     async def __aenter__(self) -> Connected:
-        """Open the other models first, so a model the run cannot score with refuses the run
+        """Open the other models first, so a model the run cannot get logprobs from refuses the run
         before the agent's GPUs start; then the agent's session, then the proxy, which needs
         every lane's base model and session; then serve the agent's starting weights. A
         failure closes what opened, the proxy first."""
@@ -343,7 +341,7 @@ def connect(
     held: Values[tuple[str, Model]],
     spend: Callable[..., None],
     *,
-    weights: str | None = None,
+    training_state: str | None = None,
 ) -> Connected:
     """Give each model the trainer holds its backend, by its provider, the agent first, each
     filing its spend under its role. Raise `ValueError` for a model the run cannot train or
@@ -354,7 +352,7 @@ def connect(
         why = f"{given} serves it" if given not in CLIENTS else "it is weights saved for sampling"
         raise ValueError(
             f"the agent, {agent!r}, is training, and {why}, so no run can train it: a recipe "
-            "that never updates sets `self.policy.training = False`"
+            "that never updates sets `self.agent.training = False`"
         )
     for named, one in others:
         if one.training:
@@ -383,27 +381,32 @@ def connect(
             max_context=rollout.max_context or None,
         )
         session = Session(
-            config, directory, partial(spend, role), lane, trains=agent.training, weights=weights
+            config,
+            directory,
+            partial(spend, role),
+            lane,
+            trains=agent.training,
+            training_state=training_state,
         )
         # The lane bills what it serves as the session does.
         lane.opened = session
         agent.bind(session, reader=config.agent.model, limit=budget)
     else:
         agent.bind(
-            Provider(agent.name, given, partial(spend, role)),
+            API(agent.name, given, partial(spend, role)),
             reader=config.agent.model,
             limit=budget,
         )
     hosted: list[Sampling] = []
     for role, one in others:
-        backend: Sampling | Provider
+        backend: Sampling | API
         if one.provider == TINKER:
             backend = Sampling(one.name, partial(spend, role), role=role, run=run, reader=reader)
             if proxy is not None:
                 backend.endpoint = proxy.lane(lane_of(role), one.name, opened=backend)
             hosted.append(backend)
         else:
-            backend = Provider(one.name, one.provider, partial(spend, role))
+            backend = API(one.name, one.provider, partial(spend, role))
         one.bind(backend, reader=config.agent.model, limit=budget)
     return Connected(session, hosted, proxy)
 

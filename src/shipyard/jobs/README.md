@@ -13,7 +13,7 @@ flowchart LR
     judge -->|verdicts| rollout
 ```
 
-| Module | Holds |
+| File | Holds |
 | --- | --- |
 | `engine.py` | `HarborEngine`: a rollout's jobs (`split`), each `Job`'s trials run concurrently with Harbor, their records, and the groups; `Endpoint`, what a trial's harness dials |
 | `admit.py` | `Verdict`, `judge`: a trial's reward, or why it is masked |

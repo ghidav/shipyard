@@ -1,4 +1,4 @@
-"""Tests for the messages the run and the proxy exchange, each read back as it was written:
+"""Tests for the messages between the run and the proxy, each read back as it was written:
 a trial's address, `/healthz`, the weights switch, a records fetch, and serve's startup lines."""
 
 from __future__ import annotations

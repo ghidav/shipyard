@@ -1,10 +1,11 @@
-"""Tests for proxy request handling: SDK headers on records, and replay of retried requests."""
+"""Tests for the headers an SDK sends with a call: they land on its record, and a retried call
+replays the first reply."""
 
 from __future__ import annotations
 
 from proxies import FakeSampler, ask, only, server
 
-# ------------------------------------------------------------------- the exchange
+# ---------------------------------------------------------------- the SDK's headers
 
 
 async def test_the_headers_the_sdk_sends_land_on_the_record() -> None:

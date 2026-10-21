@@ -92,12 +92,12 @@ async def test_update_refuses_a_misspelled_setting_before_anything_is_scored_or_
 
 
 class Imitating(Trainer):
-    """The base step trained with `cross_entropy`: each measured trial's tokens at weight 1."""
+    """The base step trained with `cross_entropy`: each graded trial's tokens at weight 1."""
 
     async def step(self) -> None:
         groups = await self.rollout(self.draw())
         for group in groups:
-            for trial in group.measured:
+            for trial in group.graded:
                 trial.set_advantage(1.0)
         await self.update(groups, loss="cross_entropy")
 

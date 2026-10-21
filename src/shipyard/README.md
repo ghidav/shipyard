@@ -1,6 +1,6 @@
 # shipyard
 
-Recipes are implemented as subclasses of `Trainer`. Each step calls `step`, made of four primitives: `draw`, `rollout`, `score` and `update`. A recipe usually overrides `score`, `step`, or both. The trainer does the rest: it binds the models, trains the agent (unless a recipe that never updates sets `self.policy.training = False`), opens the session and the proxy, evaluates, checkpoints, logs and resumes.
+Recipes are implemented as subclasses of `Trainer`. Each step calls `step`, made of four primitives: `draw`, `rollout`, `score` and `update`. A recipe usually overrides `score`, `step`, or both. The trainer does the rest: it binds the models, trains the agent (unless a recipe that never updates sets `self.agent.training = False`), opens the session and the proxy, evaluates, checkpoints, logs and resumes.
 
 ```mermaid
 flowchart LR
@@ -10,7 +10,7 @@ flowchart LR
     update -.->|new weights| rollout
 ```
 
-| Module | Holds |
+| File | Holds |
 | --- | --- |
 | `trainer.py` | `Trainer`: the four primitives, the default `step`, the run loop, evaluation and checkpoints |
 | `model.py` | `Model`, a model the trainer rolls out or scores: what it can do follows from what it is, and `train=True` has the run train it |
@@ -19,6 +19,6 @@ flowchart LR
 | `state.py` | `State`: what a checkpoint saves and a resume restores |
 | `config.py` | `Blueprint`, `Recipe`, `load`: a `run.toml`, checked against the recipe |
 | `cli.py` | `shipyard init`, `run` and `resume` |
-| [`models/`](models/README.md) | the policies' backends, the training clients and the trial proxy |
+| [`models/`](models/README.md) | the models' backends, the training clients and the run's proxy |
 | [`jobs/`](jobs/README.md) | Harbor jobs, harnesses, secrets and verdicts |
-| [`run/`](run/README.md) | the run's directory, streams, costs and tasks |
+| [`run/`](run/README.md) | the run's directory: its logs, costs and checkpoints; and the tasks |

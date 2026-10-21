@@ -425,7 +425,7 @@ async def _roll(
     class Rolling(Trainer):
         def __init__(self, config: Blueprint, directory: Path) -> None:
             super().__init__(config, directory)
-            self.policy.training = update  # a rollout alone trains nothing
+            self.agent.training = update  # a rollout alone trains nothing
 
         async def step(self) -> None:
             for tasks, named in jobs:
@@ -541,7 +541,7 @@ async def _two(tmp_path: Path, text: str) -> tuple[Path, list[Group]]:
     class Rolling(Trainer):
         def __init__(self, config: Blueprint, directory: Path) -> None:
             super().__init__(config, directory)
-            self.policy.training = False
+            self.agent.training = False
 
         async def step(self) -> None:
             found.extend(await self.rollout(_batch(tmp_path, "alpha", "beta")))

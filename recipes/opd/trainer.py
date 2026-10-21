@@ -1,5 +1,5 @@
 """On-policy distillation (Agarwal et al., arXiv 2306.13649): each token's advantage is how much
-more likely the teacher finds it than the policy does. The rewards are logged, not trained on."""
+more likely the teacher finds it than the agent does. The rewards are logged, not trained on."""
 
 from __future__ import annotations
 
@@ -21,10 +21,10 @@ class OPDTrainer(Trainer):
         self.teacher = Model(self.recipe.teacher)
 
     async def score(self, groups: Sequence[Group]) -> None:
-        seqs = [s for g in groups for t in g.measured for s in t.sequences]
+        seqs = [s for g in groups for t in g.graded for s in t.sequences]
         if not seqs:
             return
-        ours, theirs = await asyncio.gather(self.policy.logprobs(seqs), self.teacher.logprobs(seqs))
+        ours, theirs = await asyncio.gather(self.agent.logprobs(seqs), self.teacher.logprobs(seqs))
         for seq, ref, taught in zip(seqs, ours, theirs, strict=True):
             seq.advantages = taught - ref
         self.metrics["teacher_kl"] = fmean(

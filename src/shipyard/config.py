@@ -37,11 +37,11 @@ class _Table(BaseModel):
 
 
 class Agent(_Table):
-    """The `[agent]` table: the run's own policy, and the harnesses that drive it."""
+    """The `[agent]` table: the run's own model, and the harnesses that drive it."""
 
     model: str
-    #: Who serves the model: `tinker` or `together`, which the run trains, or a provider such
-    #: as `anthropic`.
+    #: Who serves the model: `tinker` or `together`, which the run can train, or another
+    #: provider, such as `anthropic`, whose API it only calls.
     provider: str = "tinker"
     #: The checkpoint the agent starts from: on Tinker, a training state (`.../weights/...`)
     #: for a run that trains it, weights saved for sampling (`.../sampler_weights/...`) for one
@@ -151,7 +151,7 @@ class Recipe(_Table):
     steps: int = Field(ge=1)
     #: The rate `update` trains the agent at, warmed up over `warmup` updates. A run that
     #: trains its agent needs it; a recipe that never updates, such as a search over the
-    #: modules, sets `self.policy.training = False` and leaves it out.
+    #: modules, sets `self.agent.training = False` and leaves it out.
     learning_rate: float | None = Field(default=None, gt=0)
     #: Parts each update is split into, by prompt: one optimizer step each.
     substeps: int = Field(default=1, ge=1)
@@ -162,7 +162,7 @@ class Recipe(_Table):
     lora_rank: int | None = Field(default=None, ge=1)
     #: With `[agent] from_checkpoint`, also restore its optimizer state.
     restore_optimizer: bool = False
-    #: Grade a rollout Harbor cut at its timeout by the verifier's reward, as any other. By
+    #: Grade a trial Harbor cut at its timeout by the verifier's reward, as any other. By
     #: default it is masked, as DAPO filters answers cut at their length: its transcript ends
     #: where the clock did.
     grade_timeouts: bool = False

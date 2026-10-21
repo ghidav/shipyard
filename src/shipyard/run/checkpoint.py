@@ -19,9 +19,9 @@ class Checkpoint:
     #: The trainer's state, a path relative to the run directory; None for a row that has none.
     state: str | None = None
     #: Each trained model's training state, by role; none until an update moved its weights.
-    weights: dict[str, str] = field(default_factory=dict)
-    #: Each trained model's weights saved for sampling, by role, when the checkpoint kept them.
-    sampler: dict[str, str] = field(default_factory=dict)
+    training_state: dict[str, str] = field(default_factory=dict)
+    #: Each trained model's sampler weights, by role, when the checkpoint kept them.
+    sampler_weights: dict[str, str] = field(default_factory=dict)
     #: Hours its saves live: None for good, or when it saved no weights.
     ttl_hours: float | None = None
 
@@ -33,8 +33,8 @@ class Checkpoint:
         step: int,
         state: Mapping[str, Any],
         *,
-        weights: Mapping[str, str] | None = None,
-        sampler: Mapping[str, str] | None = None,
+        training_state: Mapping[str, str] | None = None,
+        sampler_weights: Mapping[str, str] | None = None,
         ttl_hours: float | None = None,
     ) -> Checkpoint:
         """Write the trainer's `state` into the run in `directory` and add the checkpoint's row;
@@ -43,8 +43,8 @@ class Checkpoint:
             tag,
             step,
             f"{files.STATES}/step-{step}.json",
-            dict(weights or {}),
-            dict(sampler or {}),
+            dict(training_state or {}),
+            dict(sampler_weights or {}),
             ttl_hours,
         )
         files.write_json(Path(directory) / made.state, dict(state))  # type: ignore[operator]
@@ -53,14 +53,15 @@ class Checkpoint:
 
     @classmethod
     def of(cls, row: Mapping[str, Any]) -> Checkpoint:
-        """Read a `checkpoints.jsonl` row. A row written before saves were named by role names
-        the agent's alone."""
+        """Read a `checkpoints.jsonl` row, of any age: one written before saves were named by role
+        names the agent's alone, and one written before they were named for what they hold
+        calls them `weights` and `sampler`."""
         return cls(
             row["tag"],
             row["step"],
             row.get("state"),
-            _by_role(row.get("weights")),
-            _by_role(row.get("sampler")),
+            _by_role(row.get("training_state", row.get("weights"))),
+            _by_role(row.get("sampler_weights", row.get("sampler"))),
             row.get("ttl_hours"),
         )
 
@@ -70,9 +71,9 @@ class Checkpoint:
             "tag": self.tag,
             "step": self.step,
             "state": self.state,
-            "weights": dict(self.weights),
-            "sampler": dict(self.sampler),
-            **({"ttl_hours": self.ttl_hours} if self.weights else {}),
+            "training_state": dict(self.training_state),
+            "sampler_weights": dict(self.sampler_weights),
+            **({"ttl_hours": self.ttl_hours} if self.training_state else {}),
         }
 
     def saved_state(self, run: Path) -> dict[str, Any]:

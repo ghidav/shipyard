@@ -22,7 +22,7 @@ Tokens = dict[str, dict[str, dict[str, int]]]
 
 
 class Spend(Protocol):
-    """Files a policy's spend, `spend(provider, model, **counts)`, under its role in the costs."""
+    """Files a model's spend, `spend(provider, model, **counts)`, under its role in the costs."""
 
     def __call__(self, provider: str, model: str, /, **counts: int) -> None: ...
 
@@ -97,7 +97,9 @@ class Costs:
         return costs
 
 
-def sampled(trials: Sequence[Trial], provider: str, model: str) -> tuple[Tokens, dict[str, int]]:
+def billed_tokens(
+    trials: Sequence[Trial], provider: str, model: str
+) -> tuple[Tokens, dict[str, int]]:
     """Count a served job's tokens from its records, and its refusals and bridged prompts."""
     costs = Costs()
     for one in trials:

@@ -58,9 +58,9 @@ async def test_the_proxy_starts_with_each_lane_whole_and_a_trial_dials_its_own(
     assert (lane.provider, lane.model, lane.told) == ("tinker", "Qwen/Qwen3-32B", WEIGHTS)
     await lane.serve("tinker://r/sampler_weights/step-2")
     assert fake.lane_swaps == [("teacher", "tinker://r/sampler_weights/step-2")]
-    fake.default = [made(served="tinker://r/sampler_weights/step-2")]
+    fake.default = [made(weights="tinker://r/sampler_weights/step-2")]
     assert await lane.record("j", [trial]), "answered by the lane's own weights"
-    fake.default = [made(served="tinker://w/sample-1")]
+    fake.default = [made(weights="tinker://w/sample-1")]
     with pytest.raises(ValueError, match="in lane teacher, and the run pointed that lane"):
         await lane.record("j", [trial])
     with pytest.raises(ValueError, match="two models would serve in the proxy's lane 'teacher'"):

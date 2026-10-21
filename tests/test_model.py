@@ -38,12 +38,12 @@ class Scored(Trainer):
 
     def __init__(self, config: Blueprint, directory: Path) -> None:
         super().__init__(config, directory)
-        self.policy.training = False
+        self.agent.training = False
 
     async def step(self) -> None:
         groups = await self.rollout(self.draw())
-        seqs = [s for g in groups for t in g.measured for s in t.sequences]
-        scored = await self.policy.logprobs(seqs)
+        seqs = [s for g in groups for t in g.graded for s in t.sequences]
+        scored = await self.agent.logprobs(seqs)
         self.metrics["agent_logprob"] = float(scored[0].mean())  # type: ignore[union-attr]
 
 
@@ -80,7 +80,7 @@ async def test_an_agent_the_run_does_not_train_is_served_and_scored_as_it_is(
     assert {(one["role"], one["model"]) for one in usage} == {("agent", MODEL)}
     assert "train" not in files.read_json(directory / files.COSTS)["tokens"]["tinker"][MODEL]
     saved = list(files.read(directory / files.CHECKPOINTS))
-    assert [c["weights"] for c in saved] == [{}, {}], "nothing moved, so nothing to save"
+    assert [c["training_state"] for c in saved] == [{}, {}], "nothing moved, so nothing to save"
 
 
 async def test_an_agent_served_as_it_is_starts_from_weights_saved_for_sampling(
@@ -107,10 +107,10 @@ async def test_what_the_run_cannot_train_is_refused_before_anything_opens(
 
     class Late(Trainer):
         async def step(self) -> None:
-            self.policy.training = False
+            self.agent.training = False
 
     claude = {'model = "Qwen/Qwen3-8B"': 'model = "claude-sonnet-5-5"\nprovider = "anthropic"'}
-    with pytest.raises(ValueError, match="anthropic serves it, .* `self.policy.training = False`"):
+    with pytest.raises(ValueError, match="anthropic serves it, .* `self.agent.training = False`"):
         await train(blueprint(tmp_path, **ONE_STEP, **claude), tmp_path / "runs")
     assert service.calls == [] and proxy.placed == [], "nothing opened"
     with pytest.raises(RuntimeError, match="already open: set `training` in the trainer's"):
@@ -142,7 +142,7 @@ def test_a_checkpoint_from_before_roles_restores_as_the_agents(
     trainer = Trainer(config, directory)
     old = {"tag": "step-1", "step": 1, "state": state, "weights": weights, "sampler": None}
     trainer.restore(directory, Checkpoint.of(old))
-    assert trainer.state.updates == {"agent": 1} and trainer._weights == weights
+    assert trainer.state.updates == {"agent": 1} and trainer._training_state == weights
     assert Trainer.State(updates=0).updates == {}  # type: ignore[arg-type]
 
 

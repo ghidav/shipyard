@@ -139,7 +139,7 @@ async def test_a_trainer_rolls_out_another_model_through_its_own_harness_under_i
     class Critiqued(Trainer):
         def __init__(self, config: Blueprint, directory: Path) -> None:
             super().__init__(config, directory)
-            self.policy.training = False
+            self.agent.training = False
             self.critic = Model("claude-sonnet-5-5", provider="anthropic")
             self.teacher = Model("Qwen/Qwen3-32B")
 
@@ -187,7 +187,7 @@ async def test_a_model_on_tinker_beside_a_providers_agent_is_served_by_the_runs_
     class Taught(Trainer):
         def __init__(self, config: Blueprint, directory: Path) -> None:
             super().__init__(config, directory)
-            self.policy.training = False
+            self.agent.training = False
             self.teacher = Model("Qwen/Qwen3-32B")
 
         async def step(self) -> None:

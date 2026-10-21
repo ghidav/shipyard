@@ -69,7 +69,7 @@ class Model:
 
     @property
     def budget(self) -> int | None:
-        """Most tokens one rollout may sample, when the model is served to rollouts."""
+        """Most tokens one trial may sample, when the model is served to rollouts."""
         return self._backend.budget if self._backend is not None else None
 
     @property
@@ -92,7 +92,7 @@ class Model:
             texts = [prefix] * len(read) if isinstance(prefix, str) else list(prefix)
             read = insert(sequences, texts, self._reader, self._limit())
         asked = [one for one in read if one is not None]
-        scored = iter(await backend.score(asked) if asked else [])
+        scored = iter(await backend.logprobs(asked) if asked else [])
         return [None if one is None else torch.tensor(next(scored)) for one in read]
 
     def _bound(self) -> Backend:

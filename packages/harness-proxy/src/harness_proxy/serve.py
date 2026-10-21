@@ -230,7 +230,7 @@ def tokens_from_env(environ: Mapping[str, str] = os.environ) -> tuple[str, str, 
 def parser(prog: str = "harness-proxy") -> argparse.ArgumentParser:
     made = argparse.ArgumentParser(
         prog=prog,
-        description="Serve a Tinker model to a harness in a sandbox, recording what it sampled.",
+        description="Serve a model on Tinker or Together to harnesses, recording what it sampled.",
     )
     made.add_argument(
         "--model",

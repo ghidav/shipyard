@@ -97,7 +97,7 @@ async def test_the_base_step_draws_rolls_out_scores_and_updates(
             "the sampler's -0.5, the trainer's -0.3"
         )
     saved = list(files.read(directory / files.CHECKPOINTS))
-    assert [(c["tag"], c["step"], c["weights"]) for c in saved] == [
+    assert [(c["tag"], c["step"], c["training_state"]) for c in saved] == [
         ("step-1", 1, {"agent": "tinker://fake/weights/step-1"}),
         ("step-2", 2, {"agent": "tinker://fake/weights/step-2"}),
         ("final", 2, {"agent": "tinker://fake/weights/final"}),
@@ -158,7 +158,7 @@ async def test_a_step_with_nothing_to_teach_takes_no_gradient(
     (row,) = rows(directory)
     assert row["trained"] is False and row["uniform"] == 2 and "sequences" not in row
     assert not any(c[0] in ("forward", "forward_backward") for c in service.client.calls)
-    saved = [c["weights"] for c in files.read(directory / files.CHECKPOINTS)]
+    saved = [c["training_state"] for c in files.read(directory / files.CHECKPOINTS)]
     assert saved == [{}, {}], "no update, so no weights to keep: the state alone"
 
 
@@ -377,7 +377,7 @@ async def test_the_gepa_example_searches_the_prompt_and_keeps_the_best(
     asked = {one["role"] for one in usage if one.get("provider") == "anthropic"}
     assert asked == {"reflector"}, "the reflector's spend is filed under its role"
     saved = list(files.read(directory / files.CHECKPOINTS))
-    assert [(c["tag"], c["weights"]) for c in saved] == [("step-1", {}), ("final", {})], (
+    assert [(c["tag"], c["training_state"]) for c in saved] == [("step-1", {}), ("final", {})], (
         "a search moves no weights, and saves the modules it found"
     )
     state = Trainer.State.model_validate(files.read_json(directory / saved[-1]["state"]))
@@ -484,7 +484,7 @@ async def test_a_run_that_moves_no_weights_saves_its_state_and_a_resume_goes_on_
     going = resumed(origin)
     assert going is not None
     directory, config, checkpoint = going
-    assert (checkpoint.tag, checkpoint.weights) == ("step-2", {}), "a state, no weights to save"
+    assert checkpoint.tag == "step-2" and checkpoint.training_state == {}, "a state alone"
     trainer = Noting(config, directory)
     trainer.restore(origin, checkpoint)
     assert (trainer.state.steps, trainer.state.drawn, len(trainer.state.seen)) == (2, 2, 4)
@@ -510,7 +510,7 @@ async def test_a_run_checkpoints_every_few_steps_and_saves_weights_once_updates_
     every = {"steps = 2": "steps = 3", "[recipe]": "[checkpoints]\nevery = 2\n\n[recipe]"}
     directory = await train(blueprint(tmp_path, **every), tmp_path / "runs")
     saved = list(files.read(directory / files.CHECKPOINTS))
-    assert [(c["tag"], c["step"], c["weights"]) for c in saved] == [
+    assert [(c["tag"], c["step"], c["training_state"]) for c in saved] == [
         ("step-2", 2, {}),
         ("final", 3, {}),
     ]
@@ -638,7 +638,7 @@ def test_the_recipe_table_holds_the_keys_its_trainer_declares_and_every_table_is
         "[recipe] steps: field required",
         "[rolout]: unknown table",
     }
-    # [agent] is the run's own policy: Tinker serves it, unless it names a provider.
+    # [agent] is the run's own model: Tinker serves it, unless it names a provider.
     assert load(blueprint(tmp_path)).agent.provider == "tinker"
     named = load(
         blueprint(tmp_path, **{'harness = "pi@0.85.1"': 'harness = "pi"\nprovider = "anthropic"'})
@@ -678,7 +678,7 @@ def test_the_run_makes_its_agent_and_finds_the_models_a_recipe_holds(
 ) -> None:
     directory, config = open_run(blueprint(tmp_path), root=tmp_path / "runs")
     trainer = Holding(config, directory)
-    agent = trainer.policy
+    agent = trainer.agent
     assert (agent.provider, agent.name) == ("tinker", MODEL)
     assert agent.training, "the run trains its agent unless its recipe says otherwise"
     held = trainer._held()
@@ -691,7 +691,7 @@ def test_the_run_makes_its_agent_and_finds_the_models_a_recipe_holds(
     assert all(one.endpoint is None for _, one in held), "nothing built yet"
     assert not any(one.training for _, one in held[1:]), "the run trains its agent alone"
     with pytest.raises(AttributeError):
-        trainer.policy = Model("Qwen/Qwen3-32B")  # type: ignore[misc]
+        trainer.agent = Model("Qwen/Qwen3-32B")  # type: ignore[misc]
 
 
 async def test_a_model_is_used_once_the_run_binds_it_to_what_it_runs_on(
@@ -699,7 +699,7 @@ async def test_a_model_is_used_once_the_run_binds_it_to_what_it_runs_on(
 ) -> None:
     directory, config = open_run(blueprint(tmp_path), root=tmp_path / "runs")
     trainer = Holding(config, directory)
-    agent, teacher = trainer.policy, trainer.teachers[0]
+    agent, teacher = trainer.agent, trainer.teachers[0]
     with pytest.raises(RuntimeError, match="not connected yet"):
         await agent.logprobs([])
     connected = connect(config, directory, trainer._held(), trainer.logs.spend)
@@ -726,14 +726,14 @@ async def test_a_providers_agent_is_rolled_out_by_its_harness_and_never_trained(
     trials = harbor(FakeTrials(default={"reward": 1.0, "tokens": (100, 40, 10)}))
     claude = {'model = "Qwen/Qwen3-8B"': 'model = "claude-sonnet-5-5"\nprovider = "anthropic"'}
     home = blueprint(tmp_path, **claude, **ONE_STEP)
-    with pytest.raises(ValueError, match="anthropic serves it, .* `self.policy.training = False`"):
+    with pytest.raises(ValueError, match="anthropic serves it, .* `self.agent.training = False`"):
         await train(home, tmp_path / "runs", Trainer)
     assert service.calls == [] and proxy.placed == [] and trials.configs == [], "nothing opened"
 
     class Measured(Trainer):
         def __init__(self, config: Blueprint, directory: Path) -> None:
             super().__init__(config, directory)
-            self.policy.training = False
+            self.agent.training = False
 
         async def step(self) -> None:
             groups = await self.rollout(self.draw())
@@ -745,13 +745,13 @@ async def test_a_providers_agent_is_rolled_out_by_its_harness_and_never_trained(
     named = [one.agent.model_name for one in trials.configs]
     assert named == ["anthropic/claude-sonnet-5-5"] * 4, "the harness calls the provider"
     [job] = list(files.read(directory / files.JOBS))
-    assert job["backend"] == "provider" and job["graded"] == 4
+    assert job["backend"] == "api" and job["graded"] == 4
     spent = files.read_json(directory / files.COSTS)["tokens"]
     assert spent == {
         "anthropic": {"claude-sonnet-5-5": {"prefill": 240, "cache": 160, "sample": 40}}
     }
     saved = list(files.read(directory / files.CHECKPOINTS))
-    assert [(c["tag"], c["weights"]) for c in saved] == [("step-1", {}), ("final", {})], (
+    assert [(c["tag"], c["training_state"]) for c in saved] == [("step-1", {}), ("final", {})], (
         "no weights to save, but a state to go on from"
     )
     (row,) = rows(directory)

@@ -22,19 +22,25 @@ def test_a_checkpoint_saves_the_state_beside_its_row(tmp_path: Path) -> None:
         "final",
         3,
         {"steps": 3},
-        weights={"agent": "tinker://w/final"},
-        sampler={"agent": "tinker://s/final"},
+        training_state={"agent": "tinker://w/final"},
+        sampler_weights={"agent": "tinker://s/final"},
     )
     rows = list(files.read(tmp_path / files.CHECKPOINTS))
     assert all(row.pop("at") for row in rows), "each row says when it was written"
     assert rows == [
-        {"tag": "step-2", "step": 2, "state": made.state, "weights": {}, "sampler": {}},
+        {
+            "tag": "step-2",
+            "step": 2,
+            "state": made.state,
+            "training_state": {},
+            "sampler_weights": {},
+        },
         {
             "tag": "final",
             "step": 3,
             "state": kept.state,
-            "weights": {"agent": "tinker://w/final"},
-            "sampler": {"agent": "tinker://s/final"},
+            "training_state": {"agent": "tinker://w/final"},
+            "sampler_weights": {"agent": "tinker://s/final"},
             "ttl_hours": None,
         },
     ], "how long saves live, once there are saves"
@@ -44,7 +50,8 @@ def test_a_checkpoint_saves_the_state_beside_its_row(tmp_path: Path) -> None:
 def test_a_row_from_before_saves_were_named_by_role_reads_as_the_agents() -> None:
     old = {"tag": "step-1", "step": 1, "weights": "tinker://w/1", "sampler": None}
     read = Checkpoint.of(old)
-    assert (read.state, read.weights, read.sampler) == (None, {"agent": "tinker://w/1"}, {})
+    assert read.state is None and read.sampler_weights == {}
+    assert read.training_state == {"agent": "tinker://w/1"}
     assert read.saved_state(Path("anywhere")) == {}, "no state to read"
 
 
