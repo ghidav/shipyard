@@ -7,26 +7,26 @@ Shipyard post-trains agents on Harbor tasks: a recipe runs a model through the h
 ### Runs
 
 **Recipe**:
-An algorithm written as a trainer that overrides parts of the step, together with the blueprint that runs it.
+An algorithm written as a trainer that writes the step, and the evaluation when the config has a test set, together with the config that runs it.
 _Avoid_: method, algorithm (what a recipe holds)
 
-**Blueprint**:
-Every setting of a run, in one file, checked against the recipe before anything opens.
-_Avoid_: config, settings
+**Config**:
+Every setting of a run, in its `run.toml`: the models it reaches, its data, how its trials run, and the recipe's own keys, such as its harnesses; checked against the recipe before anything opens.
+_Avoid_: blueprint, settings
 
 **Run**:
-One execution of a recipe on a blueprint, and the directory that records it.
+One execution of a recipe on a config, and the directory that records it.
 _Avoid_: experiment, job (a job is part of a rollout)
 
 **Step**:
-One turn of a run: draw a batch, roll it out, score its sequences, update the models in training.
+One turn of a run, as the recipe writes it: most draw a batch, roll it out, score its sequences, and update the models in training.
 _Avoid_: iteration, epoch
 
 **Draw**:
 Taking the next batch of tasks from the training dataset.
 
 **Rollout**:
-Running the agent on a batch of tasks, through each harness and renderer, and returning a group per task.
+Running a model on a batch of tasks at one harness and renderer, as one job, and returning a group per task. A recipe that wants several harnesses or renderers runs several rollouts.
 _Avoid_: rollout for a single trial (say trial)
 
 **Score**:
@@ -34,10 +34,13 @@ Giving each sequence its advantages, which is the part of the step most recipes 
 _Avoid_: score for a model's logprobs
 
 **Update**:
-One training call for each model in training, on the step's scored sequences.
+One training call on a model in training: its groups split into substeps at one learning rate, then its new weights served.
+
+**Substep**:
+One optimizer step of an update, on a share of its groups, whole groups each; the recipe sets how many.
 
 **Evaluation**:
-A rollout of the test dataset, every few steps, that nothing trains on.
+The recipe's rollouts of the test dataset, every few steps and after the last, that nothing trains on.
 _Avoid_: test (the dataset), validation
 
 **State**:
@@ -59,32 +62,40 @@ A Harbor task: an instruction, an environment, and the tests that grade an attem
 _Avoid_: problem, prompt (the prompt is a module)
 
 **Dataset**:
-A named set of tasks; a blueprint names one or more to train on and to test on.
+A named set of tasks; a config names one or more to train on and to test on.
 
 **Batch**:
 The tasks one step draws.
 _Avoid_: mini-batch (a share of an update)
 
 **Group size**:
-How many trials each task gets in a rollout, at each harness and renderer.
+How many trials each task gets in a rollout; a key of the recipe.
 _Avoid_: attempts, rollouts per task
 
 **Harness**:
-The agent program a trial runs, such as Claude Code or pi, at a pinned version; it calls the model as it would a provider's API.
+The agent program a trial runs, such as Claude Code or pi, at a pinned version, with the environment and keyword arguments it starts with; it calls the model as it would a provider's API. A recipe declares the harnesses it runs as keys of its own.
 _Avoid_: agent (the agent is the model), client
 
 **Renderer**:
-The way a model's conversation becomes tokens and back; one model may be served with several.
+The way a model's conversation becomes tokens and back; a model's table lists the ones its lane holds, and a rollout uses one of them.
 
 **Job**:
-A rollout's trials at one harness and renderer, run together in Harbor.
+A rollout's trials, run together in Harbor, and the row the run writes for them.
 
 **Trial**:
 One harness running one task once, in a sandbox, graded by the task's tests.
 _Avoid_: rollout, attempt, episode
 
+**Sandbox**:
+Where a trial runs: a container or VM started from its task's image, on this machine (Docker) or a provider's (Together, Modal); `[rollout] sandbox` names it.
+_Avoid_: environment (Harbor's class that drives one), container
+
+**Hooks**:
+Code a task carries to run outside its sandboxes at events of each of its trials, such as preparing an outside system the task uses before the agent starts and tearing it down once the trial is done.
+_Avoid_: callbacks, setup scripts
+
 **Group**:
-One task's trials in a rollout, at one renderer, whose rewards are compared with each other.
+One task's trials in a rollout, whose rewards are compared with each other.
 
 **Sequence**:
 One chain of the agent's calls within a trial, as the tokens it read and sampled, with an advantage on each sampled token; what an update trains on.
@@ -108,31 +119,31 @@ _Avoid_: measured, counted
 ### Models
 
 **Model**:
-A model the run reaches, held by the trainer under a role, which the run rolls out through harnesses or asks for logprobs.
+A model the run reaches, named in the config under a role, which the recipe rolls out through harnesses, asks for logprobs, or trains.
 _Avoid_: policy
 
 **Role**:
-The name a trainer holds a model under, such as agent, teacher or critic; each model's spend and saves are filed under it.
+The name the config gives a model, as `[models.<role>]`, such as agent, teacher or critic: the recipe reads the model by it, and its lane, spend and saves are filed under it.
 
 **Agent**:
-The run's own model: the one it rolls out and, unless the recipe says otherwise, trains.
+The role recipes give, by convention, to the model they roll out on the tasks; no role means more to the run than another.
 _Avoid_: policy, student, and agent for a harness (Harbor's usage)
 
 **Trainable**:
 Said of a model a run could train: a base model or training state on Tinker or Together, not sampler weights.
 
 **In training**:
-Said of a model this run trains; set by the recipe before the run starts.
+Said of a model the recipe trains: it marks it so in its `__init__`, before the run starts, and the run opens a training session for it. Any trainable model may be.
 
 **Provider**:
 Who serves a model and bills its tokens: Tinker or Together, which shipyard can train on, or an API such as Anthropic's, which it only calls.
 
 **Backend**:
-What a model runs on once the run binds it: a session on the agent's training service, a sampling session for another model on Tinker, or a provider's API.
+What a model runs on once the run binds it: its session on Tinker or Together, or a provider's API.
 _Avoid_: client (the training client is one part of a session), agent (every model has a backend, not only the agent)
 
 **Session**:
-The agent's connection to its provider's training service, which trains the agent or serves it as it is, and saves its training state.
+A model's connection to its provider's service on Tinker or Together, which trains it or serves it as it is, and saves its training state.
 _Avoid_: client
 
 **Training state**:
@@ -143,24 +154,32 @@ _Avoid_: weights (alone), checkpoint (a run's)
 A model's weights saved for sampling only: they can be served and scored, not trained further.
 _Avoid_: sampler (the service that samples), inference checkpoint
 
+**Sampler replica**:
+One of the copies of a model's sampler, the service that answers its calls; a model with more sampler replicas answers a crowded rollout faster.
+_Avoid_: generator (draws the run's tasks)
+
 ### The proxy
 
 **Proxy**:
-The model server the run puts between the harnesses and the models it trains or scores; it stands in for a provider's API and records every call.
+The one model server a run puts between the harnesses and the models it trains or scores; it stands in for a provider's API, answers only the trials the run has opened on it, and records their every call.
 _Avoid_: endpoint, gateway
 
 **Lane**:
-One model the proxy serves, named after its role, with its own weights, renderers and records.
+One model the proxy serves, named after its role, with its own renderers and sampling; the weights it samples are each open trial's own.
+
+**Open**:
+Said of a trial the run has opened on the proxy, on the lane, renderer and weights its calls are answered with until the run closes it.
+_Avoid_: registered, active, started
 
 **Endpoint**:
-What a trial's harness dials to reach a model: a lane of the run's proxy, or a provider's API.
+What a trial's harness dials to reach a model: the run's proxy, which knows the trial by the token it was opened with, or a provider's API.
 
 **Call**:
 One request from a harness to a model, answered with one reply.
 _Avoid_: request, turn (one message of a conversation), tool call
 
 **Records**:
-What the proxy recorded of one trial's calls, each answered, turned away or failed at the sampler, or that it recorded none because a provider served the trial.
+What the proxy recorded of one trial's calls, each answered, turned away or failed at the sampler, handed to the run when it closes the trial; or that it recorded none because a provider served the trial.
 _Avoid_: calls (reads as tool or function calls), served (already names the weights that answered a call)
 
 **Turned away**:

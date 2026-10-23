@@ -1,4 +1,4 @@
-"""Tests for the proxy server over HTTP: auth, both wires, weight swaps, and sampling parameters."""
+"""Tests for the proxy server over HTTP: auth, both wires, openings, and sampling parameters."""
 
 from __future__ import annotations
 
@@ -11,30 +11,37 @@ import pytest
 import tinker
 
 from harness_proxy.backends.tinker import context_of
-from harness_proxy.chat import Caller
-from harness_proxy.recorder import Recorder
-from harness_proxy.rendering import Prompt
 from harness_proxy.server import DEFAULT_MAX_TOKENS, Lane, Server
-from proxies import FakeSampler, address, ask, ask_anthropic, by_path, control, ids, only, server
+from harness_proxy.trial import Trial
+from harness_proxy.wire import TRIALS_PATH
+from proxies import (
+    FakeSampler,
+    ask,
+    ask_anthropic,
+    by_path,
+    ids,
+    only,
+    opened,
+    recorded,
+    root,
+    server,
+)
 
 # ------------------------------------------------------------------ before it starts
 
 
-def test_nothing_is_recorded_before_start() -> None:
-    with pytest.raises(RuntimeError):
-        only(server()).records_for("task-1")
+def test_each_server_has_its_own_control_token_and_an_empty_one_is_replaced() -> None:
+    lane = Lane(name="agent", model="a/b")
+    assert Server(lanes=[lane]).control_token != Server(lanes=[lane]).control_token
+    assert server(control_token="").control_token
 
 
-def test_each_endpoint_has_its_own_token_and_an_empty_one_is_replaced() -> None:
-    assert server().token != server().token
-    assert server(token="").token
-
-
-def test_neither_token_is_in_the_endpoints_repr() -> None:
+async def test_no_token_is_in_the_servers_repr() -> None:
     """As with the run's `Proxy`, tokens must not leak into a traceback's locals or a log."""
-    made = server(token="harness-secret", control_token="control-secret")
-    shown = repr(made)
-    assert "harness-secret" not in shown and "control-secret" not in shown
+    async with server(FakeSampler("ok"), control_token="control-secret") as started:
+        token = await opened(started, "t")
+        shown = repr(started)
+    assert token not in shown and "control-secret" not in shown
     assert "Qwen/Qwen3-8B" in shown
 
 
@@ -44,7 +51,6 @@ def test_neither_token_is_in_the_endpoints_repr() -> None:
 async def test_the_port_is_ephemeral_and_two_endpoints_do_not_collide() -> None:
     async with server() as first, server() as second:
         assert first.port and second.port and first.port != second.port
-        assert address(first, "task-1") == f"http://127.0.0.1:{first.port}/r/trial/task-1/v1"
 
 
 async def test_the_port_is_given_back_on_stop() -> None:
@@ -62,7 +68,7 @@ async def test_a_request_is_served_and_recorded_under_its_trial() -> None:
         answered = await ask(started, "task-1")
         assert answered.status_code == 200
         assert answered.json()["choices"][0]["message"]["content"] == "ok"
-        (record,) = only(started).records_for("task-1")
+        (record,) = recorded(started, "task-1")
     assert record.completion_token_ids == ids("ok")
     assert record.prompt_token_ids == ids("go")
     assert record.requested_model == "gpt-oss-20b"
@@ -75,7 +81,7 @@ async def test_a_request_over_aiohttps_default_body_size_is_served_and_recorded(
     async with server(FakeSampler("ok")) as started:
         answered = await ask(started, "task-1", metadata={"pad": "x" * (2 * 1024**2)})
         assert answered.status_code == 200
-        assert len(only(started).records_for("task-1")) == 1
+        assert len(recorded(started, "task-1")) == 1
 
 
 async def test_the_anthropic_wire_is_served_and_recorded_too() -> None:
@@ -83,7 +89,7 @@ async def test_the_anthropic_wire_is_served_and_recorded_too() -> None:
         answered = await ask_anthropic(started, "task-1")
         assert answered.status_code == 200
         assert answered.json()["content"][0]["text"] == "ok"
-        assert only(started).records_for("task-1")[0].requested_model == "claude-sonnet-4-5"
+        assert recorded(started, "task-1")[0].requested_model == "claude-sonnet-4-5"
 
 
 async def test_two_trials_keep_separate_records_and_seq_counts_per_trial() -> None:
@@ -91,86 +97,15 @@ async def test_two_trials_keep_separate_records_and_seq_counts_per_trial() -> No
         await ask(started, "task-1")
         await ask(started, "task-2")
         await ask(started, "task-2")
-        assert [r.seq for r in only(started).records_for("task-1")] == [1]
-        assert [r.seq for r in only(started).records_for("task-2")] == [1, 2]
-        assert only(started).records_for("task-3") == []
-
-
-async def test_a_request_with_no_trial_in_its_address_is_recorded_under_nothing() -> None:
-    async with server(FakeSampler("ok")) as started:
-        await ask(started, "task-1")
-        async with httpx.AsyncClient() as client:
-            answered = await client.post(
-                f"http://127.0.0.1:{started.port}/v1/chat/completions",
-                headers={"x-api-key": started.token},
-                json={"model": "m", "messages": [{"role": "user", "content": "go"}]},
-            )
-        assert answered.status_code == 200
-        assert len(only(started).records_for("")) == 1
-        assert len(only(started).records_for("task-1")) == 1
+        assert [r.seq for r in recorded(started, "task-1")] == [1]
+        assert [r.seq for r in recorded(started, "task-2")] == [1, 2]
+        assert recorded(started, "task-3") == []
 
 
 async def test_the_token_is_the_gate() -> None:
     async with server(FakeSampler("ok")) as started:
         assert (await ask(started, "task-1", key="not-the-token")).status_code == 401
-        assert only(started).records_for("task-1") == []
-
-
-# ------------------------------------------------------------------------- swapping
-
-
-async def test_swap_changes_what_is_served_and_every_record_says_who_answered() -> None:
-    async with server(by_path=by_path) as started:
-        assert (await ask(started, "t")).json()["choices"][0]["message"]["content"] == "base"
-        await only(started).swap("tinker://run/sampler_weights/step-1")
-        answered = await ask(started, "t")
-        assert answered.json()["choices"][0]["message"]["content"] == "step-1"
-        assert answered.json()["model"] == "tinker://run/sampler_weights/step-1"
-        await only(started).swap(None)
-        assert (await ask(started, "t")).json()["choices"][0]["message"]["content"] == "base"
-        assert [r.weights for r in only(started).records_for("t")] == [
-            None,
-            "tinker://run/sampler_weights/step-1",
-            None,
-        ]
-        assert address(started, "t").startswith(f"http://127.0.0.1:{started.port}/")
-
-
-async def test_a_path_given_before_start_is_what_start_serves() -> None:
-    async with server(by_path=by_path, weights="tinker://w/step-7") as started:
-        assert (await ask(started, "t")).json()["choices"][0]["message"]["content"] == "step-7"
-        assert only(started).records_for("t")[0].weights == "tinker://w/step-7"
-
-
-async def test_a_bare_name_is_not_a_path() -> None:
-    async with server(by_path=by_path) as started:
-        with pytest.raises(ValueError, match="tinker://"):
-            await only(started).swap("step-1")
-
-
-async def test_a_record_is_stamped_with_the_weights_that_answered_it() -> None:
-    """The weights are read before the sample is awaited, so a swap mid-flight does not
-    change the record's stamp."""
-
-    class Swapping:
-        def __init__(self) -> None:
-            self.recorder: Recorder | None = None
-
-        async def sample_async(self, **_: Any) -> Any:
-            assert self.recorder is not None
-            self.recorder.client, self.recorder.weights = object(), "tinker://intruder/step-9"
-            return SimpleNamespace(
-                sequences=[SimpleNamespace(tokens=[3], logprobs=[-0.1], stop_reason="stop")],
-                prompt_cache_hit_tokens=0,
-            )
-
-    swapping = Swapping()
-    recorder = Recorder(swapping, weights="tinker://mine/step-1")
-    swapping.recorder = recorder
-    prompt = Prompt(tinker.ModelInput.from_ints([1, 2]))
-    await recorder.sample(Caller(trial="t-1"), prompt, tinker.SamplingParams())
-    (record,) = recorder.take("t-1")
-    assert record.weights == "tinker://mine/step-1"
+        assert recorded(started, "task-1") == []
 
 
 # --------------------------------------------------------------- the run's parameters
@@ -181,7 +116,7 @@ async def test_the_runs_temperature_overrides_the_harnesses() -> None:
     async with server(sampler, temperature=0.7) as started:
         await ask(started, "t", temperature=0.0)
         assert sampler.asked[0].temperature == 0.7
-        assert only(started).records_for("t")[0].sampling_params["temperature"] == 0.7
+        assert recorded(started, "t")[0].sampling_params["temperature"] == 0.7
 
 
 async def test_what_the_run_did_not_name_is_left_to_the_harness() -> None:
@@ -209,59 +144,46 @@ async def test_a_request_naming_no_limit_is_not_cut_at_the_cookbooks_default() -
 
 
 def test_every_knob_that_shapes_the_distribution_is_pinned_and_the_object_left_alone() -> None:
-    recorder = Recorder(object(), temperature=1.0, top_p=1.0, top_k=-1)
+    trial = Trial("t", object(), temperature=1.0, top_p=1.0, top_k=-1)
     asked = tinker.SamplingParams(max_tokens=64, temperature=0.2, top_p=0.9, top_k=40)
-    pinned = recorder.pin(asked)
+    pinned = trial.pin(asked)
     assert (pinned.temperature, pinned.top_p, pinned.top_k, pinned.max_tokens) == (1, 1, -1, 64)
     assert (asked.temperature, asked.top_p, asked.top_k) == (0.2, 0.9, 40)
-    untouched = Recorder(object()).pin(asked)
+    untouched = Trial("t", object()).pin(asked)
     assert (untouched.temperature, untouched.top_p, untouched.top_k) == (0.2, 0.9, 40)
 
 
 def test_the_endpoint_defaults_to_truncating_nothing() -> None:
     lane = Lane(name="agent", model="a/b")
     assert (lane.temperature, lane.top_p, lane.top_k, lane.max_tokens) == (1.0, 1.0, -1, 8192)
-    assert Server(lanes=[lane]).control_token is None
+    assert Server(lanes=[lane]).control_token, "generated when none is given"
 
 
-def test_a_server_serves_lanes_each_named_once_by_a_name_an_address_can_hold() -> None:
+def test_a_server_serves_lanes_each_named_once() -> None:
     with pytest.raises(ValueError, match="at least one lane"):
         Server(lanes=[])
     with pytest.raises(ValueError, match="two lanes are named 'agent'"):
         Server(lanes=[Lane(name="agent", model="a/b"), Lane(name="agent", model="c/d")])
-    for name in ("", "a/b"):
-        with pytest.raises(ValueError, match="cannot be"):
-            Lane(name=name, model="a/b")
+    with pytest.raises(ValueError, match="a lane is named"):
+        Lane(name="", model="a/b")
 
 
-# ------------------------------------------------------------------ the control route
+# --------------------------------------------------------------------- the opening
 
 
-async def test_the_control_route_is_closed_without_a_control_token() -> None:
-    async with server(by_path=by_path, control_token=None) as started:
-        assert (await control(started, "tinker://w/step-1", token="x")).status_code == 404
-
-
-async def test_the_control_route_opens_to_the_control_token_and_not_the_harnesses() -> None:
-    async with server(by_path=by_path, control_token="ctl") as started:
-        assert (await control(started, "tinker://w/step-1", token="wrong")).status_code == 401
-        assert (await control(started, "tinker://w/step-1", token=started.token)).status_code == 401
-        swapped = await control(started, "tinker://w/step-1")
-        assert swapped.status_code == 200 and swapped.json() == {"serving": "tinker://w/step-1"}
-        assert (await ask(started, "t")).json()["choices"][0]["message"]["content"] == "step-1"
-        back = await control(started, None)
-        assert back.status_code == 200 and back.json() == {"serving": None}
-        assert (await ask(started, "t")).json()["choices"][0]["message"]["content"] == "base"
-        assert [r.weights for r in only(started).records_for("t")] == ["tinker://w/step-1", None]
-
-
-async def test_the_control_route_refuses_what_is_not_a_path() -> None:
-    async with server(by_path=by_path, control_token="ctl") as started:
-        assert (await control(started, "step-1")).status_code == 400
-        assert (await control(started, 7)).status_code == 400
-        assert (await control(started, None, raw=b"{not json")).status_code == 400
-        assert (await control(started, None, raw=b'{"path": "tinker://x"}')).status_code == 400
-        assert only(started).weights is None
+async def test_an_opening_that_is_not_one_is_refused_and_opens_nothing() -> None:
+    async with server(by_path=by_path) as started, httpx.AsyncClient() as client:
+        control = {"Authorization": f"Bearer {started.control_token}"}
+        for sent in (
+            {"content": b"{not json"},
+            {"json": {"name": "t"}},
+            {"json": {"trial": "t", "weights": "step-1"}},
+            {"json": {"trial": "t", "weights": 7}},
+            {"json": {"trial": "t", "renderer": "medium"}},
+        ):
+            refused = await client.post(f"{root(started)}{TRIALS_PATH}", headers=control, **sent)
+            assert refused.status_code == 400, sent
+        assert started.trial("t") is None and only(started)._clients == {}
 
 
 # ------------------------------------------------------------------ the context length
@@ -289,7 +211,7 @@ async def test_the_context_length_is_read_off_the_capabilities_or_is_none(
     with caplog.at_level(logging.WARNING, logger="harness_proxy.server"):
         assert await context_of(Broken(), "a/b") is None
     assert "could not read the context length of a/b" in caplog.text
-    assert "not enforced" in caplog.text and "RuntimeError: no network" in caplog.text
+    assert "RuntimeError: no network" in caplog.text
 
 
 # ------------------------------------------------------------------ the Tinker session
@@ -321,6 +243,15 @@ async def test_the_proxy_closes_its_tinker_session_once_on_the_way_out() -> None
             raise KeyError("the run failed")
     assert service.closed == ["success"]
     assert only(started)._service is None and started.port is None
+
+
+async def test_a_lane_whose_context_length_cannot_be_read_refuses_to_start() -> None:
+    """Neither a trial's budget nor the context could be enforced, so the proxy serves nothing,
+    and closes the session it opened."""
+    service = Service()  # whose capabilities list no model
+    with pytest.raises(RuntimeError, match="context length of .*: give the lane its max_context"):
+        await server(_service=service).start()
+    assert service.closed == ["success"]
 
 
 async def test_a_close_that_fails_still_stops_the_proxy() -> None:

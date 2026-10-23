@@ -1,5 +1,5 @@
-"""Tests for a proxy given several renderers, such as reasoning efforts: each trial's address
-names the one its calls are rendered with, and `/healthz` names them all."""
+"""Tests for a proxy given several renderers, such as reasoning efforts: each trial is opened
+with the one its calls are rendered with, and `/healthz` names them all."""
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ from proxies import (
     chars,
     ids,
     only,
+    recorded,
     root,
     server,
 )
@@ -56,47 +57,51 @@ def efforts() -> dict[str, Effort]:
     return {"low": Effort("low"), "high": Effort("high")}
 
 
+def client(started: Server) -> Proxy:
+    """Return the run's client for a started server."""
+    return Proxy(origin=root(started), control_token=started.control_token)
+
+
 async def ask_at(started: Server, trial: str, renderer: str | None, **body: Any) -> httpx.Response:
-    """Send one OpenAI chat completion for `trial` to the address the run's client gives it."""
-    base = Proxy(origin=root(started), token=started.token).address_for(trial, renderer)
-    async with httpx.AsyncClient() as client:
-        return await client.post(
-            f"{base}/chat/completions",
-            headers={"Authorization": f"Bearer {started.token}"},
+    """Open `trial` with `renderer` through the run's client, once, and send one OpenAI chat
+    completion with its token to the address every trial dials."""
+    proxy = client(started)
+    token = await proxy.open(trial, renderer=renderer)
+    async with httpx.AsyncClient() as http:
+        return await http.post(
+            f"{proxy.address}/chat/completions",
+            headers={"Authorization": f"Bearer {token}"},
             json={"model": "m", "messages": [{"role": "user", "content": "go"}], **body},
         )
 
 
-# ------------------------------------------------------------------ the address
+# ------------------------------------------------------------------ the opening
 
 
-def test_a_trials_address_names_its_renderer_when_it_has_one() -> None:
-    proxy = Proxy(origin="http://proxy:8000/", token="t")
-    assert proxy.address_for("x__1") == "http://proxy:8000/r/trial/x__1/v1"
-    assert proxy.address_for("x__1", "low") == "http://proxy:8000/r/trial/x__1/renderer/low/v1"
-    for bad in ("", "a/b"):
-        with pytest.raises(ValueError, match="a renderer goes in the URL path"):
-            proxy.address_for("x__1", bad)
+def test_every_trial_dials_one_address_and_its_token_says_which_trial_it_is() -> None:
+    proxy = Proxy(origin="http://proxy:8000/", control_token="c")
+    assert proxy.address == proxy.local_address == "http://proxy:8000/v1"
 
 
-async def test_each_trial_is_rendered_with_the_renderer_its_address_names() -> None:
+async def test_each_trial_is_rendered_with_the_renderer_it_was_opened_with() -> None:
     sampler = FakeSampler("hi")
     async with server(sampler, renderer=efforts()) as started:
         for trial, renderer in (("a", "low"), ("b", "high"), ("c", None)):
             assert (await ask_at(started, trial, renderer)).status_code == 200
-        opened = {t: chars(only(started).records_for(t)[0].prompt_token_ids) for t in "abc"}
+        opened = {t: chars(recorded(started, t)[0].prompt_token_ids) for t in "abc"}
     assert opened == {"a": "[low]user:go\n>", "b": "[high]user:go\n>", "c": "[low]user:go\n>"}, (
-        "an address that names none takes the first"
+        "a trial opened with none takes the first"
     )
 
 
-async def test_a_renderer_the_proxy_was_not_given_is_refused_before_it_samples() -> None:
+async def test_a_renderer_the_proxy_was_not_given_is_refused_when_the_trial_opens() -> None:
     sampler = FakeSampler("hi")
     async with server(sampler, renderer={"low": Effort("low")}) as started:
-        refused = await ask_at(started, "t", "medium")
-        assert refused.status_code == 400
-        assert "does not render with 'medium': it renders with low" in refused.text
-        assert sampler.asked == [] and only(started).records_for("t") == []
+        with pytest.raises(
+            RuntimeError, match="does not render with 'medium': it renders with low"
+        ):
+            await client(started).open("t", renderer="medium")
+        assert sampler.asked == [] and started.trial("t") is None
 
 
 async def test_each_renderer_bridges_its_own_trials_tool_loop() -> None:
@@ -112,7 +117,7 @@ async def test_each_renderer_bridges_its_own_trials_tool_loop() -> None:
             second = await ask_at(started, trial, renderer, messages=history, tools=TOOLS_OPENAI)
             assert second.status_code == 200, second.text
         for trial, renderer in (("a", "low"), ("b", "high")):
-            one, two = only(started).records_for(trial)
+            one, two = recorded(started, trial)
             assert (one.bridged, two.bridged) == (False, True)
             assert chars(one.prompt_token_ids).startswith(f"[{renderer}]system:")
             assert two.prompt_token_ids[: len(one.prompt_token_ids)] == one.prompt_token_ids
@@ -142,11 +147,11 @@ async def test_named_renderers_are_built_from_the_cookbook_in_the_order_given(
 
 async def test_healthz_names_each_lanes_renderers_and_the_client_reads_them() -> None:
     async with server(renderer=efforts()) as started:
-        proxy = Proxy(origin=root(started), token=started.token)
+        proxy = client(started)
         (lane,) = (await proxy.ready(seconds=5)).values()
         assert (lane.model, lane.renderers) == (MODEL, ("low", "high"))
     async with server() as plain:
-        proxy = Proxy(origin=root(plain), token=plain.token)
+        proxy = client(plain)
         await proxy.ready(seconds=5)
         assert proxy.lanes["agent"].renderers == (), "a lane on its model's default names none"
 
@@ -154,7 +159,5 @@ async def test_healthz_names_each_lanes_renderers_and_the_client_reads_them() ->
 def test_the_renderer_flag_names_each_renderer_of_the_one_lane() -> None:
     args = serve.parser().parse_args(["--model", "m", "--renderer", "low", "--renderer", "high"])
     assert args.renderer == ["low", "high"]
-    given = serve.document(
-        None, lane=args.lane, model=args.model, weights=None, renderer=args.renderer
-    )
+    given = serve.document(None, lane=args.lane, model=args.model, renderer=args.renderer)
     assert given == {"lanes": [{"name": "agent", "model": "m", "renderer": ["low", "high"]}]}

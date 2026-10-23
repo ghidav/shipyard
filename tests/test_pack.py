@@ -20,7 +20,7 @@ from tinker_cookbook.supervised.common import (
 from harness_proxy.wire import IMAGE_TOKEN, Picture, Record, model_input
 from shipyard.groups import Sequence, Trial, grouped
 from shipyard.jobs.admit import ENV_ERROR, Verdict
-from shipyard.jobs.harnesses import harness
+from shipyard.jobs.harnesses import Harness
 from shipyard.models.clients.tinker import datum, shifted
 from shipyard.records import Records
 from tests.fakes import made
@@ -40,7 +40,7 @@ def _record(prompt: tuple[int, ...], completion: tuple[int, ...], seq: int, **na
 def _trial(*records: Record) -> Trial:
     """A graded trial holding `records`."""
     graded = Verdict(1.0, None, None)
-    return Trial("j", Path("t"), harness("pi"), Path("t"), Records(records), graded)
+    return Trial("j", Path("t"), Harness(name="pi"), Path("t"), Records(records), graded)
 
 
 def _packed(records: list[Record]) -> list[Sequence]:
@@ -68,7 +68,9 @@ def _written(sequence: Sequence) -> list[int]:
 def test_grouped_gives_a_measured_trial_its_chains_and_any_other_trial_none() -> None:
     graded = _trial(*_tool_loop())
     masked = replace(_trial(*_tool_loop()), verdict=Verdict(None, ENV_ERROR, None))
-    provided = Trial("j", Path("t"), harness("pi"), Path("t"), verdict=Verdict(1.0, None, None))
+    provided = Trial(
+        "j", Path("t"), Harness(name="pi"), Path("t"), verdict=Verdict(1.0, None, None)
+    )
     grouped([graded, masked, provided])
     [found] = graded.sequences
     assert found.trial is graded and found.targets == (3, 4, 6, 9, 10)

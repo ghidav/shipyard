@@ -11,7 +11,7 @@ from rich.console import Console
 
 from shipyard.config import Rollout
 from shipyard.jobs.engine import HarborEngine, Job
-from shipyard.jobs.harnesses import harness
+from shipyard.jobs.harnesses import Harness
 from shipyard.jobs.progress import QUIET, Bars
 from shipyard.models.endpoints import ProviderEndpoint
 from tests.fakes import FakeTrials
@@ -76,7 +76,7 @@ async def test_the_engine_reports_each_trial_and_the_jobs_masked_count_once_judg
     engine = HarborEngine(rollout, run_trial=FakeTrials(breaks=("beta",)))
     engine.progress = heard = Heard()
     endpoint = ProviderEndpoint("m", "openrouter")
-    await engine.run(Job("job-0000", harness=harness("pi")), tasks, 1, endpoint=endpoint)
+    await engine.run(Job("job-0000", harness=Harness(name="pi")), tasks, 1, endpoint=endpoint)
     assert heard.events == [
         ("started", "job-0000", 3),
         *[("finished", "job-0000", None)] * 3,

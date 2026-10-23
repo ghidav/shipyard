@@ -16,11 +16,12 @@ from harness_proxy.keepalive import FRAME
 from proxies import (
     BridgeRenderer,
     FakeSampler,
-    address,
     ask,
     ask_anthropic,
     ids,
-    only,
+    opened,
+    recorded,
+    root,
     server,
 )
 
@@ -65,7 +66,7 @@ async def test_a_slow_streamed_reply_gets_frames_before_its_first_data_frame() -
             json.loads(line[6:])["choices"][0]["delta"].get("content") or "" for line in chunks
         )
         assert said == "hi" and text.rstrip().endswith("data: [DONE]")
-        [made] = only(started).records_for("t-1")
+        [made] = recorded(started, "t-1")
     assert made.completion_token_ids == ids("hi") and made.error is None and made.seq == 1
     assert made.prompt_token_ids == ids("go")
 
@@ -73,7 +74,7 @@ async def test_a_slow_streamed_reply_gets_frames_before_its_first_data_frame() -
 async def test_the_anthropic_wire_is_kept_alive_the_same_way() -> None:
     async with kept(SlowSampler("hi")) as started:
         text = (await ask_anthropic(started, "t-1", stream=True)).text
-        [made] = only(started).records_for("t-1")
+        [made] = recorded(started, "t-1")
     assert text.startswith(FRAME.decode()) and frames_before(text, "event: message_start") >= 2
     assert '"text": "hi"' in text and "event: message_stop" in text
     assert made.completion_token_ids == ids("hi")
@@ -91,7 +92,7 @@ async def test_a_sampler_failing_after_the_frames_ends_the_stream_with_an_error_
     async with kept(SlowSampler("hi", fails=True)) as started:
         text = (await ask(started, "t", stream=True)).text
         anthropic = (await ask_anthropic(started, "u", stream=True)).text
-        [failed] = only(started).records_for("t")
+        [failed] = recorded(started, "t")
     assert frames_before(text, "data:") >= 2
     error = json.loads(text[text.index("data:") + 6 :].split("\n", 1)[0])["error"]
     assert "the sampler fell over" in error["message"] and text.rstrip().endswith("[DONE]")
@@ -148,8 +149,8 @@ async def test_a_client_gone_mid_wait_still_records_the_sample() -> None:
         async with httpx.AsyncClient() as http:
             with pytest.raises(httpx.ReadTimeout):
                 await http.post(
-                    f"{address(started, 't')}/chat/completions",
-                    headers={"Authorization": f"Bearer {started.token}"},
+                    f"{root(started)}/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {await opened(started, 't')}"},
                     json={
                         "model": "m",
                         "stream": True,
@@ -158,5 +159,5 @@ async def test_a_client_gone_mid_wait_still_records_the_sample() -> None:
                     timeout=httpx.Timeout(5.0, read=0.05),
                 )
         await asyncio.sleep(0.5)
-        [made] = only(started).records_for("t")
+        [made] = recorded(started, "t")
     assert made.completion_token_ids == ids("hi"), "the sample finishes and is recorded"

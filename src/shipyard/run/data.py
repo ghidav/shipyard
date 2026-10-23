@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from harbor.models.task.task import Task
 
 if TYPE_CHECKING:
-    from shipyard.config import Blueprint
+    from shipyard.config import Config
 
 #: Directory holding the datasets, relative to the working directory, as Harbor uses `tasks/`.
 TASKS_DIR = "tasks"
@@ -42,8 +42,8 @@ class Generator:
     test: list[Path] = field(default_factory=list)
 
     @classmethod
-    def of(cls, config: Blueprint) -> Generator:
-        """Build a generator from the blueprint's `[data]` table."""
+    def of(cls, config: Config) -> Generator:
+        """Build a generator from the config's `[data]` table."""
         data = config.data
 
         def listed(names: Sequence[str]) -> list[Path]:

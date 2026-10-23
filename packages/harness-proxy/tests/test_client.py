@@ -11,7 +11,8 @@ from pathlib import Path
 import pytest
 
 from harness_proxy import client
-from harness_proxy.client import CONTROL_TOKEN_ENV, PROXY_TOKEN_ENV, Proxy, serve_command
+from harness_proxy.client import CONTROL_TOKEN_ENV, Proxy, serve_command
+from harness_proxy.wire import Opening
 
 SERVE_STUB = textwrap.dedent(
     """
@@ -35,7 +36,7 @@ SERVE_STUB = textwrap.dedent(
         sys.exit(0)
     port = os.environ.get("STUB_PORT", "8765")
     named = [one["name"] for one in json.loads(flag("--settings"))["lanes"]]
-    print(banner(named, flag("--advertise"), int(port), control=True), flush=True)
+    print(banner(named, flag("--advertise"), int(port)), flush=True)
     print("serving on", file=sys.stderr, flush=True)
     if "--tunnel" in args:
         if mode == "no-tunnel":
@@ -70,7 +71,7 @@ def stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def test_the_serve_command_carries_the_process_as_flags_and_the_lanes_as_settings() -> None:
-    lanes = [{"name": "agent", "model": "a/b", "weights": "tinker://w/step-1", "renderer": "q"}]
+    lanes = [{"name": "agent", "model": "a/b", "renderer": "q"}]
     made = serve_command(
         {"lanes": lanes, "bind": "0.0.0.0", "bind_port": 8000, "keepalive_every": 5.0},
         host="proxy",
@@ -108,7 +109,7 @@ def test_the_serve_command_carries_the_process_as_flags_and_the_lanes_as_setting
 # ------------------------------------------------------------------ a local proxy
 
 
-async def test_local_reads_the_port_off_the_first_line_and_hands_the_tokens_down(
+async def test_local_reads_the_port_off_the_first_line_and_hands_the_control_token_down(
     stub: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("STUB_PORT", "4242")
@@ -119,11 +120,10 @@ async def test_local_reads_the_port_off_the_first_line_and_hands_the_tokens_down
             assert proxy.origin == "http://host.docker.internal:4242"
             assert proxy.loopback == "http://127.0.0.1:4242"
             assert proxy.host == "host.docker.internal"
-            assert proxy.address_for("t-1") == "http://host.docker.internal:4242/r/trial/t-1/v1"
-            assert proxy.token and proxy.control_token and proxy.token != proxy.control_token
+            assert proxy.address == "http://host.docker.internal:4242/v1"
+            assert proxy.local_address == "http://127.0.0.1:4242/v1"
             seen = json.loads(stub.read_text())
-            assert seen["env"][PROXY_TOKEN_ENV] == proxy.token
-            assert seen["env"][CONTROL_TOKEN_ENV] == proxy.control_token
+            assert proxy.control_token and seen["env"] == {CONTROL_TOKEN_ENV: proxy.control_token}
             assert seen["argv"][:6] == [
                 "--bind",
                 "127.0.0.1",
@@ -134,21 +134,20 @@ async def test_local_reads_the_port_off_the_first_line_and_hands_the_tokens_down
             ]
             assert proxy.process is not None and proxy.process.poll() is None
         finally:
-            proxy.close()
+            proxy.stop()
     assert proxy.process is None
     assert "warming up" in log.read_text() and "serving agent" in log.read_text()
 
 
-async def test_the_tokens_from_the_environment_are_the_ones_handed_down(
+async def test_the_control_token_from_the_environment_is_the_one_handed_down(
     stub: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    environ = {**os.environ, PROXY_TOKEN_ENV: "t", CONTROL_TOKEN_ENV: "c"}
-    proxy = await Proxy.local(SETTINGS, environ=environ)
+    proxy = await Proxy.local(SETTINGS, environ={**os.environ, CONTROL_TOKEN_ENV: "c"})
     try:
-        assert (proxy.token, proxy.control_token) == ("t", "c")
-        assert json.loads(stub.read_text())["env"] == {PROXY_TOKEN_ENV: "t", CONTROL_TOKEN_ENV: "c"}
+        assert proxy.control_token == "c"
+        assert json.loads(stub.read_text())["env"] == {CONTROL_TOKEN_ENV: "c"}
     finally:
-        proxy.close()
+        proxy.stop()
 
 
 async def test_a_serve_that_exits_before_its_line_raises_with_what_it_said(
@@ -181,13 +180,14 @@ async def test_tunnelled_serves_on_loopback_and_answers_at_the_tunnel_it_opened(
         assert proxy.origin == "https://fake-words.trycloudflare.com" and proxy.tunnel
         assert proxy.loopback == "http://127.0.0.1:5151"
         assert proxy.host == "fake-words.trycloudflare.com"
-        assert proxy.address_for("t") == "https://fake-words.trycloudflare.com/r/trial/t/v1"
+        assert proxy.address == "https://fake-words.trycloudflare.com/v1"
+        assert proxy.local_address == "http://127.0.0.1:5151/v1"
         argv = json.loads(stub.read_text())["argv"]
         assert argv[argv.index("--advertise") + 1] == "127.0.0.1" and "--tunnel" in argv
         assert argv[argv.index("--parent-pid") + 1] == str(os.getpid())
         process = proxy.process
     finally:
-        proxy.close()
+        proxy.stop()
         log.close()
     assert process is not None and process.poll() is not None
     assert "trycloudflare.com  |" in (tmp_path / "proxy.log").read_text(), "its output is kept"
@@ -204,25 +204,28 @@ async def test_a_tunnel_that_cannot_open_stops_the_serve_it_fronted(
 # ------------------------------------------------------------------- a remote one
 
 
-def test_remote_is_addressed_by_url_and_needs_the_token() -> None:
-    proxy = Proxy.remote("https://proxy.example/", "k")
+def test_remote_is_addressed_by_url_and_needs_the_control_token() -> None:
+    proxy = Proxy.remote("https://proxy.example/", "c")
     assert proxy.origin == proxy.loopback == "https://proxy.example"
-    assert proxy.address_for("t-1") == "https://proxy.example/r/trial/t-1/v1"
-    assert proxy.control_token is None and proxy.process is None and not proxy.tunnel
-    assert Proxy.remote("https://proxy.example", "k", "c").control_token == "c"
-    with pytest.raises(ValueError, match=PROXY_TOKEN_ENV):
+    assert proxy.address == proxy.local_address == "https://proxy.example/v1"
+    assert proxy.control_token == "c" and proxy.process is None and not proxy.tunnel
+    with pytest.raises(ValueError, match=CONTROL_TOKEN_ENV):
         Proxy.remote("https://proxy.example", "")
     with pytest.raises(ValueError, match="URL"):
-        Proxy.remote("  ", "k")
+        Proxy.remote("  ", "c")
 
 
 @pytest.mark.parametrize("name", ["", "org/name"])
-def test_a_trial_name_that_cannot_ride_in_the_path_is_refused(name: str) -> None:
-    with pytest.raises(ValueError):
-        Proxy.remote("https://proxy.example", "k").address_for(name)
+async def test_a_trial_name_the_close_route_cannot_hold_is_refused_before_anything_is_sent(
+    name: str,
+) -> None:
+    with pytest.raises(ValueError, match="cannot be a trial's name"):
+        Opening(name)
+    with pytest.raises(ValueError, match="cannot be a trial's name"):
+        await Proxy.remote("https://proxy.example", "c").open(name)
 
 
-async def test_a_remote_proxy_is_closed_without_stopping_anything() -> None:
-    proxy = Proxy.remote("https://proxy.example", "k")
-    proxy.close()
-    proxy.close()
+async def test_a_remote_proxy_is_stopped_without_stopping_anything() -> None:
+    proxy = Proxy.remote("https://proxy.example", "c")
+    proxy.stop()
+    proxy.stop()

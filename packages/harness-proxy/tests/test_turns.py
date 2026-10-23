@@ -8,7 +8,16 @@ import pytest
 
 from harness_proxy.chat import Refused
 from harness_proxy.dialects import anthropic, openai
-from proxies import BridgeRenderer, FakeSampler, ask, ask_anthropic, chars, ids, only, server
+from proxies import (
+    BridgeRenderer,
+    FakeSampler,
+    ask,
+    ask_anthropic,
+    chars,
+    ids,
+    recorded,
+    server,
+)
 
 
 @pytest.fixture
@@ -144,7 +153,7 @@ async def test_a_call_that_ends_with_a_new_block_extends_the_previous_prompt() -
         ]
         second = await ask_anthropic(started, "t", messages=messages, **body)
         assert second.status_code == 200, second.text
-        one, two = only(started).records_for("t")
+        one, two = recorded(started, "t")
     assert one.prompt_token_ids == ids(
         "system:Be brief.<tools:ls>\nuser:look\nuser:# Environment\nA sandbox.\n>"
     )
@@ -178,7 +187,7 @@ async def test_the_same_on_the_openai_wire() -> None:
         ]
         second = await ask(started, "t", messages=messages, tools=OPENAI_TOOLS)
         assert second.status_code == 200, second.text
-        one, two = only(started).records_for("t")
+        one, two = recorded(started, "t")
     assert one.prompt_token_ids == ids("system:Be brief.<tools:ls>\nuser:look\n>")
     assert two.bridged
     prefix = (*one.prompt_token_ids, *one.completion_token_ids)

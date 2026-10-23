@@ -8,14 +8,13 @@ from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any
 
 from harness_proxy.client import Proxy
-from harness_proxy.wire import CONTROL_TOKEN_ENV, PROXY_TOKEN_ENV, Served
+from harness_proxy.wire import CONTROL_TOKEN_ENV, Served
 from shipyard.groups import Connection, Where
 from shipyard.models.clients.tinker import tagged
 from shipyard.records import Records, served_nothing
 
 if TYPE_CHECKING:
-    from harness_proxy.wire import Record
-    from shipyard.config import Blueprint, Rollout
+    from shipyard.config import Config, Rollout
     from shipyard.groups import Trial
 
 logger = logging.getLogger(__name__)
@@ -24,6 +23,10 @@ logger = logging.getLogger(__name__)
 LOCAL_SANDBOXES = frozenset({"docker", "podman", "apple-container"})
 #: What the proxy and its tunnel print, kept in the run directory.
 PROXY_LOG = "proxy.log"
+#: The token a preflight's harness is given: it makes no call, so no trial is opened for it.
+PREFLIGHT_TOKEN = "preflight"
+#: The proxy's backend that samples a session's weights published last, so serves one version.
+ONE_VERSION = "together"
 
 
 class ProxyGone(RuntimeError):
@@ -41,26 +44,13 @@ def placement(rollout: Rollout) -> str:
     return "local" if rollout.sandbox in LOCAL_SANDBOXES else "tunnel"
 
 
-def sampling_params(config: Blueprint, run: str) -> dict[str, Any]:
-    """Return the sampling settings `[rollout]` gives each lane of the proxy the run starts."""
-    rollout = config.rollout
-    return {
-        "temperature": rollout.temperature,
-        "top_p": rollout.top_p,
-        "top_k": rollout.top_k,
-        "max_tokens": rollout.max_tokens,
-        "fill_context": rollout.fill_context,
-        "metadata": tagged(run),
-    }
-
-
 @dataclass
 class ProxyEndpoint:
     """The run's proxy. It serves each model on Tinker or Together in a lane of its own, which
-    `lane` makes and a trial's address names. It starts once every model's session has opened,
+    `lane` makes and each trial is opened on. It starts once every model's session has opened,
     and stops with the run."""
 
-    config: Blueprint
+    config: Config
     directory: Path
     environ: Mapping[str, str] = field(default_factory=lambda: os.environ, repr=False)
     proxy: Proxy | None = None
@@ -76,14 +66,18 @@ class ProxyEndpoint:
         opened: Any = None,
         renderers: Sequence[str] = (),
         max_context: int | None = None,
+        sampling: Mapping[str, Any] | None = None,
     ) -> LaneEndpoint:
         """Make the lane `name`, which serves `load`, a model's name or a `tinker://` path, and
         return what a trial's harness dials to reach it. `opened`, a model the run opens,
-        knows a path's base model once open; `renderers` are the ones its calls may name, and
-        `max_context` caps what one trial may sample, its model's context if None."""
+        knows a path's base model once open; `renderers` are the ones its calls may name,
+        `max_context` caps what one trial may sample, its model's context if None, and
+        `sampling` is what every call is sampled with, over the harness's own."""
         if name in self.lanes:
             raise ValueError(f"two models would serve in the proxy's lane {name!r}: rename one")
-        made = LaneEndpoint(self, name, load, opened, list(renderers), max_context)
+        made = LaneEndpoint(
+            self, name, load, opened, list(renderers), max_context, dict(sampling or {})
+        )
         self.lanes[name] = made
         return made
 
@@ -104,18 +98,9 @@ class ProxyEndpoint:
         rollout = self.config.rollout
         where = placement(rollout)
         if where == "remote":
-            proxy = Proxy.remote(
-                rollout.endpoint_url,
-                self.environ.get(PROXY_TOKEN_ENV) or "",
-                self.environ.get(CONTROL_TOKEN_ENV) or None,
+            self.proxy = Proxy.remote(
+                rollout.endpoint_url, self.environ.get(CONTROL_TOKEN_ENV) or ""
             )
-            if proxy.control_token is None:
-                raise RuntimeError(
-                    f"the proxy at {rollout.endpoint_url} takes its control token to read "
-                    f"records and point weights, and {CONTROL_TOKEN_ENV} is unset: export the "
-                    "token it was started with"
-                )
-            self.proxy = proxy
         else:
             given = {
                 "bind": rollout.bind,
@@ -134,7 +119,7 @@ class ProxyEndpoint:
             serves(self.proxy.origin, one, served.get(one.name))
         logger.info("the proxy at %s answers (%s)", self.proxy.origin, where)
         for name, one in served.items():
-            logger.info("lane %s serves %s", name, one.serving)
+            logger.info("lane %s serves %s", name, one.model)
 
     def client(self) -> Proxy:
         """Return the proxy's client; `RuntimeError` before the proxy opens."""
@@ -156,7 +141,7 @@ class ProxyEndpoint:
     def close(self) -> None:
         proxy, self.proxy = self.proxy, None
         if proxy is not None:
-            proxy.close()
+            proxy.stop()
         for opened in self._logs:
             opened.close()
         self._logs.clear()
@@ -164,8 +149,8 @@ class ProxyEndpoint:
 
 @dataclass
 class LaneEndpoint:
-    """A model the run's proxy serves, in a lane of its own: what a trial's harness dials when
-    `rollout` runs it, and where the run points the model's weights."""
+    """A model the run's proxy serves, in a lane of its own: it opens each trial `rollout` runs
+    of the model, on the weights the model serves then, and closes it for its records."""
 
     proxy: ProxyEndpoint
     #: The lane's name, which a trial's address gives.
@@ -179,14 +164,20 @@ class LaneEndpoint:
     renderers: list[str] = field(default_factory=list)
     #: Most tokens one trial may sample; None for its model's context.
     max_context: int | None = None
+    #: What the proxy samples every call with, over the harness's own: temperature, top_p,
+    #: top_k, max_tokens and fill_context.
+    sampling: dict[str, Any] = field(default_factory=dict)
     #: The proxy's backend settings for the lane beyond Tinker's: for Together, the backend
     #: and the session, which the model's client opens before the proxy starts.
     backend: dict[str, str] = field(default_factory=dict)
-    #: The weights the run last pointed the lane at; None for the base model.
+    #: The weights the model serves now, which each trial opened from now on samples; None
+    #: for the base model.
     told: str | None = None
+    #: The trials open on the lane, by name.
+    trials: set[str] = field(default_factory=set)
 
     def __post_init__(self) -> None:
-        """Serve a `tinker://` path from the start."""
+        """Open trials on a `tinker://` path from the start."""
         if self.told is None and self.load.startswith("tinker://"):
             self.told = self.load
 
@@ -207,11 +198,12 @@ class LaneEndpoint:
 
     @property
     def document(self) -> dict[str, Any]:
-        """The lane, as the proxy is started with it: its name, model and weights, its own
-        renderers and context, the run's sampling, and its backend beyond Tinker's."""
-        own = {"weights": self.told, "renderer": self.renderers, "max_context": self.max_context}
+        """The lane, as the proxy is started with it: its name and model, its own renderers,
+        context and sampling, and its backend beyond Tinker's. Each trial names its weights."""
+        own = {"renderer": self.renderers, "max_context": self.max_context}
         return {
-            **sampling_params(self.proxy.config, self.proxy.directory.name),
+            **self.sampling,
+            "metadata": tagged(self.proxy.directory.name),
             "name": self.name,
             "model": self.model,
             **{key: value for key, value in own.items() if value},
@@ -225,41 +217,56 @@ class LaneEndpoint:
         served = proxy.lanes.get(self.name) if proxy is not None else None
         return served.budget if served is not None else None
 
-    async def serve(self, path: str | None) -> None:
-        """Point the lane at the sampler weights at `path`, or at its base model for None."""
-        self.proxy.alive()
-        await self.proxy.client().swap(path, lane=self.name)
+    def publishing(self) -> None:
+        """Raise `RuntimeError` if the model cannot publish new weights now: Together serves
+        the weights a session published last, so a trial open on the old ones would be
+        answered by the new."""
+        if self.backend.get("backend") == ONE_VERSION and self.trials:
+            raise RuntimeError(
+                f"[models.{self.name}] serves on Together, which samples the weights published "
+                f"last, and {len(self.trials)} of its trials are open on the ones before: "
+                "publish once they close"
+            )
+
+    def serve(self, path: str | None) -> None:
+        """Open the lane's trials from now on at the sampler weights at `path`, or at its base
+        model for None; a trial open already keeps the weights it was opened on."""
         self.told = path
 
-    def connection(self, trial: Trial) -> Connection:
-        """Return what a trial's harness dials: the lane's address, naming the trial's
-        renderer, and the token, as the harness reaches them."""
+    async def open(self, trial: Trial) -> Connection:
+        """Open `trial` on the proxy, on the weights the model serves now and rendered with its
+        renderer, and return what its harness dials."""
+        self.proxy.alive()
+        try:
+            token = await self.proxy.client().open(
+                trial.name, lane=self.name, renderer=trial.renderer, weights=self.told
+            )
+        except Exception:
+            self.proxy.alive()  # an open that failed because the proxy died says so
+            raise
+        self.trials.add(trial.name)
+        return self.connection(trial, token)
+
+    def connection(self, trial: Trial, token: str = PREFLIGHT_TOKEN) -> Connection:
+        """Return what a trial's harness dials: the proxy's address, as the harness reaches
+        it, with `token`, the one its trial was opened with."""
         proxy = self.proxy.client()
-        address = proxy.address_for(trial.name, trial.renderer, lane=self.name)
         where = Where(
-            address,
-            # The same address from this machine, for a harness whose calls leave from here.
-            local=proxy.loopback + address.removeprefix(proxy.origin),
-            token=proxy.token,
-            host=proxy.host or None,
+            proxy.address, local=proxy.local_address, token=token, host=proxy.host or None
         )
         return trial.harness.dial(
-            where, self.model, fill_context=self.proxy.config.rollout.fill_context
+            where, self.model, fill_context=bool(self.sampling.get("fill_context"))
         )
 
-    async def record(self, job: str, trials: Sequence[Trial]) -> dict[str, list[Record]]:
-        """Drain the trials' records from the proxy, by trial name, and check that the lane's
-        weights served them."""
-        proxy = self.proxy.client()
-        taken: dict[str, list[Record]] = {}
-        for trial in trials:
-            try:
-                taken[trial.name] = await proxy.records(trial.name)
-            except Exception:
-                self.proxy.alive()  # a fetch that failed because the proxy died says so
-                raise
-        answered_by_ours(job, taken, self.told, lane=self.name)
-        return taken
+    async def close(self, trial: Trial) -> Records:
+        """Close `trial` on the proxy and return its records."""
+        try:
+            return Records(await self.proxy.client().close(trial.name))
+        except Exception:
+            self.proxy.alive()  # a close that failed because the proxy died says so
+            raise
+        finally:
+            self.trials.discard(trial.name)
 
     def check(self, job: str, trials: Sequence[Trial]) -> None:
         """Raise if the proxy died during the job or served it nothing."""
@@ -269,27 +276,13 @@ class LaneEndpoint:
             raise NothingServed(f"job {job}: {why}")
 
 
-def answered_by_ours(
-    job: str, taken: Mapping[str, Sequence[Record]], told: str | None, *, lane: str
-) -> None:
-    """Raise `ValueError` unless every record of `job` was served from `told`, the weights the
-    run pointed `lane` at."""
-    answered = {name for one in taken.values() for name in Records(one).weights}
-    if answered - {told}:
-        raise ValueError(
-            f"job {job} was served from {sorted(answered)} in lane {lane}, and the run pointed "
-            f"that lane at {told}: something re-pointed it while the batch was in flight, or a "
-            "remote proxy was started on other weights"
-        )
-
-
 def serves(origin: str, lane: LaneEndpoint, served: Served | None) -> None:
     """Raise `RuntimeError` unless the proxy at `origin`, which reports `served` for `lane`,
     serves it as the run made it: its model, rendered with each of its renderers."""
     if served is None:
         raise RuntimeError(
             f"the proxy at {origin} serves no lane for {lane.name}: start it with a lane for "
-            "each model on Tinker the trainer holds"
+            "each model on Tinker or Together that run.toml names"
         )
     if served.model != lane.model:
         raise RuntimeError(
@@ -300,8 +293,9 @@ def serves(origin: str, lane: LaneEndpoint, served: Served | None) -> None:
     if missing:
         has = ", ".join(served.renderers) or "its model's default alone"
         raise RuntimeError(
-            f"the proxy at {origin} renders lane {lane.name} with {has}, and [rollout] renderer "
-            f"names {', '.join(missing)}: start it with each of {', '.join(lane.renderers)}"
+            f"the proxy at {origin} renders lane {lane.name} with {has}, and [models.{lane.name}] "
+            f"renderers names {', '.join(missing)}: start it with each of "
+            f"{', '.join(lane.renderers)}"
         )
 
 
@@ -328,13 +322,17 @@ class ProviderEndpoint:
         named = self.model.startswith(f"{self.provider}/")
         return self.model if named else f"{self.provider}/{self.model}"
 
-    def connection(self, trial: Trial) -> Connection:
+    async def open(self, trial: Trial) -> Connection:
+        """Return what `trial`'s harness dials: the model under its provider. Nothing opens."""
+        return self.connection(trial)
+
+    def connection(self, trial: Trial, token: str = PREFLIGHT_TOKEN) -> Connection:
         """Return the model under its provider, for a harness to call with its own credentials."""
         return Connection(model=self.routed)
 
-    async def record(self, job: str, trials: Sequence[Trial]) -> None:
-        """Return None: the provider keeps no records for the run."""
-        return None
+    async def close(self, trial: Trial) -> Records:
+        """Return the records of a trial its provider served: none, as it keeps none for the run."""
+        return Records.unrecorded()
 
     def check(self, job: str, trials: Sequence[Trial]) -> None:
         """Do nothing: the run keeps no proxy for a provider's model, so none can fail it."""

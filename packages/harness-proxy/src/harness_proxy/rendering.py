@@ -15,7 +15,7 @@ from harness_proxy.vision import has_images, takes_images
 from harness_proxy.wire import model_input
 
 if TYPE_CHECKING:
-    from harness_proxy.recorder import Recorder
+    from harness_proxy.trial import Trial
 
 #: What Tinker's 400 for a prompt that does not fit says. A harness compacts its history on the
 #: refusal this becomes, so no other refusal may say it.
@@ -41,11 +41,10 @@ class Prompt:
         return self.rendered is not None
 
 
-async def complete(
-    call: Call, caller: Caller, renderer: Any, recorder: Recorder, default_max_tokens: int
-) -> Reply:
-    """Render the call, sample one reply through `recorder`, parse it, and index it for the
-    bridge; raise `Refused` if it cannot be sampled."""
+async def complete(call: Call, caller: Caller, trial: Trial, default_max_tokens: int) -> Reply:
+    """Render the call with the trial's renderer, sample one reply through the trial, parse it,
+    and index it for the bridge; raise `Refused` if it cannot be sampled."""
+    renderer = trial.renderer
     if call.tools:
         try:
             prefix = renderer.create_conversation_prefix_with_tools(
@@ -60,7 +59,7 @@ async def complete(
         messages = [Message(role="system", content=call.system), *call.messages]
     else:
         messages = list(call.messages)
-    prompt = render(messages, renderer, recorder.index_for(caller.trial))
+    prompt = render(messages, renderer, trial.index)
     stop: list[str] | list[int] = renderer.get_stop_sequences()
     string_stops = bool(stop) and isinstance(stop[0], str)
     if call.stop:
@@ -88,7 +87,7 @@ async def complete(
         raise Refused(f"invalid sampling parameters: {bad}") from None
     length = prompt.model_input.length
     try:
-        sampled = await recorder.sample(caller, prompt, params, requested_model=call.model)
+        sampled = await trial.sample(caller, prompt, params, requested_model=call.model)
     except tinker.BadRequestError as failed:
         if any(pattern.search(str(failed)) for pattern in _OVERFLOW):
             raise Refused(
@@ -115,8 +114,7 @@ async def complete(
             client_stop = True
             matched = call.stop[0] if len(call.stop) == 1 else None
     if sampled.seq is not None:
-        recorder.reply(
-            caller.trial,
+        trial.reply(
             sampled.seq,
             digest(message),
             ended_with_stop=bool(tokens) and int(tokens[-1]) in int_stops(renderer),

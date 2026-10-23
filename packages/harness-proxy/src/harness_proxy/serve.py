@@ -15,7 +15,7 @@ from typing import Any, TextIO
 from harness_proxy import wire
 from harness_proxy.server import Lane, Server
 from harness_proxy.tunnel import Tunnel
-from harness_proxy.wire import CONTROL_TOKEN_ENV, PROXY_TOKEN_ENV, new_token
+from harness_proxy.wire import CONTROL_TOKEN_ENV, new_token
 
 logger = logging.getLogger(__name__)
 
@@ -51,23 +51,20 @@ def document(
     *,
     lane: str,
     model: str | None,
-    weights: str | None,
     renderer: str | Sequence[str] | None,
 ) -> dict[str, Any]:
     """Return the run's `settings`, or, for a proxy started by hand with `--model`, the
-    document of its one lane, `lane`, which serves `weights` with `renderer`."""
+    document of its one lane, `lane`, rendered with `renderer`."""
     given = dict(settings or {})
     if not model:
-        if weights or renderer:
-            raise ValueError("--weights and --renderer describe the lane of a --model: name it")
+        if renderer:
+            raise ValueError("--renderer describes the lane of a --model: name it")
         return given
     if "lanes" in given:
         raise ValueError(
             "--model starts the proxy with one lane, and --settings lists its lanes: give one"
         )
     one: dict[str, Any] = {"name": lane, "model": model}
-    if weights:
-        one["weights"] = weights
     if renderer:
         one["renderer"] = renderer if isinstance(renderer, str) else list(renderer)
     return {**given, "lanes": [one]}
@@ -79,7 +76,6 @@ def server_for(
     bind: str,
     port: int,
     advertise: str | None,
-    token: str | None,
     control_token: str | None,
 ) -> Server:
     """Build the server the command-line flags and the run's document, `given`, describe: its
@@ -96,15 +92,14 @@ def server_for(
         host=advertised(bind, advertise),
         bind=bind,
         bind_port=int(port),
-        token=token or "",
-        control_token=control_token or None,
+        control_token=control_token or "",
         **{key: given[key] for key in SERVER_SETTINGS if key in given},
     )
 
 
 def lanes_of(given: Any) -> list[Lane]:
     """Build the lanes `--settings` lists, each complete: a `name`, a `model`, and any other
-    setting of its own, such as its `weights`, `renderer`, `temperature` or `backend`."""
+    setting of its own, such as its `renderer`, `temperature` or `backend`."""
     if not isinstance(given, list) or not given:
         raise ValueError(
             "a proxy serves a --model, or the lanes --settings lists, each with a name and a model"
@@ -136,8 +131,7 @@ def configure_logging(stream: TextIO = sys.stderr) -> None:
 
 def banner(server: Server) -> str:
     """Return the first line serve prints, which the run parses: the lanes, and the address."""
-    named = [lane.name for lane in server.lanes]
-    return wire.banner(named, server.host, server.port, control=bool(server.control_token))
+    return wire.banner([lane.name for lane in server.lanes], server.host, server.port)
 
 
 def say(line: str) -> None:
@@ -215,16 +209,14 @@ async def watching(
     return None
 
 
-def tokens_from_env(environ: Mapping[str, str] = os.environ) -> tuple[str, str, dict[str, str]]:
-    """Return `(token, control, generated)`: the tokens from the environment, else generated."""
-    generated: dict[str, str] = {}
-    token = environ.get(PROXY_TOKEN_ENV) or ""
-    if not token:
-        token = generated[PROXY_TOKEN_ENV] = new_token()
+def control_from_env(environ: Mapping[str, str] = os.environ) -> tuple[str, dict[str, str]]:
+    """Return `(control, generated)`: the control token from the environment, else generated
+    and named in `generated`, for serve to print."""
     control = environ.get(CONTROL_TOKEN_ENV) or ""
-    if not control:
-        control = generated[CONTROL_TOKEN_ENV] = new_token()
-    return token, control, generated
+    if control:
+        return control, {}
+    control = new_token()
+    return control, {CONTROL_TOKEN_ENV: control}
 
 
 def parser(prog: str = "harness-proxy") -> argparse.ArgumentParser:
@@ -236,7 +228,6 @@ def parser(prog: str = "harness-proxy") -> argparse.ArgumentParser:
         "--model",
         help="the base model of the one lane this proxy serves; or list lanes in --settings",
     )
-    made.add_argument("--weights", help="a tinker:// path to serve (default: the base model)")
     made.add_argument(
         "--lane", default=LANE, help=f"the name an address gives that lane (default: {LANE})"
     )
@@ -266,7 +257,7 @@ def parser(prog: str = "harness-proxy") -> argparse.ArgumentParser:
         type=json.loads,
         metavar="JSON",
         help="the run's document, as a JSON object: its lanes, each a name, a model and its "
-        "own settings (weights, renderer, temperature, top_p, top_k, max_tokens, max_context, "
+        "own settings (renderer, temperature, top_p, top_k, max_tokens, max_context, "
         "fill_context, metadata, backend, session); and keepalive_grace, keepalive_every",
     )
     return made
@@ -276,22 +267,11 @@ def main(argv: list[str] | None = None, prog: str = "harness-proxy") -> int:
     """Build the server and serve until signalled; return 2 if the server cannot be built."""
     configure_logging()
     args = parser(prog).parse_args(argv)
-    token, control, generated = tokens_from_env()
+    control, generated = control_from_env()
     try:
-        given = document(
-            args.settings,
-            lane=args.lane,
-            model=args.model,
-            weights=args.weights,
-            renderer=args.renderer,
-        )
+        given = document(args.settings, lane=args.lane, model=args.model, renderer=args.renderer)
         server = server_for(
-            given,
-            bind=args.bind,
-            port=args.port,
-            advertise=args.advertise,
-            token=token,
-            control_token=control,
+            given, bind=args.bind, port=args.port, advertise=args.advertise, control_token=control
         )
     except ValueError as refused:
         say(str(refused))

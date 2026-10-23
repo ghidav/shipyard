@@ -1,23 +1,23 @@
 # DAPO on Reasoning Gym's easy split: 16 tasks a step, 8 trials each. Run it with trainer.py.
-[agent]
+[models.agent]
 model = "Qwen/Qwen3-8B"
-harness = "pi@0.85.1"
+learning_rate = 2e-5
+lora_rank = 32
+max_tokens = 8192
 
 [data]
 train = "reasoning-gym-easy"
 batch_size = 16
-group_size = 8
 
 [rollout]
-sandbox = "modal"
+sandbox = "together"
 concurrency = 32
 setup_timeout = 900
-max_tokens = 8192
 
 [recipe]
-learning_rate = 2e-5
 steps = 100
-lora_rank = 32
+harness = "pi@0.85.1"
+group_size = 8
 # The paper's 16 mini-batches a step, and its clip-higher: 0.2 below 1, 0.28 above.
 substeps = 16
 clip_low = 0.2

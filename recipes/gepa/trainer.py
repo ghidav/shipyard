@@ -3,14 +3,14 @@ modules the agent carries, its prompt and skills, that takes no gradient step.
 
 `gepa.optimize` runs the search. Each time it scores a candidate on some tasks, the agent is
 rolled out on them as one job carrying the candidate's modules, and a task scores its mean
-reward. To propose a candidate, the reflector, `[recipe.reflector]`, is rolled out through its
-own harness at a task written for each module to rewrite (`reflect.py`): it reads the module
-and a few tasks' attempts as files, and rewrites the module in place. The best candidate is
-kept in the run as `modules/best/`, in the layout `[agent] modules` reads, and every job after
-the search carries it, the test set's included.
+reward. To propose a candidate, the reflector, `[models.reflector]`, is rolled out through
+`[recipe] reflector_harness` at a task written for each module to rewrite (`reflect.py`): it
+reads the module and a few tasks' attempts as files, and rewrites the module in place. The
+best candidate is kept in the run as `modules/best/`, in the layout the config's `modules`
+reads, and every job after the search carries it, the test set's included.
 
 It searches for any agent: one Tinker serves, which this run never trains, or a provider's,
-with `[agent] provider`. It needs the `gepa` extra, and `[recipe] steps = 1`."""
+with `[models.agent] provider`. It needs the `gepa` extra, and `[recipe] steps = 1`."""
 
 from __future__ import annotations
 
@@ -25,9 +25,9 @@ from typing import Any
 import gepa
 from gepa import EvaluationBatch
 
-from shipyard import Blueprint, Group, Inadmissible, Model, Modules, Trainer
+from shipyard import Config, Group, Harness, Inadmissible, Modules, Trainer
 
-from .reflect import Reflector, reflection, rewritten
+from .reflect import reflection, rewritten
 
 #: Where the run keeps the reflector's tasks, under its `gepa/`: one folder per proposal.
 REFLECTIONS = "reflections"
@@ -38,9 +38,12 @@ Wait = Callable[[Coroutine[Any, Any, Any]], Any]
 
 class GEPATrainer(Trainer):
     class Recipe(Trainer.Recipe):
-        #: The model that rewrites the modules, and the harness it runs through.
-        reflector: Reflector
-        #: The most task evaluations the search may run, each `[data] group_size` trials.
+        #: The harness the agent runs through, and its trials per task in a rollout.
+        harness: Harness
+        group_size: int
+        #: The harness the reflector, `[models.reflector]`, rewrites the modules through.
+        reflector_harness: Harness
+        #: The most task evaluations the search may run, each `group_size` trials.
         budget: int
         #: How many tasks a reflection reads.
         minibatch: int
@@ -48,14 +51,13 @@ class GEPATrainer(Trainer):
         #: thirds of them, as in the paper.
         pareto: int | None = None
 
-    def __init__(self, config: Blueprint, directory: Path) -> None:
+    def __init__(self, config: Config, directory: Path) -> None:
         super().__init__(config, directory)
         if self.state.modules is None:
-            raise ValueError("GEPA searches the modules the agent carries: set [agent] modules")
+            raise ValueError("GEPA searches the modules the agent carries: set `modules`")
         # A search: the proxy serves the agent as it is, and no training client opens.
-        self.agent.training = False
-        held = self.recipe.reflector
-        self.reflector = Model(held.model, provider=held.provider)
+        self.agent = self.models["agent"]
+        self.reflector = self.models["reflector"]
 
     async def step(self) -> None:
         loop, seed = asyncio.get_running_loop(), self.state.modules
@@ -92,6 +94,15 @@ class GEPATrainer(Trainer):
             reflections=adapter.proposed,
         )
 
+    async def evaluate(self, tasks: list[Path]) -> list[Group]:
+        return await self.rollout(
+            tasks,
+            model=self.agent,
+            harness=self.recipe.harness,
+            attempts=self.recipe.group_size,
+            modules=self.state.modules,
+        )
+
 
 class Rollouts:
     """GEPA's adapter. A candidate's score on some tasks is a job of the agent's trials
@@ -116,11 +127,18 @@ class Rollouts:
             logging.getLogger("gepa").warning("a proposal scores 0: %s", refused)
             groups = [Group(task, []) for task in tasks]
         else:
-            groups = self.wait(self.trainer.rollout(tasks, modules=modules, purpose="search"))
-        # A task's groups, one per renderer and harness, scored as one.
-        found: dict[Path, Group] = {}
-        for group in groups:
-            found.setdefault(group.task, Group(group.task, [])).trials.extend(group.trials)
+            trainer = self.trainer
+            groups = self.wait(
+                trainer.rollout(
+                    tasks,
+                    model=trainer.agent,
+                    harness=trainer.recipe.harness,
+                    attempts=trainer.recipe.group_size,
+                    modules=modules,
+                    purpose="search",
+                )
+            )
+        found = {group.task: group for group in groups}
         each = [found[task] for task in batch]
         return EvaluationBatch(
             outputs=[group.rewards for group in each],
@@ -160,15 +178,13 @@ class Rollouts:
             reflection(home / f"{at:02d}", name, candidate[name], reflective_dataset[name]): name
             for at, name in enumerate(components_to_update)
         }
-        held = self.trainer.recipe.reflector
         groups = self.wait(
             self.trainer.rollout(
                 list(tasks),
-                attempts=1,
                 model=self.trainer.reflector,
-                harness=held.harness,
-                env=held.env,
-                kwargs=held.kwargs,
+                harness=self.trainer.recipe.reflector_harness,
+                attempts=1,
+                modules=None,
                 purpose="reflection",
             )
         )

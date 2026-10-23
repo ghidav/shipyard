@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 
 from shipyard.run import files
-from shipyard.run.logs import AGENT
 
 
 @dataclass(frozen=True)
@@ -53,15 +52,13 @@ class Checkpoint:
 
     @classmethod
     def of(cls, row: Mapping[str, Any]) -> Checkpoint:
-        """Read a `checkpoints.jsonl` row, of any age: one written before saves were named by role
-        names the agent's alone, and one written before they were named for what they hold
-        calls them `weights` and `sampler`."""
+        """Read a `checkpoints.jsonl` row."""
         return cls(
             row["tag"],
             row["step"],
             row.get("state"),
-            _by_role(row.get("training_state", row.get("weights"))),
-            _by_role(row.get("sampler_weights", row.get("sampler"))),
+            dict(row.get("training_state") or {}),
+            dict(row.get("sampler_weights") or {}),
             row.get("ttl_hours"),
         )
 
@@ -94,10 +91,3 @@ def found(directory: Path, tag: str = "last") -> Checkpoint:
         tags = ", ".join(one["tag"] for one in rows) or "none"
         raise ValueError(f"{directory.name} has no checkpoint {tag!r}; it has {tags}")
     return Checkpoint.of(row)
-
-
-def _by_role(saved: Any) -> dict[str, str]:
-    """Return saves by role: as they are, or one path as the agent's, or none."""
-    if isinstance(saved, Mapping):
-        return {str(role): str(path) for role, path in saved.items()}
-    return {AGENT: str(saved)} if saved else {}

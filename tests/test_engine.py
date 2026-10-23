@@ -17,7 +17,7 @@ from harbor.models.trial.config import AgentConfig, TrialConfig
 from harbor.utils.env import redact_sensitive_value
 
 from proxies import MODEL, made
-from shipyard.config import Blueprint, Rollout
+from shipyard.config import Config, Rollout
 from shipyard.groups import Connection, Trial
 from shipyard.jobs.admit import ENV_ERROR
 from shipyard.jobs.engine import (
@@ -32,12 +32,11 @@ from shipyard.jobs.engine import (
     laid_over,
     quiet_litellm,
 )
-from shipyard.jobs.harnesses import harness
+from shipyard.jobs.harnesses import Harness
 from shipyard.jobs.modules import PROMPT_TEMPLATE, Module, Modules
 from shipyard.jobs.secrets import Pool, Secrets
-from shipyard.models.endpoints import ProviderEndpoint
+from shipyard.models.endpoints import LaneEndpoint, ProviderEndpoint, ProxyEndpoint
 from tests.fakes import FakeProxy, FakeTrials, write_result
-from tests.test_endpoints import agent
 
 NAME = "BAUPLAN_API_KEY"
 #: Pool keys longer than eight characters, so Harbor's redacted form of each is distinct.
@@ -62,19 +61,11 @@ def _batch(tmp_path: Path, *names: str) -> list[Path]:
 
 
 def _engine(
-    tmp_path: Path,
-    runner: Any,
-    *,
-    secrets: Secrets | None = None,
-    env: Mapping[str, str] | None = None,
-    kwargs: Mapping[str, Any] | None = None,
-    **rollout: Any,
+    tmp_path: Path, runner: Any, *, secrets: Secrets | None = None, **rollout: Any
 ) -> HarborEngine:
-    """Build an engine from `[rollout]` fields; `env` and `kwargs` are the harness's settings."""
+    """Build an engine from `[rollout]` fields."""
     table = {"sandbox": "docker", "concurrency": 4, "jobs_dir": str(tmp_path / "jobs")}
-    return HarborEngine(
-        Rollout(**{**table, **rollout}), env=env, kwargs=kwargs, secrets=secrets, run_trial=runner
-    )
+    return HarborEngine(Rollout(**{**table, **rollout}), secrets=secrets, run_trial=runner)
 
 
 async def _run(
@@ -83,44 +74,47 @@ async def _run(
     tasks: list[Path],
     attempts: int,
     *,
-    deployed: str = "pi",
+    deployed: str | Harness = "pi",
     endpoint: Any = PROVIDER,
     modules: Modules | None = None,
 ) -> Job:
-    job = Job(name, modules=modules, harness=harness(deployed))
+    """Run the job `name` through `deployed`, a harness or its name."""
+    job = Job(name, modules=modules, harness=Harness.model_validate(deployed))
     return await engine.run(job, tasks, attempts, endpoint=endpoint)
 
 
-def served(**rollout: Any) -> Blueprint:
-    """A blueprint with `[rollout]` from the keywords."""
-    return Blueprint.model_validate(
+def lane(tmp_path: Path, proxy: FakeProxy, **model: Any) -> LaneEndpoint:
+    """The agent's lane of a run's proxy, made as the run makes it from `[models.agent]` with
+    the keywords."""
+    config = Config.model_validate(
         {
-            "agent": {"model": MODEL, "harness": "pi@0.85.1"},
+            "models": {"agent": {"model": MODEL, **model}},
             "data": {"train": "d", "batch_size": 1},
-            "rollout": rollout,
-            "recipe": {"steps": 1, "learning_rate": 1e-5},
+            "recipe": {"steps": 1},
         }
+    )
+    table = config.models["agent"]
+    return ProxyEndpoint(config, tmp_path, proxy=proxy).lane(
+        "agent",
+        table.model,
+        renderers=table.renderers,
+        max_context=table.max_context or None,
+        sampling=table.sampling,
     )
 
 
 async def test_configs_are_built_in_plan_order_with_harbors_fields(tmp_path: Path) -> None:
     harbor = FakeTrials()
     batch = _batch(tmp_path, "alpha", "beta")
-    engine = _engine(
-        tmp_path,
-        harbor,
-        env={"API_KEY": "k"},
-        kwargs={"thinking": "high"},
-        setup_timeout=360.0,
-        timeout=1800.0,
-    )
-    pi = harness("pi@0.85.1")
-    job = Job("run-0000", harness=pi)
+    engine = _engine(tmp_path, harbor, setup_timeout=360.0, timeout=1800.0)
+    pi = Harness(name="pi@0.85.1")
+    job = Job("run-0000", harness=pi, renderer="low", role="agent")
     found = await engine.run(job, batch, 3, endpoint=PROVIDER)
     assert found is job and len(job.trials) == 6
     assert {one.job for one in job.trials} == {"run-0000"}
     assert [one.task for one in job.trials] == [batch[0]] * 3 + [batch[1]] * 3
     assert all(one.harness is pi for one in job.trials)
+    assert {(one.renderer, one.role) for one in job.trials} == {("low", "agent")}, "the job's"
     assert (
         sorted(config.task.path.name for config in harbor.configs) == ["alpha"] * 3 + ["beta"] * 3
     )
@@ -129,8 +123,7 @@ async def test_configs_are_built_in_plan_order_with_harbors_fields(tmp_path: Pat
         assert config.trials_dir == tmp_path / "jobs" / "run-0000"
         assert config.agent.name == "pi" and config.agent.import_path is None
         assert config.agent.model_name == "anthropic/some-model"
-        assert config.agent.kwargs == {"version": "0.85.1", "thinking": "high"}
-        assert config.agent.env == {"API_KEY": "k"}
+        assert config.agent.kwargs == {"version": "0.85.1"} and config.agent.env == {}
         assert config.agent.override_setup_timeout_sec == 360.0
         assert config.agent.override_timeout_sec == 1800.0
         assert config.environment.type == EnvironmentType.DOCKER
@@ -144,19 +137,15 @@ async def test_configs_are_built_in_plan_order_with_harbors_fields(tmp_path: Pat
     assert {one.name for one in job.trials} == {c.trial_name for c in harbor.configs}
 
 
-async def test_every_job_of_an_engine_runs_under_its_tables_on_its_sandbox(
+async def test_every_job_of_an_engine_runs_under_its_timeouts_on_its_sandbox(
     tmp_path: Path,
 ) -> None:
     harbor = FakeTrials()
     batch = _batch(tmp_path, "alpha")
-    engine = _engine(
-        tmp_path, harbor, sandbox="modal", env={"A": "1"}, kwargs={"max_turns": 10}, timeout=900.0
-    )
+    engine = _engine(tmp_path, harbor, sandbox="modal", timeout=900.0)
     await _run(engine, "j0", batch, 1, deployed="pi@0.85.1")
-    await _run(engine, "j1", batch, 1, deployed="pi@0.85.1")
+    await _run(engine, "j1", batch, 1, deployed="claude-code")
     for config in harbor.configs:
-        assert config.agent.env == {"A": "1"}
-        assert config.agent.kwargs == {"version": "0.85.1", "max_turns": 10}
         assert config.agent.override_setup_timeout_sec is None
         assert config.agent.override_timeout_sec == 900.0
         assert config.environment.type == EnvironmentType.MODAL
@@ -173,24 +162,34 @@ async def test_each_job_runs_the_harness_it_is_given(tmp_path: Path) -> None:
     by_name = {c.trial_name: c for c in harbor.configs}
     for job, named, kwargs in ((pinned, "pi", {"version": "0.85.1"}), (bare, "opencode", {})):
         assert [one.task.name for one in job.trials] == ["alpha", "alpha", "beta", "beta"]
-        assert {one.harness.name for one in job.trials} == {named}
+        assert {one.harness.bare for one in job.trials} == {named}
         assert {by_name[one.name].agent.name for one in job.trials} == {named}
         assert all(by_name[one.name].agent.kwargs == kwargs for one in job.trials)
 
 
-async def test_the_harness_pin_is_split_and_a_colon_name_is_left_whole(tmp_path: Path) -> None:
+async def test_the_agent_config_takes_the_harnesss_bare_name_version_env_and_kwargs(
+    tmp_path: Path,
+) -> None:
+    """Harbor installs the bare agent at the version the name pins, with the harness's own env
+    and kwargs; a kwarg of its own wins over the pin."""
     batch = _batch(tmp_path, "alpha")
-    harbor = FakeTrials()
-    await _run(_engine(tmp_path, harbor), "j", batch, 1, deployed="pi")
-    assert harbor.configs[0].agent.name == "pi" and harbor.configs[0].agent.kwargs == {}
-    harbor = FakeTrials()
-    await _run(_engine(tmp_path, harbor), "j", batch, 1, deployed="acp:some.module:Agent@1")
-    assert harbor.configs[0].agent.name == "acp:some.module:Agent@1"
-    assert harbor.configs[0].agent.kwargs == {}
-    harbor = FakeTrials()
-    engine = _engine(tmp_path, harbor, kwargs={"version": "0.90"})
-    await _run(engine, "j", batch, 1, deployed="pi@0.85.1")
-    assert harbor.configs[0].agent.kwargs == {"version": "0.90"}
+
+    async def built(deployed: Harness) -> AgentConfig:
+        harbor = FakeTrials()
+        await _run(_engine(tmp_path, harbor), "j", batch, 1, deployed=deployed)
+        return harbor.configs[0].agent
+
+    own = Harness(name="pi@0.85.1", env={"API_KEY": "k"}, kwargs={"thinking": "high"})
+    agent = await built(own)
+    assert (agent.name, agent.import_path) == ("pi", None)
+    assert agent.kwargs == {"version": "0.85.1", "thinking": "high"}
+    assert agent.env == {"API_KEY": "k"}
+    agent = await built(Harness(name="pi"))
+    assert (agent.name, agent.kwargs, agent.env) == ("pi", {}, {}), "no pin, no version"
+    agent = await built(Harness(name="acp:some.module:Agent@1"))
+    assert (agent.name, agent.kwargs) == ("acp:some.module:Agent@1", {}), "a path is left whole"
+    agent = await built(Harness(name="pi@0.85.1", kwargs={"version": "0.90"}))
+    assert agent.kwargs == {"version": "0.90"}
 
 
 async def test_a_trial_that_could_not_run_keeps_its_slot_and_is_masked(tmp_path: Path) -> None:
@@ -230,9 +229,8 @@ async def test_a_job_that_could_not_happen_is_refused_before_anything_is_written
     harbor = FakeTrials()
     engine = _engine(tmp_path, harbor)
     batch = _batch(tmp_path, "alpha")
-    for named in ("", "   "):
-        with pytest.raises(ValueError, match="oracle"):
-            await _run(engine, "j", batch, 1, deployed=named)
+    with pytest.raises(ValueError, match="job j names no harness"):
+        await engine.run(Job("j"), batch, 1, endpoint=PROVIDER)
     with pytest.raises(ValueError, match="attempts"):
         await _run(engine, "j", batch, 0)
     with pytest.raises(ValueError, match="names no task"):
@@ -326,11 +324,11 @@ async def test_each_trial_holds_the_endpoints_records_of_it_and_is_judged_with_t
     proxy = FakeProxy(
         answers={"alpha": [made("one", "ok"), made("oneok", "two", seq=2)], "beta": []}
     )
-    endpoint = agent(served(), tmp_path, proxy=proxy)
+    endpoint = lane(tmp_path, proxy)
     batch = _batch(tmp_path, "alpha", "beta")
     job = await _run(_engine(tmp_path, FakeTrials()), "j", batch, 1, endpoint=endpoint)
     alpha, beta = job.trials
-    assert proxy.fetched == [alpha.name, beta.name]
+    assert sorted(proxy.closed) == sorted([alpha.name, beta.name]), "each closed for its records"
     assert [one.seq for one in alpha.records] == [1, 2] and list(beta.records) == []
     assert alpha.reward == 1.0, "graded by its result.json"
     assert beta.verdict is not None and beta.verdict.mask == ENV_ERROR, "it never reached the proxy"
@@ -349,9 +347,10 @@ async def test_a_jobs_modules_are_delivered_beside_its_trials_and_laid_into_the_
         }
     )
     harbor = FakeTrials()
-    engine = _engine(tmp_path, harbor, kwargs={"thinking": "high"})
+    engine = _engine(tmp_path, harbor)
+    pi = Harness(name="pi@0.85.1", kwargs={"thinking": "high"})
     batch = _batch(tmp_path, "alpha")
-    await _run(engine, "j", batch, 2, deployed="pi@0.85.1", modules=modules)
+    await _run(engine, "j", batch, 2, deployed=pi, modules=modules)
     home = (tmp_path / "jobs" / "j" / DELIVERED).resolve()
     template = home / PROMPT_TEMPLATE
     for config in harbor.configs:
@@ -363,7 +362,7 @@ async def test_a_jobs_modules_are_delivered_beside_its_trials_and_laid_into_the_
         assert config.agent.skills == [str(home / "skills")]
     assert "Be brief." in template.read_text(encoding="utf-8")
     assert (home / "skills" / "tidy" / "SKILL.md").read_text(encoding="utf-8") == skill
-    await _run(engine, "k", batch, 1, deployed="pi@0.85.1")
+    await _run(engine, "k", batch, 1, deployed=pi)
     assert harbor.configs[-1].agent.kwargs == {"version": "0.85.1", "thinking": "high"}
     assert harbor.configs[-1].agent.skills == []
     assert not (tmp_path / "jobs" / "k" / DELIVERED).exists()
@@ -514,43 +513,43 @@ def _config(tmp_path: Path, task: str, deployed: str = "pi", **agent: Any) -> Tr
     return _trial_config(
         tmp_path / "tasks" / task,
         trials_dir=tmp_path / "jobs" / "j",
-        agent=AgentConfig(name=harness(deployed).name, model_name="m", **agent),
+        agent=AgentConfig(name=Harness(name=deployed).bare, model_name="m", **agent),
         sandbox="docker",
     )
 
 
-def _dialled(
-    tmp_path: Path, proxy: FakeProxy, config: TrialConfig, deployed: str, **rollout: Any
+async def _dialled(
+    tmp_path: Path, proxy: FakeProxy, config: TrialConfig, deployed: str, **model: Any
 ) -> Connection:
-    """Return the connection a served trial of `config` under harness `deployed` dials."""
+    """Return the connection a trial of `config` under harness `deployed` dials once opened,
+    its model's `[models.agent]` given the keywords."""
     trial = Trial(
-        "j", Path(config.task.path), harness(deployed), tmp_path / "jobs" / "j" / config.trial_name
+        "j",
+        Path(config.task.path),
+        Harness(name=deployed),
+        tmp_path / "jobs" / "j" / config.trial_name,
     )
-    return agent(served(**rollout), tmp_path, proxy=proxy).connection(trial)
+    return await lane(tmp_path, proxy, **model).open(trial)
 
 
-async def test_every_trial_is_pointed_at_the_address_that_names_it(tmp_path: Path) -> None:
+async def test_every_trial_dials_the_proxy_with_the_token_it_was_opened_with(
+    tmp_path: Path,
+) -> None:
     harbor = FakeTrials()
-    proxy = FakeProxy(origin="http://host.docker.internal:8000", token="secret")
-    engine = _engine(
-        tmp_path,
-        harbor,
-        env={"OPENAI_BASE_URL": "https://api.openai.com/v1", "HTTPS_PROXY": "corp"},
-    )
-    endpoint = agent(served(), tmp_path, proxy=proxy)
+    proxy = FakeProxy(origin="http://host.docker.internal:8000")
+    own = {"OPENAI_BASE_URL": "https://api.openai.com/v1", "HTTPS_PROXY": "corp"}
+    pi = Harness(name="pi@0.85.1", env=own)
+    endpoint = lane(tmp_path, proxy)
     batch = _batch(tmp_path, "alpha", "beta")
-    job = await _run(engine, "j", batch, 2, deployed="pi@0.85.1", endpoint=endpoint)
+    job = await _run(_engine(tmp_path, harbor), "j", batch, 2, deployed=pi, endpoint=endpoint)
     assert len(harbor.configs) == 4
-    addresses = [config.agent.env["OPENAI_BASE_URL"] for config in harbor.configs]
-    # Every trial is addressed, and so is the job's preflight, once.
-    named = [c.trial_name for c in harbor.configs]
-    assert len(set(addresses)) == 4 and sorted(proxy.addressed) == sorted([*named, "preflight"])
-    for config, address in zip(harbor.configs, addresses, strict=True):
-        assert (
-            address == f"http://host.docker.internal:8000/r/lane/agent/trial/{config.trial_name}/v1"
-        )
-        assert config.agent.env["OPENAI_API_KEY"] == "secret"
-        assert config.agent.env["HTTPS_PROXY"] == "corp", "the job's other env survives"
+    named = sorted(c.trial_name for c in harbor.configs)
+    assert sorted(name for name, *_ in proxy.opened) == named, "each trial, and no preflight"
+    assert sorted(proxy.closed) == named
+    for config in harbor.configs:
+        assert config.agent.env["OPENAI_BASE_URL"] == "http://host.docker.internal:8000/v1"
+        assert config.agent.env["OPENAI_API_KEY"] == f"token-{config.trial_name}"
+        assert config.agent.env["HTTPS_PROXY"] == "corp", "the harness's other env survives"
         assert config.agent.kwargs == {"version": "0.85.1", "model_api": "openai-completions"}
         assert config.agent.model_name == f"openai/{MODEL}"
         assert config.agent.extra_allowed_hosts == []
@@ -565,7 +564,7 @@ async def test_a_job_lets_the_trials_of_an_allowlisted_task_reach_the_proxys_hos
     )
     public = _task_toml(tmp_path, "public", '[environment]\nnetwork_mode = "public"\n')
     harbor = FakeTrials()
-    endpoint = agent(served(), tmp_path, proxy=FakeProxy(origin="https://p.example:8443"))
+    endpoint = lane(tmp_path, FakeProxy(origin="https://p.example:8443"))
     await _run(_engine(tmp_path, harbor), "j", [allow, public], 1, endpoint=endpoint)
     hosts = {c.task.path.name: c.agent.extra_allowed_hosts for c in harbor.configs}
     assert hosts == {"allow": ["p.example"], "public": []}
@@ -574,16 +573,20 @@ async def test_a_job_lets_the_trials_of_an_allowlisted_task_reach_the_proxys_hos
     assert harbor.configs[0].agent.extra_allowed_hosts == [], "a provider's model has no host"
 
 
-def test_terminus_2_whose_calls_harbor_makes_here_dials_the_proxys_own_address(
+async def test_terminus_2_whose_calls_harbor_makes_here_dials_the_proxys_own_address(
     tmp_path: Path,
 ) -> None:
     """Its litellm runs in this process, which neither the trial env nor the container's name
-    for the proxy reaches: the proxy's loopback address and its token go in as options."""
-    proxy = FakeProxy(origin="https://x.trycloudflare.com", token="k")
+    for the proxy reaches: the proxy's loopback address and the trial's token go in as
+    options."""
+    proxy = FakeProxy(origin="https://x.trycloudflare.com")
     config = _config(tmp_path, "alpha", deployed="terminus-2")
-    dialled = _dialled(tmp_path, proxy, config, "terminus-2")
-    address = f"http://127.0.0.1:8000/r/lane/agent/trial/{config.trial_name}/v1"
-    assert dialled.kwargs == {"api_base": address, "llm_call_kwargs": {"api_key": "k"}}
+    dialled = await _dialled(tmp_path, proxy, config, "terminus-2")
+    token = f"token-{config.trial_name}"
+    assert dialled.kwargs == {
+        "api_base": "http://127.0.0.1:8000/v1",
+        "llm_call_kwargs": {"api_key": token},
+    }
 
 
 async def test_a_task_with_no_network_is_refused_unless_the_harness_calls_from_here(
@@ -603,45 +606,49 @@ async def test_a_config_the_harness_refuses_fails_the_job_once_before_any_trial(
     tmp_path: Path,
 ) -> None:
     runner = FakeTrials()
-    engine = _engine(tmp_path, runner, kwargs={"prompt_template_path": "/m/PROMPT.md"})
+    terminus = Harness(name="terminus-2", kwargs={"prompt_template_path": "/m/PROMPT.md"})
+    batch = _batch(tmp_path, "alpha", "beta")
     with pytest.raises(ValueError, match="the terminus-2 harness refuses its config") as refused:
-        await _run(engine, "j", _batch(tmp_path, "alpha", "beta"), 2, deployed="terminus-2")
+        await _run(_engine(tmp_path, runner), "j", batch, 2, deployed=terminus)
     assert "Unknown option 'prompt_template_path'" in str(refused.value)
     assert runner.configs == [], "no trial started"
 
 
-def test_claude_code_is_handed_the_anthropic_wire_without_the_v1(tmp_path: Path) -> None:
-    proxy = FakeProxy(origin="https://x.trycloudflare.com", token="k")
+async def test_claude_code_is_handed_the_anthropic_wire_without_the_v1(tmp_path: Path) -> None:
+    proxy = FakeProxy(origin="https://x.trycloudflare.com")
     config = _config(tmp_path, "alpha", deployed="claude-code", env={"KEEP": "1"})
-    pointed = connected(config, _dialled(tmp_path, proxy, config, "claude-code", fill_context=True))
+    dialled = await _dialled(tmp_path, proxy, config, "claude-code", fill_context=True)
+    pointed = connected(config, dialled)
     assert pointed.agent.env == {
         "KEEP": "1",
         "DISABLE_COMPACT": "1",
         "DISABLE_AUTO_COMPACT": "1",
-        "ANTHROPIC_BASE_URL": f"https://x.trycloudflare.com/r/lane/agent/trial/{config.trial_name}",
-        "ANTHROPIC_API_KEY": "k",
+        "ANTHROPIC_BASE_URL": "https://x.trycloudflare.com",
+        "ANTHROPIC_API_KEY": f"token-{config.trial_name}",
     }
     assert pointed.agent.kwargs == {} and pointed.agent.name == "claude-code"
     assert pointed.agent.model_name == f"anthropic/{MODEL}"
-    plain = connected(config, _dialled(tmp_path, proxy, config, "claude-code"))
+    plain = connected(config, await _dialled(tmp_path, proxy, config, "claude-code"))
     assert "DISABLE_COMPACT" not in plain.agent.env, "the profile's env only when filling"
     assert config.agent.env == {"KEEP": "1"}, "the job's config was not written into"
 
 
-def test_opencode_gets_its_providers_env_and_keeps_a_blueprints_own_config(
+async def test_opencode_gets_its_providers_env_and_keeps_a_configs_own_config(
     tmp_path: Path,
 ) -> None:
-    """The trial receives the env that the profile's opencode config names. A blueprint's own
+    """The trial receives the env that the profile's opencode config names. A config's own
     `opencode_config` keeps its keys, and the profile's keys win where both set one."""
-    proxy = FakeProxy(origin="http://host.docker.internal:8000", token="k")
+    proxy = FakeProxy(origin="http://host.docker.internal:8000")
     mine = {
         "provider": {"shipyard": {"models": {MODEL: {"limit": {"context": 32768}}}}},
         "agent": {"title": {"disable": False}, "build": {"steps": 40}},
     }
     config = _config(tmp_path, "alpha", deployed="opencode", kwargs={"opencode_config": mine})
-    pointed = connected(config, _dialled(tmp_path, proxy, config, "opencode"))
-    address = f"http://host.docker.internal:8000/r/lane/agent/trial/{config.trial_name}/v1"
-    assert pointed.agent.env == {"SHIPYARD_BASE_URL": address, "SHIPYARD_API_KEY": "k"}
+    pointed = connected(config, await _dialled(tmp_path, proxy, config, "opencode"))
+    assert pointed.agent.env == {
+        "SHIPYARD_BASE_URL": "http://host.docker.internal:8000/v1",
+        "SHIPYARD_API_KEY": f"token-{config.trial_name}",
+    }
     merged = pointed.agent.kwargs["opencode_config"]
     assert merged["provider"]["shipyard"] == {
         "npm": "@ai-sdk/openai-compatible",
@@ -653,7 +660,7 @@ def test_opencode_gets_its_providers_env_and_keeps_a_blueprints_own_config(
     assert "npm" not in str(config.agent.kwargs) and "npm" not in str(mine), "nothing written into"
     merged["agent"]["title"]["disable"] = False
     merged["provider"]["shipyard"]["env"].append("LEAKED")
-    again = connected(config, _dialled(tmp_path, proxy, config, "opencode")).agent.kwargs
+    again = connected(config, await _dialled(tmp_path, proxy, config, "opencode")).agent.kwargs
     assert again["opencode_config"]["agent"]["title"]["disable"] is True, "the profile is intact"
     shipyard = again["opencode_config"]["provider"]["shipyard"]
     assert shipyard["env"] == ["SHIPYARD_API_KEY"], "a list is copied too"
@@ -700,3 +707,13 @@ def test_a_task_in_allowlist_mode_gets_the_proxys_host(tmp_path: Path) -> None:
     assert connected(had, dialled).agent.extra_allowed_hosts == ["host.docker.internal", "pypi.org"]
     assert connected(_config(tmp_path, "public"), dialled).agent.extra_allowed_hosts == []
     assert connected(_config(tmp_path, "allow"), Connection("m")).agent.extra_allowed_hosts == []
+
+
+def test_a_sandbox_whose_package_is_missing_is_refused_when_the_engine_is_made(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("shipyard.jobs.engine.find_spec", lambda name: None)
+    with pytest.raises(ValueError, match=r'sandbox = "modal" needs the modal package'):
+        HarborEngine(Rollout(sandbox="modal"))
+    HarborEngine(Rollout(sandbox="docker"))  # nothing beyond Harbor itself
+    HarborEngine(Rollout(sandbox="modal"), run_trial=FakeTrials())  # a stand-in starts none

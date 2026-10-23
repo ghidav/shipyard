@@ -1,5 +1,6 @@
 """Tests for `shipyard.run.checkpoint`: a checkpoint saves the trainer's state beside its row,
-reads rows of every age, and is found by its tag; and for `resumed`, which goes on from one."""
+which reads back as the checkpoint, and is found by its tag; and for `resumed`, which goes on
+from one."""
 
 from __future__ import annotations
 
@@ -10,7 +11,7 @@ import pytest
 from shipyard.run import files
 from shipyard.run.checkpoint import Checkpoint, found
 from shipyard.run.directory import open_run, resumed
-from tests.runs import blueprint
+from tests.runs import GRPO_FILE, run_toml
 
 
 def test_a_checkpoint_saves_the_state_beside_its_row(tmp_path: Path) -> None:
@@ -47,14 +48,6 @@ def test_a_checkpoint_saves_the_state_beside_its_row(tmp_path: Path) -> None:
     assert [Checkpoint.of(row) for row in rows] == [made, kept]
 
 
-def test_a_row_from_before_saves_were_named_by_role_reads_as_the_agents() -> None:
-    old = {"tag": "step-1", "step": 1, "weights": "tinker://w/1", "sampler": None}
-    read = Checkpoint.of(old)
-    assert read.state is None and read.sampler_weights == {}
-    assert read.training_state == {"agent": "tinker://w/1"}
-    assert read.saved_state(Path("anywhere")) == {}, "no state to read"
-
-
 def test_a_checkpoint_is_found_by_its_tag_or_as_the_last(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="has no checkpoint 'last'; it has none"):
         found(tmp_path)
@@ -69,7 +62,7 @@ def test_a_run_goes_on_from_a_checkpoint_until_its_last_step(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    origin, config = open_run(blueprint(tmp_path), root=tmp_path / "runs")
+    origin, config = open_run(run_toml(tmp_path), root=tmp_path / "runs", trainer=GRPO_FILE)
     assert config.recipe.steps == 2
     Checkpoint.save(origin, "step-1", 1, {"steps": 1})
     going = resumed(origin)

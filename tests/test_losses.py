@@ -10,16 +10,15 @@ from pathlib import Path
 import pytest
 import tinker
 
-from shipyard import Trainer
 from shipyard.groups import Sequence, Trial
-from shipyard.jobs.harnesses import harness
+from shipyard.jobs.harnesses import Harness
 from shipyard.models.clients.tinker import LOSSES, check_loss, datum, sent
 from shipyard.models.clients.together import LOSS_TYPES, sample
 from tests.fakes import Alternating, FakeProxy, Harbor, made
-from tests.runs import ONE_STEP, blueprint, train
+from tests.runs import GRPO, ONE_STEP, run_toml, train
 from tests.service import FakeService
 
-TRIAL = Trial("j", Path("t"), harness("pi"), Path("t"))
+TRIAL = Trial("j", Path("t"), Harness(name="pi"), Path("t"))
 
 
 def _datum(advantage: float) -> tinker.Datum:
@@ -67,13 +66,19 @@ def test_each_loss_is_sent_only_what_it_reads_and_never_the_mask() -> None:
 # ------------------------------------------------------------------------- in a run
 
 
-class Misspelled(Trainer):
-    """The base step, with PPO's lower clip threshold misspelled."""
+class Misspelled(GRPO):  # type: ignore[misc, valid-type]
+    """GRPO's step, with PPO's lower clip threshold misspelled."""
 
     async def step(self) -> None:
-        groups = await self.rollout(self.draw())
+        groups = await self.rollout(
+            self.draw(),
+            model=self.agent,
+            harness=self.recipe.harness,
+            attempts=self.recipe.group_size,
+            modules=self.state.modules,
+        )
         await self.score(groups)
-        await self.update(groups, loss="ppo", loss_config={"clip_low": 0.8})
+        await self.update(self.agent, groups, loss="ppo", loss_config={"clip_low": 0.8})
 
 
 async def test_update_refuses_a_misspelled_setting_before_anything_is_scored_or_sent(
@@ -84,22 +89,28 @@ async def test_update_refuses_a_misspelled_setting_before_anything_is_scored_or_
     proxy.default = [replace(made(), inference_logprobs=())]
     harbor(Alternating())
     with pytest.raises(ValueError, match="^the ppo loss takes .*; got clip_low$"):
-        await train(blueprint(tmp_path, **ONE_STEP), tmp_path / "runs", Misspelled)
+        await train(run_toml(tmp_path, **ONE_STEP), tmp_path / "runs", Misspelled)
     passes = [
         call[0] for call in service.client.calls if call[0] in ("forward", "forward_backward")
     ]
     assert passes == [], "nothing was scored or trained"
 
 
-class Imitating(Trainer):
-    """The base step trained with `cross_entropy`: each graded trial's tokens at weight 1."""
+class Imitating(GRPO):  # type: ignore[misc, valid-type]
+    """GRPO's rollout trained with `cross_entropy`: each graded trial's tokens at weight 1."""
 
     async def step(self) -> None:
-        groups = await self.rollout(self.draw())
+        groups = await self.rollout(
+            self.draw(),
+            model=self.agent,
+            harness=self.recipe.harness,
+            attempts=self.recipe.group_size,
+            modules=self.state.modules,
+        )
         for group in groups:
             for trial in group.graded:
                 trial.set_advantage(1.0)
-        await self.update(groups, loss="cross_entropy")
+        await self.update(self.agent, groups, loss="cross_entropy")
 
 
 async def test_update_with_cross_entropy_weighs_each_target_by_its_advantage(
@@ -107,7 +118,7 @@ async def test_update_with_cross_entropy_weighs_each_target_by_its_advantage(
 ) -> None:
     _, service = fakes
     harbor(Alternating())
-    await train(blueprint(tmp_path, **ONE_STEP), tmp_path / "runs", Imitating)
+    await train(run_toml(tmp_path, **ONE_STEP), tmp_path / "runs", Imitating)
     passes = [call for call in service.client.calls if call[0] == "forward_backward"]
     assert passes and all(call[2] == "cross_entropy" for call in passes)
     trained = service.client.sent

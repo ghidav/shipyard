@@ -12,16 +12,16 @@ import tinker
 import torch
 
 from shipyard.groups import Sequence, Trial
-from shipyard.jobs.harnesses import harness
+from shipyard.jobs.harnesses import Harness
 from shipyard.models.backends import Saved, Session
 from shipyard.run.directory import open_run
 from tests.fakes import FakeProxy
-from tests.runs import blueprint
+from tests.runs import GRPO, run_toml
 from tests.service import FakeService
 from tests.test_endpoints import agent
 
 #: The trial a test's sequences belong to; the session reads only their tokens and advantages.
-TRIAL = Trial("j", Path("t"), harness("pi"), Path("t"))
+TRIAL = Trial("j", Path("t"), Harness(name="pi"), Path("t"))
 ADAM = tinker.AdamParams(beta1=0.9, beta2=0.95, eps=1e-8)
 
 
@@ -54,12 +54,14 @@ class FakeClient:
 
 
 def _session(tmp_path: Path, spent: list[Any], **replacements: str) -> tuple[Session, FakeClient]:
-    directory, config = open_run(blueprint(tmp_path, **replacements), root=tmp_path / "runs")
+    home = run_toml(tmp_path, **replacements)
+    directory, config = open_run(home, root=tmp_path / "runs", trainer=GRPO)
     session = Session(
-        config,
-        directory,
+        config.models["agent"],
+        directory.name,
         lambda *billed, **tokens: spent.append((billed, tokens)),
         agent(config, directory),
+        ttl_hours=config.checkpoints.ttl_hours,
     )
     session.client = client = FakeClient()  # type: ignore[assignment]
     return session, client

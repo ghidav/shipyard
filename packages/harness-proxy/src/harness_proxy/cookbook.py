@@ -34,6 +34,51 @@ class AtEffort:
         return getattr(self._inner, name)
 
 
+class Remembering:
+    """One trial's view of its model's tokenizer, which encodes each text once. A call renders
+    the trial's whole conversation, about three times with the bridge, so without it every
+    message is encoded again on every call."""
+
+    def __init__(self, tokenizer: Any) -> None:
+        self._tokenizer = tokenizer
+        self._encoded: dict[Any, tuple[int, ...]] = {}
+
+    def encode(self, text: Any, *args: Any, **kwargs: Any) -> list[int]:
+        """Return the tokenizer's ids for `text`, encoding it once for each set of options."""
+        key = (text, tuple(sorted(kwargs.items()))) if isinstance(text, str) and not args else None
+        try:
+            known = self._encoded.get(key) if key is not None else None
+        except TypeError:  # an option that cannot be a key: encode as asked
+            key = known = None
+        if known is not None:
+            return list(known)
+        encoded = self._tokenizer.encode(text, *args, **kwargs)
+        if key is not None:
+            self._encoded[key] = tuple(encoded)
+        return encoded
+
+    def __getattr__(self, name: str) -> Any:
+        if name == "_tokenizer":  # not set yet, as while copying
+            raise AttributeError(name)
+        return getattr(self._tokenizer, name)
+
+
+def remembering(renderer: Any) -> Any:
+    """Return a copy of `renderer` for one trial, over a `Remembering` view of its tokenizer;
+    a renderer with no tokenizer, as a test's, is returned as it is. The copy takes the
+    renderer's state as it is: `copy.copy` would go through the cookbook's pickling, which
+    rebuilds a renderer from its name and drops what `renderer_for` set on it."""
+    if isinstance(renderer, AtEffort):
+        return AtEffort(remembering(renderer._inner), renderer.effort)
+    tokenizer = getattr(renderer, "tokenizer", None)
+    if tokenizer is None or not hasattr(renderer, "__dict__"):
+        return renderer
+    copied = object.__new__(type(renderer))
+    copied.__dict__.update(vars(renderer))
+    copied.tokenizer = Remembering(tokenizer)
+    return copied
+
+
 def renderer_for(base_model: str, name: str | None = None) -> Any:
     """Build the cookbook renderer `name`, or the model's recommended one, for `base_model`."""
     chosen = name or get_recommended_renderer_name(base_model)

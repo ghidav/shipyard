@@ -13,7 +13,7 @@ from tinker_cookbook.renderers import ToolCall
 
 from harness_proxy.cookbook import ParseTermination
 from harness_proxy.server import Lane, Server
-from harness_proxy.wire import CONTROL_PATH, RECORDS_PATH, Address, Picture, Record
+from harness_proxy.wire import TRIALS_PATH, Opening, Picture, Record, closing_path
 
 MODEL = "Qwen/Qwen3-8B"
 #: The name of the lane `server` serves, as `harness-proxy --model` names it.
@@ -129,8 +129,14 @@ def server(
 
 
 def only(started: Server) -> Lane:
-    """Return the server's one lane, which an address that names none reaches."""
+    """Return the server's one lane, which a trial opened on none is opened on."""
     return started.lane("")
+
+
+def recorded(started: Server, trial: str) -> list[Record]:
+    """Return what the open trial `trial` has recorded so far; [] for one that is not open."""
+    opened = started.trial(trial)
+    return list(opened.records) if opened is not None else []
 
 
 def by_path(path: str | None) -> FakeSampler:
@@ -147,9 +153,25 @@ def root(started: Server) -> str:
     return f"http://127.0.0.1:{started.port}"
 
 
-def address(started: Server, trial: str) -> str:
-    """Return the base URL for `trial` on a started server, as `Proxy.address_for` makes it."""
-    return root(started) + Address(trial).path
+async def opened(
+    started: Server,
+    trial: str,
+    *,
+    lane: str | None = None,
+    renderer: str | None = None,
+    weights: str | None = None,
+) -> str:
+    """Open `trial` on the control route, as the run does, and return its token; opening it
+    again the same way returns the same token."""
+    opening = Opening(trial, lane, renderer, weights)
+    async with httpx.AsyncClient() as client:
+        answered = await client.post(
+            f"{root(started)}{TRIALS_PATH}",
+            headers={"Authorization": f"Bearer {started.control_token}"},
+            json=opening.body,
+        )
+    assert answered.status_code == 200, answered.text
+    return str(answered.json()["token"])
 
 
 async def ask(
@@ -160,23 +182,26 @@ async def ask(
     headers: dict[str, str] | None = None,
     **body: Any,
 ) -> httpx.Response:
-    """Send one OpenAI chat completion request for `trial`, as a harness would."""
-    sent = {"Authorization": f"Bearer {started.token if key is None else key}", **(headers or {})}
+    """Send one OpenAI chat completion request for `trial`, opened on first use, as a harness
+    would; with the token `key` instead of the trial's when given."""
+    token = await opened(started, trial) if key is None else key
+    sent = {"Authorization": f"Bearer {token}", **(headers or {})}
     async with httpx.AsyncClient() as client:
         return await client.post(
-            f"{address(started, trial)}/chat/completions",
+            f"{root(started)}/v1/chat/completions",
             headers=sent,
             json={"model": "gpt-oss-20b", "messages": [{"role": "user", "content": "go"}], **body},
         )
 
 
 async def ask_anthropic(started: Server, trial: str, **body: Any) -> httpx.Response:
-    """Send one Anthropic messages request for `trial`, authenticated with `x-api-key` as
-    Claude Code does."""
+    """Send one Anthropic messages request for `trial`, opened on first use, authenticated with
+    `x-api-key` as Claude Code does."""
+    token = await opened(started, trial)
     async with httpx.AsyncClient() as client:
         return await client.post(
-            f"{address(started, trial)}/messages",
-            headers={"x-api-key": started.token},
+            f"{root(started)}/v1/messages",
+            headers={"x-api-key": token},
             json={
                 "model": "claude-sonnet-4-5",
                 "max_tokens": 64,
@@ -186,31 +211,15 @@ async def ask_anthropic(started: Server, trial: str, **body: Any) -> httpx.Respo
         )
 
 
-async def fetch(
-    started: Server, trial: str, headers: dict[str, str] | None = None, **params: str
+async def close(
+    started: Server, trial: str, headers: dict[str, str] | None = None
 ) -> httpx.Response:
-    """Fetch the records for `trial`, authenticated with the control token unless `headers`
-    is given, as the run fetches them."""
+    """Close `trial` on the control route, authenticated with the control token unless
+    `headers` is given, as the run closes it."""
     if headers is None:
         headers = {"Authorization": f"Bearer {started.control_token}"}
     async with httpx.AsyncClient() as client:
-        return await client.get(
-            f"{root(started)}{RECORDS_PATH}/{trial}", headers=headers, params=params
-        )
-
-
-async def control(
-    started: Server, weights: Any, *, token: str | None = None, raw: Any = None
-) -> httpx.Response:
-    """Request a weights swap on the control route, authenticated with the control token
-    unless `token` is given."""
-    bearer = started.control_token if token is None else token
-    async with httpx.AsyncClient() as client:
-        return await client.post(
-            f"{root(started)}{CONTROL_PATH}",
-            headers={"Authorization": f"Bearer {bearer}"},
-            **({"content": raw} if raw is not None else {"json": {"weights": weights}}),
-        )
+        return await client.post(f"{root(started)}{closing_path(trial)}", headers=headers)
 
 
 # ------------------------------------------------------------- tools, thinking, bridging

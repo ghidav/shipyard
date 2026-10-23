@@ -1,5 +1,6 @@
-"""Tests for `shipyard.models.clients.tinker`, the trained agent's training client, using a fake
-Tinker SDK client."""
+"""Tests for `shipyard.models.clients.tinker`, a model's Tinker session: a training client when
+the recipe trains the model, else a sampling client on its weights; using a fake Tinker SDK
+client."""
 
 from __future__ import annotations
 
@@ -12,18 +13,17 @@ import tinker
 from harness_proxy.wire import Picture
 from proxies import MODEL
 from shipyard.groups import Sequence, Trial
-from shipyard.jobs.harnesses import harness
+from shipyard.jobs.harnesses import Harness
 from shipyard.models.clients.tinker import (
     DEFAULT_LORA_RANK,
     SERVE_TTL,
     TinkerClient,
     datum,
-    sampling,
 )
 from tests.service import FakeService, FakeTrainingClient, capable
 
 #: The trial a test's sequences belong to; the client reads only their tokens and images.
-TRIAL = Trial("j", Path("t"), harness("pi"), Path("t"))
+TRIAL = Trial("j", Path("t"), Harness(name="pi"), Path("t"))
 TAGGED = {"shipyard_run": "r"}
 
 
@@ -110,23 +110,28 @@ async def test_open_refuses_a_model_the_backend_lacks_or_cannot_train_before_spe
     assert service.closed == [("errored", "RuntimeError: no capacity for a new model")]
 
 
-async def test_a_model_sampled_alone_opens_a_session_of_its_own_billed_to_its_host(
+async def test_a_model_the_run_does_not_train_scores_through_a_sampling_client_of_its_own(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    tagged: list[dict[str, str] | None] = []
     service = FakeService()
-    monkeypatch.setattr(
-        "shipyard.models.clients.tinker.service_client", lambda metadata=None: service
-    )
+
+    def service_client(metadata: dict[str, str] | None = None) -> FakeService:
+        tagged.append(metadata)
+        return service
+
+    monkeypatch.setattr("shipyard.models.clients.tinker.service_client", service_client)
     monkeypatch.setenv("TINKER_BASE_URL", "https://api.fireworks.ai/inference/v1")
-    opened, sampler, model, billed = await sampling("Qwen/Qwen3-32B", run="r")
-    assert (opened, sampler, model) == (service, service.anchor, "Qwen/Qwen3-32B")
-    assert billed == "tinker@api.fireworks.ai"
-    _, _, model, _ = await sampling("tinker://r/sampler_weights/final")
-    assert model == service.anchor.base, "a path is priced as its base model"
-    assert service.calls[-2:] == [
-        ("sampling", "Qwen/Qwen3-32B", None),
-        ("sampling", None, "tinker://r/sampler_weights/final"),
-    ]
+    served = TinkerClient("Qwen/Qwen3-32B", run="r", trains=False)
+    await served.open()
+    assert tagged == [TAGGED] and served.provider == "tinker@api.fireworks.ai"
+    assert served.client is None and service.calls == [("sampling", "Qwen/Qwen3-32B", None)]
+    service.anchor.cached = 2
+    chained = Sequence((1, 2, 3, 4), ((2, 4),), None, (), TRIAL)
+    found, tokens = await served.compute_logprobs([chained])
+    assert found == [[-0.1, -0.1]], "its prompt logprobs, read at the targets"
+    assert service.anchor.asked == [[1, 2, 3, 4]], "the whole sequence, as it was given"
+    assert tokens == {"prefill": 2, "cache": 2, "sample": 1}
 
 
 # -------------------------------------------------------------------- the step

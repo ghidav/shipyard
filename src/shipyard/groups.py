@@ -91,9 +91,11 @@ class Trial:
     verdict: Verdict | None = None
     #: The chains of model calls it made, as token ids; none when it is masked.
     sequences: list[Sequence] = field(default_factory=list)
-    #: The renderer the proxy rendered its calls with, as `[rollout] renderer` names it; None
+    #: The renderer the proxy rendered its calls with, one of its model's `renderers`; None
     #: for the model's own.
     renderer: str | None = None
+    #: The role of the model it ran, whose sampler's logprobs its sequences hold.
+    role: str = ""
 
     @property
     def name(self) -> str:
@@ -167,20 +169,23 @@ def result_in(trial: Path) -> TrialResult | None:
 
 @dataclass(eq=False)
 class Group:
-    """One task's trials at one renderer, and one harness unless mixed, in the order they ran."""
+    """One task's trials in a rollout, in the order they ran, or any trials a recipe puts
+    together."""
 
     task: Path
     trials: list[Trial]
 
     @property
     def renderer(self) -> str | None:
-        """The renderer its trials' calls were rendered with: a group never mixes them."""
-        return self.trials[0].renderer if self.trials else None
+        """The renderer its trials' calls were rendered with; None for the model's own, or when
+        it holds trials of several."""
+        used = {one.renderer for one in self.trials}
+        return used.pop() if len(used) == 1 else None
 
     @property
     def harness(self) -> str | None:
-        """The harness its trials ran, as `[agent] harness` names it; None when it mixes them."""
-        ran = {one.harness.agent for one in self.trials}
+        """The harness its trials ran, by its name; None when it holds trials of several."""
+        ran = {one.harness.name for one in self.trials}
         return ran.pop() if len(ran) == 1 else None
 
     @property
@@ -214,15 +219,6 @@ class Group:
     def is_scored(self) -> bool:
         """Whether any of its sequences has advantages to train on."""
         return bool(self.scored)
-
-
-def merged(groups: Values[Group], *, mix: bool = False) -> list[Group]:
-    """Return one group per task, renderer and, unless `mix`, harness, in order of first run."""
-    found: dict[tuple[Path, str | None, str | None], list[Trial]] = {}
-    for group in groups:
-        key = (group.task, group.renderer, None if mix else group.harness)
-        found.setdefault(key, []).extend(group.trials)
-    return [Group(task, trials) for (task, _, _), trials in found.items()]
 
 
 def grouped(trials: Values[Trial]) -> list[Group]:

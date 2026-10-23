@@ -111,11 +111,6 @@ class Records:
         """How many of its calls' prompts the proxy bridged."""
         return sum(one.bridged for one in self._held)
 
-    @property
-    def weights(self) -> frozenset[str]:
-        """The sampler weights the proxy served its calls from; the base model names none."""
-        return frozenset(one.weights for one in self._held if one.weights)
-
     def chains(self) -> list[Chain]:
         """Return each chain of its answered calls in which the model wrote, in order."""
         found: list[Chain] = []

@@ -9,8 +9,6 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
-
 from shipyard import Trial
 
 #: The file the module's text is in, in the task's workspace and, once its tests ran, in the
@@ -69,19 +67,6 @@ else
   echo 0 > /logs/verifier/reward.txt
 fi
 """
-
-
-class Reflector(BaseModel):
-    """The `[recipe.reflector]` table: the model that rewrites the modules, and the harness
-    it runs through, with that harness's `env` and `kwargs`."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    model: str
-    provider: str
-    harness: str
-    env: dict[str, str] = Field(default_factory=dict)
-    kwargs: dict[str, Any] = Field(default_factory=dict)
 
 
 def reflection(into: Path, name: str, text: str, attempts: Sequence[Mapping[str, Any]]) -> Path:

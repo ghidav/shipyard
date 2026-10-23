@@ -15,7 +15,7 @@ from typing import Any
 import tomli_w
 from shortuuid import ShortUUID
 
-from shipyard.config import Blueprint, config_file, load, parsed
+from shipyard.config import Config, config_file, load, parsed
 from shipyard.run import files
 from shipyard.run.checkpoint import Checkpoint, found
 from shipyard.trainer import Trainer
@@ -32,26 +32,28 @@ def runs_root(flag: Path | None = None) -> Path:
 
 
 def open_run(
-    blueprint: Path,
+    path: Path,
     *,
     root: Path | None = None,
-    trainer: Path | None = None,
+    trainer: Path | type[Trainer] | None = None,
     origin: Mapping[str, Any] | None = None,
     overrides: Mapping[str, str] | None = None,
-) -> tuple[Path, Blueprint]:
-    """Create a blueprint's run directory, noting its recipe and any `origin` in `run.json`."""
-    source = config_file(blueprint)
-    if trainer is None and (source.parent / files.TRAINER).is_file():
-        trainer = source.parent / files.TRAINER
-    made = trainer_in(trainer) if trainer is not None else Trainer
-    config = load(blueprint, made.Recipe, overrides)
+) -> tuple[Path, Config]:
+    """Create a config's run directory, noting its recipe and any `origin` in `run.json`. The
+    recipe is `trainer`: its trainer file, the config folder's `trainer.py` by default, or a
+    `Trainer` subclass, which a run made from Python passes and a resume cannot find again."""
+    source = config_file(path)
+    if trainer is None:
+        trainer = recipe_of(source)
+    made = trainer if isinstance(trainer, type) else trainer_in(trainer)
+    config = load(path, made.Recipe, overrides)
     # A run that goes on from another is named as that one is, without its id.
     named = source.parent.name.rsplit("__", 1)[0] if origin else source.parent.name
     stem = named[:32].rstrip("_-") or "run"
     directory = runs_root(root) / f"{stem}__{ShortUUID().random(length=7)}"
     directory.mkdir(parents=True)
     if overrides:
-        # The blueprint as the run has it, which a resume reads again.
+        # The config as the run has it, which a resume reads again.
         given = " ".join(shlex.join([f"--{name}", text]) for name, text in overrides.items())
         header = " ".join(f"# {source} with {given}".splitlines())
         written = tomli_w.dumps(parsed(source, overrides))
@@ -59,7 +61,7 @@ def open_run(
     else:
         shutil.copyfile(source, directory / files.CONFIG)
     noted: dict[str, Any] = {}
-    if trainer is not None:
+    if not isinstance(trainer, type):
         trainer = Path(trainer).resolve()
         noted["recipe"] = {"trainer": str(trainer), "fingerprint": fingerprint(trainer.parent)}
     if origin is not None:
@@ -68,9 +70,23 @@ def open_run(
     return directory, config
 
 
-def resumed(origin: Path, *, tag: str = "last") -> tuple[Path, Blueprint, Checkpoint] | None:
+def recipe_of(path: Path, trainer: Path | None = None) -> Path:
+    """Return the trainer file a config runs with: `trainer`, else the `trainer.py` beside the
+    config's run.toml. Raise `ValueError` when there is none."""
+    if trainer is not None:
+        return Path(trainer)
+    found = config_file(path).parent / files.TRAINER
+    if not found.is_file():
+        raise ValueError(
+            f"{found.parent} holds no {files.TRAINER}: a recipe is its run.toml and the "
+            "trainer.py that writes its step"
+        )
+    return found
+
+
+def resumed(origin: Path, *, tag: str = "last") -> tuple[Path, Config, Checkpoint] | None:
     """Open a run beside `origin` that goes on from its checkpoint `tag`, the last by default,
-    and return its directory, its blueprint and that checkpoint; None when the checkpoint is
+    and return its directory, its config and that checkpoint; None when the checkpoint is
     at the run's last step, so nothing is left to run."""
     config, checkpoint = reopened(origin, tag=tag)
     if checkpoint.step >= config.recipe.steps:
@@ -79,7 +95,7 @@ def resumed(origin: Path, *, tag: str = "last") -> tuple[Path, Blueprint, Checkp
     return directory, config, checkpoint
 
 
-def continued(origin: Path, checkpoint: Checkpoint) -> tuple[Path, Blueprint]:
+def continued(origin: Path, checkpoint: Checkpoint) -> tuple[Path, Config]:
     """Open a run beside `origin` that goes on from its `checkpoint`, noting the chain."""
     origin = Path(origin).resolve()
     noted = files.read_json(origin / files.RUN)
@@ -97,8 +113,8 @@ def continued(origin: Path, checkpoint: Checkpoint) -> tuple[Path, Blueprint]:
     return directory, config
 
 
-def reopened(directory: Path, *, tag: str = "last") -> tuple[Blueprint, Checkpoint]:
-    """Return a run's blueprint and its checkpoint `tag`, the last one by default."""
+def reopened(directory: Path, *, tag: str = "last") -> tuple[Config, Checkpoint]:
+    """Return a run's config and its checkpoint `tag`, the last one by default."""
     directory = Path(directory)
     if not (directory / files.CONFIG).is_file():
         raise ValueError(f"no run at {directory}")
@@ -117,7 +133,7 @@ def reopened(directory: Path, *, tag: str = "last") -> tuple[Blueprint, Checkpoi
 
 
 def trainer_class(directory: Path) -> type[Trainer]:
-    """Return the run's trainer: its recipe's, else its own copy's, else the base `Trainer`."""
+    """Return the run's trainer: its recipe's, else its own copy's."""
     directory = Path(directory)
     recipe = files.read_json(directory / files.RUN).get("recipe")
     if recipe:
@@ -129,7 +145,9 @@ def trainer_class(directory: Path) -> type[Trainer]:
             )
         return trainer_in(path)
     kept = directory / files.TRAINER
-    return trainer_in(kept) if kept.is_file() else Trainer
+    if not kept.is_file():
+        raise ValueError(f"{directory.name} names no recipe, and holds no {files.TRAINER}")
+    return trainer_in(kept)
 
 
 def fingerprint(folder: Path) -> str:
@@ -172,7 +190,12 @@ def trainer_in(path: Path) -> type[Trainer]:
         raise ValueError(
             f"{path} defines {len(found)} Trainer subclasses; a trainer file defines one"
         )
-    return found[0]
+    made = found[0]
+    if made.step is Trainer.step:
+        raise ValueError(
+            f"{path}: {made.__name__} writes no step: a recipe writes `async def step`"
+        )
+    return made
 
 
 @contextmanager

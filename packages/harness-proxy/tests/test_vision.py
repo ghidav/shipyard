@@ -13,7 +13,7 @@ from PIL import Image
 from harness_proxy import vision
 from harness_proxy.chat import Refused
 from harness_proxy.dialects import anthropic, openai
-from proxies import FakeSampler, ask, ask_anthropic, only, server
+from proxies import FakeSampler, ask, ask_anthropic, recorded, server
 
 
 def _png(width: int = 40, height: int = 30, color: str = "red") -> str:
@@ -279,7 +279,7 @@ async def test_a_text_only_model_refuses_an_image_with_a_400_on_both_wires() -> 
             started, "t", messages=[{"role": "user", "content": [_image(_png())]}]
         )
         plain = await ask(started, "t")
-        assert len(only(started).records_for("t")) == 1, "a refused image costs no sample"
+        assert len(recorded(started, "t")) == 1, "a refused image costs no sample"
     assert openai.status_code == 400 and "takes none" in openai.json()["error"]["message"]
     assert anthropic.status_code == 400 and "takes none" in anthropic.json()["error"]["message"]
     assert plain.status_code == 200 and sampler.asked and len(sampler.asked) == 1

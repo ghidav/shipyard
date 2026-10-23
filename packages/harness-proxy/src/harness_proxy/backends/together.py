@@ -44,10 +44,9 @@ async def context_of(service: Any, base_model: str) -> int | None:
                 configs = [one.generator_config for one in model.compute_configs or ()]
                 lengths = [one.context_length for one in configs if one is not None]
                 return max(lengths, default=None)
-    except Exception:  # noqa: BLE001 - a failed lookup must not fail a run
+    except Exception:  # noqa: BLE001 - the lane refuses, one way for any cause
         logger.warning(
-            "could not read the context length of %s: the budget and the context fit are "
-            "not enforced",
+            "could not read the context length of %s",
             base_model,
             exc_info=True,
         )

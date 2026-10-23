@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from shipyard.groups import Connection, Where
 
@@ -20,8 +23,8 @@ class Profile:
     provider: str | None = None
     #: Extra Harbor agent kwargs.
     kwargs: dict = field(default_factory=dict)
-    #: Trial env that turns off the harness's own context compaction. It is set only when
-    #: `[rollout] fill_context` is on, which instead gives a call that would overflow the
+    #: Trial env that turns off the harness's own context compaction. It is set only when the
+    #: model's `fill_context` is on, which instead gives a call that would overflow the
     #: context whatever room is left.
     env: dict = field(default_factory=dict)
     #: Whether the harness appends `/v1` to its base URL itself, so the proxy address is
@@ -92,21 +95,51 @@ PROFILES: dict[str, Profile] = {
 }
 
 
-@dataclass(frozen=True)
-class Harness:
-    """The agent program a trial runs: what it dials to reach the model, whether it can run
-    with no network, and whether its log says its last model call failed."""
+class Harness(BaseModel):
+    """The agent program a trial runs, at an optional pinned version, with the environment and
+    keyword arguments Harbor starts it with: what it dials to reach the model, whether it can run
+    with no network, and whether its log says its last model call failed. A recipe declares the
+    harnesses it runs as keys of its own; `run.toml` gives one as a name, `"pi@0.85.1"`, or as a
+    table with `name`, `env` and `kwargs`."""
 
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    #: The Harbor agent to install: a name with an optional version, such as `pi@0.85.1`, or an
+    #: import path.
     name: str
-    #: The Harbor agent to install: a name with an optional version, or an import path.
-    agent: str
-    profile: Profile = field(default_factory=Profile)
+    env: dict[str, str] = Field(default_factory=dict)
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _named(cls, value: Any) -> Any:
+        """Read a harness given as its name alone."""
+        return {"name": value} if isinstance(value, str) else value
+
+    @field_validator("name")
+    @classmethod
+    def _unblank(cls, value: str) -> str:
+        """Refuse a blank name: Harbor reads an unnamed agent as its oracle, which runs the
+        task's reference solution instead of the agent."""
+        if not value.strip():
+            raise ValueError("a harness needs its name, such as `pi@0.85.1`")
+        return value.strip()
+
+    @property
+    def bare(self) -> str:
+        """Its name without the version: the Harbor agent, such as `pi` of `pi@0.85.1`."""
+        return bare_name(self.name)
 
     @property
     def version(self) -> str | None:
-        """The version `agent` pins, such as `0.85.1` of `pi@0.85.1`; None for none."""
-        bare = bare_name(self.agent)
-        return (self.agent[len(bare) + 1 :] or None) if bare != self.agent else None
+        """The version `name` pins, such as `0.85.1` of `pi@0.85.1`; None for none."""
+        bare = self.bare
+        return (self.name[len(bare) + 1 :] or None) if bare != self.name else None
+
+    @property
+    def profile(self) -> Profile:
+        """How it connects to the model, by its bare name."""
+        return profile_for(self.name)
 
     @property
     def runs_without_network(self) -> bool:
@@ -140,31 +173,12 @@ class Harness:
         if reader is None:
             return False
         try:
-            text = (trial / "agent" / f"{self.name}.txt").read_text(
+            text = (trial / "agent" / f"{self.bare}.txt").read_text(
                 encoding="utf-8", errors="replace"
             )
         except OSError:
             return False
         return reader(text)
-
-
-def harness(named: str) -> Harness:
-    """Return the harness for a name as `[agent] harness` gives it, such as `pi@0.85.1`."""
-    return Harness(bare_name(named).strip(), named, profile_for(named))
-
-
-def resolved(named: str, harnesses: Sequence[str]) -> str:
-    """Return the harness `named` runs as, beside `harnesses` as `[agent] harness` lists them: a
-    bare name of one of them as that one, at its version, such as `pi@0.85.1` for `pi`; any
-    other as it is. Raise `ValueError` for a bare name of two of them."""
-    if named in harnesses:
-        return named
-    found = [one for one in harnesses if bare_name(one).strip() == named.strip()]
-    if len(found) > 1:
-        raise ValueError(
-            f"harness {named!r} names {' and '.join(found)} of [agent] harness: give its version"
-        )
-    return found[0] if found else named
 
 
 def bare_name(harness: str) -> str:

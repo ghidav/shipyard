@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from shipyard.run.files import CARRIED, MODULES
 
 if TYPE_CHECKING:
-    from shipyard.config import Blueprint
+    from shipyard.config import Config
 
 #: The prompt file at the top of a modules directory, and its component name.
 PROMPT_FILE = "PROMPT.md"
@@ -263,14 +263,14 @@ def keep(modules: Modules, into: Path) -> None:
         write(files, into=Path(into) / kind.home(module.name))
 
 
-def carried(config: Blueprint, directory: Path) -> Modules | None:
-    """Return the modules every job carries, from the run's copy or `[agent] modules`."""
+def carried(config: Config, directory: Path) -> Modules | None:
+    """Return the modules the run starts with, from the run's copy or the config's `modules`."""
     kept = Path(directory) / MODULES / CARRIED
     if kept.is_dir():
         return Modules.read(kept)
-    if not config.agent.modules:
+    if not config.modules:
         return None
-    found = Modules.read(config.home / config.agent.modules)
+    found = Modules.read(config.home / config.modules)
     keep(found, kept)
     return found
 

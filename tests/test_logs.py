@@ -10,17 +10,18 @@ import pytest
 from shipyard.config import load
 from shipyard.groups import Trial
 from shipyard.jobs.engine import Job
-from shipyard.jobs.harnesses import harness
+from shipyard.jobs.harnesses import Harness
 from shipyard.records import Records
 from shipyard.run import files
 from shipyard.run.costs import Costs
 from shipyard.run.logs import Logs
-from shipyard.trainer import Evaluation
-from tests.fakes import made
+from shipyard.trainer import Evaluation, Update
+from tests.fakes import Alternating, FakeProxy, Harbor, made
+from tests.runs import GRPO, ONE_STEP, rows, run_toml, train
+from tests.service import FakeService
 
-BLUEPRINT = """[agent]
+RUN_TOML = """[models.agent]
 model = "m"
-harness = "pi"
 
 [data]
 train = "four"
@@ -32,7 +33,7 @@ steps = 1
 
 
 def _logs(tmp_path: Path) -> Logs:
-    (tmp_path / "run.toml").write_text(BLUEPRINT, encoding="utf-8")
+    (tmp_path / "run.toml").write_text(RUN_TOML, encoding="utf-8")
     return Logs(load(tmp_path), tmp_path / "runs" / "r")
 
 
@@ -42,7 +43,7 @@ def test_a_job_writes_its_row_and_a_row_per_model_call_the_proxy_served(
     monkeypatch.chdir(tmp_path)
     logs = _logs(tmp_path)
     alpha, beta = (
-        Trial("j", Path(task), harness("pi"), tmp_path / "jobs" / "j" / f"{task}__1")
+        Trial("j", Path(task), Harness(name="pi"), tmp_path / "jobs" / "j" / f"{task}__1")
         for task in ("alpha", "beta")
     )
     alpha.records = Records(
@@ -53,7 +54,7 @@ def test_a_job_writes_its_row_and_a_row_per_model_call_the_proxy_served(
     )
     beta.records = Records([made("go", error="context", seq=1)])
     at_host = SimpleNamespace(provider="tinker@api.example.com", model="m", kind="tinker")
-    logs.job(Job("j", trials=[alpha, beta]), at_host)
+    logs.job(Job("j", role="agent", trials=[alpha, beta]), at_host)
     [job] = list(files.read(logs.directory / files.JOBS))
     assert (job["job"], job["trials"], job["backend"]) == ("j", 2, "tinker"), "named by its kind"
     rows = list(files.read(logs.directory / files.REQUESTS))
@@ -105,7 +106,7 @@ def test_every_spend_is_a_row_of_the_usage_ledger_and_on_disk_at_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "run.toml").write_text(BLUEPRINT, encoding="utf-8")
+    (tmp_path / "run.toml").write_text(RUN_TOML, encoding="utf-8")
     logs = Logs(load(tmp_path), tmp_path / "runs" / "r", step=lambda: 3)
     logs.spend("embedder", "openai", "openai/text-embedding-3-small", prefill=120)
     logs.spend("embedder", "openai", "text-embedding-3-small", prefill=0)  # nothing spent
@@ -123,28 +124,81 @@ def test_every_spend_is_a_row_of_the_usage_ledger_and_on_disk_at_once(
     assert totals["tokens"] == {"openai": {"text-embedding-3-small": {"prefill": 120}}}
 
 
-def test_a_steps_row_holds_its_evaluation_and_the_recipes_numbers_beside_its_own(
+def test_a_steps_row_holds_the_recipes_numbers_beside_its_own_and_an_evaluation_has_a_row(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
     logs = _logs(tmp_path)
-    each = {"reward_mean_low": 0.25}
-    evaluation = Evaluation(
-        1, tasks=2, trials=4, graded=3, masked=1, reward_mean=0.5, breakdown=each
-    )
-    logs.step(1, [], None, evaluation, {"trials": 9, "own": 1})
-    logs.step(2, [], None, None, {})
-    first, second = files.read(logs.directory / files.METRICS)
+    logs.step(1, [], {}, {"trials": 9, "own": 1})
+    logs.evaluation(Evaluation(1, tasks=2, trials=4, graded=3, masked=1, reward_mean=None))
+    logs.step(2, [], {}, {})
+    first, evaluated, second = files.read(logs.directory / files.METRICS)
     assert (first["step"], first["trained"], first["trials"]) == (1, False, 0)
-    evaluated = {key: value for key, value in first.items() if key.startswith("eval_")}
-    assert evaluated == {
+    assert (first["recipe_trials"], first["own"]) == (9, 1), "named like the row's own: beside it"
+    assert not any(key.startswith("eval_") for key in (*first, *second))
+    assert {key: value for key, value in evaluated.items() if key != "at"} == {
+        "step": 1,
         "eval_tasks": 2,
         "eval_trials": 4,
         "eval_graded": 3,
         "eval_masked": 1,
-        "eval_reward_mean": 0.5,
-        "eval_reward_mean_low": 0.25,
-    }
-    assert (first["recipe_trials"], first["own"]) == (9, 1), "named like the row's own: beside it"
-    assert second["step"] == 2 and not any(key.startswith("eval_") for key in second)
+    }, "at the step whose weights it measured; a mean with nothing graded is left out"
     assert not {"section", "seq", "attempt"} & set(first), "one kind of row, written by one process"
+
+
+def _update(role: str, sequences: int) -> Update:
+    return Update(
+        role=role,
+        sequences=sequences,
+        train_tokens=10 * sequences,
+        substeps=1,
+        learning_rate=2e-5,
+        loss="importance_sampling",
+        update_seconds=0.5,
+        kl_v1=0.01,
+        kl_v2=0.02,
+        entropy=0.3,
+    )
+
+
+def _fields(update: Update) -> dict[str, object]:
+    return {key: value for key, value in vars(update).items() if key != "role"}
+
+
+def test_a_steps_row_holds_one_models_update_as_it_is_and_each_of_several_by_role(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    logs = _logs(tmp_path)
+    agent, teacher = _update("agent", 4), _update("teacher", 2)
+    logs.step(1, [], {"agent": agent}, {})
+    logs.step(2, [], {"agent": agent, "teacher": teacher}, {})
+    one, two = files.read(logs.directory / files.METRICS)
+    assert one["trained"] is True and {key: one[key] for key in _fields(agent)} == _fields(agent)
+    assert not any(key.startswith(("agent_", "teacher_")) for key in one), "unprefixed"
+    assert two["trained"] is True and not set(_fields(agent)) & set(two), "none unprefixed"
+    for update in (agent, teacher):
+        prefixed = {key: two[f"{update.role}_{key}"] for key in _fields(update)}
+        assert prefixed == _fields(update), "each field under its model's role"
+
+
+class Twice(GRPO):  # type: ignore[misc, valid-type]
+    """GRPO's agent rolled out at its first task twice in a step, as two jobs."""
+
+    async def step(self) -> None:
+        task = self.draw()[0]
+        for _ in range(2):
+            await self.rollout(
+                [task], model=self.agent, harness=self.recipe.harness, attempts=2, modules=None
+            )
+
+
+async def test_a_steps_row_counts_the_groups_as_its_rollouts_returned_them(
+    tmp_path: Path, fakes: tuple[FakeProxy, FakeService], harbor: Harbor
+) -> None:
+    """A task rolled out twice is two groups, one per rollout: the row merges none into
+    another."""
+    harbor(Alternating())
+    directory = await train(run_toml(tmp_path, **ONE_STEP), tmp_path / "runs", Twice)
+    (row,) = rows(directory)
+    assert (row["groups"], row["trials"], len(row["jobs"])) == (2, 4, 2)

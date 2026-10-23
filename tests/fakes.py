@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 import httpx
 from harbor.models.trial.config import TrialConfig
 
-from harness_proxy.wire import Address, Record, Served
+from harness_proxy.wire import Record, Served
 from proxies import made
 
 FIXTURES = Path(__file__).parent / "tasks"
@@ -189,26 +189,25 @@ class Harbor(Protocol):
 
 @dataclass
 class FakeProxy:
-    """Fake `Proxy` driven by `ProxyEndpoint` that logs each call and answers by task name."""
+    """Fake `Proxy` driven by `ProxyEndpoint`: it logs each call, and closes a trial with the
+    records its task's name answers."""
 
     origin: str = "http://host.docker.internal:8000"
     loopback: str = "http://127.0.0.1:8000"
-    token: str = "harness-token"
-    control_token: str | None = "control-token"
+    control_token: str = "control-token"
     answers: dict[str, list[Record]] = field(default_factory=dict)
     default: list[Record] | None = None
     failing: set[str] = field(default_factory=set)
     placed: list[tuple[str, Any, dict[str, Any]]] = field(default_factory=list)
-    addressed: list[str] = field(default_factory=list)
-    fetched: list[str] = field(default_factory=list)
-    #: The weights of each swap, in order, whichever lane it pointed.
-    swapped: list[str | None] = field(default_factory=list)
+    #: Each trial opened, in order: its name, lane, renderer and weights.
+    opened: list[tuple[str, str | None, str | None, str | None]] = field(default_factory=list)
+    #: The trials closed, in order.
+    closed: list[str] = field(default_factory=list)
     #: Lanes reported by `/healthz`: the ones the run started it with, or a test's for a
     #: remote one.
     lanes: dict[str, Served] = field(default_factory=dict)
-    #: Each swap: the lane it named, and the weights.
-    lane_swaps: list[tuple[str | None, str | None]] = field(default_factory=list)
-    closed: int = 0
+    #: Times the run stopped it.
+    stopped: int = 0
     #: Number of times `/healthz` was probed.
     probed: int = 0
     #: Reason the proxy exited, or None while it is alive.
@@ -217,6 +216,23 @@ class FakeProxy:
     @property
     def host(self) -> str:
         return urlsplit(self.origin).hostname or ""
+
+    @property
+    def address(self) -> str:
+        return f"{self.origin}/v1"
+
+    @property
+    def local_address(self) -> str:
+        return f"{self.loopback}/v1"
+
+    @property
+    def weights(self) -> list[str | None]:
+        """The weights each trial was opened on, in order, whichever lane it was opened on."""
+        return [weights for *_, weights in self.opened]
+
+    def weights_of(self, lane: str) -> list[str | None]:
+        """The weights each trial opened on `lane` was opened on, in order."""
+        return [weights for _, named, _, weights in self.opened if named == lane]
 
     async def local(self, settings: Any, *, host: str, **named: Any) -> FakeProxy:
         self.placed.append(("local", dict(settings), {"host": host, **named}))
@@ -234,34 +250,32 @@ class FakeProxy:
         self.lanes = {
             one["name"]: Served(
                 model=one["model"],
-                serving=one.get("weights") or one["model"],
                 budget=one.get("max_context"),
                 renderers=tuple(one.get("renderer") or ()),
             )
             for one in settings["lanes"]
         }
 
-    def remote(self, url: str, token: str, control_token: str | None = None) -> FakeProxy:
-        if not token:
-            raise ValueError("HARNESS_PROXY_TOKEN is unset")
-        self.placed.append(("remote", url, {"token": token, "control_token": control_token}))
-        self.origin, self.token, self.control_token = url.rstrip("/"), token, control_token
+    def remote(self, url: str, control_token: str) -> FakeProxy:
+        if not control_token:
+            raise ValueError("HARNESS_PROXY_CONTROL_TOKEN is unset")
+        self.placed.append(("remote", url, {"control_token": control_token}))
+        self.origin, self.control_token = url.rstrip("/"), control_token
         return self
 
-    def address_for(self, trial: str, renderer: str | None = None, lane: str | None = None) -> str:
-        self.addressed.append(trial)
-        return self.origin + Address(trial, lane, renderer).path
+    async def open(
+        self,
+        trial: str,
+        *,
+        lane: str | None = None,
+        renderer: str | None = None,
+        weights: str | None = None,
+    ) -> str:
+        self.opened.append((trial, lane, renderer, weights))
+        return f"token-{trial}"
 
-    async def swap(self, weights: str | None, lane: str | None = None) -> None:
-        if self.control_token is None:
-            raise RuntimeError("no control route")
-        self.swapped.append(weights)
-        self.lane_swaps.append((lane, weights))
-
-    async def records(self, trial: str) -> list[Record]:
-        if self.control_token is None:
-            raise RuntimeError("no records route")
-        self.fetched.append(trial)
+    async def close(self, trial: str) -> list[Record]:
+        self.closed.append(trial)
         task = trial.split("__")[0]
         if task in self.failing:
             raise httpx.ConnectError("the proxy went away")
@@ -275,5 +289,5 @@ class FakeProxy:
     def gone(self) -> str | None:
         return self.exited
 
-    def close(self) -> None:
-        self.closed += 1
+    def stop(self) -> None:
+        self.stopped += 1

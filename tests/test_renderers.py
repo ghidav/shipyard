@@ -1,129 +1,148 @@
-"""Tests for training at several renderers, such as reasoning efforts: how a rollout splits its
-tasks between them, how each trial reaches its own, and what the rows say of each."""
+"""Tests for a model's renderers, such as reasoning efforts: its `[models.<role>]` table names them,
+its lane in the proxy holds them, and each rollout of it picks one, which its trials are opened
+with."""
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
 
-from harness_proxy.wire import CONTROL_TOKEN_ENV, PROXY_TOKEN_ENV, Served
-from shipyard import Trainer, load
-from shipyard.config import ConfigError
-from shipyard.jobs.engine import split
+from harness_proxy.wire import CONTROL_TOKEN_ENV, Served
+from shipyard.config import Config, ConfigError, load
+from shipyard.models.endpoints import ProxyEndpoint
 from shipyard.run import files
-from shipyard.run.logs import AGENT
-from tests.fakes import Alternating, FakeProxy, Harbor
-from tests.runs import ONE_STEP, blueprint, rows, train
+from tests.fakes import Alternating, FakeProxy, FakeTrials, Harbor
+from tests.runs import GRPO, ONE_STEP, rows, run_toml, train
 from tests.service import FakeService
-from tests.test_endpoints import agent
 
 LOW, HIGH = "qwen3_8_low_reasoning", "qwen3_8_xhigh_reasoning"
-ROLLOUT = "concurrency = 2"
+#: The line of `[models.agent]` that its renderers are written after.
+AGENT = "lora_rank = 32"
 
 
 def rendered(given: str) -> dict[str, str]:
-    """The blueprint's `[rollout]` with `renderer = <given>`."""
-    return {ROLLOUT: f"{ROLLOUT}\nrenderer = {given}"}
+    """The config's `[models.agent]` with `renderers = <given>`."""
+    return {AGENT: f"{AGENT}\nrenderers = {given}"}
 
 
 EFFORTS = rendered(f'["{LOW}", "{HIGH}"]')
 
 
-# ------------------------------------------------------------------ the blueprint
+def loaded(tmp_path: Path, **replacements: str) -> Config:
+    """Load the GRPO config over the four-task dataset with `replacements` made in it."""
+    return load(run_toml(tmp_path, **replacements), GRPO.Recipe)
 
 
-def test_the_rollout_takes_a_renderer_or_several_each_named_once(tmp_path: Path) -> None:
-    assert load(blueprint(tmp_path)).rollout.renderer == [], "none: the model's own"
-    assert load(blueprint(tmp_path, **rendered('""'))).rollout.renderer == []
-    assert load(blueprint(tmp_path, **rendered(f'"{LOW}"'))).rollout.renderer == [LOW]
-    assert load(blueprint(tmp_path, **EFFORTS)).rollout.renderer == [LOW, HIGH]
+@pytest.fixture(autouse=True)
+def _no_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Harbor's own check of each harness's config, which is not what these tests are about."""
+    monkeypatch.setattr("shipyard.jobs.engine.preflight", lambda *_: None)
+
+
+# ------------------------------------------------------------------ the config
+
+
+def test_a_model_takes_a_renderer_or_several_each_named_once(tmp_path: Path) -> None:
+    assert loaded(tmp_path).models["agent"].renderers == [], "none: the model's own"
+    assert loaded(tmp_path, **rendered('""')).models["agent"].renderers == []
+    assert loaded(tmp_path, **rendered(f'"{LOW}"')).models["agent"].renderers == [LOW]
+    assert loaded(tmp_path, **EFFORTS).models["agent"].renderers == [LOW, HIGH]
     for given, problem in (
         (f'["{LOW}", "{LOW}"]', "each renderer is named once"),
-        ('["a/b"]', "a renderer is named in its trials' addresses, so it holds no '/'"),
         ("[1]", "a renderer or a list of them"),
     ):
         with pytest.raises(ConfigError) as refused:
-            load(blueprint(tmp_path, **rendered(given)))
-        assert refused.value.problems == [f"[rollout] renderer: {problem}"]
+            loaded(tmp_path, **rendered(given))
+        assert refused.value.problems == [f"[models.agent] renderers: {problem}"]
 
 
-def test_a_providers_agent_takes_no_renderer(tmp_path: Path) -> None:
+def test_the_rollouts_renderer_is_refused_where_it_moved(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError) as refused:
+        loaded(tmp_path, **{"concurrency = 2": f'concurrency = 2\nrenderer = "{LOW}"'})
+    assert refused.value.problems == [
+        "[rollout] renderer: unknown key: it moved, to [models.<role>] renderers"
+    ]
+
+
+def test_a_providers_model_takes_no_renderer(tmp_path: Path) -> None:
     claude = {'model = "Qwen/Qwen3-8B"': 'model = "claude-sonnet-5-5"\nprovider = "anthropic"'}
-    config = load(blueprint(tmp_path, **claude, **EFFORTS))
+    config = loaded(tmp_path, **claude, **EFFORTS)
     with pytest.raises(ValueError, match="renders the calls of a model on Tinker or Together"):
-        Trainer(config, tmp_path / "run")
+        GRPO(config, tmp_path / "run")
     assert not (tmp_path / "run").exists(), "refused before the run directory is made"
 
 
-# ------------------------------------------------------------------ the jobs a rollout runs
+# ------------------------------------------------------------------ a rollout's renderer
 
 
-def test_a_rollout_runs_every_task_at_every_harness_and_renderer() -> None:
-    a, b = Path("a"), Path("b")
-    assert split([a, b], 4, ["pi", "cc"], [LOW, HIGH], mix=False) == [
-        ("pi", LOW, [a, b], 4),
-        ("pi", HIGH, [a, b], 4),
-        ("cc", LOW, [a, b], 4),
-        ("cc", HIGH, [a, b], 4),
-    ], "a group per task, renderer and harness, of four"
+async def test_a_rollout_names_a_renderer_its_model_holds_and_must_when_it_holds_several(
+    tmp_path: Path, fakes: tuple[FakeProxy, FakeService], harbor: Harbor
+) -> None:
+    proxy, _ = fakes
+    trials = harbor(FakeTrials())
+
+    class Unnamed(GRPO):
+        async def step(self) -> None:
+            tasks, agent = self.draw(), {"model": self.agent, "harness": "pi", "modules": None}
+            with pytest.raises(ValueError, match=f"name its renderer, one of {LOW}, {HIGH}"):
+                await self.rollout(tasks, attempts=1, **agent)
+            with pytest.raises(
+                ValueError,
+                match=rf"rollout\(renderer='medium'\): \[models.agent\] renderers holds {LOW}",
+            ):
+                await self.rollout(tasks, attempts=1, renderer="medium", **agent)
+            assert trials.configs == [], "refused before any trial runs"
+
+    several = await train(run_toml(tmp_path, **EFFORTS, **ONE_STEP), tmp_path / "runs", Unnamed)
+    assert list(files.read(several / files.JOBS)) == [], "no job was named"
+    home = run_toml(tmp_path, **rendered(f'"{LOW}"'), **ONE_STEP)
+    single = await train(home, tmp_path / "runs")
+    assert [job["renderer"] for job in files.read(single / files.JOBS)] == [LOW], "its only one"
+    assert [renderer for _, _, renderer, _ in proxy.opened] == [LOW] * 4
 
 
-def test_mixed_harnesses_share_a_groups_attempts_at_each_renderer() -> None:
-    a, b = Path("a"), Path("b")
-    assert split([a, b], 4, ["pi", "cc"], [LOW, HIGH], mix=True) == [
-        ("pi", LOW, [a, b], 2),
-        ("pi", HIGH, [a, b], 2),
-        ("cc", LOW, [a, b], 2),
-        ("cc", HIGH, [a, b], 2),
-    ], "a group per task and renderer, of four, two from each harness"
-
-
-# ------------------------------------------------------------------ a run at two renderers
-
-
-async def test_a_run_trains_and_evaluates_at_each_renderer_and_says_which(
+async def test_a_models_lane_holds_its_renderers_and_each_trial_opens_on_the_one_its_rollout_named(
     tmp_path: Path, fakes: tuple[FakeProxy, FakeService], harbor: Harbor
 ) -> None:
     proxy, _ = fakes
     trials = harbor(Alternating())
-    with_test = {"group_size = 2": 'group_size = 2\ntest = "four"\ntest_group_size = 1'}
-    home = blueprint(tmp_path, **EFFORTS, **ONE_STEP, **with_test)
-    directory = await train(home, tmp_path / "runs")
-    (lane,) = proxy.placed[0][1]["lanes"]
-    assert lane["renderer"] == [LOW, HIGH], "one proxy, the agent's lane started with both"
-    jobs = {job["job"]: job for job in files.read(directory / files.JOBS)}
-    trained = [job["renderer"] for job in jobs.values() if job["purpose"] == "training"]
-    assert trained == [LOW, HIGH], "the batch's two tasks, one at each"
-    tested = [job["renderer"] for job in jobs.values() if job["purpose"] == "evaluation"]
-    assert sorted(tested) == sorted([LOW, HIGH] * 2), "each test batch at each renderer"
-    for config in trials.configs:
-        renderer = jobs[Path(config.trials_dir).name]["renderer"]
-        address = config.agent.env["OPENAI_BASE_URL"]
-        assert address.endswith(f"/renderer/{renderer}/v1"), "each trial dials its own"
-    (row,) = rows(directory)
-    for one in (LOW, HIGH):
-        assert (row[f"reward_mean_{one}"], row[f"sampled_mean_{one}"]) == (0.5, 2.0)
-    assert (row["eval_tasks"], row["eval_trials"], row["eval_graded"]) == (4, 8, 8)
-    assert {f"eval_reward_mean_{LOW}", f"eval_reward_mean_{HIGH}"} <= set(row)
 
-
-async def test_a_recipe_may_roll_out_at_one_renderer_and_no_other(
-    tmp_path: Path, fakes: tuple[FakeProxy, FakeService], harbor: Harbor
-) -> None:
-    harbor(Alternating())
-
-    class Pinned(Trainer):
+    class Efforts(GRPO):
         async def step(self) -> None:
-            groups = await self.rollout(self.draw(), renderer=HIGH)
-            assert {one.renderer for group in groups for one in group.trials} == {HIGH}
-            with pytest.raises(ValueError, match=r"rollout\(renderer='medium'\): the proxy"):
-                await self.rollout(self.draw(), renderer="medium")
+            tasks = self.draw()
+            both = await asyncio.gather(
+                *(
+                    self.rollout(
+                        tasks,
+                        model=self.agent,
+                        harness=self.recipe.harness,
+                        attempts=self.recipe.group_size,
+                        modules=None,
+                        renderer=one,
+                    )
+                    for one in (LOW, HIGH)
+                )
+            )
+            for groups, renderer in zip(both, (LOW, HIGH), strict=True):
+                assert {group.renderer for group in groups} == {renderer}
 
-    directory = await train(blueprint(tmp_path, **EFFORTS, **ONE_STEP), tmp_path / "runs", Pinned)
-    assert [job["renderer"] for job in files.read(directory / files.JOBS)] == [HIGH]
+    home = run_toml(tmp_path, **EFFORTS, **ONE_STEP)
+    directory = await train(home, tmp_path / "runs", Efforts)
+    (lane,) = proxy.placed[0][1]["lanes"]
+    assert (lane["name"], lane["renderer"]) == ("agent", [LOW, HIGH]), "one lane, with both"
+    jobs = {job["job"]: job["renderer"] for job in files.read(directory / files.JOBS)}
+    assert sorted(jobs.values()) == sorted([LOW, HIGH]), "a job at each renderer"
+    opened = {name: renderer for name, _, renderer, _ in proxy.opened}
+    for config in trials.configs:
+        assert opened[config.trial_name] == jobs[Path(config.trials_dir).name]
     (row,) = rows(directory)
-    assert not any(key.startswith("reward_mean_") for key in row), "one renderer: no breakdown"
+    assert (row["groups"], row["trials"], row["reward_mean"]) == (4, 8, 0.5)
+    assert not any(LOW in key or HIGH in key for key in row), "no breakdown by renderer"
+
+
+# ------------------------------------------------------------------ a remote proxy
 
 
 async def test_a_remote_proxy_that_lacks_a_named_renderer_is_refused_before_any_trial(
@@ -131,19 +150,17 @@ async def test_a_remote_proxy_that_lacks_a_named_renderer_is_refused_before_any_
 ) -> None:
     proxy = FakeProxy()
     monkeypatch.setattr("shipyard.models.endpoints.Proxy", proxy)
-    remote = rendered(f'["{LOW}", "{HIGH}"]\nendpoint_url = "https://proxy.example"')
-    lane = agent(
-        load(blueprint(tmp_path, **remote)),
-        tmp_path,
-        environ={PROXY_TOKEN_ENV: "t", CONTROL_TOKEN_ENV: "c"},
-    )
-    endpoint = lane.proxy
+    remote = {"concurrency = 2": 'concurrency = 2\nendpoint_url = "https://proxy.example"'}
+    config = loaded(tmp_path, **EFFORTS, **remote)
+    table = config.models["agent"]
+    endpoint = ProxyEndpoint(config, tmp_path, environ={CONTROL_TOKEN_ENV: "c"})
+    lane = endpoint.lane("agent", table.model, renderers=table.renderers)
 
     def renders(*names: str) -> dict[str, Served]:
-        return {AGENT: Served(lane.model, lane.model, None, names)}
+        return {"agent": Served(lane.model, None, names)}
 
     proxy.lanes = renders(LOW)
-    match = rf"renders lane agent with {LOW}, and \[rollout\] renderer names {HIGH}"
+    match = rf"renders lane agent with {LOW}, and \[models.agent\] renderers names {HIGH}"
     with pytest.raises(RuntimeError, match=match):
         await endpoint.open()
     proxy.lanes = renders()

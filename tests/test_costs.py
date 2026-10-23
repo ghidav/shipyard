@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from shipyard.groups import Trial
-from shipyard.jobs.harnesses import harness
+from shipyard.jobs.harnesses import Harness
 from shipyard.records import Records
 from shipyard.run.costs import Costs, billed_by, billed_tokens, reported, sandbox_seconds
 from tests.fakes import made, write_result
@@ -19,7 +19,7 @@ from tests.fakes import made, write_result
 
 def _trials(*dirs: Path, records: Mapping[str, Sequence[Any]] | None = None) -> list[Trial]:
     """One trial per directory; with `records`, each holds those under its name, else none."""
-    found = [Trial("j", Path(one.name), harness("pi"), one) for one in dirs]
+    found = [Trial("j", Path(one.name), Harness(name="pi"), one) for one in dirs]
     if records is not None:
         for one in found:
             one.records = Records(records.get(one.name) or [])

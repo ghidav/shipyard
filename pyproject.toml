@@ -1,7 +1,7 @@
 [project]
 name = "shipyard"
 version = "0.1.0"
-description = "Post-training on Harbor jobs: a blueprint is a config, a run is its record."
+description = "Post-training on Harbor jobs: a config sets up a run, and a run is its record."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
@@ -55,9 +55,12 @@ shipyard = "shipyard.cli:app"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.8"]
+# The reference in docs/: `uv run --extra docs mkdocs serve`, or `uvx zensical serve -f mkdocs.yml`.
+docs = ["mkdocs>=1.6", "mkdocs-material>=9.5"]
 wandb = ["wandb>=0.21"]
-# An agent on Together post-training: `[agent] provider = "together"`.
-together = ["harness-proxy[together]"]
+# Together: a model on its post-training, `provider = "together"` in its `[models.<role>]`,
+# and trials in its sandboxes, `[rollout] sandbox = "together"`.
+together = ["harness-proxy[together]", "together-sandbox>=4.1,<5"]
 gepa = [
     "gepa>=0.1.4",
 ]

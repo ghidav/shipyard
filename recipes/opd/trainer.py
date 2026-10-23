@@ -8,17 +8,32 @@ from collections.abc import Sequence
 from pathlib import Path
 from statistics import fmean
 
-from shipyard import Blueprint, Group, Model, Trainer
+from shipyard import Config, Group, Harness, Trainer
 
 
 class OPDTrainer(Trainer):
     class Recipe(Trainer.Recipe):
-        #: The teacher: a model on Tinker that shares the agent's tokenizer, or a checkpoint.
-        teacher: str
+        #: The harness the agent runs through, and the trials per task in a rollout.
+        harness: Harness
+        group_size: int
 
-    def __init__(self, config: Blueprint, directory: Path) -> None:
+    def __init__(self, config: Config, directory: Path) -> None:
         super().__init__(config, directory)
-        self.teacher = Model(self.recipe.teacher)
+        self.agent = self.models["agent"]
+        self.agent.training = True
+        #: A model on Tinker that reads the agent's token ids: it shares its tokenizer.
+        self.teacher = self.models["teacher"]
+
+    async def step(self) -> None:
+        groups = await self.rollout(
+            self.draw(),
+            model=self.agent,
+            harness=self.recipe.harness,
+            attempts=self.recipe.group_size,
+            modules=self.state.modules,
+        )
+        await self.score(groups)
+        await self.update(self.agent, groups)
 
     async def score(self, groups: Sequence[Group]) -> None:
         seqs = [s for g in groups for t in g.graded for s in t.sequences]
@@ -29,4 +44,13 @@ class OPDTrainer(Trainer):
             seq.advantages = taught - ref
         self.metrics["teacher_kl"] = fmean(
             float((r - t).mean()) for r, t in zip(ours, theirs, strict=True)
+        )
+
+    async def evaluate(self, tasks: list[Path]) -> list[Group]:
+        return await self.rollout(
+            tasks,
+            model=self.agent,
+            harness=self.recipe.harness,
+            attempts=self.recipe.group_size,
+            modules=self.state.modules,
         )

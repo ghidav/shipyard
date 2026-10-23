@@ -6,11 +6,12 @@ batch's worth of groups have something to teach (dynamic sampling)."""
 from __future__ import annotations
 
 from collections.abc import Sequence
+from pathlib import Path
 from statistics import fmean, pstdev
 
 import tinker
 
-from shipyard import Group, Trainer
+from shipyard import Config, Group, Harness, Trainer
 
 
 class DAPOTrainer(Trainer):
@@ -18,6 +19,11 @@ class DAPOTrainer(Trainer):
     ADAM = tinker.AdamParams(beta1=0.9, beta2=0.95, eps=1e-8, weight_decay=0.1, grad_clip_norm=1.0)
 
     class Recipe(Trainer.Recipe):
+        #: The harness the agent runs through, and the trials per task in a rollout.
+        harness: Harness
+        group_size: int
+        #: Optimizer steps each update takes, on a share of the groups each.
+        substeps: int
         #: How far below and above 1 a token's ratio may go before `ppo` clips it.
         clip_low: float
         clip_high: float
@@ -29,10 +35,21 @@ class DAPOTrainer(Trainer):
         #: per-trial budget, which is the model's context length.
         overlong_budget: int | None = None
 
+    def __init__(self, config: Config, directory: Path) -> None:
+        super().__init__(config, directory)
+        self.agent = self.models["agent"]
+        self.agent.training = True
+
     async def step(self) -> None:
         active: list[Group] = []
         for _ in range(self.generator.per_pass):  # at most one pass over the tasks
-            groups = await self.rollout(self.draw())
+            groups = await self.rollout(
+                self.draw(),
+                model=self.agent,
+                harness=self.recipe.harness,
+                attempts=self.recipe.group_size,
+                modules=self.state.modules,
+            )
             await self.score(groups)
             active += [g for g in groups if g.is_scored]
             if len(active) >= self.config.data.batch_size:
@@ -44,7 +61,13 @@ class DAPOTrainer(Trainer):
                 s.advantages *= fmean(sizes) / size
         low, high = self.recipe.clip_low, self.recipe.clip_high
         clipped = {"clip_low_threshold": 1 - low, "clip_high_threshold": 1 + high}
-        await self.update(active, loss="ppo", loss_config=clipped)
+        await self.update(
+            self.agent,
+            active,
+            substeps=self.recipe.substeps,
+            loss="ppo",
+            loss_config=clipped,
+        )
 
     async def score(self, groups: Sequence[Group]) -> None:
         for group in groups:
@@ -70,3 +93,12 @@ class DAPOTrainer(Trainer):
             return 0.0
         cache = self.recipe.overlong_buffer * budget
         return -penalty * min(max(tokens - (budget - cache), 0) / cache, 1.0)
+
+    async def evaluate(self, tasks: list[Path]) -> list[Group]:
+        return await self.rollout(
+            tasks,
+            model=self.agent,
+            harness=self.recipe.harness,
+            attempts=self.recipe.group_size,
+            modules=self.state.modules,
+        )

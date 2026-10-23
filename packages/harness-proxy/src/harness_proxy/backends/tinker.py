@@ -29,10 +29,9 @@ async def context_of(service: Any, base_model: str) -> int | None:
         for model in getattr(caps, "supported_models", None) or []:
             if getattr(model, "model_name", None) == base_model:
                 return int(getattr(model, "max_context_length", 0) or 0) or None
-    except Exception:  # noqa: BLE001 - a failed capability read must not fail a run
+    except Exception:  # noqa: BLE001 - the lane refuses, one way for any cause
         logger.warning(
-            "could not read the context length of %s: the budget and the context fit are "
-            "not enforced",
+            "could not read the context length of %s",
             base_model,
             exc_info=True,
         )

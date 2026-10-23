@@ -14,14 +14,10 @@ class Refused(Exception):
 
 @dataclass(frozen=True)
 class Caller:
-    """Who made a call: the trial, lane and renderer its address names, the wire it came on,
-    and the SDK's retry headers."""
+    """Who made a call: the trial its token opened, the wire it came on, and the SDK's retry
+    headers."""
 
     trial: str = ""
-    #: The lane whose model answers the call; "" for a proxy's only lane.
-    lane: str = ""
-    #: The renderer that renders the call; "" for the lane's first.
-    renderer: str = ""
     #: `anthropic` for a call on `/messages`, otherwise `openai`. Determines the form of the
     #: tool call ids the proxy mints.
     wire: str = "openai"

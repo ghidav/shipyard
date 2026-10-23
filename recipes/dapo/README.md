@@ -4,11 +4,11 @@ DAPO ([Yu et al., 2025](https://arxiv.org/abs/2503.14476)): each trial's reward,
 
 | | |
 | --- | --- |
-| **Agent** | `Qwen/Qwen3-8B` on Tinker, through `pi` |
+| **Agent** | `[models.agent]`: `Qwen/Qwen3-8B` on Tinker, trained; through `pi`, `[recipe] harness` |
 | **Data** | `reasoning-gym-easy`: 16 tasks a step, 8 trials each, in 16 substeps |
-| **Sandbox** | Modal (set `[rollout] sandbox = "docker"` to run trials on this machine) |
-| **Needs** | `TINKER_API_KEY`; Modal credentials and `harbor[modal]` (`uv tool install shipyard --with "harbor[modal]"`) |
-| **`[recipe]`** | `clip_low`, `clip_high`, `overlong_penalty`, `overlong_buffer`; `overlong_budget` (optional: unset, the model's context) |
+| **Sandbox** | Together (set `[rollout] sandbox = "docker"` to run trials on this machine) |
+| **Needs** | `TINKER_API_KEY`; `TOGETHER_API_KEY` for the sandboxes, and the `together` extra (`uv tool install "shipyard[together]"`) |
+| **`[recipe]`** | `harness`, `group_size`, `clip_low`, `clip_high`, `overlong_penalty`, `overlong_buffer`; `overlong_budget` (optional: unset, the model's context) |
 
 ```sh
 uvx harbor datasets download reasoning-gym-easy -o tasks

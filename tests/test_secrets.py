@@ -14,28 +14,27 @@ import pytest
 from harbor.models.trial.config import TrialConfig
 from harbor.utils.env import redact_sensitive_value
 
-from shipyard import Blueprint, Trainer, Trial
+from shipyard import Config, Trainer, Trial
 from shipyard.config import Rollout
 from shipyard.jobs.engine import HarborEngine, Job
-from shipyard.jobs.harnesses import harness
+from shipyard.jobs.harnesses import Harness
 from shipyard.jobs.secrets import Pool, Secrets, scrub
 from shipyard.models.endpoints import ProviderEndpoint
 from shipyard.run.directory import open_run
 from tests.fakes import FakeProxy, Harbor, dataset
+from tests.runs import GRPO
 from tests.service import FakeService
 
 NAME = "BAUPLAN_API_KEY"
 #: Pool keys longer than eight characters, so Harbor's redacted form of each is distinct.
 KEYS = ("key-0000-aaaaaaaa", "key-0001-bbbbbbbb")
-BLUEPRINT = """[agent]
+RUN_TOML = """[models.agent]
 model = "claude-x"
 provider = "anthropic"
-harness = "pi@0.85.1"
 
 [data]
 train = "four"
 batch_size = 4
-group_size = 2
 
 [rollout]
 concurrency = 4
@@ -43,6 +42,8 @@ secrets = {{ {secrets} }}
 
 [recipe]
 steps = 1
+harness = "pi@0.85.1"
+group_size = 2
 """
 
 
@@ -104,7 +105,9 @@ def _engine(tmp_path: Path, runner: Any, secrets: Secrets, concurrency: int = 4)
 
 async def _run(engine: HarborEngine, name: str, tasks: list[Path], attempts: int) -> list[Trial]:
     endpoint = ProviderEndpoint("m", "openrouter")
-    job = await engine.run(Job(name, harness=harness("pi")), tasks, attempts, endpoint=endpoint)
+    job = await engine.run(
+        Job(name, harness=Harness(name="pi")), tasks, attempts, endpoint=endpoint
+    )
     return job.trials
 
 
@@ -195,34 +198,40 @@ async def test_secrets_of_ones_own_are_acquired_and_released_with_each_trial(
 
 
 def _home(tmp_path: Path, secrets: str = "") -> Path:
-    """Write a blueprint of a provider's agent over a four-task dataset, with `secrets` as the
+    """Write a config of a provider's agent over a four-task dataset, with `secrets` as the
     entries of `[rollout] secrets`."""
     if not (tmp_path / "tasks" / "four").is_dir():
         dataset(tmp_path / "tasks", "four", *"abcd")
     home = tmp_path / "bp" / "leased"
     home.mkdir(parents=True, exist_ok=True)
-    (home / "run.toml").write_text(BLUEPRINT.format(secrets=secrets), encoding="utf-8")
+    (home / "run.toml").write_text(RUN_TOML.format(secrets=secrets), encoding="utf-8")
     return home
 
 
-class RollingOut(Trainer):
-    """A trainer whose step only rolls the agent out, as a provider's agent cannot update."""
+class RollingOut(GRPO):  # type: ignore[misc, valid-type]
+    """GRPO whose step only rolls the agent out, as a provider's agent cannot update."""
 
-    def __init__(self, config: Blueprint, directory: Path) -> None:
+    def __init__(self, config: Config, directory: Path) -> None:
         super().__init__(config, directory)
         self.agent.training = False
 
     async def step(self) -> None:
-        await self.rollout(self.draw())
+        await self.rollout(
+            self.draw(),
+            model=self.agent,
+            harness=self.recipe.harness,
+            attempts=self.recipe.group_size,
+            modules=None,
+        )
 
 
 async def _rolled_out(home: Path, root: Path) -> None:
-    directory, config = open_run(home, root=root)
+    directory, config = open_run(home, root=root, trainer=RollingOut)
     with RollingOut(config, directory) as trainer:
         await trainer.run()
 
 
-async def test_a_trainer_leases_the_blueprints_pool_to_its_trials_or_gives_them_none(
+async def test_a_trainer_leases_the_configs_pool_to_its_trials_or_gives_them_none(
     tmp_path: Path,
     fakes: tuple[FakeProxy, FakeService],
     harbor: Harbor,
@@ -246,10 +255,12 @@ def test_a_trainer_refuses_a_pool_it_cannot_lease(
     monkeypatch.delenv("NOBODY", raising=False)
     monkeypatch.setenv("BAUPLAN_API_KEYS", ",".join(KEYS))
     monkeypatch.setenv("BAUPLAN_USERS", "one")
-    directory, config = open_run(_home(tmp_path, f'{NAME} = "NOBODY"'), root=tmp_path / "runs")
+    directory, config = open_run(
+        _home(tmp_path, f'{NAME} = "NOBODY"'), root=tmp_path / "runs", trainer=GRPO
+    )
     with pytest.raises(ValueError, match=r"^\[rollout\.secrets\]: NOBODY unset or empty$"):
         Trainer(config, directory)
     paired = f'{NAME} = "BAUPLAN_API_KEYS", BAUPLAN_USER = "BAUPLAN_USERS"'
-    directory, config = open_run(_home(tmp_path, paired), root=tmp_path / "runs")
+    directory, config = open_run(_home(tmp_path, paired), root=tmp_path / "runs", trainer=GRPO)
     with pytest.raises(ValueError, match=r"differ in size \(BAUPLAN_API_KEYS 2, BAUPLAN_USERS 1\)"):
         Trainer(config, directory)

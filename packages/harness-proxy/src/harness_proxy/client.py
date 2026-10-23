@@ -20,20 +20,17 @@ from harness_proxy.tunnel import STARTUP_SECONDS as TUNNEL_SECONDS
 from harness_proxy.tunnel import end, started
 from harness_proxy.wire import (
     BANNER,
-    CONTROL_PATH,
     CONTROL_TOKEN_ENV,
     HEALTH_PATH,
-    PROXY_TOKEN_ENV,
+    TRIALS_PATH,
     TUNNEL_LINE,
-    Address,
-    Fetch,
+    Opening,
     Record,
     Served,
-    Swap,
+    closing_path,
     lanes_in,
     new_token,
     records_in,
-    records_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,11 +38,11 @@ logger = logging.getLogger(__name__)
 #: Command that starts `harness-proxy`. Tests replace it with a stub.
 SERVE: list[str] = [sys.executable, "-m", "harness_proxy.serve"]
 STARTUP_SECONDS = 180.0
-#: Seconds `close` gives serve to stop its tunnel and close its session before killing it.
+#: Seconds `stop` gives serve to stop its tunnel and close its session before killing it.
 STOP_SECONDS = 30.0
-#: Attempts per records fetch, so one tunnel stall does not lose a trial.
-RECORDS_ATTEMPTS = 4
-RECORDS_TIMEOUT = 120.0
+#: Attempts at opening or closing a trial, so one network stall to a remote proxy does not
+#: lose a trial: the proxy answers an open or a close asked again as it answered the first.
+CONTROL_ATTEMPTS = 4
 CONTROL_TIMEOUT = 120.0
 PAUSES = (1.0, 2.0, 4.0)
 #: Settings passed to serve as flags, which describe the process. Its lanes, and the rest,
@@ -75,11 +72,11 @@ def serve_command(settings: Mapping[str, Any], *, host: str, tunnel: bool = Fals
 
 @dataclass
 class Proxy:
-    """A proxy as seen from the run: its addresses, its tokens, and the process it started."""
+    """A proxy as seen from the run: its addresses, the control token that opens and closes its
+    trials, and the process it started."""
 
     origin: str
-    token: str = field(repr=False)
-    control_token: str | None = field(default=None, repr=False)
+    control_token: str = field(repr=False)
     loopback: str | None = None
     process: subprocess.Popen[str] | None = field(default=None, repr=False)
     #: Whether the proxy opened a quick tunnel, whose address `origin` is.
@@ -98,6 +95,16 @@ class Proxy:
     def host(self) -> str:
         """Hostname a sandbox resolves for this proxy, for a network allowlist."""
         return urlsplit(self.origin).hostname or ""
+
+    @property
+    def address(self) -> str:
+        """The base URL every trial's harness dials, with the token its trial was opened with."""
+        return f"{self.origin}/v1"
+
+    @property
+    def local_address(self) -> str:
+        """The same address from this machine, for a harness whose calls leave from here."""
+        return f"{self.loopback}/v1"
 
     @classmethod
     async def local(
@@ -139,9 +146,7 @@ class Proxy:
         tunnel: bool = False,
     ) -> Proxy:
         environ = dict(os.environ if environ is None else environ)
-        token = environ.get(PROXY_TOKEN_ENV) or new_token()
-        control = environ.get(CONTROL_TOKEN_ENV) or new_token()
-        environ.update({PROXY_TOKEN_ENV: token, CONTROL_TOKEN_ENV: control})
+        control = environ[CONTROL_TOKEN_ENV] = environ.get(CONTROL_TOKEN_ENV) or new_token()
         environ.setdefault("PYTHONUNBUFFERED", "1")
         process = subprocess.Popen(
             serve_command(endpoint_settings, host=host, tunnel=tunnel),
@@ -173,7 +178,6 @@ class Proxy:
         logger.info("proxy serving %s on port %s as %s", match.group("lanes"), port, host)
         return cls(
             origin=opened.group("origin") if opened else f"http://{match.group('host')}:{port}",
-            token=token,
             control_token=control,
             loopback=f"http://127.0.0.1:{port}",
             process=process,
@@ -181,16 +185,17 @@ class Proxy:
         )
 
     @classmethod
-    def remote(cls, url: str, token: str, control_token: str | None = None) -> Proxy:
-        """Return a proxy running elsewhere at `url`, reached with `token`."""
+    def remote(cls, url: str, control_token: str) -> Proxy:
+        """Return a proxy running elsewhere at `url`, whose trials the run opens with
+        `control_token`."""
         if not url.strip():
             raise ValueError("a remote proxy needs a URL")
-        if not token:
+        if not control_token:
             raise ValueError(
-                f"{PROXY_TOKEN_ENV} is unset, so the token that harnesses must present to the "
-                f"proxy at {url} is unknown"
+                f"{CONTROL_TOKEN_ENV} is unset, so the run cannot open trials on the proxy at "
+                f"{url}: export the token it was started with"
             )
-        return cls(origin=url, token=token, control_token=control_token or None)
+        return cls(origin=url, control_token=control_token)
 
     async def ready(self, seconds: float = PROBE_SECONDS) -> dict[str, Served]:
         """Wait for `/healthz` to answer, and return the lanes the proxy serves."""
@@ -211,70 +216,57 @@ class Proxy:
             return f"harness-proxy exited with {code}"
         return None
 
-    def address_for(self, trial: str, renderer: str | None = None, lane: str | None = None) -> str:
-        """Return a trial's base URL on the proxy, naming `renderer` and `lane` if given; a
-        proxy with one lane answers an address that names none."""
-        return self.origin + Address(trial, lane, renderer).path
+    async def open(
+        self,
+        trial: str,
+        *,
+        lane: str | None = None,
+        renderer: str | None = None,
+        weights: str | None = None,
+    ) -> str:
+        """Open `trial` on `lane`, the only one for None, rendered with `renderer`, the lane's
+        first for None, and sampled from `weights`, its base model for None; return the token
+        its harness calls with. `RuntimeError` if the proxy refuses it."""
+        opening = Opening(trial, lane, renderer, weights)
+        answer = await self._control(TRIALS_PATH, opening.body, what=f"open trial {trial}")
+        return str(answer["token"])
 
-    async def swap(self, weights: str | None, lane: str | None = None) -> None:
-        """Switch `lane`, or a proxy's one lane, to `weights`, or to its base model for None."""
-        if self.control_token is None:
-            raise RuntimeError(
-                f"the proxy at {self.origin} opened no control route to this run: set "
-                f"{CONTROL_TOKEN_ENV} to the token it was started with"
-            )
-        async with httpx.AsyncClient(timeout=CONTROL_TIMEOUT, transport=self.transport) as client:
-            answered = await client.post(
-                f"{self.loopback}{CONTROL_PATH}",
-                json=Swap(weights, lane).body,
-                headers={"Authorization": f"Bearer {self.control_token}"},
-            )
-        if answered.status_code != 200:
-            raise RuntimeError(
-                f"the proxy at {self.origin} refused to serve {weights}: "
-                f"{answered.status_code} {answered.text[:200]}"
-            )
+    async def close(self, trial: str) -> list[Record]:
+        """Close `trial` and return its records, in request order. `RuntimeError` for a trial
+        the proxy does not hold."""
+        return records_in(await self._control(closing_path(trial), None, what=f"close {trial}"))
 
-    async def records(self, trial: str) -> list[Record]:
-        """Fetch the trial's records, which drains them, retrying transport errors and 5xx."""
-        if self.control_token is None:
-            raise RuntimeError(
-                f"the proxy at {self.origin} opened no records route to this run: set "
-                f"{CONTROL_TOKEN_ENV} to the token it was started with"
-            )
-        url = f"{self.loopback}{records_path(trial)}"
-        for attempt in range(RECORDS_ATTEMPTS):
-            # A retry asks again for the answer the lost fetch drained.
-            params = Fetch(delta=True, again=attempt > 0).query
+    async def _control(self, path: str, body: Any, *, what: str) -> dict[str, Any]:
+        """Post `body` to the control route `path` and return its answer, retrying transport
+        errors and 5xx; `RuntimeError` for a refusal."""
+        url = f"{self.loopback}{path}"
+        for attempt in range(CONTROL_ATTEMPTS):
             try:
                 async with httpx.AsyncClient(
-                    timeout=RECORDS_TIMEOUT, transport=self.transport
+                    timeout=CONTROL_TIMEOUT, transport=self.transport
                 ) as client:
-                    answered = await client.get(
-                        url,
-                        params=params,
-                        headers={"Authorization": f"Bearer {self.control_token}"},
+                    answered = await client.post(
+                        url, json=body, headers={"Authorization": f"Bearer {self.control_token}"}
                     )
                 answered.raise_for_status()
                 payload = answered.json()
-            except (httpx.TransportError, httpx.HTTPStatusError) as failed:
-                status = getattr(getattr(failed, "response", None), "status_code", 0)
-                last = attempt == RECORDS_ATTEMPTS - 1
-                if (isinstance(failed, httpx.HTTPStatusError) and status < 500) or last:
+            except httpx.HTTPStatusError as failed:
+                status = failed.response.status_code
+                if status < 500 or attempt == CONTROL_ATTEMPTS - 1:
+                    raise RuntimeError(
+                        f"the proxy at {self.origin} refused to {what}: {status} "
+                        f"{failed.response.text[:300]}"
+                    ) from failed
+            except httpx.TransportError:
+                if attempt == CONTROL_ATTEMPTS - 1:
                     raise
-                logger.warning(
-                    "records of %s: %s on try %d of %d, retrying",
-                    trial,
-                    type(failed).__name__,
-                    attempt + 1,
-                    RECORDS_ATTEMPTS,
-                )
-                await asyncio.sleep(PAUSES[min(attempt, len(PAUSES) - 1)])
-                continue
-            return records_in(payload)
+            else:
+                return payload if isinstance(payload, dict) else {}
+            logger.warning("%s: try %d of %d failed, retrying", what, attempt + 1, CONTROL_ATTEMPTS)
+            await asyncio.sleep(PAUSES[min(attempt, len(PAUSES) - 1)])
         raise AssertionError("unreachable")  # pragma: no cover
 
-    def close(self) -> None:
+    def stop(self) -> None:
         """Stop the serve process, if this run started it, which stops its tunnel."""
         process, self.process = self.process, None
         if process is not None:

@@ -17,3 +17,8 @@ MAP.md
 experiments/
 .claude
 .agents
+docs/*
+!docs/adr/
+mkdocs.yml
+skills-lock.json
+uv.lock

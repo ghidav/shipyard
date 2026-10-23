@@ -15,11 +15,11 @@ from harbor.utils.templating import render_prompt_template
 from typer.testing import CliRunner
 
 from proxies import MODEL
-from shipyard import Blueprint, Group, Trainer
+from shipyard import Config, Trainer
 from shipyard.cli import app
-from shipyard.config import Rollout
+from shipyard.config import Rollout, load
 from shipyard.jobs.engine import DELIVERED, HarborEngine, Job, laid_over
-from shipyard.jobs.harnesses import harness
+from shipyard.jobs.harnesses import Harness
 from shipyard.jobs.modules import (
     KINDS,
     PROMPT,
@@ -41,23 +41,24 @@ from shipyard.jobs.modules import (
 )
 from shipyard.models.endpoints import ProviderEndpoint
 from shipyard.run import files
-from shipyard.run.checkpoint import Checkpoint
-from shipyard.run.directory import open_run, reopened, running
+from shipyard.run.checkpoint import Checkpoint, found
+from shipyard.run.directory import open_run, running
 from shipyard.run.files import CARRIED
 from tests.fakes import Alternating, FakeProxy, FakeTrials, Harbor, dataset
+from tests.runs import GRPO, GRPO_FILE
 from tests.service import FakeService
 
 FIXTURES = Path(__file__).parent / "modules"
 VALID = FIXTURES / "valid"
 
-#: Blueprint over the two-task `fixture` dataset whose `[agent] modules` names `modules/` beside
-#: it. A provider serves the agent, so its rollouts need no proxy and no Tinker.
-CARRYING = """
-[agent]
+#: Config over the two-task `fixture` dataset whose top-level `modules` names `modules/` beside
+#: it, for the GRPO recipe. A provider serves the agent, so its rollouts need no proxy and no
+#: Tinker.
+CARRYING = """modules = "modules"
+
+[models.agent]
 model = "m"
 provider = "openrouter"
-harness = "pi@0.85.1"
-modules = "modules"
 
 [data]
 train = "fixture"
@@ -65,6 +66,8 @@ batch_size = 2
 
 [recipe]
 steps = 1
+harness = "pi@0.85.1"
+group_size = 1
 """
 
 
@@ -260,7 +263,7 @@ def test_a_prompt_is_delivered_as_harbors_prompt_template(tmp_path: Path) -> Non
     assert rendered == preamble(_prompt(text)) + "Fix the bug.\n"
 
 
-def test_a_prompt_rides_with_skills_and_lays_over_the_blueprints_kwargs(tmp_path: Path) -> None:
+def test_a_prompt_rides_with_skills_and_lays_over_the_harness_kwargs(tmp_path: Path) -> None:
     candidate = Modules({PROMPT: _prompt(), "solving": _module()})
     under: dict[str, Any] = {"kwargs": {"version": "1.0", "prompt_template_path": "theirs.j2"}}
     fields = laid_over(under, deliver(candidate, tmp_path / "into"))
@@ -335,9 +338,9 @@ def test_deliver_names_the_skills_root_harbor_takes_and_writes_every_file(
 async def test_a_kinds_fields_land_on_the_agent_config_beside_the_rollouts_own(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Fields a kind's `deliver` returns merge with the ones the rollout sets. A future
-    harness or tool kind can then be added as a class and a `KINDS` entry, with no change
-    to the engine."""
+    """Fields a kind's `deliver` returns merge with the ones the rollout's harness sets. A
+    future harness or tool kind can then be added as a class and a `KINDS` entry, with no
+    change to the engine."""
     # These fields are made up, so Harbor's own check of the config would refuse them.
     monkeypatch.setattr("shipyard.jobs.engine.preflight", lambda *_: None)
     monkeypatch.setattr(
@@ -351,8 +354,9 @@ async def test_a_kinds_fields_land_on_the_agent_config_beside_the_rollouts_own(
     )
     runner = FakeTrials()
     table = Rollout(sandbox="docker", concurrency=1, jobs_dir=str(tmp_path / "jobs"))
-    engine = HarborEngine(table, env={"KEEP": "1"}, kwargs={"thinking": "high"}, run_trial=runner)
-    job = Job("run-0000", modules=Modules.read(VALID), harness=harness("pi@0.85.1"))
+    engine = HarborEngine(table, run_trial=runner)
+    harness = Harness(name="pi@0.85.1", env={"KEEP": "1"}, kwargs={"thinking": "high"})
+    job = Job("run-0000", modules=Modules.read(VALID), harness=harness)
     endpoint = ProviderEndpoint("m", "openrouter")
     await engine.run(job, [tmp_path / "tasks" / "alpha"], 1, endpoint=endpoint)
     agent = runner.configs[0].agent
@@ -400,7 +404,7 @@ def test_read_skips_the_incidental_and_write_refuses_an_escape(tmp_path: Path) -
 def _carrying(
     tmp_path: Path, text: str = CARRYING, modules: Path | None = VALID, *, at: str = "bp"
 ) -> Path:
-    """Write a blueprint at `<tmp>/<at>` with a copy of `modules` beside it, over the fixture
+    """Write a config at `<tmp>/<at>` with a copy of `modules` beside it, over the fixture
     dataset in `<tmp>/tasks`."""
     if not (tmp_path / "tasks" / "fixture").is_dir():
         dataset(tmp_path / "tasks", "fixture", "alpha", "beta")
@@ -420,21 +424,28 @@ async def _roll(
     home: Path, root: Path, *jobs: tuple[list[Path], Mapping[str, Any]], update: bool = False
 ) -> tuple[Path, Trainer]:
     """Open a run for `home` and train it one step that rolls out each of `jobs`, a batch with
-    the keyword arguments of its `rollout`; with `update`, it scores and trains on each."""
+    the keyword arguments of its `rollout` over GRPO's own: its agent, its harness, its group
+    size and the run's modules. With `update`, it scores and trains on each, as GRPO does."""
 
-    class Rolling(Trainer):
-        def __init__(self, config: Blueprint, directory: Path) -> None:
+    class Rolling(GRPO):  # type: ignore[misc, valid-type]
+        def __init__(self, config: Config, directory: Path) -> None:
             super().__init__(config, directory)
             self.agent.training = update  # a rollout alone trains nothing
 
         async def step(self) -> None:
             for tasks, named in jobs:
-                groups = await self.rollout(tasks, **named)
+                own = {
+                    "model": self.agent,
+                    "harness": self.recipe.harness,
+                    "attempts": self.recipe.group_size,
+                    "modules": self.state.modules,
+                }
+                groups = await self.rollout(tasks, **{**own, **named})
                 if update:
                     await self.score(groups)
-                    await self.update(groups)
+                    await self.update(self.agent, groups)
 
-    directory, config = open_run(home, root=root)
+    directory, config = open_run(home, root=root, trainer=Rolling)
     with running(directory), Rolling(config, directory) as trainer:
         await trainer.run()
     return directory, trainer
@@ -511,6 +522,26 @@ async def test_a_job_delivers_the_candidate_it_is_handed_and_nothing_otherwise(
     assert "modules" not in rows[0] and rows[1]["modules"] == handed.digest
 
 
+async def test_the_runs_modules_come_from_the_top_level_key_and_a_rollout_given_none_carries_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, harbor: Harbor
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    home = _carrying(tmp_path)
+    runner = harbor(FakeTrials())
+    alpha = _batch(tmp_path, "alpha")
+    directory, trainer = await _roll(
+        home, tmp_path / "runs", (alpha, {"modules": None}), (alpha, {})
+    )
+    assert trainer.config.modules == "modules", "a key of the config's own, above its tables"
+    assert trainer.state.modules == Modules.read(home / "modules")
+    bare, carrying = runner.configs
+    assert bare.agent.skills == [], "the run's modules ride only with the rollouts handed them"
+    root = (tmp_path / "jobs" / f"{directory.name}-0001" / DELIVERED / "skills").resolve()
+    assert carrying.agent.skills == [str(root)]
+    rows = _rows(directory)
+    assert "modules" not in rows[0] and rows[1]["modules"] == trainer.state.modules.digest
+
+
 async def test_a_rollout_runs_the_harness_it_names_and_its_row_says_which(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, harbor: Harbor
 ) -> None:
@@ -521,72 +552,8 @@ async def test_a_rollout_runs_the_harness_it_names_and_its_row_says_which(
     named = {"attempts": 1, "harness": "claude-code@2.1.0"}
     directory, _ = await _roll(home, tmp_path / "runs", (alpha, {"attempts": 1}), (alpha, named))
     ran = [(one.agent.name, one.agent.kwargs.get("version")) for one in runner.configs]
-    assert ran == [("pi", "0.85.1"), ("claude-code", "2.1.0")], "[agent] harness, then the named"
+    assert ran == [("pi", "0.85.1"), ("claude-code", "2.1.0")], "the recipe's, then the named"
     assert [row["harness"] for row in _rows(directory)] == ["pi@0.85.1", "claude-code@2.1.0"]
-
-
-#: CARRYING without modules, driven by two harnesses, in groups of two.
-TWO = (
-    CARRYING.replace('modules = "modules"\n', "")
-    .replace('harness = "pi@0.85.1"', 'harness = ["pi@0.85.1", "claude-code@2.1.0"]')
-    .replace("batch_size = 2", "batch_size = 2\ngroup_size = 2")
-)
-
-
-async def _two(tmp_path: Path, text: str) -> tuple[Path, list[Group]]:
-    """Run one step that rolls out the fixture's two tasks under `text`, and return the run's
-    directory and the groups the rollout returned."""
-    found: list[Group] = []
-
-    class Rolling(Trainer):
-        def __init__(self, config: Blueprint, directory: Path) -> None:
-            super().__init__(config, directory)
-            self.agent.training = False
-
-        async def step(self) -> None:
-            found.extend(await self.rollout(_batch(tmp_path, "alpha", "beta")))
-
-    directory, config = open_run(_carrying(tmp_path, text, modules=None), root=tmp_path / "runs")
-    with running(directory), Rolling(config, directory) as trainer:
-        await trainer.run()
-    return directory, found
-
-
-async def test_two_unmixed_harnesses_each_run_every_task_in_a_group_of_their_own(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, harbor: Harbor
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    harbor(FakeTrials())
-    directory, found = await _two(tmp_path, TWO)
-    assert [(group.task.name, group.harness) for group in found] == [
-        ("alpha", "pi@0.85.1"),
-        ("alpha", "claude-code@2.1.0"),
-        ("beta", "pi@0.85.1"),
-        ("beta", "claude-code@2.1.0"),
-    ], "in the order asked, a group of each task per harness"
-    assert all(len(group.trials) == 2 for group in found), "each of group_size"
-    assert [(row["harness"], row["tasks"], row["trials"]) for row in _rows(directory)] == [
-        ("pi@0.85.1", 2, 4),
-        ("claude-code@2.1.0", 2, 4),
-    ]
-
-
-async def test_mixed_harnesses_split_each_tasks_attempts_and_share_its_group(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, harbor: Harbor
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    harbor(FakeTrials())
-    mixed = TWO.replace("harness = [", "mix_harnesses = true\nharness = [")
-    directory, found = await _two(tmp_path, mixed)
-    assert [group.task.name for group in found] == ["alpha", "beta"]
-    assert [[one.harness.name for one in group.trials] for group in found] == [
-        ["pi", "claude-code"],
-        ["pi", "claude-code"],
-    ], "one attempt of each task per harness, in one group"
-    assert [(row["harness"], row["trials"]) for row in _rows(directory)] == [
-        ("pi@0.85.1", 2),
-        ("claude-code@2.1.0", 2),
-    ]
 
 
 async def test_a_handed_candidate_wins_over_the_carried_one(
@@ -624,12 +591,13 @@ async def test_a_job_hands_a_prompt_to_harbor_as_the_agents_prompt_template(
     assert _rows(directory)[0]["modules"] == prompted.digest
 
 
-async def test_a_carried_prompt_replaces_the_blueprints_template_and_skills_leave_it_alone(
+async def test_a_carried_prompt_replaces_the_harness_template_and_skills_leave_it_alone(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, harbor: Harbor
 ) -> None:
     monkeypatch.chdir(tmp_path)
     runner = harbor(FakeTrials())
-    text = CARRYING.replace("[recipe]", '[agent.kwargs]\nprompt_template_path = "t.j2"\n[recipe]')
+    templated = 'harness = { name = "pi@0.85.1", kwargs = { prompt_template_path = "t.j2" } }'
+    text = CARRYING.replace('harness = "pi@0.85.1"', templated)
     prompted = _carrying(tmp_path, text, modules=None, at="prompted")
     write({PROMPT_FILE: "Run the tests.\n"}, into=prompted / "modules")
     alpha = (_batch(tmp_path, "alpha"), {"attempts": 1})
@@ -644,7 +612,7 @@ def test_a_run_carries_its_modules_and_keeps_a_candidate_in_the_layout_it_reads(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    directory, config = open_run(_carrying(tmp_path), root=tmp_path / "runs")
+    directory, config = open_run(_carrying(tmp_path), root=tmp_path / "runs", trainer=GRPO)
     assert carried(config, directory) == Modules.read(VALID)
     assert (directory / files.MODULES / CARRIED / SKILLS_DIR / "solving" / SKILL_FILE).is_file()
     best = Modules({**Modules.read(VALID).components, PROMPT: _prompt("Run the tests.\n")})
@@ -663,26 +631,28 @@ def test_a_resumed_run_carries_the_modules_its_checkpoint_saved(
     """Not the seed: a search, such as FST's, moved on to other modules, which the state of
     its checkpoint holds whole."""
     monkeypatch.chdir(tmp_path)
-    directory, config = open_run(_carrying(tmp_path), root=tmp_path / "runs")
+    directory, config = open_run(_carrying(tmp_path), root=tmp_path / "runs", trainer=GRPO)
     trainer = Trainer(config, directory)
     later = Modules({"solving": _module(_skill("read it three times"))})
-    saved = Trainer.State(steps=4, updates=4, drawn=4, modules=later).model_dump(mode="json")
+    state = Trainer.State(steps=4, updates={"agent": 4}, drawn=4, modules=later)
+    saved = state.model_dump(mode="json")
     files.write_json(directory / files.STATES / "step-4.json", saved)
     resumed = Trainer(config, directory)
     resumed.restore(directory, Checkpoint("step-4", 4, f"{files.STATES}/step-4.json"))
     assert resumed.state.modules == later != trainer.state.modules
 
 
-async def test_a_resumed_run_carries_the_modules_it_kept_not_the_blueprints(
+async def test_a_resumed_run_carries_the_modules_it_kept_not_the_configs(
     tmp_path: Path, fakes: tuple[FakeProxy, FakeService], harbor: Harbor
 ) -> None:
     harbor(Alternating())
-    trained = CARRYING.replace('model = "m"\nprovider = "openrouter"', f'model = "{MODEL}"')
-    home = _carrying(tmp_path, trained + "learning_rate = 2e-5\n")
+    on_tinker = f'model = "{MODEL}"\nlearning_rate = 2e-5'
+    home = _carrying(tmp_path, CARRYING.replace('model = "m"\nprovider = "openrouter"', on_tinker))
     twice = (_batch(tmp_path, "alpha"), {"attempts": 2})  # scored 1 and 0, so it updates
     directory, _ = await _roll(home, tmp_path / "runs", twice, update=True)
     shutil.rmtree(home / "modules")
-    config, checkpoint = reopened(directory)
+    # Trained by a class, the run names no recipe for `reopened` to find: read it as that would.
+    config, checkpoint = load(directory, GRPO.Recipe), found(directory)
     saved = Trainer.State.model_validate(checkpoint.saved_state(directory))
     assert checkpoint.tag == "final" and saved.modules == Modules.read(VALID), "in the state"
     with Trainer(config, directory) as resumed:
@@ -708,7 +678,8 @@ def test_modules_the_run_cannot_read_fail_it_before_anything_is_kept_or_rolled_o
     monkeypatch.chdir(tmp_path)
     runner = harbor(FakeTrials())
     home = _carrying(tmp_path, modules=modules)
-    result = CliRunner().invoke(app, ["run", str(home), "--root", str(tmp_path / "runs")])
+    argv = ["run", str(home), str(GRPO_FILE), "--root", str(tmp_path / "runs")]
+    result = CliRunner().invoke(app, argv)
     assert result.exit_code == 1 and isinstance(result.exception, Inadmissible)
     (directory,) = (tmp_path / "runs").iterdir()
     note = files.read_json(directory / files.RUN)["process"]
@@ -725,7 +696,7 @@ def test_a_reserved_kind_stops_the_trainer_by_name(
     monkeypatch.chdir(tmp_path)
     home = _carrying(tmp_path, modules=None)
     write({"lakehouse/server.py": "print('x')\n"}, into=home / "modules" / "tools")
-    directory, config = open_run(home, root=tmp_path / "runs")
+    directory, config = open_run(home, root=tmp_path / "runs", trainer=GRPO)
     with pytest.raises(Unsupported) as refused:
         Trainer(config, directory)
     assert str(refused.value) == (

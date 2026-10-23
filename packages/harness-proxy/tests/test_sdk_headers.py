@@ -3,7 +3,7 @@ replays the first reply."""
 
 from __future__ import annotations
 
-from proxies import FakeSampler, ask, only, server
+from proxies import FakeSampler, ask, recorded, server
 
 # ---------------------------------------------------------------- the SDK's headers
 
@@ -13,7 +13,7 @@ async def test_the_headers_the_sdk_sends_land_on_the_record() -> None:
         await ask(started, "t", headers={"x-request-id": "req-1"})
         await ask(started, "t", headers={"Idempotency-Key": "idem-2", "x-request-id": "req-2"})
         await ask(started, "t")
-    assert [r.request_id for r in only(started).records_for("t")] == ["req-1", "idem-2", None]
+    assert [r.request_id for r in recorded(started, "t")] == ["req-1", "idem-2", None]
 
 
 async def test_a_retry_is_answered_with_the_stored_reply_not_a_second_sample() -> None:
@@ -24,7 +24,7 @@ async def test_a_retry_is_answered_with_the_stored_reply_not_a_second_sample() -
         other = await ask(started, "t", headers={"x-stainless-retry-count": "not-a-number"})
     assert first.json()["choices"] == again.json()["choices"] == other.json()["choices"]
     assert len(sampler.asked) == 2, "the retry replayed; the bad header counted as none"
-    assert len(only(started).records_for("t")) == 2
+    assert len(recorded(started, "t")) == 2
 
 
 async def test_an_idempotency_key_replays_without_a_retry_header() -> None:
@@ -33,7 +33,7 @@ async def test_an_idempotency_key_replays_without_a_retry_header() -> None:
         await ask(started, "t", headers={"Idempotency-Key": "k"})
         await ask(started, "t", headers={"Idempotency-Key": "k"}, max_tokens=7)
         await ask(started, "t", headers={"Idempotency-Key": "other"})
-    assert len(sampler.asked) == 2 and len(only(started).records_for("t")) == 2
+    assert len(sampler.asked) == 2 and len(recorded(started, "t")) == 2
 
 
 async def test_a_retry_after_a_budget_cut_still_replays() -> None:
@@ -44,6 +44,6 @@ async def test_a_retry_after_a_budget_cut_still_replays() -> None:
         first = await ask(started, "t", max_tokens=10)
         again = await ask(started, "t", max_tokens=10, headers={"x-stainless-retry-count": "1"})
         assert first.json()["choices"] == again.json()["choices"]
-        assert len(sampler.asked) == 1 and len(only(started).records_for("t")) == 1
-        assert only(started).recorder.spoke == {"t": 95}, "a replay spends nothing"
-        assert only(started).records_for("t")[0].sampling_params["max_tokens"] == 10
+        assert len(sampler.asked) == 1 and len(recorded(started, "t")) == 1
+        assert started.trial("t").spoke == 95, "a replay spends nothing"
+        assert recorded(started, "t")[0].sampling_params["max_tokens"] == 10

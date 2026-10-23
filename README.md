@@ -20,14 +20,14 @@ shipyard run recipes/dapo --data.train <dataset>  # the run writes runs/dapo__<i
 ```
 
 > [!IMPORTANT]
-> Check all the parameters of this run at `recipes/dapo/run.toml`.
+> Add `--dry` to see every setting the run would use, with each default `run.toml` leaves marked, and to check the run without starting it.
 
 ## Customizing
 
 
 - **Settings:** a recipe's settings can be updated in its `run.toml` (model, harnesses, data, learning rate, LoRA rank, ...); you can overwrite them using `--table.key VALUE` on `shipyard run`.
-- **Algorithm:** a recipe defines a `trainer.py` where it subclasses `Trainer`. `step` is the core function, runs four primitives: `draw`, `rollout`, `score` and `update`. A recipe overrides `score`, `step`, or both (see [`src/shipyard`](src/shipyard/README.md)).
-- **Recipes:** DAPO, on-policy distillation and GEPA, in [`recipes/`](recipes/README.md).
+- **Algorithm:** a recipe defines a `trainer.py` where it subclasses `Trainer` and writes `step` from the primitives `draw`, `rollout` and `update`, giving the sequences their advantages in between; the core holds no algorithm of its own (see [`src/shipyard`](src/shipyard/README.md)).
+- **Recipes:** GRPO, DAPO, on-policy distillation and GEPA, in [`recipes/`](recipes/README.md).
 
 The trainer updates on exactly what the agent sampled: `harness-proxy` serves the model to the harnesses, and records every call's token ids and logprobs.
 

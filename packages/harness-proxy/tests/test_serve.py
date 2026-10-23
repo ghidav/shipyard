@@ -33,7 +33,6 @@ class FakeEndpoint:
 
     lanes: list[Any] = field(default_factory=lambda: [SimpleNamespace(name="agent")])
     host: str = "proxy-host"
-    control_token: str | None = "c"
     port: int | None = None
     called: list[str] = field(default_factory=list)
 
@@ -95,10 +94,9 @@ def test_a_wildcard_bind_with_nothing_named_is_refused() -> None:
 
 def test_the_flags_default_to_every_interface_and_any_port() -> None:
     args = serve.parser().parse_args(["--model", "a/b"])
-    assert (args.bind, args.port, args.advertise, args.weights, args.renderer, args.lane) == (
+    assert (args.bind, args.port, args.advertise, args.renderer, args.lane) == (
         "0.0.0.0",
         0,
-        None,
         None,
         None,
         "agent",
@@ -136,38 +134,37 @@ def test_main_configures_the_proxys_logging_unless_it_is_configured(
 # ------------------------------------------------------------------- the server
 
 
-def build(*, weights: str | None = None, renderer: str | None = None, **overrides: Any) -> Server:
+def build(*, renderer: str | None = None, **overrides: Any) -> Server:
     """Build the server `harness-proxy --model Qwen/Qwen3-8B` and the other flags describe."""
-    given = serve.document(
-        None, lane="agent", model="Qwen/Qwen3-8B", weights=weights, renderer=renderer
-    )
-    named: dict[str, Any] = dict(
-        bind="127.0.0.1", port=0, advertise=None, token="k", control_token="c"
-    )
+    given = serve.document(None, lane="agent", model="Qwen/Qwen3-8B", renderer=renderer)
+    named: dict[str, Any] = dict(bind="127.0.0.1", port=0, advertise=None, control_token="c")
     return serve.server_for(given, **{**named, **overrides})
 
 
 def test_the_flags_reach_the_real_endpoint() -> None:
-    made = build(weights="tinker://w/step-1", bind="0.0.0.0", port=8000, advertise="proxy")
+    made = build(bind="0.0.0.0", port=8000, advertise="proxy")
     assert isinstance(made, Server)
     (lane,) = made.lanes
-    assert (lane.name, lane.model, lane.weights) == ("agent", "Qwen/Qwen3-8B", "tinker://w/step-1")
-    assert (made.bind, made.bind_port, made.host) == ("0.0.0.0", 8000, "proxy")
-    assert (made.token, made.control_token) == ("k", "c")
+    assert (lane.name, lane.model) == ("agent", "Qwen/Qwen3-8B")
+    assert (made.bind, made.bind_port, made.host, made.control_token) == (
+        "0.0.0.0",
+        8000,
+        "proxy",
+        "c",
+    )
     assert made.port is None, "nothing is bound yet"
     assert build(renderer="qwen3_disable_thinking").lanes[0].renderer == "qwen3_disable_thinking"
     assert build().lanes[0].renderer is None
 
 
-def test_an_empty_token_is_replaced_and_no_control_token_closes_the_route() -> None:
-    made = build(token="", control_token=None)
-    assert made.token and made.control_token is None
+def test_an_empty_control_token_is_replaced() -> None:
+    assert build(control_token=None).control_token
 
 
 def test_a_lane_carries_its_own_settings_and_nothing_else() -> None:
     def lane(**settings: Any) -> Any:
         given = {"lanes": [{"name": "agent", "model": "Qwen/Qwen3-8B", **settings}]}
-        named = dict(bind="127.0.0.1", port=0, advertise=None, token="k", control_token="c")
+        named = dict(bind="127.0.0.1", port=0, advertise=None, control_token="c")
         (made,) = serve.server_for(given, **named).lanes
         return made
 
@@ -175,22 +172,15 @@ def test_a_lane_carries_its_own_settings_and_nothing_else() -> None:
     assert (made.temperature, made.max_tokens, made.max_context) == (0.5, 64, 4096)
     assert made.fill_context is True
     assert lane(metadata={"run": "r"}).metadata == {"run": "r"}
-    for foreign in ("graph_text", "bind", "client_factory"):
+    for foreign in ("graph_text", "bind", "client_factory", "weights"):
         with pytest.raises(ValueError, match=foreign):
             lane(**{foreign: None})
 
 
-def test_the_tokens_come_from_the_env_or_are_generated_and_said() -> None:
-    token, control, generated = serve.tokens_from_env({"HARNESS_PROXY_TOKEN": "t"})
-    assert token == "t" and control and generated == {"HARNESS_PROXY_CONTROL_TOKEN": control}
-    token, control, generated = serve.tokens_from_env(
-        {"HARNESS_PROXY_TOKEN": "", "HARNESS_PROXY_CONTROL_TOKEN": "c"}
-    )
-    assert token and control == "c" and generated == {"HARNESS_PROXY_TOKEN": token}
-    assert serve.tokens_from_env({})[2].keys() == {
-        "HARNESS_PROXY_TOKEN",
-        "HARNESS_PROXY_CONTROL_TOKEN",
-    }
+def test_the_control_token_comes_from_the_env_or_is_generated_and_said() -> None:
+    assert serve.control_from_env({"HARNESS_PROXY_CONTROL_TOKEN": "c"}) == ("c", {})
+    control, generated = serve.control_from_env({})
+    assert control and generated == {"HARNESS_PROXY_CONTROL_TOKEN": control}
 
 
 # ------------------------------------------------------------------ what is printed
@@ -198,22 +188,20 @@ def test_the_tokens_come_from_the_env_or_are_generated_and_said() -> None:
 
 async def test_the_banner_is_the_first_line_and_the_generated_tokens_follow() -> None:
     fake = FakeEndpoint(lanes=[SimpleNamespace(name="agent"), SimpleNamespace(name="teacher")])
-    printed = await run_briefly(fake, generated={"HARNESS_PROXY_TOKEN": "made-up"})
-    assert printed[0] == "serving agent,teacher at http://proxy-host:8000 (control: on)"
-    assert printed[1] == "HARNESS_PROXY_TOKEN made-up"
+    printed = await run_briefly(fake, generated={"HARNESS_PROXY_CONTROL_TOKEN": "made-up"})
+    assert printed[0] == "serving agent,teacher at http://proxy-host:8000"
+    assert printed[1] == "HARNESS_PROXY_CONTROL_TOKEN made-up"
     assert fake.called == ["start", "stop"]
 
 
 async def test_a_token_the_caller_supplied_is_not_printed_back() -> None:
-    printed = await run_briefly(FakeEndpoint())
-    assert len(printed) == 1 and "control: on" in printed[0]
-    assert "control: off" in (await run_briefly(FakeEndpoint(control_token=None)))[0]
+    assert await run_briefly(FakeEndpoint()) == ["serving agent at http://proxy-host:8000"]
 
 
 async def test_the_banner_names_the_real_endpoints_port() -> None:
     async with server(control_token="c") as started:
         line, port = serve.banner(started), started.port
-    assert line == f"serving agent at http://127.0.0.1:{port} (control: on)"
+    assert line == f"serving agent at http://127.0.0.1:{port}"
 
 
 async def test_the_endpoint_closes_even_when_printing_raises() -> None:
@@ -260,7 +248,7 @@ async def test_a_tunnel_opens_after_the_banner_and_closes_before_the_server(
     asked = opening(monkeypatch, FakeTunnel(fake.called))
     printed = await run_briefly(fake, tunnel=True)
     assert printed == [
-        "serving agent at http://proxy-host:8000 (control: on)",
+        "serving agent at http://proxy-host:8000",
         "tunnel at https://fake-words.trycloudflare.com",
     ]
     assert asked == [8000] and fake.called == ["start", "tunnel stop", "stop"]
@@ -315,13 +303,13 @@ sys.exit(serve.main(sys.argv[1:]))
 
 
 def test_serve_runs_for_real_on_a_fake_sampler(tmp_path: Path) -> None:
-    """Mirrors the acceptance script: start the process, call both wires, read the records,
-    swap weights through the control route, and stop it with SIGTERM."""
+    """Mirrors the acceptance script: start the process, open a trial and call both wires, open
+    another on other weights beside it, close both for their records, and stop it with
+    SIGTERM."""
     src = str(Path(harness_proxy.__file__).resolve().parent.parent)
     fakes = str(Path(__file__).resolve().parent)
     env = {
         **os.environ,
-        "HARNESS_PROXY_TOKEN": "harness-token",
         "HARNESS_PROXY_CONTROL_TOKEN": "control-token",
         "PYTHONPATH": os.pathsep.join([src, fakes, os.environ.get("PYTHONPATH", "")]),
         "PYTHONUNBUFFERED": "1",
@@ -337,19 +325,20 @@ def test_serve_runs_for_real_on_a_fake_sampler(tmp_path: Path) -> None:
     try:
         line = _first_line(process)
         assert line.startswith("serving agent at http://127.0.0.1:")
-        assert line.endswith("(control: on)")
-        origin = line.split(" at ", 1)[1].split(" ", 1)[0]
+        origin = line.split(" at ", 1)[1]
+        control = {"Authorization": "Bearer control-token"}
         with httpx.Client(base_url=origin, timeout=10) as client:
+            token = client.post("/trials", headers=control, json={"trial": "t-1"}).json()["token"]
             chat = client.post(
-                "/r/trial/t-1/v1/chat/completions",
-                headers={"Authorization": "Bearer harness-token"},
+                "/v1/chat/completions",
+                headers={"Authorization": f"Bearer {token}"},
                 json={"model": "m", "messages": [{"role": "user", "content": "echo"}]},
             )
             assert chat.status_code == 200, chat.text
             assert chat.json()["choices"][0]["message"]["content"] == "echo"
             messages = client.post(
-                "/r/trial/t-1/v1/messages",
-                headers={"x-api-key": "harness-token"},
+                "/v1/messages",
+                headers={"x-api-key": token},
                 json={
                     "model": "m",
                     "max_tokens": 8,
@@ -358,33 +347,28 @@ def test_serve_runs_for_real_on_a_fake_sampler(tmp_path: Path) -> None:
             )
             assert messages.status_code == 200, messages.text
             assert messages.json()["content"][0]["text"] == "hi"
-            swapped = client.post(
-                "/control/weights",
-                headers={"Authorization": "Bearer control-token"},
-                json={"weights": "tinker://run/sampler_weights/step-3"},
-            )
-            assert swapped.status_code == 200 and swapped.json()["serving"].endswith("step-3")
+            weights = "tinker://run/sampler_weights/step-3"
+            other = client.post(
+                "/trials", headers=control, json={"trial": "t-2", "weights": weights}
+            ).json()["token"]
             later = client.post(
-                "/r/trial/t-1/v1/chat/completions",
-                headers={"Authorization": "Bearer harness-token"},
+                "/v1/chat/completions",
+                headers={"Authorization": f"Bearer {other}"},
                 json={"model": "m", "messages": [{"role": "user", "content": "again"}]},
             )
-            assert later.json()["model"] == "tinker://run/sampler_weights/step-3"
-            fetched = client.get(
-                "/records/t-1",
-                params={"delta": "1"},
-                headers={"Authorization": "Bearer control-token"},
-            )
-            assert fetched.status_code == 200
-        records = records_of(fetched.json()["records"])
-        assert [r.seq for r in records] == [1, 2, 3]
+            assert later.json()["model"] == weights
+            first = client.post("/trials/t-1/close", headers=control)
+            second = client.post("/trials/t-2/close", headers=control)
+            assert first.status_code == second.status_code == 200
+        records = records_of(first.json()["records"])
+        assert [r.seq for r in records] == [1, 2]
         assert [tuple(r.completion_token_ids) for r in records] == [
             tuple(map(ord, "echo")),
             tuple(map(ord, "hi")),
-            tuple(map(ord, "again")),
         ]
-        assert [r.weights for r in records] == [None, None, "tinker://run/sampler_weights/step-3"]
-        assert sum(len(r.completion_token_ids) for r in records) == len("echohiagain")
+        assert [r.weights for r in records] == [None, None]
+        (again,) = records_of(second.json()["records"])
+        assert (again.completion_token_ids, again.weights) == (tuple(map(ord, "again")), weights)
         process.send_signal(signal.SIGTERM)
         assert process.wait(timeout=20) == 0
     finally:

@@ -1,32 +1,34 @@
 # GEPA over the prompt the agent carries, on Reasoning Gym's easy split, with Claude rewriting it.
 # Run it with trainer.py; it needs the `gepa` extra and ANTHROPIC_API_KEY. For a provider's agent,
-# set model = "claude-sonnet-5-5", provider = "anthropic" and harness = "claude-code".
-[agent]
-model = "Qwen/Qwen3-8B"
-harness = "pi@0.85.1"
+# set [models.agent] model = "claude-sonnet-5-5", provider = "anthropic", and
+# [recipe] harness = "claude-code".
 modules = "modules"
+
+[models.agent]
+model = "Qwen/Qwen3-8B"
+max_tokens = 8192
+
+# The reflector, rolled out through `reflector_harness` at a task written for each module it
+# rewrites: it reads the module and the agent's attempts as files, and rewrites the module in
+# place.
+[models.reflector]
+model = "claude-sonnet-5-5"
+provider = "anthropic"
 
 [data]
 train = "reasoning-gym-easy"
 batch_size = 16
-group_size = 2
 
 [rollout]
-sandbox = "modal"
+sandbox = "together"
 concurrency = 32
 setup_timeout = 900
-max_tokens = 8192
 
 [recipe]
 steps = 1
+harness = "pi@0.85.1"
+group_size = 2
+reflector_harness = "claude-code"
 budget = 600
 pareto = 30
 minibatch = 3
-
-# The reflector, rolled out through its own harness at a task written for each module it
-# rewrites: it reads the module and the agent's attempts as files, and rewrites the module in
-# place. Its `env` and `kwargs` go to its harness, as [agent]'s go to the agent's.
-[recipe.reflector]
-model = "claude-sonnet-5-5"
-provider = "anthropic"
-harness = "claude-code"

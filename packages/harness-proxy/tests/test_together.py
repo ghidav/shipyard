@@ -13,8 +13,9 @@ import tinker
 
 from harness_proxy.backends import together
 from harness_proxy.chat import Refused
+from harness_proxy.client import Proxy
 from harness_proxy.server import Lane, Server
-from proxies import MODEL, FakeRenderer, ask, control, ids, only
+from proxies import MODEL, FakeRenderer, ask, ids, opened, recorded, root
 
 
 @dataclass
@@ -62,8 +63,8 @@ def on_together(session: FakeSession) -> Server:
 
 
 async def test_a_together_proxy_samples_the_runs_session_and_records_as_on_tinker() -> None:
-    """The run publishes new weights to its session itself, so a swap only names them: each
-    record says which weights answered it."""
+    """The run publishes new weights to its session itself, so a trial opened on them only
+    names them: each record says which weights answered it."""
     session = FakeSession(FakeGenerator("hi"))
     async with on_together(session) as started:
         reply = await ask(started, "t1")
@@ -72,10 +73,12 @@ async def test_a_together_proxy_samples_the_runs_session_and_records_as_on_tinke
         (prompt, samples, params) = session.generator.asked[0]
         assert prompt == {"chunks": [{"encoded_text": {"tokens": list(ids("go"))}}]}
         assert samples == 1 and "stop" not in params
-        assert (await control(started, "together://s1/sample-1")).status_code == 200
-        assert (await control(started, "tinker://run/weights")).status_code == 400
-        await ask(started, "t1")
-        first, second = only(started).records_for("t1")
+        token = await opened(started, "t2", weights="together://s1/sample-1")
+        with pytest.raises(RuntimeError, match="is not a together:// path"):
+            proxy = Proxy(origin=root(started), control_token=started.control_token)
+            await proxy.open("t3", weights="tinker://run/weights")
+        await ask(started, "t2", key=token)
+        (first,), (second,) = recorded(started, "t1"), recorded(started, "t2")
     assert (first.weights, second.weights) == (None, "together://s1/sample-1")
     assert first.completion_token_ids == ids("hi") and first.inference_logprobs == (-0.5, -0.5)
     assert first.cached_tokens == 2 and first.stop_reason == "stop"

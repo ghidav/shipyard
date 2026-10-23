@@ -3,6 +3,7 @@ shell may carry, so no test reaches a backend or depends on this machine."""
 
 from __future__ import annotations
 
+import signal
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,7 @@ import pytest
 
 from proxies import MODEL
 from shipyard.jobs.engine import MODAL_IMAGE_BUILDER
+from shipyard.models.clients import together
 from tests.fakes import FakeProxy, Harbor
 from tests.service import FakeService, capable
 
@@ -26,6 +28,19 @@ SHELL_VARS = (
 def _shell_vars_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in SHELL_VARS:
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def together_exit(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Keep a Together client's exit hook, and the SIGTERM handler it may set, to the test that
+    opened it; return the stops the hook would run at exit."""
+    before = signal.getsignal(signal.SIGTERM)
+    hooks: list[Any] = []
+    monkeypatch.setattr(together, "at_exit", hooks.append)
+    monkeypatch.setattr(together, "RUNNING", set())
+    monkeypatch.setattr(together, "_hooked", False)
+    yield hooks
+    signal.signal(signal.SIGTERM, before)
 
 
 @pytest.fixture
@@ -46,8 +61,7 @@ TEACHER = "Qwen/Qwen3-32B"
 @pytest.fixture
 def fakes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[FakeProxy, FakeService]:
     """Install a fake proxy and a fake Tinker service, which every Tinker session the run opens
-    gets, and change into `tmp_path`. Every model reads the agent's token ids, as no
-    tokenizer is downloaded here."""
+    gets, and change into `tmp_path`."""
     monkeypatch.chdir(tmp_path)
     proxy = FakeProxy()
     monkeypatch.setattr("shipyard.models.endpoints.Proxy", proxy)
@@ -56,5 +70,4 @@ def fakes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[FakeProxy, F
     monkeypatch.setattr(
         "shipyard.models.clients.tinker.service_client", lambda metadata=None: service
     )
-    monkeypatch.setattr("shipyard.models.context.shares_tokenizer", lambda model, other: True)
     return proxy, service

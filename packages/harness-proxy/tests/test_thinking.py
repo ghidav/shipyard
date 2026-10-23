@@ -17,7 +17,7 @@ from proxies import (
     ask,
     ask_anthropic,
     chars,
-    only,
+    recorded,
     server,
 )
 
@@ -53,7 +53,7 @@ async def _anthropic_turns(sent_back: Any) -> list[Any]:
         )
         second = await ask_anthropic(started, "t", messages=messages, **body)
         assert second.status_code == 200, second.text
-        return only(started).records_for("t")
+        return recorded(started, "t")
 
 
 async def test_the_reply_carries_its_thinking_as_a_signed_block_first() -> None:
@@ -192,7 +192,7 @@ async def test_reasoning_sent_back_in_any_field_is_read_once_and_bridged(
             {"role": "tool", "tool_call_id": said["tool_calls"][0]["id"], "content": "a"}
         )
         await ask(started, "t", messages=history, tools=TOOLS_OPENAI)
-        one, two = only(started).records_for("t")
+        one, two = recorded(started, "t")
     assert two.bridged and chars(two.prompt_token_ids).count("{look}") == 1
 
 
@@ -300,7 +300,7 @@ async def test_qwen_reads_its_thinking_exactly_when_claude_code_sends_it_back(
         ]
         second = await ask_anthropic(started, "t", messages=messages, **body)
         assert second.status_code == 200, second.text
-        one, two = only(started).records_for("t")
+        one, two = recorded(started, "t")
     prefix = (*one.prompt_token_ids, *one.completion_token_ids)
     shown = tokenizer.decode(list(two.prompt_token_ids))
     if kept:

@@ -6,7 +6,7 @@ from pathlib import Path
 from statistics import fmean, pstdev
 from typing import TYPE_CHECKING, Any
 
-from shipyard.groups import Group, merged
+from shipyard.groups import Group
 from shipyard.records import cached
 from shipyard.run import files
 from shipyard.run.costs import (
@@ -22,15 +22,12 @@ from shipyard.run.costs import (
 
 if TYPE_CHECKING:
     from harness_proxy.wire import Record
-    from shipyard.config import Blueprint
+    from shipyard.config import Config
     from shipyard.groups import Trial
     from shipyard.jobs.engine import Job
 
-#: The role the agent's own spend is filed under: its rollouts, and its passes on Tinker.
-#: Another model's is the name the trainer holds it by, such as `teacher`.
-AGENT = "agent"
-#: Keys of a step's row, in order, before its evaluation's and the recipe's own `metrics`. A
-#: key with no value is left out.
+#: Keys of a step's row, in order, before the recipe's own `metrics`. A key with no value is
+#: left out.
 ROW = (
     "step",
     "trained",
@@ -53,14 +50,14 @@ ROW = (
     "loss",
     "update_seconds",
 )
-#: What an evaluation's fields are prefixed with in the row of the step it belongs to.
+#: What an evaluation's fields are prefixed with in its own row.
 EVAL = "eval_"
 
 
 class Wandb:
     """The wandb run the rows and costs are mirrored to, grouped with the runs of its chain."""
 
-    def __init__(self, config: Blueprint, directory: Path) -> None:
+    def __init__(self, config: Config, directory: Path) -> None:
         try:
             import wandb
         except ImportError:
@@ -79,7 +76,8 @@ class Wandb:
         )
 
     def log(self, row: Mapping[str, Any]) -> None:
-        """Mirror a step row's numbers at its step, its evaluation's under `eval/`."""
+        """Mirror a row's numbers at its step: a step's as they are, an evaluation's under
+        `eval/`."""
         numbers = {
             (f"eval/{key.removeprefix(EVAL)}" if key.startswith(EVAL) else key): value
             for key, value in row.items()
@@ -100,7 +98,7 @@ class Logs:
 
     def __init__(
         self,
-        config: Blueprint,
+        config: Config,
         directory: Path,
         *,
         step: Callable[[], int | None] = lambda: None,
@@ -144,7 +142,7 @@ class Logs:
             "dir": str((self.jobs_dir / job.name).resolve()),
             "purpose": job.purpose,
             "role": job.role,
-            **({"harness": job.harness.agent} if job.harness is not None else {}),
+            **({"harness": job.harness.name} if job.harness is not None else {}),
             **({"renderer": job.renderer} if job.renderer is not None else {}),
             "trials": len(job.trials),
             "step": job.step,
@@ -192,38 +190,43 @@ class Logs:
         self,
         index: int,
         groups: Sequence[Group],
-        update: Any,
-        evaluation: Any,
+        updates: Mapping[str, Any],
         metrics: Mapping[str, Any],
     ) -> None:
-        """Write a step's row: its groups, update, evaluation as `eval_` fields, and `metrics`."""
-        groups = merged(groups)
+        """Write a step's row: its groups, its updates by role, and `metrics`. The update of the
+        one model a step trained is written as it is; a step that trained several prefixes each
+        one's fields with its role."""
         graded = [one for group in groups for one in group.graded]
         spreads = [pstdev(group.rewards) for group in groups if len(group.rewards) > 1]
+        trained = {role: _fields(update) for role, update in updates.items()}
         row: dict[str, Any] = {
             "step": index,
-            "trained": update is not None,
+            "trained": bool(trained),
             "jobs": list(dict.fromkeys(one.job for group in groups for one in group.trials)),
             "groups": len(groups),
             **tally(groups),
             "uniform": sum(1 for group in groups if group.graded and not group.is_scored),
             "reward_spread": fmean(spreads) if spreads else None,
             "sampled_mean": fmean(one.sampled_tokens for one in graded) if graded else None,
-            **(vars(update) if update is not None else {}),
+            **(next(iter(trained.values())) if len(trained) == 1 else {}),
         }
         kept = {key: value for key in ROW if (value := row.get(key)) is not None}
-        kept |= breakdown(groups)
-        if evaluation is not None:
-            evaluated = {key: value for key, value in vars(evaluation).items() if key != "step"}
-            each = evaluated.pop("breakdown", None) or {}
-            kept |= {
-                f"{EVAL}{key}": value
-                for key, value in {**evaluated, **each}.items()
-                if value is not None
-            }
+        if len(trained) > 1:
+            for role, fields in trained.items():
+                kept |= {f"{role}_{key}": value for key, value in fields.items()}
         own = {(f"recipe_{key}" if key in kept else key): value for key, value in metrics.items()}
-        row = {**kept, **own}
-        files.append(self.directory / files.METRICS, row)
+        self._row({**kept, **own})
+
+    def evaluation(self, evaluation: Any) -> None:
+        """Write an evaluation's row: what the test set came to, as `eval_` fields, at the step
+        whose weights it measured. The run evaluates them beside the next step's update, so the
+        row falls between that step's row and the next."""
+        measured = {key: value for key, value in vars(evaluation).items() if key != "step"}
+        row = {f"{EVAL}{key}": value for key, value in measured.items() if value is not None}
+        self._row({"step": evaluation.step, **row})
+
+    def _row(self, row: Mapping[str, Any]) -> None:
+        files.append(self.directory / files.METRICS, dict(row))
         if self.wandb is not None:
             self.wandb.log(row)
 
@@ -242,6 +245,11 @@ def _known(about: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in about.items() if value is not None}
 
 
+def _fields(update: Any) -> dict[str, Any]:
+    """Return an update's fields as a step's row holds them: all but its role."""
+    return {key: value for key, value in vars(update).items() if key != "role"}
+
+
 def tally(groups: Sequence[Group]) -> dict[str, Any]:
     """Return what the groups' trials came to: how many ran, were graded and were masked, and
     the graded ones' mean reward, None when none was graded."""
@@ -253,24 +261,6 @@ def tally(groups: Sequence[Group]) -> dict[str, Any]:
         "masked": trials - len(graded),
         "reward_mean": fmean(one.reward or 0.0 for one in graded) if graded else None,
     }
-
-
-def breakdown(groups: Sequence[Group]) -> dict[str, float]:
-    """Return each harness's and renderer's mean reward and tokens sampled, when several ran."""
-    trials = [one for group in groups for one in group.trials]
-    found: dict[str, float] = {}
-    for named in ([one.harness.agent for one in trials], [one.renderer for one in trials]):
-        graded: dict[str, list[Trial]] = {}
-        for name, one in zip(named, trials, strict=True):
-            if name is not None:
-                graded.setdefault(name, []).extend([one] if one.graded else [])
-        if len(graded) < 2:
-            continue
-        for name, kept in graded.items():
-            if kept:
-                found[f"reward_mean_{name}"] = fmean(one.reward or 0.0 for one in kept)
-                found[f"sampled_mean_{name}"] = fmean(one.sampled_tokens for one in kept)
-    return found
 
 
 def request(job: str, trial: Trial, item: Record) -> dict[str, Any]:

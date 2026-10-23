@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Iterator, Mapping
 from collections.abc import Sequence as Values
-from dataclasses import dataclass, field
+from contextvars import ContextVar
+from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
 from typing import Any, Self
@@ -13,31 +15,42 @@ import tinker
 from pydantic import ValidationError
 from tinker_cookbook.utils.misc_utils import split_list
 
-from shipyard.config import Blueprint, Recipe
+from shipyard.config import Config, Recipe
 from shipyard.groups import Group, Sequence
-from shipyard.jobs.engine import EVALUATION, HarborEngine
-from shipyard.jobs.harnesses import resolved
+from shipyard.jobs.engine import HarborEngine
+from shipyard.jobs.harnesses import Harness
+from shipyard.jobs.hooks import hooks_of
 from shipyard.jobs.modules import Modules, carried, keep
 from shipyard.jobs.secrets import Pool, Secrets
-from shipyard.model import Model
-from shipyard.models.backends import Session, connect
+from shipyard.model import Model, Models
+from shipyard.models.backends import Connected, Session, connect
 from shipyard.models.clients.tinker import check_loss
 from shipyard.run import files
 from shipyard.run.checkpoint import Checkpoint
 from shipyard.run.data import Generator
-from shipyard.run.logs import AGENT, Logs, breakdown, tally
+from shipyard.run.logs import Logs, tally
 from shipyard.state import State
 
 logger = logging.getLogger(__name__)
 
 #: The checkpoint a run saves when it ends: the weights its updates moved to, kept for good.
 FINAL = "final"
+#: What a rollout is for unless it says: a step's training, whose groups the step's row counts.
+TRAINING = "training"
+#: What the rollouts `evaluate` makes are for: the test set, whose row is its own.
+EVALUATION = "evaluation"
+#: The step whose weights the evaluation under way measures, set in the task the evaluation runs
+#: in, which runs beside the next step's update: its rollouts are the test set's and filed under
+#: that step, while the step under way trains. None outside an evaluation.
+EVALUATING: ContextVar[int | None] = ContextVar("evaluating", default=None)
 
 
 @dataclass(frozen=True)
 class Update:
     """What one `update` trained, and what its training pass read."""
 
+    #: The role of the model it trained.
+    role: str
     sequences: int
     train_tokens: int
     substeps: int
@@ -52,8 +65,11 @@ class Update:
 
 @dataclass(frozen=True)
 class Evaluation:
-    """What one `evaluate` rolled out and measured; its step's row holds it as `eval_` fields."""
+    """What one evaluation rolled out and measured, written as a row of its own: `eval_` fields
+    at the step whose weights it measured."""
 
+    #: The step after which the weights it measured were served; 0 for the model the run starts
+    #: from.
     step: int
     tasks: int
     trials: int
@@ -61,71 +77,68 @@ class Evaluation:
     masked: int
     #: Mean reward over the graded trials; None when none were graded.
     reward_mean: float | None
-    #: Each harness's and each renderer's mean reward and sampled tokens, when there are several.
-    breakdown: dict[str, float] = field(default_factory=dict)
 
 
 class Trainer:
-    """A run: the four primitives, and the `step` a recipe writes from them."""
+    """A run: the primitives a recipe writes its `step` from, and the loop that takes the steps,
+    evaluates them and checkpoints them."""
 
     #: Adam settings from the cookbook's `train_step`. Its `learning_rate` is not read: each
-    #: update takes the agent's, `[recipe] learning_rate`, warmed up over `[recipe] warmup`.
+    #: update takes the one the recipe gives it, else its model's `learning_rate`.
     ADAM = tinker.AdamParams(beta1=0.9, beta2=0.95, eps=1e-8)
-    #: The `[recipe]` keys the trainer reads. A recipe with keys of its own declares them in a
-    #: subclass, `class Recipe(Trainer.Recipe)`, and its run.toml sets every one.
+    #: The `[recipe]` keys the trainer reads. A recipe declares its own in a subclass,
+    #: `class Recipe(Trainer.Recipe)`, such as its harnesses and group size, and its run.toml
+    #: sets every one.
     Recipe = Recipe
     #: What the run has done so far, which a checkpoint saves. A recipe with state of its own
     #: declares it in a subclass, `class State(Trainer.State)`, each field with a default.
     State = State
 
-    def __init__(self, config: Blueprint, directory: Path) -> None:
-        # The agent trains unless a recipe that never updates sets `self.agent.training`
-        # False in its __init__; the run checks it can when it starts.
-        agent = Model(config.agent.model, provider=config.agent.provider, train=True)
-        # The proxy serves a model on Tinker or Together: one a run could train.
-        if config.rollout.renderer and not agent.trainable:
-            raise ValueError(
-                "[rollout] renderer: the proxy renders the calls of a model on Tinker or "
-                f"Together, and {config.agent.provider} serves {config.agent.model} to its "
-                "harnesses itself"
-            )
+    def __init__(self, config: Config, directory: Path) -> None:
+        """Raise `ValueError` for a model the run cannot hold, such as renderers of a model a
+        provider serves."""
         self.config = config
         self.recipe = config.recipe
         #: Run directory: its rows, checkpoints, costs and modules, written by this run alone.
         self.directory = Path(directory)
+        #: The models run.toml names, by role. A recipe reads the ones it uses in its
+        #: `__init__`, as `self.models["agent"]`, and sets `training = True` on the ones it
+        #: trains; the run refuses a model it never read.
+        self.models = Models(config.models)
         self.generator = Generator.of(config)
+        for task in (*self.generator.train, *self.generator.test):
+            hooks_of(task)  # a task whose hooks.py is wrong stops the run before anything opens
         #: What the run has done so far, which a checkpoint saves and a resume goes on from.
         self.state = self.State(modules=carried(config, self.directory))
         self.directory.mkdir(parents=True, exist_ok=True)
         #: The run's logs: its job, step and request rows, its usage ledger and its costs.
         self.logs = Logs(config, self.directory, step=lambda: self._current)
         table = config.rollout.secrets
-        #: One engine, so every job shares one `[rollout] concurrency` limit.
+        #: One engine, so every rollout shares one `[rollout] concurrency` limit.
         self.engine = HarborEngine(
             config.rollout,
             logs=self.logs,
-            env=config.agent.env,
-            kwargs=config.agent.kwargs,
             secrets=Pool.of(table) if table else Secrets(),
-            mix=config.agent.mix_harnesses,
             grade_timeouts=self.recipe.grade_timeouts,
         )
-        self._agent = agent
-        #: The agent on Tinker or Together, made and opened when `run` starts; None for a
-        #: provider's.
-        self._session: Session | None = None
         #: The recipe's own numbers for this step's row, such as a KL it measured.
         self.metrics: dict[str, Any] = {}
         #: The step the rows written now belong to, counted from 1: the step under way, and
         #: after it, until the next starts, the step just taken.
         self._current = 0
-        #: The training state of the checkpoint the run went on from, which the session opens.
-        self._training_state: str | None = None
+        #: The training states of the checkpoint the run went on from, by role, which each
+        #: trained model's session opens on.
+        self._training_states: dict[str, str] = {}
         self._stream: Iterator[list[Path]] | None = None
         self._seen: list[Group] = []
-        self._update: Update | None = None
-        #: The evaluation that belongs to the step under way, for its row.
-        self._evaluation: Evaluation | None = None
+        #: The updates of the step under way, by the role of the model each trained.
+        self._updates: dict[str, Update] = {}
+        #: The step whose weights wait to be evaluated. The samplers serve them until the next
+        #: update publishes, so that update starts the evaluation as it trains and publishes once
+        #: it has finished. None when none waits.
+        self._pending: int | None = None
+        #: The evaluation under way beside an update.
+        self._evaluating: asyncio.Task[Evaluation] | None = None
 
     def __enter__(self) -> Self:
         return self
@@ -139,29 +152,18 @@ class Trainer:
         self.engine.close()
         self.logs.close(failed)
 
-    @property
-    def agent(self) -> Model:
-        """The agent: the run's own model, made from `[agent]`. The run trains it, unless a
-        recipe that never updates sets `self.agent.training = False` in its __init__."""
-        return self._agent
-
     # ------------------------------------------------------------------ what a recipe writes
 
     async def step(self) -> None:
-        """Draw a batch, roll the agent out on it, score its groups, and update."""
-        groups = await self.rollout(self.draw())
-        await self.score(groups)
-        await self.update(groups)
+        """Take one step of the recipe's algorithm, from `draw`, `rollout` and `update`."""
+        raise NotImplementedError(f"{type(self).__name__} writes no step")
 
-    async def score(self, groups: Values[Group]) -> None:
-        """Give each trial its reward minus its group's mean, skipping groups of equal rewards."""
-        for group in groups:
-            if group.reward_variance == 0:
-                continue
-            for trial, advantage in zip(group.graded, group.centered_rewards, strict=True):
-                trial.set_advantage(advantage)
+    async def evaluate(self, tasks: list[Path]) -> list[Group]:
+        """Roll the test set's `tasks` out as the recipe measures them, and return their groups.
+        The run calls it on schedule and puts what the groups came to in the step's row."""
+        raise NotImplementedError(f"{type(self).__name__} writes no evaluate")
 
-    # ------------------------------------------------------------------ the other primitives
+    # ------------------------------------------------------------------ the primitives
 
     def draw(self) -> list[Path]:
         """Return the next batch of `[data] batch_size` training tasks."""
@@ -175,228 +177,255 @@ class Trainer:
         self,
         tasks: Values[Path],
         *,
-        attempts: int | None = None,
-        modules: Modules | None = None,
-        harness: str | None = None,
+        model: Model,
+        harness: Harness | str,
+        attempts: int,
+        modules: Modules | None,
         renderer: str | None = None,
-        purpose: str = "training",
-        model: Model | None = None,
-        env: Mapping[str, str] | None = None,
-        kwargs: Mapping[str, Any] | None = None,
+        purpose: str | None = None,
     ) -> list[Group]:
-        """Run each task in groups of `attempts`, per renderer and, unless mixed, per harness.
-        The agent runs by default, carrying the run's modules, through `[agent]`'s harnesses;
-        `model` runs another model the trainer holds, through `harness` with `env` and
-        `kwargs`, carrying `modules` alone. Only the agent's training rollouts count in the
-        step's row."""
-        if model is not None and model is not self._agent:
-            return await self._rollout(
-                model, list(tasks), attempts, modules, harness, renderer, purpose, env, kwargs
-            )
-        named = self.config.rollout.renderer
-        if renderer is not None and renderer not in named:
+        """Run `model` on each task `attempts` times through `harness`, carrying `modules`
+        (`self.state.modules` for the run's, None for none), as one job, and return one group
+        per task, in the order of `tasks`. Its calls are rendered with `renderer`, one of the
+        model's renderers, which a model with several must be given. A rollout `evaluate` makes
+        is the test set's, filed under the step whose weights it measures, and any other's is
+        `training` unless `purpose` names another; only training rollouts count in the step's
+        row. Raise `ValueError` before any trial runs for a rollout no trial could run."""
+        if all(one is not model for one in self.models.all):
+            raise ValueError(f"rollout(model={model!r}): roll out a model of self.models")
+        if model.endpoint is None:
             raise ValueError(
-                f"rollout(renderer={renderer!r}): the proxy renders with "
-                f"{', '.join(named) or 'the model default alone'}, from [rollout] renderer"
+                f"rollout(model={model.role}): {model!r} has nothing a harness could dial: it "
+                "is not connected yet"
             )
-        harnesses = self.config.agent.harness
-        if harness is not None:
-            try:
-                harnesses = [resolved(harness, harnesses)]
-            except ValueError as refused:
-                raise ValueError(f"rollout(harness=...): {refused}") from None
+        evaluating = EVALUATING.get()
+        purpose = purpose or (TRAINING if evaluating is None else EVALUATION)
         found = await self.engine.rollout(
             list(tasks),
-            attempts=attempts or self.config.data.group_size,
-            harnesses=harnesses,
-            renderers=[renderer] if renderer else list(named) or [None],
-            endpoint=self._agent.endpoint,
-            modules=self.state.modules if modules is None else modules,
+            attempts=attempts,
+            harness=Harness.model_validate(harness),
+            endpoint=model.endpoint,
+            renderer=_rendered(model, renderer),
+            modules=modules,
             purpose=purpose,
-            step=self._current,
-            env=env,
-            kwargs=kwargs,
+            step=self._current if evaluating is None else evaluating,
+            role=model.role,
         )
-        if purpose == "training":
+        if purpose == TRAINING:
             self._seen += found
         return found
 
-    async def _rollout(
-        self,
-        model: Model,
-        tasks: list[Path],
-        attempts: int | None,
-        modules: Modules | None,
-        harness: str | None,
-        renderer: str | None,
-        purpose: str,
-        env: Mapping[str, str] | None,
-        kwargs: Mapping[str, Any] | None,
-    ) -> list[Group]:
-        """Run `model`, a model the trainer holds besides the agent, as `rollout` says."""
-        role = next((named for named, one in self._held() if one is model), None)
-        if role is None:
-            raise ValueError(
-                f"rollout(model={model!r}): keep the model on the trainer, as self.<name>"
-            )
-        if harness is None:
-            raise ValueError(f"rollout(model={role}): name the harness it runs through")
-        if renderer is not None:
-            raise ValueError(f"rollout(model={role}): the proxy renders the agent's calls alone")
-        if model.endpoint is None:
-            raise ValueError(
-                f"rollout(model={role}): {model!r} has nothing a harness could dial: it is "
-                "not connected yet"
-            )
-        return await self.engine.rollout(
-            tasks,
-            attempts=attempts or self.config.data.group_size,
-            harnesses=[harness],
-            renderers=[None],
-            endpoint=model.endpoint,
-            modules=modules,
-            purpose=purpose,
-            step=self._current,
-            role=role,
-            env=dict(env or {}),
-            kwargs=dict(kwargs or {}),
-        )
-
     async def update(
         self,
+        model: Model,
         groups: Values[Group],
         *,
+        substeps: int = 1,
+        learning_rate: float | None = None,
         loss: str = "importance_sampling",
         loss_config: Mapping[str, float] | None = None,
     ) -> Update | None:
-        """Train the agent on every sequence with advantages, and serve its new weights. Raise
-        `ValueError` for a loss Tinker does not have, or a setting it does not take, before
-        anything is scored or sent."""
+        """Train `model` on every sequence with advantages in `groups`, in `substeps` optimizer
+        steps without splitting a group, at `learning_rate`, else its table's, and serve its new
+        weights. Each sequence's ratio is taken against the logprobs its sampler gave, when
+        `model` sampled it, and else against `model`'s own at its current weights. An evaluation
+        due for the weights served until now runs while it trains, and the new weights are
+        served once it has finished. Return None when no group is scored. Raise `ValueError` for
+        a model the recipe does not train, a loss Tinker does not have, or a setting it does not
+        take, before anything is scored or sent."""
         check_loss(loss, loss_config)
-        agent, session, learning_rate = self._agent, self._session, self.recipe.learning_rate
-        if not agent.trainable:
+        role, session = model.role, model.backend
+        if not model.training:
             raise ValueError(
-                f"update trains the agent, and {agent.provider} serves {agent.name}: there "
-                "are no weights to train"
+                f"update(model={role}): the recipe does not train it: set "
+                f"`self.models[{role!r}].training = True` in its __init__"
             )
-        if not agent.training:
-            raise ValueError(
-                "update trains the agent, and this recipe set `self.agent.training = False`"
-            )
-        if session is None or learning_rate is None:
-            raise RuntimeError("update trains the agent, which opens when the run starts")
+        rate = model.table.learning_rate if learning_rate is None else learning_rate
+        if not isinstance(session, Session) or rate is None:
+            raise RuntimeError(f"update trains {model!r}, which opens when the run starts")
         kept = [group.scored for group in groups if group.is_scored]
         if not kept:
             return None
-        began, recipe = time.monotonic(), self.recipe
-        flat = [one for part in kept for one in part]
-        unrecorded = [one for one in flat if one.sampled_logprobs is None]
-        # Each ratio is taken against the sampler's logprobs, else the current weights' own.
-        logprobs: dict[Sequence, Values[float]] = {
-            one: one.sampled_logprobs for one in flat if one.sampled_logprobs is not None
-        }
-        for one, scored in zip(unrecorded, await agent.logprobs(unrecorded), strict=True):
-            logprobs[one] = scored.tolist()  # type: ignore[union-attr]
-        # The papers' mini-batches are sets of prompts, so a group is not split across parts.
-        count = min(recipe.substeps, len(kept))
-        parts = [[one for part in piece for one in part] for piece in split_list(kept, count)]
-        rate = self._rate(learning_rate)
-        trained = await session.fit(
-            parts, logprobs=logprobs, adam=self.ADAM, rate=rate, loss=loss, loss_config=loss_config
-        )
-        made = self.state.updates[AGENT] = self.state.updates.get(AGENT, 0) + 1
+        began = time.monotonic()
+        self._start_evaluation()
+        try:
+            flat = [one for part in kept for one in part]
+            # Each ratio is taken against the sampler's logprobs, else the current weights' own.
+            logprobs: dict[Sequence, Values[float]] = {
+                one: one.sampled_logprobs
+                for one in flat
+                if one.trial.role == role and one.sampled_logprobs is not None
+            }
+            rest = [one for one in flat if one not in logprobs]
+            for one, scored in zip(rest, await model.logprobs(rest), strict=True):
+                logprobs[one] = scored.tolist()
+            # The papers' mini-batches are sets of prompts, so a group is not split across parts.
+            count = min(substeps, len(kept))
+            parts = [[one for part in piece for one in part] for piece in split_list(kept, count)]
+            trained = await session.fit(
+                parts,
+                logprobs=logprobs,
+                adam=self.ADAM,
+                rate=rate,
+                loss=loss,
+                loss_config=loss_config,
+            )
+        except BaseException:
+            self._cancel_evaluation()
+            raise
+        took = time.monotonic() - began
+        await self._finish_evaluation()
+        made = self.state.updates[role] = self.state.updates.get(role, 0) + 1
+        serving = time.monotonic()
         await session.serve(f"sample-{made}")
-        self._update = Update(
+        update = self._updates[role] = Update(
+            role=role,
             sequences=len(flat),
             train_tokens=trained.tokens,
             substeps=count,
             learning_rate=rate,
             loss=loss,
-            update_seconds=round(time.monotonic() - began, 3),
+            # Training and serving, not the wait for an evaluation between them.
+            update_seconds=round(took + time.monotonic() - serving, 3),
             kl_v1=trained.kl_v1,
             kl_v2=trained.kl_v2,
             entropy=trained.entropy,
         )
-        return self._update
-
-    def _rate(self, learning_rate: float) -> float:
-        """Return the agent's next learning rate, warmed up over `[recipe] warmup` updates."""
-        recipe, made = self.recipe, self.state.updates.get(AGENT, 0)
-        restored = self.config.agent.from_checkpoint and recipe.restore_optimizer
-        if restored or made >= recipe.warmup:
-            return learning_rate
-        return learning_rate * (made + 1) / recipe.warmup
+        return update
 
     # ------------------------------------------------------------------ the run
 
     async def run(self) -> None:
-        """Open the models, take `[recipe] steps` steps, the last evaluated, then save `final`.
-        Raise `ValueError`, before anything opens, for a model the run cannot train or open."""
-        if self._agent.training and self.recipe.learning_rate is None:
-            raise ValueError(
-                "[recipe] learning_rate: the agent trains, and the blueprint sets no rate: set "
-                "it, or, in a recipe that never updates, set `self.agent.training = False`"
-            )
+        """Open the models, take `[recipe] steps` steps, evaluating on schedule, then save
+        `final`. Raise `ValueError`, before anything opens, for a recipe the run cannot take, or
+        a model it cannot train or open."""
+        connected = self.check()
         self._current = self.state.steps
-        connected = connect(
-            self.config,
-            self.directory,
-            self._held(),
-            self.logs.spend,
-            training_state=self._training_state,
-        )
-        self._session = connected.session
         async with connected:
-            while self.state.steps < self.recipe.steps:
-                await self._advance()
+            try:
+                while self.state.steps < self.recipe.steps:
+                    await self._advance()
+            finally:
+                self._cancel_evaluation()
             await self.checkpoint(FINAL, keep=True)
 
+    def check(self) -> Connected:
+        """Raise `ValueError` for what the run refuses before it opens anything: a recipe that
+        writes no step, a test set it writes no evaluation for, a model it never reads, a model
+        it trains with no rate, a saved training state of a model it no longer trains, or a
+        model it cannot train or open. Return the models' backends and the proxy, built and not
+        opened: `run` opens them, and a dry run drops them."""
+        made = type(self)
+        if made.step is Trainer.step:
+            raise ValueError(f"{made.__name__} writes no step: a recipe writes `async def step`")
+        if self.generator.test and made.evaluate is Trainer.evaluate:
+            raise ValueError(
+                f"[data] test: {made.__name__} writes no `evaluate`, so the test set cannot be "
+                "rolled out: write `async def evaluate(self, tasks)`, or leave [data] test out"
+            )
+        unread = self.models.unread
+        if unread:
+            named = ", ".join(f"[models.{one}]" for one in unread)
+            raise ValueError(
+                f"{named}: {made.__name__} never reads it: a recipe reads the models it uses in "
+                "its __init__, as self.models[role]; leave out the ones it does not"
+            )
+        trained = {one.role for one in self.models.all if one.training}
+        for one in self.models.all:
+            if one.training and one.table.learning_rate is None:
+                raise ValueError(
+                    f"[models.{one.role}] learning_rate: {made.__name__} trains it, and its "
+                    "table sets no rate"
+                )
+        lost = sorted(set(self._training_states) - trained)
+        if lost:
+            raise ValueError(
+                f"the checkpoint the run goes on from holds the training state of "
+                f"{', '.join(lost)}, which {made.__name__} does not train"
+            )
+        return connect(
+            self.config,
+            self.directory,
+            self.models.all,
+            self.logs.spend,
+            training_states=self._training_states,
+        )
+
     async def _advance(self) -> None:
-        """Take a step, evaluate and checkpoint it on schedule, and write its row."""
-        self._seen, self._update, self._evaluation, self.metrics = [], None, None, {}
+        """Take a step, checkpoint it on schedule, and write its row. The weights it starts from,
+        when due, are evaluated beside its update, or after it when it makes none; the last
+        step's, after it."""
+        self._seen, self._updates, self.metrics = [], {}, {}
+        self._wait(self.state.steps)
         self._current = self.state.steps + 1
         await self.step()
+        await self._finish_evaluation()  # a step that served no new weights is evaluated now
         self.state.steps += 1
-        every, steps = self.recipe.evaluate_every, self.state.steps
-        due = (every and steps % every == 0) or steps == self.recipe.steps
-        if due and self.generator.test and self.state.evaluated != self._current:
-            await self.evaluate()
-        self.logs.step(self._current, self._seen, self._update, self._evaluation, self.metrics)
+        steps = self.state.steps
+        self.logs.step(self._current, self._seen, self._updates, self.metrics)
+        if steps == self.recipe.steps:
+            self._wait(steps)
+            await self._finish_evaluation()
         if steps % self.config.checkpoints.every == 0:
             await self.checkpoint(f"step-{steps}")
 
-    async def evaluate(self) -> Evaluation | None:
-        """Roll the agent out on every test task at each harness and renderer, unmixed."""
-        tasks = list(self.generator.test)
-        if not tasks:
-            return None
-        data = self.config.data
-        attempts = data.test_group_size or data.group_size
-        found: list[Group] = []
-        for start in range(0, len(tasks), data.batch_size):
-            batch = tasks[start : start + data.batch_size]
-            found += await self.rollout(batch, attempts=attempts, purpose=EVALUATION)
-        self._evaluation = Evaluation(
-            step=self._current,
-            tasks=len({group.task for group in found}),
-            **tally(found),
-            breakdown=breakdown(found),
-        )
-        self.state.evaluated = self._current
-        return self._evaluation
+    def _wait(self, step: int) -> None:
+        """Have the weights served after `step` evaluated, when they are due and not evaluated
+        yet: every `evaluate_every` steps from the start, the model the run starts from
+        included, and after the last step."""
+        every = self.recipe.evaluate_every
+        due = (every > 0 and step % every == 0) or step == self.recipe.steps
+        done = self.state.evaluated is not None and self.state.evaluated >= step
+        if self.generator.test and due and not done:
+            self._pending = step
+
+    def _start_evaluation(self) -> None:
+        """Start evaluating the waiting weights, beside what the caller goes on to do."""
+        if self._pending is not None and self._evaluating is None:
+            self._evaluating = asyncio.create_task(self._evaluate(self._pending))
+
+    async def _finish_evaluation(self) -> None:
+        """Have the waiting weights evaluated, starting the evaluation if it has not started,
+        and write its row."""
+        self._start_evaluation()
+        if self._evaluating is None:
+            return
+        try:
+            evaluation = await self._evaluating
+        finally:
+            self._evaluating = None
+        self._pending = None
+        self.state.evaluated = evaluation.step
+        self.logs.evaluation(evaluation)
+
+    def _cancel_evaluation(self) -> None:
+        """Stop the evaluation under way, which a resume runs again."""
+        if self._evaluating is not None:
+            self._evaluating.cancel()
+            self._evaluating = None
+
+    async def _evaluate(self, step: int) -> Evaluation:
+        """Roll the test set out with the recipe's `evaluate` at the weights served after
+        `step`, and return what it came to. It runs as a task of its own, so `EVALUATING` is
+        set for its rollouts alone."""
+        EVALUATING.set(step)
+        found = await self.evaluate(list(self.generator.test))
+        return Evaluation(step=step, tasks=len({group.task for group in found}), **tally(found))
 
     async def checkpoint(self, tag: str, *, keep: bool = False) -> None:
         """Save the run's state as `tag`, which a resume goes on from; `keep` keeps the weights.
         Its row names each trained model's training state by role, once an update has moved it."""
-        session = self._session
         training_state: dict[str, str] = {}
         sampler_weights: dict[str, str] = {}
         hours: float | None = None
-        if session is not None and self.state.updates.get(AGENT):
+        for one in self.models.all:
+            session = one.backend
+            if not isinstance(session, Session) or not self.state.updates.get(one.role):
+                continue
             made = await session.save(tag, keep=keep)
-            training_state = {AGENT: made.training_state}
+            training_state[one.role] = made.training_state
             if made.sampler_weights is not None:
-                sampler_weights = {AGENT: made.sampler_weights}
+                sampler_weights[one.role] = made.sampler_weights
             hours = made.ttl_hours
         saved = Checkpoint.save(
             self.directory,
@@ -410,15 +439,16 @@ class Trainer:
         logger.info("checkpoint %s: %s", tag, saved.state)
 
     def keep(self, modules: Modules, name: str) -> Path:
-        """Keep `modules` in the run as `modules/<name>/`, for a later run to carry."""
+        """Keep `modules` in the run as `modules/<name>/`, for a later run to start from."""
         into = self.directory / files.MODULES / name
         keep(modules, into)
         return into
 
     def restore(self, origin: Path, checkpoint: Checkpoint) -> None:
-        """Restore `checkpoint` of `origin`: its state now, its training state once `run` opens."""
+        """Restore `checkpoint` of `origin`: its state now, its training states once `run`
+        opens."""
         tag = checkpoint.tag
-        self._training_state = checkpoint.training_state.get(AGENT)
+        self._training_states = dict(checkpoint.training_state)
         saved = checkpoint.saved_state(origin)
         if not saved:
             raise ValueError(
@@ -435,19 +465,21 @@ class Trainer:
                 f"checkpoint {tag}: its state does not fit {named}: {refused}"
             ) from None
 
-    # ------------------------------------------------------------------ plumbing
 
-    def _held(self) -> list[tuple[str, Model]]:
-        """Return every model the trainer holds, the agent first, each with its spend's role."""
-        found = [(AGENT, self._agent)]
-        for name, value in vars(self).items():
-            if isinstance(value, dict):
-                inner = [(f"{name}[{key}]", one) for key, one in value.items()]
-            elif isinstance(value, list | tuple):
-                inner = [(f"{name}[{at}]", one) for at, one in enumerate(value)]
-            else:
-                inner = [(name, value)]
-            for role, one in inner:
-                if isinstance(one, Model) and all(one is not seen for _, seen in found):
-                    found.append((role, one))
-        return found
+def _rendered(model: Model, renderer: str | None) -> str | None:
+    """Return the renderer a rollout of `model` renders its calls with: `renderer`, one of the
+    model's, or its only one; None for the model's own. Raise `ValueError` for a renderer it
+    does not hold, or none named when it holds several."""
+    held = model.renderers
+    if renderer is None:
+        if len(held) > 1:
+            raise ValueError(
+                f"rollout(model={model.role}): name its renderer, one of {', '.join(held)}"
+            )
+        return held[0] if held else None
+    if renderer not in held:
+        has = ", ".join(held) or "none: its calls are rendered as the model's own"
+        raise ValueError(
+            f"rollout(renderer={renderer!r}): [models.{model.role}] renderers holds {has}"
+        )
+    return renderer

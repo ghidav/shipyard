@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import hmac
 import json
 import logging
@@ -17,17 +18,13 @@ from harness_proxy import backends, cookbook, keepalive
 from harness_proxy.chat import Caller, Refused
 from harness_proxy.dialects import anthropic, openai
 from harness_proxy.keepalive import KEEPALIVE_EVERY, KEEPALIVE_GRACE
-from harness_proxy.recorder import Recorder
 from harness_proxy.rendering import complete
+from harness_proxy.trial import Trial
 from harness_proxy.wire import (
-    CONTROL_PATH,
     HEALTH_PATH,
-    RECORDS_PATH,
-    Address,
-    Fetch,
-    Record,
+    TRIALS_PATH,
+    Opening,
     Served,
-    Swap,
     health,
     new_token,
     records_answer,
@@ -35,9 +32,9 @@ from harness_proxy.wire import (
 
 logger = logging.getLogger(__name__)
 
-#: Seconds a trial's last records payload is kept for `again=1`. A fetch drains the
-#: records, so a lost answer cannot be rebuilt otherwise.
-SERVED_KEPT_SECONDS = 1800.0
+#: Seconds a closed trial's records are kept, so a close whose answer was lost is answered
+#: again: closing hands the records over, and the trial is gone.
+CLOSED_KEPT_SECONDS = 1800.0
 #: `max_tokens` for a request that sets none. The cookbook's default of 1024 cuts off a
 #: coding turn.
 DEFAULT_MAX_TOKENS = 8192
@@ -53,19 +50,17 @@ ClientFactory = Callable[[str | None], Awaitable[Any]]
 
 @dataclass
 class Lane:
-    """One model the proxy serves, which a call's address names: its weights, the backend that
-    samples them, its renderers, and the recorder its calls sample through, which keeps their
-    records."""
+    """One model the proxy serves, which a trial is opened on: the backend that samples it, its
+    renderers, the run's sampling settings, and a sampling client on each weights its open
+    trials were opened on."""
 
-    #: The name a call's address gives it: `/r/lane/<name>/...`.
+    #: The name a trial is opened on it by.
     name: str
     #: The base model it serves.
     model: str
-    #: The weights it serves, under its backend's prefix; None for the base model.
-    weights: str | None = None
     #: The renderers calls are rendered with: a cookbook renderer name, or a list of them that a
-    #: trial's address picks from by name; a renderer object, or a dict of them by name (tests);
-    #: or None for the model's default. A call whose address names none takes the first.
+    #: trial is opened with by name; a renderer object, or a dict of them by name (tests); or
+    #: None for the model's default. A trial opened with none takes the first.
     renderer: Any = None
     temperature: float | None = 1.0
     top_p: float | None = 1.0
@@ -84,14 +79,16 @@ class Lane:
 
     #: The backend's service, opened on `open`; a test may pass a fake one.
     _service: Any = field(default=None, repr=False)
-    _recorder: Recorder | None = field(default=None, repr=False)
-    #: The renderers, by the name a trial's address gives each; "" for the model's default.
+    #: The renderers, by the name a trial is opened with; "" for the model's default.
     _renderers: dict[str, Any] = field(default_factory=dict, repr=False)
+    #: The sampling client on each weights open trials use, and how many of them use it.
+    _clients: dict[str | None, list[Any]] = field(default_factory=dict, repr=False)
+    _making: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
     def __post_init__(self) -> None:
-        """Refuse a name an address cannot hold, or an unknown backend."""
-        if not self.name or "/" in self.name:
-            raise ValueError(f"a lane is named in a call's address: {self.name!r} cannot be")
+        """Refuse a nameless lane, or an unknown backend."""
+        if not self.name:
+            raise ValueError("a lane is named, since a trial is opened on it by name")
         backends.named(self.backend)
 
     @property
@@ -100,46 +97,27 @@ class Lane:
         return backends.named(self.backend)
 
     @property
-    def serving(self) -> str:
-        """The model a reply names: the served weights, or the base model."""
-        return self.weights or self.model
-
-    @property
     def renderers(self) -> list[str]:
-        """The renderers a trial's address may name, in order; none for the model's default."""
+        """The renderers a trial may be opened with, in order; none for the model's default."""
         return [name for name in self._renderers if name]
 
-    @property
-    def recorder(self) -> Recorder:
-        if self._recorder is None:
-            raise RuntimeError("This endpoint is not started, so nothing is recorded.")
-        return self._recorder
-
-    def records_for(self, trial: str) -> list[Record]:
-        return self.recorder.records_for(trial)
-
     async def open(self) -> None:
-        """Build the renderers, the backend's service and the sampling client, and the recorder
-        that every call samples through."""
+        """Build the renderers and the backend's service, and read the model's context length;
+        `RuntimeError` if its backend cannot say it and the lane gives none, since neither the
+        budget nor the context could be enforced."""
         renderers = self._built()
         if self.client_factory is None and self._service is None:
             self._service = await self.sampling.connect(
                 metadata=self.metadata, session=self.session
             )
-        client = await self._make(self.weights)
         if self.max_context is None and self._service is not None:
             self.max_context = await self.sampling.context_of(self._service, self.model)
-        self._recorder = Recorder(
-            client,
-            temperature=self.temperature,
-            top_p=self.top_p,
-            top_k=self.top_k,
-            max_tokens=self.max_tokens,
-            max_context=self.max_context,
-            budget=self.max_context,
-            fill_context=self.fill_context,
-            weights=self.weights,
-        )
+            if self.max_context is None:
+                raise RuntimeError(
+                    f"lane {self.name}: could not read the context length of {self.model}, so "
+                    "neither a trial's budget nor the context could be enforced: give the lane "
+                    "its max_context"
+                )
         self._renderers = renderers
 
     async def close(self) -> None:
@@ -149,15 +127,46 @@ class Lane:
             with contextlib.suppress(Exception):
                 await self.sampling.close(service)
 
-    async def swap(self, weights: str | None) -> None:
-        """Switch to a sampling client on `weights`, or on the base model for None."""
-        client = await self._make(weights)
-        self.weights = weights
-        if self._recorder is not None:
-            self._recorder.client, self._recorder.weights = client, weights
+    async def hold(self, weights: str | None) -> Any:
+        """Return a sampling client on `weights`, or on the base model for None, for a trial
+        opened on them: the one the lane holds if an open trial uses them already. `ValueError`
+        for weights under another backend's prefix."""
+        prefix = self.sampling.PREFIX
+        if weights is not None and not weights.startswith(prefix):
+            raise ValueError(f"{weights!r} is not a {prefix} path")
+        async with self._making:
+            held = self._clients.get(weights)
+            if held is None:
+                held = self._clients[weights] = [await self._make(weights), 0]
+            held[1] += 1
+            return held[0]
+
+    def release(self, weights: str | None) -> None:
+        """Let go of the sampling client on `weights` once no open trial uses them."""
+        held = self._clients.get(weights)
+        if held is not None:
+            held[1] -= 1
+            if held[1] <= 0:
+                del self._clients[weights]
+
+    def trial(self, opening: Opening, client: Any) -> Trial:
+        """Return the trial `opening` opens on the lane, which samples through `client`."""
+        return Trial(
+            opening.trial,
+            client,
+            renderer=self.renderer_for(opening.renderer or ""),
+            weights=opening.weights,
+            temperature=self.temperature,
+            top_p=self.top_p,
+            top_k=self.top_k,
+            max_tokens=self.max_tokens,
+            max_context=self.max_context,
+            budget=self.max_context,
+            fill_context=self.fill_context,
+        )
 
     def _built(self) -> dict[str, Any]:
-        """Return the renderers by the name a trial's address gives each, "" for the default."""
+        """Return the renderers by the name a trial is opened with, "" for the default."""
         given = self.renderer
         if isinstance(given, dict):
             return dict(given)
@@ -167,7 +176,7 @@ class Lane:
         return {one or "": cookbook.renderer_for(self.model, one or None) for one in names}
 
     def renderer_for(self, named: str) -> Any:
-        """Return the renderer a call's address names, the first for ""; `Refused` if unknown."""
+        """Return the renderer `named`, the first for ""; `Refused` if unknown."""
         if not named:
             return next(iter(self._renderers.values()))
         renderer = self._renderers.get(named)
@@ -177,24 +186,35 @@ class Lane:
         return renderer
 
     async def _make(self, weights: str | None) -> Any:
-        prefix = self.sampling.PREFIX
-        if weights is not None and not weights.startswith(prefix):
-            raise ValueError(f"{weights!r} is not a {prefix} path")
         if self.client_factory is not None:
             return await self.client_factory(weights)
         return await self.sampling.sampler(self._service, self.model, weights)
 
     def reported(self) -> Served:
-        """Return the lane as `/healthz` reports it: its model, what it serves, the tokens one
-        trial may sample, and the renderers an address may name."""
-        return Served(self.model, self.serving, self.max_context or None, tuple(self.renderers))
+        """Return the lane as `/healthz` reports it: its model, the tokens one trial may sample,
+        and the renderers a trial may be opened with."""
+        return Served(self.model, self.max_context or None, tuple(self.renderers))
+
+
+@dataclass(frozen=True)
+class Opened:
+    """An open trial: what the run opened it with, the token its calls carry, and its lane."""
+
+    opening: Opening
+    token: str = field(repr=False)
+    trial: Trial
+    lane: Lane
+
+
+#: Where the auth middleware leaves the open trial a call's token names, for the call's handler.
+OPENED = web.RequestKey("opened", Opened)
 
 
 @dataclass
 class Server:
-    """Local server that stands in for a model provider. It serves each of its `lanes` to the
-    calls whose address names it (`/r/lane/<name>/...`), and its only lane, if it has one, to a
-    call whose address names none."""
+    """Local server that stands in for a model provider. The run opens each trial on one of its
+    `lanes` with the control token, and the trial's calls carry the token the opening returned;
+    closing the trial hands its records back."""
 
     lanes: list[Lane]
     host: str = "host.docker.internal"
@@ -204,24 +224,29 @@ class Server:
     #: `keepalive_every` seconds until the reply. None turns them off.
     keepalive_grace: float | None = KEEPALIVE_GRACE
     keepalive_every: float = KEEPALIVE_EVERY
-    token: str = field(default_factory=new_token, repr=False)
-    control_token: str | None = field(default=None, repr=False)
+    #: The run's token, which opens and closes trials; generated if empty.
+    control_token: str = field(default_factory=new_token, repr=False)
 
     _runner: Any = field(default=None, repr=False)
     _port: int | None = field(default=None, repr=False)
-    _served_last: dict[str, tuple[float, dict[str, Any]]] = field(default_factory=dict, repr=False)
     #: The lanes, by name.
     _named: dict[str, Lane] = field(default_factory=dict, repr=False)
+    #: The open trials, by name, and each one's name by the digest of its token.
+    _open: dict[str, Opened] = field(default_factory=dict, repr=False)
+    _by_token: dict[str, str] = field(default_factory=dict, repr=False)
+    #: Each recently closed trial's answer, by name, with when it closed.
+    _closed: dict[str, tuple[float, dict[str, Any]]] = field(default_factory=dict, repr=False)
+    _opening: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
     def __post_init__(self) -> None:
-        """Generate a token if it is empty; refuse no lane, or two lanes of one name."""
-        if not self.token:
-            self.token = new_token()
+        """Generate the control token if it is empty; refuse no lane, or two lanes of one name."""
+        if not self.control_token:
+            self.control_token = new_token()
         if not self.lanes:
             raise ValueError("a proxy serves at least one lane")
         for one in self.lanes:
             if one.name in self._named:
-                raise ValueError(f"two lanes are named {one.name!r}: an address names one")
+                raise ValueError(f"two lanes are named {one.name!r}: a trial is opened on one")
             self._named[one.name] = one
 
     @property
@@ -230,9 +255,14 @@ class Server:
 
     async def start(self) -> None:
         """Open every lane, then build the app and its routes, and bind the socket."""
-        for lane in self.lanes:
-            await lane.open()
-        # Control outermost, so only the control token opens the control route.
+        try:
+            for lane in self.lanes:
+                await lane.open()
+        except BaseException:
+            for lane in self.lanes:
+                await lane.close()  # the sessions of the lanes that opened
+            raise
+        # Control outermost, so only the control token opens and closes trials.
         middlewares = [self._control_middleware(), self._auth_middleware()]
         if self.keepalive_grace is not None:
             middlewares.append(keepalive.middleware(self.keepalive_grace, self.keepalive_every))
@@ -240,10 +270,9 @@ class Server:
         # request would not be recorded. The context refusal is the cap.
         app = web.Application(middlewares=middlewares, client_max_size=MAX_BODY_BYTES)
         for dialect in (anthropic, openai):
-            serve = self._serving(dialect)
-            app.router.add_post(f"/v1{dialect.PATH}", serve)
-            app.router.add_post(f"/r/{{address:.+}}/v1{dialect.PATH}", serve)
-        app.router.add_get(f"{RECORDS_PATH}/{{trial}}", self._serve_records)
+            app.router.add_post(f"/v1{dialect.PATH}", self._serving(dialect))
+        app.router.add_post(TRIALS_PATH, self._serve_open)
+        app.router.add_post(f"{TRIALS_PATH}/{{trial}}/close", self._serve_close)
         runner = web.AppRunner(app)
         await runner.setup()
         await web.TCPSite(runner, self.bind, self.bind_port).start()
@@ -251,7 +280,7 @@ class Server:
         self._port = _bound_port(runner)
         logger.info("listening on port %s as %s", self._port, self.host)
         for lane in self.lanes:
-            logger.info("serving %s in lane %s", lane.serving, lane.name)
+            logger.info("serving %s in lane %s", lane.model, lane.name)
 
     async def stop(self) -> None:
         runner, self._runner = self._runner, None
@@ -277,66 +306,125 @@ class Server:
         if found is None:
             served = ", ".join(self._named)
             if not name:
-                raise Refused(f"this proxy serves several lanes, so a call names one: {served}")
+                raise Refused(f"this proxy serves several lanes, so a trial names one: {served}")
             raise Refused(f"this proxy serves no lane {name!r}: it serves {served}")
         return found
+
+    def trial(self, name: str) -> Trial | None:
+        """Return the open trial `name`, or None."""
+        held = self._open.get(name)
+        return held.trial if held is not None else None
+
+    async def open(self, opening: Opening) -> str:
+        """Open the trial `opening` names and return the token its calls carry; the same token
+        for the same opening asked again. `Refused` for a lane or renderer the proxy does not
+        serve, or a trial open already on others; `ValueError` for weights it cannot serve."""
+        lane = self.lane(opening.lane or "")
+        lane.renderer_for(opening.renderer or "")  # refuses an unknown one
+        async with self._opening:
+            held = self._open.get(opening.trial)
+            if held is not None:
+                if held.opening == opening:
+                    return held.token  # an open whose answer was lost, asked again
+                raise Refused(f"trial {opening.trial} is open already, as {held.opening}")
+            client = await lane.hold(opening.weights)
+            token = new_token()
+            self._open[opening.trial] = Opened(opening, token, lane.trial(opening, client), lane)
+            self._by_token[_digest(token)] = opening.trial
+            self._closed.pop(opening.trial, None)
+        logger.info(
+            "opened trial %s in lane %s on %s",
+            opening.trial,
+            lane.name,
+            opening.weights or lane.model,
+        )
+        return token
+
+    def close(self, name: str) -> dict[str, Any]:
+        """Close the trial `name` and return its records as the close route answers them, or the
+        same answer for one closed in the last `CLOSED_KEPT_SECONDS`; `KeyError` for neither.
+        A call of the trial still in flight is answered, and recorded nowhere."""
+        now = time.monotonic()
+        for one, (at, _answer) in list(self._closed.items()):
+            if now - at > CLOSED_KEPT_SECONDS:
+                del self._closed[one]
+        held = self._open.pop(name, None)
+        if held is None:
+            return self._closed[name][1]
+        self._by_token.pop(_digest(held.token), None)
+        held.lane.release(held.opening.weights)
+        answer = records_answer(held.trial.records)
+        self._closed[name] = (now, answer)
+        logger.info("closed trial %s with %d records", name, len(held.trial.records))
+        return answer
 
     def _serving(self, dialect: ModuleType) -> Callable[[web.Request], Awaitable[Any]]:
         """Return the handler for `dialect`'s route: read the call, complete it, write the reply."""
 
         async def serve(request: web.Request) -> Any:
+            held = request[OPENED]
+            trial = held.trial
             try:
-                caller = caller_of(request)
-                lane = self.lane(caller.lane)
-                renderer = lane.renderer_for(caller.renderer)
+                caller = caller_of(request, trial.name)
                 # Off the event loop: images and PDF pages decode here, and other trials wait
                 # on the loop.
                 call = await asyncio.to_thread(dialect.read, await _body(request))
-                reply = await complete(call, caller, renderer, lane.recorder, int(lane.max_tokens))
+                reply = await complete(call, caller, trial, int(held.lane.max_tokens))
             except Refused as refused:
-                logger.warning("refused a request to %s: %s", request.path, refused)
+                logger.warning("refused a call of trial %s: %s", trial.name, refused)
                 return dialect.error(400, str(refused))
+            serving = trial.weights or held.lane.model
             if not call.stream:
-                return web.json_response(dialect.answer(reply, lane.serving, call))
-            return await keepalive.serve_sse(request, dialect.events(reply, lane.serving, call))
+                return web.json_response(dialect.answer(reply, serving, call))
+            return await keepalive.serve_sse(request, dialect.events(reply, serving, call))
 
         return serve
 
     def _auth_middleware(self) -> Any:
-        """Return middleware that requires the harness token, as `x-api-key` or a Bearer header."""
+        """Return middleware that finds the open trial whose token a call carries, as
+        `x-api-key` or a Bearer header, and turns away a call that carries none."""
 
         @web.middleware
         async def auth(request: Any, handler: Any) -> Any:
-            presented = (request.headers.get("x-api-key"), _bearer(request))
-            if not any(_matches(one, self.token) for one in presented):
-                error = {"type": "authentication_error", "message": "invalid proxy token"}
-                return web.json_response({"type": "error", "error": error}, status=401)
-            return await handler(request)
+            for presented in (request.headers.get("x-api-key"), _bearer(request)):
+                name = self._by_token.get(_digest(presented)) if presented else None
+                held = self._open.get(name) if name is not None else None
+                if held is not None:
+                    request[OPENED] = held
+                    return await handler(request)
+            message = "no open trial holds this token: the run opens a trial before it calls"
+            error = {"type": "authentication_error", "message": message}
+            return web.json_response({"type": "error", "error": error}, status=401)
 
         return auth
 
-    async def _serve_records(self, request: Any) -> Any:
-        """Return the trial's records in request order and drain them."""
-        trial = request.match_info["trial"]
-        now = time.monotonic()
-        for name, (at, _payload) in list(self._served_last.items()):
-            if now - at > SERVED_KEPT_SECONDS:
-                del self._served_last[name]
-        kept, asked = self._served_last.get(trial), Fetch.of(request.query)
-        if asked.again and kept is not None:
-            payload = kept[1]
-        else:
-            payload = self._records_payload(trial, asked.delta)
-            self._served_last[trial] = (now, payload)
-        response = web.json_response(payload, dumps=lambda data: json.dumps(data, default=str))
+    async def _serve_open(self, request: Any) -> Any:
+        """Open the trial the body names and answer its token; 400 for one it cannot open."""
+        try:
+            body = await request.json()
+        except Exception:
+            body = None  # which `Opening.of` refuses as it does any body that is not an opening
+        try:
+            token = await self.open(Opening.of(body))
+        except (ValueError, Refused) as refused:
+            raise web.HTTPBadRequest(reason=str(refused)) from None
+        except Exception as failed:
+            raise web.HTTPBadRequest(reason=f"cannot serve those weights: {failed}") from failed
+        return web.json_response({"token": token})
+
+    async def _serve_close(self, request: Any) -> Any:
+        """Close the trial the path names and answer its records; 404 if none is open by it."""
+        name = request.match_info["trial"]
+        try:
+            answer = self.close(name)
+        except KeyError:
+            minutes = round(CLOSED_KEPT_SECONDS / 60)
+            raise web.HTTPNotFound(
+                reason=f"no trial {name} is open, or closed in the last {minutes} minutes"
+            ) from None
+        response = web.json_response(answer, dumps=lambda data: json.dumps(data, default=str))
         response.enable_compression()
         return response
-
-    def _records_payload(self, trial: str, delta: bool) -> dict[str, Any]:
-        """Take the trial's records and build the response payload; [] for an unknown trial."""
-        # A trial calls one lane; each lane's recorder takes, and drains, its own records.
-        records = [one for lane in self.lanes for one in lane.recorder.take(trial)]
-        return records_answer(records, delta=delta)
 
     def _control_middleware(self) -> Any:
         """Return the first middleware: health, then the run's routes behind the control token."""
@@ -345,65 +433,34 @@ class Server:
         async def control(request: Any, handler: Any) -> Any:
             if request.path == HEALTH_PATH and request.method == "GET":
                 return web.json_response(health({one.name: one.reported() for one in self.lanes}))
-            weights = request.path == CONTROL_PATH
-            if not weights and not request.path.startswith(f"{RECORDS_PATH}/"):
+            if request.path != TRIALS_PATH and not request.path.startswith(f"{TRIALS_PATH}/"):
                 return await handler(request)
-            if self.control_token is None:
-                raise web.HTTPNotFound()
-            if weights and request.method != "POST":
-                raise web.HTTPMethodNotAllowed(request.method, ["POST"])
-            # Every sandbox holds the harness token, so the model under training must not be able
-            # to re-point the proxy, or read and drain records: those take the run's own token.
+            # Every sandbox holds a trial's token, so the model under training must not be able
+            # to open or close trials, or read records: those take the run's own token.
             if not _matches(_bearer(request), self.control_token):
                 return web.json_response({"error": "invalid control token"}, status=401)
-            if weights:
-                return await self._serve_control(request)
-            # The route's own handler, past the harness token's middleware.
+            # The route's own handler, past the trial token's middleware.
             return await request.match_info.handler(request)
 
         return control
 
-    async def _serve_control(self, request: Any) -> Any:
-        """Switch the lane the body's `lane` names, the only one if it names none, to the body's
-        `weights`, under its backend's prefix or null; 400 otherwise."""
-        try:
-            body = await request.json()
-        except Exception:
-            body = None  # which `Swap.of` refuses as it does any body that is not a swap
-        try:
-            asked = Swap.of(body)
-            lane = self.lane(asked.lane or "")
-        except (ValueError, Refused) as refused:
-            raise web.HTTPBadRequest(reason=str(refused)) from None
-        path, prefix = asked.weights, lane.sampling.PREFIX
-        if path is not None and not path.startswith(prefix):
-            raise web.HTTPBadRequest(reason=f"'weights' must be a {prefix} path or null")
-        try:
-            await lane.swap(path)
-        except Exception as refused:
-            raise web.HTTPBadRequest(reason=f"cannot serve {path}: {refused}") from refused
-        logger.info("serving %s in lane %s", path or lane.model, lane.name)
-        return web.json_response({"serving": path})
 
-
-def caller_of(request: Any) -> Caller:
-    """Return who made a call: what its address names, its wire, and the SDK's retry headers;
-    `Refused` for an address that names no trial."""
-    address = None
-    if "address" in request.match_info:
-        try:
-            address = Address.of(request.rel_url.raw_path)
-        except ValueError as unread:
-            raise Refused(str(unread)) from None
+def caller_of(request: Any, trial: str) -> Caller:
+    """Return who made a call: the trial its token opened, its wire, and the SDK's retry
+    headers."""
     return Caller(
-        trial=address.trial if address is not None else "",
-        lane=(address.lane if address is not None else None) or "",
-        renderer=(address.renderer if address is not None else None) or "",
+        trial=trial,
         wire="anthropic" if request.path.endswith("/messages") else "openai",
         retry=_count(request.headers.get(RETRY_HEADER)),
         idempotency_key=request.headers.get("Idempotency-Key") or None,
         request_id=request.headers.get("x-request-id") or None,
     )
+
+
+def _digest(token: str) -> str:
+    """Return what the server keeps a token by: its digest, which a lookup's timing cannot
+    give away."""
+    return hashlib.sha256(token.encode("utf-8", "surrogateescape")).hexdigest()
 
 
 def _count(header: str | None) -> int:

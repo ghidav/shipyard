@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from harness_proxy.bridge import Index, Reply
 from harness_proxy.chat import Caller, Refused
+from harness_proxy.cookbook import remembering
 from harness_proxy.wire import (
     BUDGET,
     CONTEXT,
@@ -33,14 +34,19 @@ class Sampled:
     seq: int | None
 
 
-class Recorder:
-    """What every call of a lane samples through: it pins the run's settings, replays a retried
-    call's reply, fits the budget and the context, and keeps the records of every trial."""
+class Trial:
+    """A trial the run opened, which its calls sample through until the run closes it: the
+    renderer and weights they are answered with, the run's settings it pins on them, the tokens it
+    has sampled, its records, the replies an SDK's retry is sent again, and the bridge's index of
+    the replies a later call may quote."""
 
     def __init__(
         self,
+        name: str,
         client: Any,
         *,
+        renderer: Any = None,
+        weights: str | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
         top_k: int | None = None,
@@ -48,32 +54,30 @@ class Recorder:
         max_context: int | None = None,
         budget: int | None = None,
         fill_context: bool = False,
-        weights: str | None = None,
     ) -> None:
+        self.name = name
+        #: The sampling client on its weights, which its lane holds while a trial uses them.
         self.client = client
+        #: Its own copy of its lane's renderer, over a tokenizer that remembers what it encoded.
+        self.renderer = remembering(renderer) if renderer is not None else None
+        #: The weights it was opened on, under the backend's prefix; None for the base model.
         self.weights = weights
         self.temperature, self.top_p, self.top_k = temperature, top_p, top_k
         #: Maximum tokens a call may sample. A call asking for more is capped to this.
         self.max_tokens = max_tokens
         self.max_context = max_context
-        #: Total tokens a trial may sample. None for no limit.
+        #: Total tokens the trial may sample. None for no limit.
         self.budget = budget
         #: Whether a call that would overrun the context gets the remaining context as its
-        #: limit instead of being refused.
+        #: limit instead of being turned away.
         self.fill_context = fill_context
-        self.records: dict[str, list[Record]] = {}
-        #: Tokens sampled so far, per trial.
-        self.spoke: dict[str, int] = {}
-        self._seq: dict[str, int] = {}
+        self.records: list[Record] = []
+        #: Tokens sampled so far.
+        self.spoke = 0
+        #: Sampled replies the bridge may extend.
+        self.index = Index()
+        self._seq = 0
         self._replies: dict[tuple[Any, ...], asyncio.Future[Any]] = {}
-        #: Sampled replies the bridge may extend, per trial.
-        self.indexes: dict[str, Index] = {}
-        #: Trials whose records were taken. No later fetch reads them, so records of
-        #: calls that finish afterwards are dropped.
-        self.taken: set[str] = set()
-
-    def index_for(self, trial: str) -> Index:
-        return self.indexes.setdefault(trial, Index())
 
     def pin(self, sampling_params: Any) -> Any:
         """Override the harness's sampling parameters with the run's, `max_tokens` only capped."""
@@ -97,37 +101,24 @@ class Recorder:
         *,
         requested_model: str | None = None,
     ) -> Sampled:
-        """Sample one reply to `prompt` for `caller`'s trial and record it, or replay the reply an
-        earlier send of the call got; `Refused`, once recorded, for a trial past its budget or a
-        prompt past the context."""
-        trial = caller.trial
+        """Sample one reply to `prompt` and record it, or replay the reply an earlier send of the
+        call got; `Refused`, once recorded, for a call past the budget or a prompt past the
+        context."""
+        prompt_ids = ids_of(prompt.model_input)
+        pictures = pictures_of(prompt.model_input)
         stamp = {
             "requested_model": requested_model,
             "request_id": caller.idempotency_key or caller.request_id,
             "bridged": prompt.bridged,
             "prompt_digests": prompt.digests,
         }
-        try:
-            return await self._sample(caller, prompt, sampling_params, stamp)
-        finally:
-            if trial in self.taken:
-                # A call that outlived its trial's fetch (Harbor's timeout can cut one)
-                # leaves records nobody reads, so drop them.
-                self._forget(trial)
-
-    async def _sample(
-        self, caller: Caller, prompt: Prompt, sampling_params: Any, stamp: dict[str, Any]
-    ) -> Sampled:
-        trial = caller.trial
-        prompt_ids = ids_of(prompt.model_input)
-        pictures = pictures_of(prompt.model_input)
         pinned = self.pin(sampling_params)
         # Keyed on the params as pinned, before the budget cut, so a retry arriving after
         # the trial's count moved still matches its reply.
         asked = json.dumps(_params_dict(pinned), sort_keys=True, default=str)
-        keys: list[tuple[Any, ...]] = [(trial, prompt_ids, asked)]
+        keys: list[tuple[Any, ...]] = [(prompt_ids, asked)]
         if caller.idempotency_key:
-            keys.append((trial, caller.idempotency_key))
+            keys.append((caller.idempotency_key,))
         # A retry replays by either key. A fresh request with an idempotency key replays
         # by that key only, since the same prompt under a new key is a resample.
         lookups = keys if caller.retry else keys[1:]
@@ -138,17 +129,14 @@ class Recorder:
                 return replace(answered, seq=None)  # the SDK sent this before: one record
         # Fit after the replay, so a retry of the call that spent the budget gets its reply.
         wanted = int(getattr(sampling_params, "max_tokens", None) or 0)
-        pinned = self._fitting(trial, prompt, prompt_ids, pinned, wanted, stamp)
+        pinned = self._fitting(prompt, prompt_ids, pinned, wanted, stamp)
         params = _params_dict(pinned)
         pending: asyncio.Future[Sampled | None] = asyncio.get_running_loop().create_future()
         for key in keys:
             self._replies[key] = pending
-        # Read together before the await, so a swap in flight does not stamp the record
-        # with weights that did not answer it.
-        client, weights = self.client, self.weights
         started = time.perf_counter()
         try:
-            response = await client.sample_async(
+            response = await self.client.sample_async(
                 prompt=prompt.model_input, num_samples=1, sampling_params=pinned
             )
             sequence = response.sequences[0]
@@ -158,16 +146,18 @@ class Recorder:
                     del self._replies[key]
             if not pending.done():
                 pending.set_result(None)  # a retry waiting on it samples for itself
+            if isinstance(failed, Refused):
+                # The backend refused the request before sampling it, as a renderer refuses an
+                # image it cannot take: the request was at fault, and it costs no record.
+                raise
             failure = f"{SAMPLER_FAILED}{type(failed).__name__}"
-            self._add(trial, prompt_ids, params, weights, **stamp, error=failure, images=pictures)
+            self._add(prompt_ids, params, **stamp, error=failure, images=pictures)
             raise
         tokens = tuple(int(token) for token in sequence.tokens)
         stop_reason = str(getattr(sequence, "stop_reason", "") or "")
         record = self._add(
-            trial,
             prompt_ids,
             params,
-            weights,
             **stamp,
             completion=tokens,
             logprobs=tuple(float(x) for x in (getattr(sequence, "logprobs", None) or [])),
@@ -176,7 +166,7 @@ class Recorder:
             cached_tokens=int(getattr(response, "prompt_cache_hit_tokens", 0) or 0),
             images=pictures,
         )
-        self.spoke[trial] = self.spoke.get(trial, 0) + len(tokens)
+        self.spoke += len(tokens)
         sampled = Sampled(tokens, stop_reason, record.seq)
         if not pending.done():
             pending.set_result(sampled)
@@ -184,7 +174,6 @@ class Recorder:
 
     def _fitting(
         self,
-        trial: str,
         prompt: Prompt,
         prompt_ids: tuple[int, ...],
         pinned: Any,
@@ -194,15 +183,14 @@ class Recorder:
         """Return the sampling params that fit the budget and the context, or record a refusal
         and raise it."""
         if self.budget:
-            spent = self.spoke.get(trial, 0)
-            if spent >= self.budget:
-                self._refuse(trial, prompt_ids, pinned, BUDGET, stamp)
+            if self.spoke >= self.budget:
+                self._refuse(prompt_ids, pinned, BUDGET, stamp)
                 raise Refused(
-                    f"This trial has spent its budget: {spent} sampled tokens of "
+                    f"This trial has spent its budget: {self.spoke} sampled tokens of "
                     f"{self.budget}, the model's context length. No further calls are answered."
                 )
-            if int(getattr(pinned, "max_tokens", 0) or 0) > self.budget - spent:
-                pinned = pinned.model_copy(update={"max_tokens": int(self.budget - spent)})
+            if int(getattr(pinned, "max_tokens", 0) or 0) > self.budget - self.spoke:
+                pinned = pinned.model_copy(update={"max_tokens": int(self.budget - self.spoke)})
         if not self.max_context:
             return pinned
         length, wants = int(prompt.model_input.length), int(getattr(pinned, "max_tokens", 0) or 0)
@@ -210,7 +198,7 @@ class Recorder:
             return pinned
         if self.fill_context and length < self.max_context:
             return pinned.model_copy(update={"max_tokens": self.max_context - length})
-        self._refuse(trial, prompt_ids, pinned, CONTEXT, stamp)
+        self._refuse(prompt_ids, pinned, CONTEXT, stamp)
         # What a harness compacts its history on.
         raise Refused(
             f"prompt is too long: {length} prompt tokens plus {wanted or wants} max_tokens "
@@ -218,21 +206,14 @@ class Recorder:
         )
 
     def _refuse(
-        self,
-        trial: str,
-        prompt_ids: tuple[int, ...],
-        pinned: Any,
-        why: str,
-        stamp: dict[str, Any],
+        self, prompt_ids: tuple[int, ...], pinned: Any, why: str, stamp: dict[str, Any]
     ) -> None:
-        self._add(trial, prompt_ids, _params_dict(pinned), self.weights, **stamp, error=why)
+        self._add(prompt_ids, _params_dict(pinned), **stamp, error=why)
 
     def _add(
         self,
-        trial: str,
         prompt_ids: tuple[int, ...],
         params: dict[str, Any],
-        weights: str | None,
         *,
         completion: tuple[int, ...] = (),
         logprobs: tuple[float, ...] = (),
@@ -246,10 +227,10 @@ class Recorder:
         bridged: bool = False,
         prompt_digests: tuple[str, ...] = (),
     ) -> Record:
-        """Append the next record of `trial`, numbered from 1, refused and failed calls included."""
-        self._seq[trial] = seq = self._seq.get(trial, 0) + 1
+        """Append the trial's next record, numbered from 1, refused and failed calls included."""
+        self._seq += 1
         record = Record(
-            seq=seq,
+            seq=self._seq,
             at=time.time(),
             prompt_token_ids=prompt_ids,
             completion_token_ids=completion,
@@ -258,7 +239,7 @@ class Recorder:
             sampling_params=params,
             requested_model=requested_model,
             sample_ms=sample_ms,
-            weights=weights,
+            weights=self.weights,
             cached_tokens=cached_tokens,
             request_id=request_id,
             bridged=bridged,
@@ -267,12 +248,11 @@ class Recorder:
             error=error,
             images=images,
         )
-        self.records.setdefault(trial, []).append(record)
+        self.records.append(record)
         return record
 
     def reply(
         self,
-        trial: str,
         seq: int,
         reply_digest: str,
         *,
@@ -283,11 +263,10 @@ class Recorder:
     ) -> None:
         """Set the parsed reply's digest on record `seq` and, unless the harness got the reply
         changed, index it for the bridge."""
-        records = self.records.get(trial, [])
-        for at in range(len(records) - 1, -1, -1):
-            if records[at].seq != seq:
+        for at in range(len(self.records) - 1, -1, -1):
+            if self.records[at].seq != seq:
                 continue
-            record = records[at] = replace(records[at], reply_digest=reply_digest)
+            record = self.records[at] = replace(self.records[at], reply_digest=reply_digest)
             if bridgeable and pictured(record):
                 reply = Reply(
                     prompt_ids=record.prompt_token_ids,
@@ -296,24 +275,8 @@ class Recorder:
                     rendered=record.prompt_token_ids if rendered is None else rendered,
                     pictures=record.images,
                 )
-                self.index_for(trial).add(record.prompt_digests, reply_digest, reply, call_ids)
+                self.index.add(record.prompt_digests, reply_digest, reply, call_ids)
             return
-
-    def records_for(self, trial: str) -> list[Record]:
-        return list(self.records.get(trial, []))
-
-    def take(self, trial: str) -> list[Record]:
-        """Remove and return the trial's records, and drop its counters and stored replies."""
-        if trial:
-            self.taken.add(trial)
-        return self._forget(trial)
-
-    def _forget(self, trial: str) -> list[Record]:
-        for key in [key for key in self._replies if key[0] == trial]:
-            del self._replies[key]
-        for counter in (self.spoke, self._seq, self.indexes):
-            counter.pop(trial, None)
-        return self.records.pop(trial, [])
 
 
 def _params_dict(sampling_params: Any) -> dict[str, Any]:

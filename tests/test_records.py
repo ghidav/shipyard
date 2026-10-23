@@ -62,7 +62,6 @@ def test_a_trial_a_provider_served_has_no_records_to_ask_about() -> None:
         lambda: held.never_fit,
         lambda: held.sampled_tokens,
         lambda: held.billed,
-        lambda: held.weights,
         held.chains,
         lambda: served_nothing([held]),
     ]
@@ -229,18 +228,6 @@ def test_a_call_turned_away_costs_nothing_and_a_failed_one_its_prompt() -> None:
 
 def test_a_cache_hit_bills_no_more_than_its_prompt() -> None:
     assert Records([made("go", cached=99)]).billed == {"prefill": 0, "cache": 2, "sample": 2}
-
-
-def test_the_weights_that_served_its_calls() -> None:
-    held = Records(
-        [
-            made(weights="tinker://w/step-2"),
-            made(seq=2, weights="tinker://w/step-2", error=BUDGET),
-            made(seq=3),
-        ]
-    )
-    assert held.weights == {"tinker://w/step-2"}
-    assert Records([made(weights=None)]).weights == frozenset(), "the base model names none"
 
 
 # ----------------------------------------------------------- what a job was served

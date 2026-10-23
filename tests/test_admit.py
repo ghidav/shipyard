@@ -26,7 +26,7 @@ from shipyard.jobs.admit import (
     judge,
 )
 from shipyard.jobs.engine import Job
-from shipyard.jobs.harnesses import harness, last_assistant_failed
+from shipyard.jobs.harnesses import Harness, last_assistant_failed
 from shipyard.records import Records
 from tests.fakes import made, write_result
 
@@ -55,7 +55,7 @@ def verified(reward: float, ended: str | None = None) -> Verdict:
 
 
 def _job(*trials: Path) -> Job:
-    pi = harness("pi")
+    pi = Harness(name="pi")
     return Job("j", trials=[Trial("j", Path("t"), pi, one) for one in trials])
 
 
@@ -239,8 +239,8 @@ def test_judge_masks_a_served_pi_trial_whose_log_ends_on_a_failed_call(tmp_path:
     provided = _job(failed)
     judge(provided)
     assert provided.trials[0].verdict == verified(0.0), "no records: the provider served it"
-    assert harness("pi").last_call_failed(failed), "pi reads its own log"
-    assert not harness("claude-code").last_call_failed(failed), "only a harness with a reader"
+    assert Harness(name="pi").last_call_failed(failed), "pi reads its own log"
+    assert not Harness(name="claude-code").last_call_failed(failed), "only a harness with a reader"
 
 
 def test_an_image_the_record_did_not_keep_masks_the_rollout_multimodal(tmp_path: Path) -> None:

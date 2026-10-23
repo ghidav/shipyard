@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shlex
 import shutil
 import signal
-from collections.abc import Coroutine, Sequence
+from collections.abc import Coroutine, Mapping, Sequence
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -12,9 +13,17 @@ import typer
 from dotenv import load_dotenv
 from typer.core import TyperCommand
 
-from shipyard.config import Blueprint, ConfigError
+from shipyard.config import Config, ConfigError, config_file, load, shown
 from shipyard.run.checkpoint import Checkpoint
-from shipyard.run.directory import open_run, resumed, running, trainer_class
+from shipyard.run.directory import (
+    open_run,
+    recipe_of,
+    resumed,
+    running,
+    trainer_class,
+    trainer_in,
+)
+from shipyard.run.dry import checked
 
 #: Where `init` copies the recipes, and the env template it writes, in the directory it runs in.
 RECIPES = "recipes"
@@ -26,16 +35,16 @@ next:
   uvx harbor datasets download <dataset> -o tasks   # the dataset a recipe's run.toml names
   shipyard run recipes/dapo                         # each recipe's README.md says what it needs"""
 
-#: Where `run` keeps the blueprint keys given as `--table.key VALUE`, in Click's context.
+#: Where `run` keeps the config keys given as `--table.key VALUE`, in Click's context.
 OVERRIDES = "shipyard.overrides"
 #: What `run --help` says of them.
 SETTABLE = (
-    "Any key of the blueprint can be set for this run as --table.key VALUE, such as "
+    "Any key of the config can be set for this run as --table.key VALUE, such as "
     "--data.train swe-bench."
 )
 
 app = typer.Typer(
-    help="Train with a recipe written from four primitives: draw, rollout, score, update.",
+    help="Train with a recipe: a run.toml, and a trainer.py whose step it writes.",
     no_args_is_help=True,
 )
 
@@ -43,7 +52,11 @@ app = typer.Typer(
 @app.callback()
 def main() -> None:
     load_dotenv(Path.cwd() / ".env", override=False)  # the shell wins over the file
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    # Harbor sets its own logger to DEBUG for each trial's log file, and a record reaches the
+    # root's handlers whatever the root's level, so the console filters by its own.
+    console = logging.StreamHandler()
+    console.setLevel(logging.INFO)
+    logging.basicConfig(level=logging.INFO, format="%(message)s", handlers=[console])
 
 
 @app.command()
@@ -63,7 +76,7 @@ def init() -> None:
 
 
 class Overridable(TyperCommand):
-    """A command that takes blueprint keys as `--table.key VALUE`, before Typer parses the rest."""
+    """A command that takes config keys as `--table.key VALUE`, before Typer parses the rest."""
 
     def parse_args(self, ctx: typer.Context, args: list[str]) -> list[str]:
         try:
@@ -76,7 +89,7 @@ class Overridable(TyperCommand):
 @app.command(cls=Overridable, epilog=SETTABLE)
 def run(
     ctx: typer.Context,
-    blueprint: Annotated[Path, typer.Argument(help="A run.toml, or the directory holding one.")],
+    config: Annotated[Path, typer.Argument(help="A run.toml, or the directory holding one.")],
     trainer: Annotated[
         Path | None,
         typer.Argument(
@@ -85,16 +98,27 @@ def run(
         ),
     ] = None,
     root: Annotated[Path | None, typer.Option(help="Where runs live; default ./runs.")] = None,
+    dry: Annotated[
+        bool,
+        typer.Option(
+            "--dry",
+            help="Print the config as the run reads it, defaults included, and run the "
+            "checks the run makes before it opens anything; then stop, with no run made.",
+        ),
+    ] = False,
 ) -> None:
-    """Run BLUEPRINT, trained by TRAINER, the trainer.py beside it, or the base trainer."""
+    """Run CONFIG, trained by TRAINER, by default the trainer.py beside it."""
+    overrides = ctx.meta.get(OVERRIDES)
+    if dry:
+        _dry(config, trainer, overrides)
+        return
     try:
-        overrides = ctx.meta.get(OVERRIDES)
-        directory, config = open_run(blueprint, root=root, trainer=trainer, overrides=overrides)
+        directory, loaded = open_run(config, root=root, trainer=trainer, overrides=overrides)
     except (ConfigError, ValueError) as refused:
         _refuse(refused)
     made = trainer_class(directory).__name__
     typer.echo(f"run {directory.name} in {directory.parent}, trained by {made}")
-    _train(directory, config)
+    _train(directory, loaded)
 
 
 @app.command()
@@ -116,9 +140,36 @@ def resume(
     _train(directory, config, origin, checkpoint)
 
 
+def _dry(path: Path, trainer: Path | None, overrides: Mapping[str, str] | None) -> None:
+    """Check the run as it would check itself before it opens anything, and print its config
+    with the values it would take: the TOML on stdout, what the check found on stderr. A config
+    the check refuses is printed as the file has it."""
+    try:
+        made = trainer_in(recipe_of(path, trainer))
+        loaded = load(path, made.Recipe, overrides)
+    except (ConfigError, ValueError) as refused:
+        _refuse(refused)
+    given = " ".join(shlex.join([f"--{name}", text]) for name, text in (overrides or {}).items())
+    read = f"{config_file(path)}" + (f" with {given}" if given else "")
+    header = f"# {read}, as {made.__name__} reads it\n\n"
+    try:
+        found = checked(made, loaded)
+    except (ValueError, KeyError, OSError) as refused:  # KeyError: a model the recipe reads
+        typer.echo(header + shown(loaded), nl=False)
+        _refuse(refused)
+    typer.echo(header + shown(loaded, found.values), nl=False)
+    # Nothing opened: each model's backend was only asked its context length.
+    for one in found.warnings:
+        typer.echo(f"\n{one}", err=True)
+    if found.warnings:
+        typer.echo("\nthe run would stop as it opens its models; no run was made", err=True)
+        raise typer.Exit(1)
+    typer.echo("\nchecked: no run was made; the sandbox's credentials are not checked", err=True)
+
+
 def _train(
     directory: Path,
-    config: Blueprint,
+    config: Config,
     origin: Path | None = None,
     checkpoint: Checkpoint | None = None,
 ) -> None:

@@ -28,8 +28,15 @@ TINKER = "tinker"
 #: Seconds served sampler weights live: long enough to outlast the batch sampled from them,
 #: short enough that a crashed run's leftovers expire on their own.
 SERVE_TTL = 12 * 3600
-#: LoRA rank used when `[recipe] lora_rank` sets none (Tinker's default).
+#: LoRA rank a new adapter opens at when `[models.<role>] lora_rank` sets none (Tinker's default).
 DEFAULT_LORA_RANK = 32
+
+
+def lora_rank(rank: int | None) -> int:
+    """Return the LoRA rank a new adapter opens at: `rank`, else `DEFAULT_LORA_RANK`."""
+    return DEFAULT_LORA_RANK if rank is None else int(rank)
+
+
 #: What names weights saved for sampling in a `tinker://` path: a run samples and scores them,
 #: and trains only from a training state (`tinker://.../weights/...`).
 SAMPLER_WEIGHTS = "/sampler_weights/"
@@ -71,21 +78,20 @@ def check_loss(loss: str, settings: Mapping[str, float] | None) -> None:
 
 
 def starts_from(checkpoint: str | None, *, trains: bool) -> None:
-    """Raise `ValueError` unless `[agent] from_checkpoint` fits the run: a training state for a
-    run that trains its agent, weights saved for sampling for one that only serves it."""
+    """Raise `ValueError` unless a model's `from_checkpoint` fits the run: a training state for
+    a model the recipe trains, weights saved for sampling for one it only serves."""
     if checkpoint is None:
         return
     sampled = SAMPLER_WEIGHTS in checkpoint
     if trains and sampled:
         raise ValueError(
-            f"[agent] from_checkpoint: {checkpoint} holds weights saved for sampling, and "
-            "training goes on from a training state: name the checkpoint's `weights` path"
+            f"from_checkpoint: {checkpoint} holds weights saved for sampling, and training goes "
+            "on from a training state: name the checkpoint's `weights` path"
         )
     if not trains and not sampled:
         raise ValueError(
-            f"[agent] from_checkpoint: a run that does not train its agent serves it from "
-            f"weights saved for sampling, and {checkpoint} is none: name a kept checkpoint's "
-            "`sampler` path"
+            f"from_checkpoint: a model the recipe does not train is served from weights saved "
+            f"for sampling, and {checkpoint} is none: name a kept checkpoint's `sampler` path"
         )
 
 
@@ -106,8 +112,8 @@ def service_client(metadata: dict[str, str] | None = None) -> Any:
 
 
 class TinkerClient:
-    """The agent's Tinker session: its training client, created on `open` when the run trains
-    the agent, or else a sampling client on its weights, which scores it."""
+    """A model's Tinker session: its training client, created on `open` when the recipe trains
+    the model, or else a sampling client on its weights, which scores it."""
 
     #: The backend it reaches, as a job's row names it.
     kind = TINKER
@@ -142,6 +148,13 @@ class TinkerClient:
         #: weights, `from_checkpoint`'s or the base model's.
         self.scorer: Any = None
 
+    async def context_length(self) -> int | None:
+        """Return the model's context length as Tinker's capabilities say it, read as the
+        proxy's lane reads it when it opens, which opens nothing; None when they do not say."""
+        from harness_proxy.backends.tinker import context_of
+
+        return await context_of(self.service, self.model)
+
     async def open(self) -> None:
         """Create the training client: a new LoRA on the model, or the checkpoint's weights.
         A run that does not train the model opens a sampling client on its weights instead."""
@@ -159,9 +172,8 @@ class TinkerClient:
                 )
                 self.client = await resume(self.from_checkpoint, user_metadata=metadata)
             else:
-                rank = DEFAULT_LORA_RANK if self.lora_rank is None else int(self.lora_rank)
                 self.client = await service.create_lora_training_client_async(
-                    base_model=self.model, rank=rank, user_metadata=metadata
+                    base_model=self.model, rank=lora_rank(self.lora_rank), user_metadata=metadata
                 )
         except BaseException as failed:
             self.service = None
@@ -250,25 +262,6 @@ class TinkerClient:
         service, self.service = self.service, None
         if service is not None:
             await finished(service, status, detail)
-
-
-async def sampling(load: str, *, run: str | None = None) -> tuple[Any, Any, str, str]:
-    """Open a Tinker session of its own for `load`, a model's name or a `tinker://` path, and
-    return the session, a sampling client on it, the base model its tokens are priced as, and
-    who they are billed to. Raise `ValueError` for a model the backend does not serve; a failed
-    open finishes the session as errored."""
-    service = service_client(tagged(run) if run else None)
-    try:
-        if load.startswith("tinker://"):
-            sampler = await _sampler(service, load)
-            model = str(await sampler.get_base_model_async())
-        else:
-            await _server_has(service, load, trains=False)
-            sampler, model = await _sampler(service, load), load
-    except BaseException as failed:
-        await _quietly_closed(service, failed)
-        raise
-    return service, sampler, model, backend()
 
 
 async def finished(service: Any, status: str = "success", detail: str | None = None) -> None:
@@ -389,8 +382,8 @@ async def _server_has(service: Any, base_model: str, *, trains: bool = True) -> 
         raise ValueError(f"the backend does not serve {base_model!r}; it serves {', '.join(names)}")
     if trains and found.trainable is False:
         raise ValueError(
-            f"{base_model!r} can be sampled but not trained; name the trainable variant "
-            "under [agent] model"
+            f"{base_model!r} can be sampled but not trained; name the trainable variant as the "
+            "model"
         )
 
 
