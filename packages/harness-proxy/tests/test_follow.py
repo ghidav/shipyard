@@ -114,7 +114,25 @@ async def test_a_call_in_flight_keeps_the_weights_it_started_with_and_lets_them_
         clients = set(only(started)._clients)
     assert (before, after) == ("start", "sample-1")
     assert weights == {"tinker://w/start", "tinker://w/sample-1"}
-    assert clients == set(), "a following trial holds no weights between its calls"
+    assert clients == {"tinker://w/sample-1"}, "the old weights go once their call ends"
+
+
+async def test_the_lane_makes_one_client_per_publish_however_many_calls_follow_it() -> None:
+    made: list[str | None] = []
+
+    def counted(path: str | None) -> FakeSampler:
+        made.append(path)
+        return by_path(path)
+
+    async with server(by_path=counted) as started:
+        token = await following(started, "t")
+        before = [await call(started, token) for _ in range(2)]
+        await publish(started, "tinker://w/start")
+        after = [await call(started, token) for _ in range(3)]
+        clients = set(only(started)._clients)
+    assert (before, after) == (["base"] * 2, ["start"] * 3)
+    assert made == [None, "tinker://w/start"], "a client per weights served, not per call"
+    assert clients == {"tinker://w/start"}, "the lane keeps the weights it serves, and no other"
 
 
 async def test_a_trial_opened_on_weights_stays_on_them_after_a_publish() -> None:
@@ -136,13 +154,22 @@ async def test_only_the_run_moves_a_lanes_weights_and_only_to_weights_it_can_ser
         assert only(started).served is None, "nothing moved"
 
 
-def test_a_lane_that_serves_one_version_names_a_calls_weights_by_the_version_that_wrote_it() -> (
-    None
-):
-    lane = Lane(name="agent", model=MODEL, backend="together", renderer=FakeRenderer())
-    lane.publish(Published("together://s/start"))  # the weights the run starts from: no version
-    lane.publish(Published("together://s/sample-1", version=4))
-    lane.publish(Published("together://s/sample-2", version=8))
+async def generator(weights: str | None) -> FakeSampler:
+    """Fake client on a Together session's generator, which serves the weights published last."""
+    return FakeSampler("latest")
+
+
+async def test_a_one_version_lane_names_a_calls_weights_by_the_version_that_wrote_it() -> None:
+    lane = Lane(
+        name="agent",
+        model=MODEL,
+        backend="together",
+        renderer=FakeRenderer(),
+        client_factory=generator,
+    )
+    await lane.publish(Published("together://s/start"))  # the run's starting weights: no version
+    await lane.publish(Published("together://s/sample-1", version=4))
+    await lane.publish(Published("together://s/sample-2", version=8))
 
     def named(*versions: int) -> str | None:
         return lane.answered("together://s/sample-2", SimpleNamespace(versions=versions))
@@ -151,7 +178,13 @@ def test_a_lane_that_serves_one_version_names_a_calls_weights_by_the_version_tha
     assert named(4) == named(6) == "together://s/sample-1"
     assert named(8) == named(9) == "together://s/sample-2"
     assert named() == "together://s/sample-2", "no version said: the weights the call took"
-    fresh = Lane(name="agent", model=MODEL, backend="together", renderer=FakeRenderer())
-    fresh.publish(Published("together://s/sample-1", version=4))
+    fresh = Lane(
+        name="agent",
+        model=MODEL,
+        backend="together",
+        renderer=FakeRenderer(),
+        client_factory=generator,
+    )
+    await fresh.publish(Published("together://s/sample-1", version=4))
     answer = SimpleNamespace(versions=(2,))
     assert fresh.answered("together://s/sample-1", answer) is None, "the base model, before it"

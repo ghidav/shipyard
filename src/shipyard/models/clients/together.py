@@ -36,8 +36,8 @@ PROVISION_SECONDS = 3600.0
 #: waits, where its SDK gives up after five minutes, which an update over long trajectories
 #: outlasts.
 OPERATION_SECONDS: float | None = None
-#: How a publish syncs the generator: queued, so the trainer goes on, and taken by the
-#: generator once its calls in flight end. Together refuses its in-flight `PIPELINE` on LoRA.
+#: How a publish syncs the generator: in the background, so the trainer goes on at once.
+#: Together refuses `PIPELINE`, which would switch a call in flight, on LoRA.
 BACKGROUND_PUBLISH = "WEIGHT_SYNC_TYPE_BACKGROUND_PUBLISH"
 
 #: Provisions a model resource for a base model with that many sampler replicas, and returns it
@@ -166,9 +166,8 @@ class TogetherClient:
 
     async def publish(self, tag: str) -> str:
         """Point the generator at the weights the updates moved to, and return their name. The
-        sync is queued in the background, so the trainer goes on at once; the generator takes
-        the weights once the calls in flight end, holding the calls that come meanwhile. Keep
-        the version Together gave them as `version`."""
+        sync runs in the background, so the trainer goes on at once, and each reply names the
+        version that wrote it. Keep the version Together gave the new weights as `version`."""
         session = await self._session()
         self.version = None
         if self.moved:

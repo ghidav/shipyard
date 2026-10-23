@@ -90,6 +90,10 @@ class Lane:
     #: them use it.
     _clients: dict[str | None, list[Any]] = field(default_factory=dict, repr=False)
     _making: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    #: Whether the lane holds a client on `served` itself, as it does from the first publish, or
+    #: the first call of a trial that follows it: each call then finds the client made.
+    _keeping: bool = field(default=False, repr=False)
+    _publishing: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     #: For a backend that serves only the weights published last: each version it gave, with
     #: the weights published as it, in order of version.
     _versions: list[tuple[int, str | None]] = field(default_factory=list, repr=False)
@@ -162,25 +166,36 @@ class Lane:
             if held[1] <= 0:
                 del self._clients[weights]
 
-    def publish(self, published: Published) -> None:
+    async def publish(self, published: Published) -> None:
         """Have the calls of the trials that follow the lane take `published`'s weights from
-        now on; a call in flight keeps the weights it started with. `ValueError` for weights
-        under another backend's prefix."""
-        weights, prefix = published.weights, self.sampling.PREFIX
-        if weights is not None and not weights.startswith(prefix):
-            raise ValueError(f"{weights!r} is not a {prefix} path")
-        self.served = weights
-        if published.version is None:
-            self._unversioned = weights
-        else:
-            self._versions.append((published.version, weights))
-            self._versions.sort(key=lambda one: one[0])
+        now on; a call in flight keeps the weights it started with. The lane holds a client on
+        them until the next publish, so each call finds it made. `ValueError` for weights under
+        another backend's prefix."""
+        async with self._publishing:
+            await self._keep(published.weights)
+            if published.version is None:
+                self._unversioned = published.weights
+            else:
+                self._versions.append((published.version, published.weights))
+                self._versions.sort(key=lambda one: one[0])
 
     async def lease(self) -> tuple[Any, str | None]:
         """Return a sampling client on the weights the lane's model published last, held until
         `release`, and those weights: what a call of a trial that follows the lane samples."""
+        if not self._keeping:  # nothing published yet: keep the base model's, as a publish would
+            async with self._publishing:
+                if not self._keeping:
+                    await self._keep(self.served)
         weights = self.served
         return await self.hold(weights), weights
+
+    async def _keep(self, weights: str | None) -> None:
+        """Serve `weights` to the trials that follow the lane, through a client the lane holds
+        until it keeps others. `ValueError` for weights under another backend's prefix."""
+        await self.hold(weights)
+        if self._keeping:
+            self.release(self.served)
+        self.served, self._keeping = weights, True
 
     def answered(self, weights: str | None, response: Any) -> str | None:
         """Return the weights that answered a call sampled from `weights`. A backend that
@@ -488,7 +503,7 @@ class Server:
         try:
             published = Published.of(body)
             lane = self.lane(request.match_info["lane"])
-            lane.publish(published)
+            await lane.publish(published)
         except (ValueError, Refused) as refused:
             raise web.HTTPBadRequest(reason=str(refused)) from None
         logger.info(
