@@ -20,7 +20,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
-      - run: uv sync --extra dev --extra gepa
+      - run: uv sync --extra dev --extra gepa --extra together
       - run: uv run ruff check src tests recipes packages
       - run: uv run ruff format --check src tests recipes packages
       - run: uv run pytest -q
