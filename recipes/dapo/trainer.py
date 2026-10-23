@@ -42,7 +42,7 @@ class DAPOTrainer(Trainer):
 
     async def step(self) -> None:
         active: list[Group] = []
-        for _ in range(self.generator.per_pass):  # at most one pass over the tasks
+        for _ in range(self.lender.per_pass):  # at most one pass over the tasks
             groups = await self.rollout(
                 self.draw(),
                 model=self.agent,

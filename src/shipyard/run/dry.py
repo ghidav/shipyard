@@ -48,7 +48,7 @@ def checked(made: type[Trainer], config: Config) -> Checked:
     with tempfile.TemporaryDirectory(prefix="shipyard-dry-") as scratch:
         with made(quiet, Path(scratch) / "dry") as trainer:
             trainer.check()  # the backends it builds are bound to the models, and never opened
-            tasks = [*trainer.generator.train, *trainer.generator.test]
+            tasks = [*trainer.lender.train, *trainer.lender.test]
             found = asyncio.run(models(trainer.models.all))
             found.values.update(rollout(config, tasks))
             return found

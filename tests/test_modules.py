@@ -634,7 +634,7 @@ def test_a_resumed_run_carries_the_modules_its_checkpoint_saved(
     directory, config = open_run(_carrying(tmp_path), root=tmp_path / "runs", trainer=GRPO)
     trainer = Trainer(config, directory)
     later = Modules({"solving": _module(_skill("read it three times"))})
-    state = Trainer.State(steps=4, updates={"agent": 4}, drawn=4, modules=later)
+    state = Trainer.State(steps=4, updates={"agent": 4}, modules=later)
     saved = state.model_dump(mode="json")
     files.write_json(directory / files.STATES / "step-4.json", saved)
     resumed = Trainer(config, directory)

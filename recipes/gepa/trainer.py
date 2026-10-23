@@ -68,9 +68,7 @@ class GEPATrainer(Trainer):
         def wait(work: Coroutine[Any, Any, Any]) -> Any:
             return asyncio.run_coroutine_threadsafe(work, loop).result()
 
-        feedback, pareto = split(
-            self.generator.train, self.recipe.pareto, seed=self.config.data.seed
-        )
+        feedback, pareto = split(self.lender.train, self.recipe.pareto, seed=self.config.data.seed)
         adapter = Rollouts(self, seed, wait)
         result = await asyncio.to_thread(
             gepa.optimize,

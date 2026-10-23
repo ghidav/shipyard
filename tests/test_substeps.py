@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from shipyard.run.data import Generator, tasks
+from shipyard.run.data import Lender, tasks
 from tests.fakes import START, Alternating, FakeProxy, Harbor, Spread
 from tests.runs import GRPO, ONE_STEP, rows, run_toml, train
 from tests.service import FakeService
@@ -35,8 +35,8 @@ async def test_an_update_takes_a_substep_for_each_share_of_its_scored_groups_at_
 ) -> None:
     proxy, service = fakes
     home = run_toml(tmp_path, **ONE_STEP, **{"batch_size = 2": "batch_size = 3"})
-    plan = Generator(tasks("four", root=tmp_path / "tasks"), 3, 0)
-    first = [one.name for one in next(plan.batches())]
+    plan = Lender(tasks("four", root=tmp_path / "tasks"), 3, 0)
+    first = [one.name for one in plan.draw()]
     harbor(Spread(set(first[:2])))
     directory = await train(home, tmp_path / "runs", Split)
     calls = service.client.calls

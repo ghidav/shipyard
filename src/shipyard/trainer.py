@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Mapping
 from collections.abc import Sequence as Values
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -27,7 +27,7 @@ from shipyard.models.backends import Connected, Session, connect
 from shipyard.models.clients.tinker import check_loss
 from shipyard.run import files
 from shipyard.run.checkpoint import Checkpoint
-from shipyard.run.data import Generator
+from shipyard.run.data import Lender
 from shipyard.run.logs import Logs, tally
 from shipyard.state import State
 
@@ -105,11 +105,13 @@ class Trainer:
         #: `__init__`, as `self.models["agent"]`, and sets `training = True` on the ones it
         #: trains; the run refuses a model it never read.
         self.models = Models(config.models)
-        self.generator = Generator.of(config)
-        for task in (*self.generator.train, *self.generator.test):
-            hooks_of(task)  # a task whose hooks.py is wrong stops the run before anything opens
         #: What the run has done so far, which a checkpoint saves and a resume goes on from.
         self.state = self.State(modules=carried(config, self.directory))
+        #: The run's source of training tasks, which keeps what it gave out in the state. A
+        #: recipe draws from it with `draw`, and may `back` or `retire` the tasks it drew.
+        self.lender = Lender.of(config, self.state.lender)
+        for task in (*self.lender.train, *self.lender.test):
+            hooks_of(task)  # a task whose hooks.py is wrong stops the run before anything opens
         self.directory.mkdir(parents=True, exist_ok=True)
         #: The run's logs: its job, step and request rows, its usage ledger and its costs.
         self.logs = Logs(config, self.directory, step=lambda: self._current)
@@ -129,7 +131,6 @@ class Trainer:
         #: The training states of the checkpoint the run went on from, by role, which each
         #: trained model's session opens on.
         self._training_states: dict[str, str] = {}
-        self._stream: Iterator[list[Path]] | None = None
         self._seen: list[Group] = []
         #: The updates of the step under way, by the role of the model each trained.
         self._updates: dict[str, Update] = {}
@@ -165,13 +166,10 @@ class Trainer:
 
     # ------------------------------------------------------------------ the primitives
 
-    def draw(self) -> list[Path]:
-        """Return the next batch of `[data] batch_size` training tasks."""
-        if self._stream is None:
-            self._stream = self.generator.batches(self.state.drawn)
-        batch = next(self._stream)
-        self.state.drawn += 1
-        return batch
+    def draw(self, n: int | None = None) -> list[Path]:
+        """Give out the next `n` training tasks, `[data] batch_size` unless given: the ones put
+        back first, then the seeded order. Each is out until a rollout returns its group."""
+        return self.lender.draw(n)
 
     async def rollout(
         self,
@@ -211,6 +209,8 @@ class Trainer:
             step=self._current if evaluating is None else evaluating,
             role=model.role,
         )
+        for group in found:
+            self.lender.complete(group.task)  # its group has completed: the task is out no more
         if purpose == TRAINING:
             self._seen += found
         return found
@@ -318,7 +318,7 @@ class Trainer:
         made = type(self)
         if made.step is Trainer.step:
             raise ValueError(f"{made.__name__} writes no step: a recipe writes `async def step`")
-        if self.generator.test and made.evaluate is Trainer.evaluate:
+        if self.lender.test and made.evaluate is Trainer.evaluate:
             raise ValueError(
                 f"[data] test: {made.__name__} writes no `evaluate`, so the test set cannot be "
                 "rolled out: write `async def evaluate(self, tasks)`, or leave [data] test out"
@@ -376,7 +376,7 @@ class Trainer:
         every = self.recipe.evaluate_every
         due = (every > 0 and step % every == 0) or step == self.recipe.steps
         done = self.state.evaluated is not None and self.state.evaluated >= step
-        if self.generator.test and due and not done:
+        if self.lender.test and due and not done:
             self._pending = step
 
     def _start_evaluation(self) -> None:
@@ -409,7 +409,7 @@ class Trainer:
         `step`, and return what it came to. It runs as a task of its own, so `EVALUATING` is
         set for its rollouts alone."""
         EVALUATING.set(step)
-        found = await self.evaluate(list(self.generator.test))
+        found = await self.evaluate(list(self.lender.test))
         return Evaluation(step=step, tasks=len({group.task for group in found}), **tally(found))
 
     async def checkpoint(self, tag: str, *, keep: bool = False) -> None:
@@ -446,7 +446,7 @@ class Trainer:
 
     def restore(self, origin: Path, checkpoint: Checkpoint) -> None:
         """Restore `checkpoint` of `origin`: its state now, its training states once `run`
-        opens."""
+        opens. The lender gives the tasks out at the checkpoint out first."""
         tag = checkpoint.tag
         self._training_states = dict(checkpoint.training_state)
         saved = checkpoint.saved_state(origin)
@@ -454,6 +454,8 @@ class Trainer:
             raise ValueError(
                 f"checkpoint {tag}: its state is missing or unreadable ({checkpoint.state})"
             )
+        if "drawn" in saved and "lender" not in saved:  # saved before the lender: batches drawn
+            saved["lender"] = {"place": self.lender.place_after(int(saved.pop("drawn")))}
         named = f"{type(self).__name__}.State"
         dropped = sorted(set(saved) - set(self.State.model_fields))
         if dropped:
@@ -464,6 +466,7 @@ class Trainer:
             raise ValueError(
                 f"checkpoint {tag}: its state does not fit {named}: {refused}"
             ) from None
+        self.lender.resume(self.state.lender)
 
 
 def _rendered(model: Model, renderer: str | None) -> str | None:

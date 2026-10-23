@@ -75,16 +75,16 @@ class MyTrainer(Trainer):
 - `Recipe` declares the recipe's own `[recipe]` keys. A nested table such as `[recipe.reflector]` is a field typed by a pydantic model, as in gepa's `reflect.py`.
 - The recipe writes `step`, and `evaluate(self, tasks) -> list[Group]` when the config has `[data] test`; `score` is the recipe's own method, called from its `step`. The run refuses a trainer missing either.
 - Read every model the config names in `__init__`, as `self.models[role]`, and set `training = True` there on each one the recipe trains: the run refuses a model the recipe never reads, a model in training with no `learning_rate`, and `training` set once the run has opened the model.
-- On the trainer: `self.recipe`, the `[recipe]` table as your `Recipe`; `self.config`, the whole `run.toml`; `self.state`, your `State`; `self.models`; `self.generator.train` and `.test`, every task path.
+- On the trainer: `self.recipe`, the `[recipe]` table as your `Recipe`; `self.config`, the whole `run.toml`; `self.state`, your `State`; `self.models`; `self.lender.train` and `.test`, every task path.
 - The run does the rest. It opens each model and the proxy, calls `step` `[recipe] steps` times, evaluates the test set every `evaluate_every` steps from step 0 and after the last, checkpoints every `[checkpoints] every` steps and at the end, and writes a row per step, and one per evaluation at the step whose weights it measured, to `metrics.jsonl`. An evaluation runs beside the next step's `update`, which serves its new weights once the evaluation has finished, so `update` is where a recipe's step lets it run.
 
 ## The primitives
 
 ### draw
 
-`self.draw()` returns the next batch: `[data] batch_size` task paths, shuffled once per pass over the tasks with `[data] seed`. It counts batches in `self.state.drawn`, so a resumed run goes on from the batch after.
+`self.draw()` returns the next batch: `[data] batch_size` task paths, shuffled once per pass over the tasks with `[data] seed`; `self.draw(1)` one task. A task is out until a rollout returns its group, and the state keeps what is out, so a resumed run gives those first and goes on in the same order. `self.lender.back(task)` gives a task out again before new ones; `self.lender.retire(task)` gives it out no more, as for one the agent always solves.
 
-Override it for a curriculum: return any list of task directories, such as some of `self.generator.train`, and keep what the choice reads (counts, scores) in your `State`. A task's instruction is readable before any rollout, at `task / "instruction.md"`.
+Override it for a curriculum: return any list of task directories, such as some of `self.lender.train`, and keep what the choice reads (counts, scores) in your `State`. A task's instruction is readable before any rollout, at `task / "instruction.md"`.
 
 ### rollout
 

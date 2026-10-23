@@ -9,7 +9,6 @@ import os
 import shutil
 import signal
 from dataclasses import replace
-from itertools import islice
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +27,7 @@ from shipyard.models.endpoints import NothingServed
 from shipyard.run import files
 from shipyard.run.checkpoint import Checkpoint, found
 from shipyard.run.costs import Costs
-from shipyard.run.data import Generator, tasks
+from shipyard.run.data import Lender, tasks
 from shipyard.run.directory import (
     continued,
     open_run,
@@ -139,11 +138,12 @@ async def test_the_grpo_recipe_draws_rolls_out_scores_and_updates(
         f"{files.STATES}/step-2.json",
     ], "final is the state after the last step, with weights of its own"
     states = [files.read_json(directory / c["state"]) for c in saved]
-    assert [(s["steps"], s["updates"], s["drawn"]) for s in states] == [
-        (1, {"agent": 1}, 1),
-        (2, {"agent": 2}, 2),
-        (2, {"agent": 2}, 2),
-    ]
+    assert [(s["steps"], s["updates"], s["lender"]["place"]) for s in states] == [
+        (1, {"agent": 1}, 2),
+        (2, {"agent": 2}, 4),
+        (2, {"agent": 2}, 4),
+    ], "two tasks drawn a step"
+    assert not any(s["lender"]["out"] for s in states), "each step's groups completed"
     assert [row["step"] for row in rows(directory)] == [1, 2], "a step's row, counted from 1"
     jobs = list(files.read(directory / files.JOBS))
     assert [(job["step"], Path(job["dir"]).name) for job in jobs] == [
@@ -376,8 +376,8 @@ async def test_dapo_keeps_drawing_until_a_batchs_worth_of_groups_have_spread(
     tmp_path: Path, fakes: tuple[FakeProxy, FakeService], harbor: Harbor
 ) -> None:
     home = run_toml(tmp_path, *DAPO, **ONE_STEP)
-    plan = Generator(tasks("four", root=tmp_path / "tasks"), 2, 0)
-    first, second = [[one.name for one in batch] for batch in islice(plan.batches(), 2)]
+    plan = Lender(tasks("four", root=tmp_path / "tasks"), 2, 0)
+    first, second = [[one.name for one in plan.draw()] for _ in range(2)]
     harbor(Spread({first[0], *second}))
     directory = await train(home, tmp_path / "runs", RECIPES / "dapo/trainer.py")
     (row,) = rows(directory)
@@ -657,7 +657,10 @@ class Noting(Trainer):
     async def step(self):
         if self.state.steps == self.stop:
             raise RuntimeError("the machine went away")
-        self.state.seen += [task.name for task in self.draw()]
+        drawn = self.draw()
+        for task in drawn:  # it runs no rollout, so it completes what it draws, as one would
+            self.lender.complete(task)
+        self.state.seen += [task.name for task in drawn]
         text = f"{self.state.steps}.\n"
         self.state.modules = Modules({PROMPT: Module(PROMPT, "prompt", {PROMPT_FILE: text})})
 """
@@ -692,7 +695,7 @@ async def test_a_run_that_moves_no_weights_saves_its_state_and_a_resume_goes_on_
     assert checkpoint.tag == "step-2" and checkpoint.training_state == {}, "a state alone"
     trainer = noting(config, directory)
     trainer.restore(origin, checkpoint)
-    assert (trainer.state.steps, trainer.state.drawn, len(trainer.state.seen)) == (2, 2, 4)
+    assert (trainer.state.steps, trainer.state.lender.place, len(trainer.state.seen)) == (2, 4, 4)
     assert trainer.state.modules is not None and trainer.state.modules.texts[PROMPT] == "1.\n"
     with running(directory), trainer:
         await trainer.run()
@@ -736,8 +739,12 @@ def test_a_checkpoints_state_must_fit_the_recipes_and_drops_what_the_recipe_no_l
     trainer = noting(config, directory)
     with caplog.at_level("WARNING"):
         trainer.restore(directory, row)
-    assert (trainer.state.steps, trainer.state.drawn, trainer.state.seen) == (1, 1, ["a", "b"])
+    lender = trainer.state.lender
+    assert (trainer.state.steps, lender.place, trainer.state.seen) == (1, 2, ["a", "b"]), (
+        "a state saved before the lender counted batches: one batch of two"
+    )
     assert "gone" in caplog.text, "a field the recipe dropped is said to be dropped"
+    assert "drawn" not in caplog.text, "batches drawn become the lender's place"
     files.write_json(saved, {"steps": 1, "seen": "a, b"})
     with pytest.raises(ValueError, match="does not fit Noting.State"):
         noting(config, directory).restore(directory, row)

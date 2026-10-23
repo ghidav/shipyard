@@ -4,7 +4,7 @@ A run's directory and everything it writes: the config, the logs, the costs, the
 
 ```mermaid
 flowchart LR
-    data["Generator: the tasks, in batches"] --> draw["draw()"]
+    data["Lender: the training tasks, given out and taken back"] --> draw["draw(n)"]
     draw -->|tasks| rollout["rollout(tasks, model, harness, ...)"]
     rollout -->|groups| score["the recipe's scoring"]
     score -->|advantages| update["update(model, groups)"]
@@ -21,4 +21,4 @@ flowchart LR
 | `logs.py` | `Logs`: the job, step and request rows, the usage ledger and the costs, and their `Wandb` mirror |
 | `costs.py` | `Costs`: tokens and sandbox time, totalled from the usage ledger |
 | `files.py` | the names of the run directory's files, its atomic JSON writes and JSONL appends |
-| `data.py` | `tasks`, `Generator`: Harbor tasks, in resumable batches |
+| `data.py` | `tasks`, `Lender`: Harbor tasks, given out in a seeded order, put back or retired, and out until their groups complete |

@@ -19,14 +19,30 @@ One execution of a recipe on a config, and the directory that records it.
 _Avoid_: experiment, job (a job is part of a rollout)
 
 **Step**:
-One turn of a run, as the recipe writes it: most draw a batch, roll it out, score its sequences, and update the models in training.
+One turn of a run, as the recipe writes it: most take a batch of groups, score their sequences, and update the models in training.
 _Avoid_: iteration, epoch
 
+**Lender**:
+The run's source of training tasks: it gives them out in a seeded order, takes back the ones a recipe puts back or retires, and keeps which are out.
+_Avoid_: generator, data loader, sampler
+
 **Draw**:
-Taking the next batch of tasks from the training dataset.
+Taking the next tasks from the lender: a batch's worth, or one at a time.
+
+**Out**:
+Said of a task the lender gave out whose group has not completed yet; a resume gives it out again before new ones.
+_Avoid_: in flight, pending
+
+**Put back**:
+Returning a task to the lender, which gives it out again before new ones.
+_Avoid_: requeue, return
+
+**Retired**:
+Said of a task the lender gives out no more in the run, such as one the agent always solves.
+_Avoid_: removed, excluded, blacklisted
 
 **Rollout**:
-Running a model on a batch of tasks at one harness and renderer, as one job, and returning a group per task. A recipe that wants several harnesses or renderers runs several rollouts.
+Running a model on tasks at one harness and renderer, as one job, and returning a group per task once its trials complete. A recipe that wants several harnesses or renderers runs several rollouts; one that streams runs a rollout per task.
 _Avoid_: rollout for a single trial (say trial)
 
 **Score**:
@@ -34,17 +50,17 @@ Giving each sequence its advantages, which is the part of the step most recipes 
 _Avoid_: score for a model's logprobs
 
 **Update**:
-One training call on a model in training: its groups split into substeps at one learning rate, then its new weights served.
+One training call on a model in training: its groups split into substeps at one learning rate, then its new weights published.
 
 **Substep**:
 One optimizer step of an update, on a share of its groups, whole groups each; the recipe sets how many.
 
 **Evaluation**:
-The recipe's rollouts of the test dataset, every few steps and after the last, that nothing trains on.
+The recipe's rollouts of the test dataset, every few steps and after the last, that nothing trains on; all its calls are answered by the weights it measures.
 _Avoid_: test (the dataset), validation
 
 **State**:
-What a run has done so far: its steps, its updates by role, the batches it drew, when it last evaluated, and the modules it carries.
+What a run has done so far: its steps, its updates by role, its lender's tasks out, put back and retired, when it last evaluated, and the modules it carries.
 _Avoid_: training state (a model's)
 
 **Checkpoint**:
@@ -65,7 +81,7 @@ _Avoid_: problem, prompt (the prompt is a module)
 A named set of tasks; a config names one or more to train on and to test on.
 
 **Batch**:
-The tasks one step draws.
+The groups one step's update trains on.
 _Avoid_: mini-batch (a share of an update)
 
 **Group size**:
@@ -80,7 +96,7 @@ _Avoid_: agent (the agent is the model), client
 The way a model's conversation becomes tokens and back; a model's table lists the ones its lane holds, and a rollout uses one of them.
 
 **Job**:
-A rollout's trials, run together in Harbor, and the row the run writes for them.
+One rollout's trials, and the row the run writes for them once they complete.
 
 **Trial**:
 One harness running one task once, in a sandbox, graded by the task's tests.
@@ -115,6 +131,46 @@ _Avoid_: dropped, filtered, discarded
 **Graded**:
 Said of a trial with a verdict that is not masked: its reward counts, and its sequences can be trained on.
 _Avoid_: measured, counted
+
+### A trial's life, and its group's
+
+**Cold**:
+Said of a trial whose task is out and that has no sandbox yet.
+
+**Warming**:
+Said of a trial whose sandbox is starting and whose harness is installing.
+_Avoid_: setting up (also covers the task's hooks)
+
+**Warm**:
+Said of a trial whose sandbox and harness are ready and that waits for its turn to sample.
+
+**Sampling**:
+Said of a trial whose agent is running, its calls answered by the model.
+_Avoid_: running (also covers warming and grading)
+
+**Grading**:
+Said of a trial whose tests are running, after its agent has finished.
+_Avoid_: verifying, judging
+
+**Completed**:
+Said of a trial with its verdict: graded or masked.
+_Avoid_: done, finished
+
+**Cancelled**:
+Said of a trial its run stopped because the run ended; it has no verdict and nothing trains on it.
+
+**Ready**:
+Said of a group whose trials have all completed.
+
+**Taken**:
+Said of a group a step took for its batch.
+
+**Updated**:
+Said of a group an update trained on.
+_Avoid_: trained (also said of models)
+
+**Dropped**:
+Said of a group a step took and chose not to train on, as DAPO drops groups of equal rewards; unlike a masked trial, nothing failed.
 
 ### Models
 
@@ -156,7 +212,11 @@ _Avoid_: sampler (the service that samples), inference checkpoint
 
 **Sampler replica**:
 One of the copies of a model's sampler, the service that answers its calls; a model with more sampler replicas answers a crowded rollout faster.
-_Avoid_: generator (draws the run's tasks)
+_Avoid_: generator (Together's name for it)
+
+**Lag**:
+How many times a model in training has published new weights since the oldest weights that sampled a group.
+_Avoid_: version, staleness (as a number), age
 
 ### The proxy
 
@@ -165,10 +225,10 @@ The one model server a run puts between the harnesses and the models it trains o
 _Avoid_: endpoint, gateway
 
 **Lane**:
-One model the proxy serves, named after its role, with its own renderers and sampling; the weights it samples are each open trial's own.
+One model the proxy serves, named after its role, with its own renderers and sampling; each call takes the weights the model published last when the call starts, and an evaluation's call the weights it measures.
 
 **Open**:
-Said of a trial the run has opened on the proxy, on the lane, renderer and weights its calls are answered with until the run closes it.
+Said of a trial the run has opened on the proxy, on the lane and renderer its calls are answered with until the run closes it.
 _Avoid_: registered, active, started
 
 **Endpoint**:
