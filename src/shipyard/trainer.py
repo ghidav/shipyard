@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import Coroutine, Mapping
 from collections.abc import Sequence as Values
 from contextlib import ExitStack
 from contextvars import ContextVar
@@ -143,6 +143,12 @@ class Trainer:
         self._pending: int | None = None
         #: The evaluation under way beside an update.
         self._evaluating: asyncio.Task[Evaluation] | None = None
+        #: The tasks the recipe spawned that are still running, which the run owns.
+        self._spawned: set[asyncio.Task[Any]] = set()
+        #: The task the run runs in, while it goes on: a spawned task that fails cancels it.
+        self._running: asyncio.Task[Any] | None = None
+        #: The error of the first spawned task that failed while the run went on.
+        self._failed: BaseException | None = None
 
     def __enter__(self) -> Self:
         return self
@@ -303,20 +309,70 @@ class Trainer:
         )
         return update
 
+    def spawn[T](self, work: Coroutine[Any, Any, T]) -> asyncio.Task[T]:
+        """Run `work` as a task the run owns, beside the steps, such as a worker that rolls tasks
+        out while the steps update; awaiting the task gives what `work` returns. If it raises,
+        the run fails at once with its error, wherever the step under way waits. When the run
+        ends, however it ends, it cancels the ones still running and waits for them, before its
+        final checkpoint: their rollouts close their trials, and the tasks they drew stay out,
+        for a resume to give out first. Raise `RuntimeError` outside a run."""
+        if self._running is None:
+            work.close()
+            raise RuntimeError(
+                "spawn(...): the run owns what a recipe spawns, so spawn from `step`, or what it "
+                "runs, once the run has started"
+            )
+        task = asyncio.get_running_loop().create_task(work)
+        self._spawned.add(task)
+        task.add_done_callback(self._ended)
+        return task
+
+    def _ended(self, task: asyncio.Task[Any]) -> None:
+        """Let go of a spawned task that ended. The first that failed while the run went on
+        fails the run, cancelling it wherever it waits; one that failed as the run stopped it
+        is logged."""
+        self._spawned.discard(task)
+        if task.cancelled() or (failed := task.exception()) is None:
+            return
+        if self._running is None:
+            logger.warning("a spawned task failed as the run stopped it: %r", failed)
+        elif self._failed is None:
+            self._failed = failed
+            self._running.cancel()
+
+    async def _stop_spawned(self) -> None:
+        """Cancel the spawned tasks still running, and wait for them to end."""
+        running = list(self._spawned)
+        for one in running:
+            one.cancel()
+        if running:
+            await asyncio.gather(*running, return_exceptions=True)
+
     # ------------------------------------------------------------------ the run
 
     async def run(self) -> None:
         """Open the models, take `[recipe] steps` steps, evaluating on schedule, then save
-        `final`. Raise `ValueError`, before anything opens, for a recipe the run cannot take, or
-        a model it cannot train or open."""
+        `final`. A task the recipe spawned that fails fails the run with its error, and the
+        run's end stops the ones still running. Raise `ValueError`, before anything opens, for a
+        recipe the run cannot take, or a model it cannot train or open."""
         connected = self.check()
         self._current = self.state.steps
         async with connected:
+            self._running = running = asyncio.current_task()
             try:
                 while self.state.steps < self.recipe.steps:
                     await self._advance()
+            except asyncio.CancelledError:
+                failed = self._failed
+                if failed is None:
+                    raise
+                if running is not None:
+                    running.uncancel()  # cancelled for a spawned task's error, which ends it
+                raise failed from None
             finally:
+                self._running = None
                 self._cancel_evaluation()
+                await self._stop_spawned()
             await self.checkpoint(FINAL, keep=True)
 
     def check(self) -> Connected:

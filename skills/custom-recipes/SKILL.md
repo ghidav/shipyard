@@ -121,6 +121,13 @@ Scoring sets the **advantages**: a number per target token of each sequence, whi
 
 Update each model in training once a step: each call takes its optimizer steps, serves new weights and advances the warmup. The loss sums over tokens, so a long sequence weighs more than a short one; to weigh every group the same, scale its advantages, as dapo's `step` does. The ratio is taken against the sampler's logprobs, which the proxy recorded as the model sampled.
 
+### spawn
+
+`self.spawn(coroutine)` runs a coroutine as a task the run owns, beside the steps, and returns it: a worker that keeps rolling tasks out while the steps update, as an asynchronous loop needs, or any work a step awaits later. Spawn from `step`, once the run has started.
+
+- If it raises, the run fails at once with its error, even while a step waits on what it would have handed over.
+- When the run ends, it cancels the ones still running before the final checkpoint: their trials close, and the tasks they drew stay out, for a resume to give out first. A group a worker finished that no step passed to `update` is lost; its task comes back in a later pass.
+
 ## Additional information
 
 ### Graded and masked trials
