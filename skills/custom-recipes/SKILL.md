@@ -92,7 +92,7 @@ Override it for a curriculum: return any list of task directories, such as some 
 
 - `modules=`: `self.state.modules` for the run's own prompt and skills, `None` for none, or any `Modules`.
 - `renderer=`: one of the model's `renderers`; a model with several must be given one.
-- `purpose=`: the job's label. Only training rollouts, the default outside `evaluate`, count in the step's row.
+- `purpose=`: the job's label: `training` unless `evaluate` makes the rollout, or one you name.
 - A recipe that wants several harnesses or renderers runs several rollouts, at once with `asyncio.gather`, and puts their groups together as it means them.
 - Any model the run holds can be rolled out, a provider's model through its harness with the harness's own credentials. To ask a model for text, write a Harbor task (`instruction.md`, `task.toml`, `environment/`, `tests/`) whose tests copy what the model wrote into the trial's `verifier/`, roll it out, and read it back from `trial.dir / "verifier"`: gepa's `reflect.py`.
 
@@ -114,7 +114,7 @@ Scoring sets the **advantages**: a number per target token of each sequence, whi
 
 ### update
 
-`await self.update(model, groups, loss=..., loss_config=...)` trains `model` on every sequence with advantages, then serves its new weights, which every call that starts from then on takes, an evaluation's excepted. It returns what it trained, or None when nothing was scored.
+`await self.update(model, groups, loss=..., loss_config=...)` trains `model` on every sequence with advantages, then serves its new weights, which every call that starts from then on takes, an evaluation's excepted. It returns what it trained, or None when nothing was scored. Pass it every group the step took, the ones it drops included: the step's row counts what it was passed, scored or not.
 
 - `loss`: `importance_sampling` (the default); `ppo` and `cispo`, which take `clip_low_threshold` and `clip_high_threshold`, bounds on the ratio itself such as 0.8 and 1.2; `dro`, which takes `beta`; `cross_entropy`, which weighs each target by its advantage: supervised fine-tuning, with advantage 1 on what to imitate.
 - `[recipe] substeps`: optimizer steps per update, each on a share of the groups, whole groups each; the model's `learning_rate` and `warmup`; `ADAM = tinker.AdamParams(...)` as a class attribute.
@@ -158,7 +158,9 @@ A task can carry a `hooks.py` beside its `task.toml`: code the run executes on t
 
 ### The step's row
 
-`metrics.jsonl` holds a row per step: `trained`, `jobs`, `groups`, `trials`, `graded`, `masked`, `uniform` (groups with graded trials and nothing to train), `sequences`, `reward_mean`, `reward_spread`, `sampled_mean`, and the update's `train_tokens`, `kl_v1`, `kl_v2`, `entropy`, `learning_rate`, `substeps`, `loss` and `update_seconds`; a step that trained several models prefixes each one's update fields with its role. After an evaluation it holds `eval_` fields, and then `self.metrics`, which starts empty each step; a key that matches one of these is written as `recipe_<key>`.
+`metrics.jsonl` holds a row per step, counting the groups the step passed to `update`, wherever they were rolled out: `trained`, `jobs` (the jobs they came from), `groups`, `trials`, `graded`, `masked`, `uniform` (groups with graded trials and nothing to train), `sequences`, `reward_mean`, `reward_spread`, `sampled_mean`, and the update's `train_tokens`, `kl_v1`, `kl_v2`, `entropy`, `learning_rate`, `substeps`, `loss` and `update_seconds`; a step that trained several models prefixes each one's update fields with its role. After an evaluation it holds `eval_` fields, and then `self.metrics`, which starts empty each step; a key that matches one of these is written as `recipe_<key>`.
+
+`jobs.jsonl` holds a row per rollout, under the step it ran in, with `weights`: the weights that answered its calls, in the order the model published them. An evaluation's name the weights it measured.
 
 ### Checking a recipe
 

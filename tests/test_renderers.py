@@ -127,6 +127,7 @@ async def test_a_models_lane_holds_its_renderers_and_each_trial_opens_on_the_one
             )
             for groups, renderer in zip(both, (LOW, HIGH), strict=True):
                 assert {group.renderer for group in groups} == {renderer}
+            await self.update(self.agent, [group for groups in both for group in groups])
 
     home = run_toml(tmp_path, **EFFORTS, **ONE_STEP)
     directory = await train(home, tmp_path / "runs", Efforts)

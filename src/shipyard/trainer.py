@@ -37,16 +37,13 @@ logger = logging.getLogger(__name__)
 
 #: The checkpoint a run saves when it ends: the weights its updates moved to, kept for good.
 FINAL = "final"
-#: What a rollout is for unless it says: a step's training, whose groups the step's row counts.
+#: What a rollout is for unless it says: a step's training.
 TRAINING = "training"
 #: What the rollouts `evaluate` makes are for: the test set, whose row is its own.
 EVALUATION = "evaluation"
-#: The step whose weights the evaluation under way measures, set in the task the evaluation runs
-#: in, which runs beside the next step's update: its rollouts are the test set's and filed under
-#: that step, while the step under way trains. None outside an evaluation.
-EVALUATING: ContextVar[int | None] = ContextVar("evaluating", default=None)
-#: The weights the evaluation under way measures, by role, set in the task it runs in: every
-#: call of its trials takes them, whatever the models publish meanwhile. None outside one.
+#: The weights the evaluation under way measures, by role, set in the task it runs in: its
+#: rollouts are the test set's, and every call of their trials takes these weights, whatever the
+#: models publish meanwhile. None outside an evaluation.
 MEASURED: ContextVar[Mapping[str, Pinned] | None] = ContextVar("measured", default=None)
 
 
@@ -136,7 +133,8 @@ class Trainer:
         #: The training states of the checkpoint the run went on from, by role, which each
         #: trained model's session opens on.
         self._training_states: dict[str, str] = {}
-        self._seen: list[Group] = []
+        #: The groups the step under way passed to `update`, each once: what its row counts.
+        self._taken: list[Group] = []
         #: The updates of the step under way, by the role of the model each trained.
         self._updates: dict[str, Update] = {}
         #: The step whose weights wait to be evaluated. The samplers serve them until the next
@@ -166,7 +164,8 @@ class Trainer:
 
     async def evaluate(self, tasks: list[Path]) -> list[Group]:
         """Roll the test set's `tasks` out as the recipe measures them, and return their groups.
-        The run calls it on schedule and puts what the groups came to in the step's row."""
+        The run calls it on schedule and writes what the groups came to in a row of its own, at
+        the step whose weights they measured."""
         raise NotImplementedError(f"{type(self).__name__} writes no evaluate")
 
     # ------------------------------------------------------------------ the primitives
@@ -192,10 +191,10 @@ class Trainer:
         per task, in the order of `tasks`. Its calls are rendered with `renderer`, one of the
         model's renderers, which a model with several must be given. Each call takes the
         weights the model published last when it starts. A rollout `evaluate` makes is the test
-        set's, its calls all on the weights it measures, filed under the step whose weights they
-        are; any other's is `training` unless `purpose` names another, and only training
-        rollouts count in the step's row. Raise `ValueError` before any trial runs for a rollout
-        no trial could run."""
+        set's, its calls all on the weights it measures; any other's is `training` unless
+        `purpose` names another. Its job is filed under the step under way, and its row names
+        the weights that answered it. Raise `ValueError` before any trial runs for a rollout no
+        trial could run."""
         if all(one is not model for one in self.models.all):
             raise ValueError(f"rollout(model={model!r}): roll out a model of self.models")
         if model.endpoint is None:
@@ -203,8 +202,8 @@ class Trainer:
                 f"rollout(model={model.role}): {model!r} has nothing a harness could dial: it "
                 "is not connected yet"
             )
-        evaluating, measured = EVALUATING.get(), MEASURED.get()
-        purpose = purpose or (TRAINING if evaluating is None else EVALUATION)
+        measured = MEASURED.get()
+        purpose = purpose or (TRAINING if measured is None else EVALUATION)
         found = await self.engine.rollout(
             list(tasks),
             attempts=attempts,
@@ -213,14 +212,12 @@ class Trainer:
             renderer=_rendered(model, renderer),
             modules=modules,
             purpose=purpose,
-            step=self._current if evaluating is None else evaluating,
+            step=self._current,
             role=model.role,
             pinned=measured.get(model.role) if measured is not None else None,
         )
         for group in found:
             self.lender.complete(group.task)  # its group has completed: the task is out no more
-        if purpose == TRAINING:
-            self._seen += found
         return found
 
     async def update(
@@ -239,9 +236,10 @@ class Trainer:
         `model` sampled it, and else against `model`'s own at its current weights. An evaluation
         due for the weights served until now runs while it trains, on the weights it measures
         whatever is published meanwhile; on Together, which serves one version, the new weights
-        are served once it has finished. Return None when no group is scored. Raise `ValueError`
-        for a model the recipe does not train, a loss Tinker does not have, or a setting it does
-        not take, before anything is scored or sent."""
+        are served once it has finished. The step's row counts every group passed, scored or
+        not. Return None when no group is scored. Raise `ValueError` for a model the recipe does
+        not train, a loss Tinker does not have, or a setting it does not take, before anything
+        is scored or sent."""
         check_loss(loss, loss_config)
         role, session = model.role, model.backend
         if not model.training:
@@ -252,6 +250,9 @@ class Trainer:
         rate = model.table.learning_rate if learning_rate is None else learning_rate
         if not isinstance(session, Session) or rate is None:
             raise RuntimeError(f"update trains {model!r}, which opens when the run starts")
+        groups = list(groups)
+        # Each once: a group is equal to itself alone.
+        self._taken = list(dict.fromkeys([*self._taken, *groups]))
         kept = [group.scored for group in groups if group.is_scored]
         if not kept:
             return None
@@ -364,14 +365,14 @@ class Trainer:
         """Take a step, checkpoint it on schedule, and write its row. The weights it starts from,
         when due, are evaluated beside its update, or after it when it makes none; the last
         step's, after it."""
-        self._seen, self._updates, self.metrics = [], {}, {}
+        self._taken, self._updates, self.metrics = [], {}, {}
         self._wait(self.state.steps)
         self._current = self.state.steps + 1
         await self.step()
         await self._finish_evaluation()  # a step that served no new weights is evaluated now
         self.state.steps += 1
         steps = self.state.steps
-        self.logs.step(self._current, self._seen, self._updates, self.metrics)
+        self.logs.step(self._current, self._taken, self._updates, self.metrics)
         if steps == self.recipe.steps:
             self._wait(steps)
             await self._finish_evaluation()
@@ -425,9 +426,8 @@ class Trainer:
     async def _evaluate(self, step: int, measured: Mapping[str, Pinned]) -> Evaluation:
         """Roll the test set out with the recipe's `evaluate` at the weights served after
         `step`, `measured` by role, and return what it came to. It runs as a task of its own,
-        so `EVALUATING` and `MEASURED` are set for its rollouts alone: their every call takes
-        the weights it measures."""
-        EVALUATING.set(step)
+        so `MEASURED` is set for its rollouts alone: they are the test set's, and their every
+        call takes the weights it measures."""
         MEASURED.set(measured)
         found = await self.evaluate(list(self.lender.test))
         return Evaluation(step=step, tasks=len({group.task for group in found}), **tally(found))

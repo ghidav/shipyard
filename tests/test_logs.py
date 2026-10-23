@@ -183,14 +183,16 @@ def test_a_steps_row_holds_one_models_update_as_it_is_and_each_of_several_by_rol
 
 
 class Twice(GRPO):  # type: ignore[misc, valid-type]
-    """GRPO's agent rolled out at its first task twice in a step, as two jobs."""
+    """GRPO's agent rolled out at its first task twice in a step, as two jobs, both passed to
+    update."""
 
     async def step(self) -> None:
-        task = self.draw()[0]
+        task, groups = self.draw()[0], []
         for _ in range(2):
-            await self.rollout(
+            groups += await self.rollout(
                 [task], model=self.agent, harness=self.recipe.harness, attempts=2, modules=None
             )
+        await self.update(self.agent, groups)
 
 
 async def test_a_steps_row_counts_the_groups_as_its_rollouts_returned_them(

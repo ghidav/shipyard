@@ -41,6 +41,7 @@ class DAPOTrainer(Trainer):
         self.agent.training = True
 
     async def step(self) -> None:
+        taken: list[Group] = []
         active: list[Group] = []
         for _ in range(self.lender.per_pass):  # at most one pass over the tasks
             groups = await self.rollout(
@@ -51,6 +52,7 @@ class DAPOTrainer(Trainer):
                 modules=self.state.modules,
             )
             await self.score(groups)
+            taken += groups
             active += [g for g in groups if g.is_scored]
             if len(active) >= self.config.data.batch_size:
                 break
@@ -61,9 +63,11 @@ class DAPOTrainer(Trainer):
                 s.advantages *= fmean(sizes) / size
         low, high = self.recipe.clip_low, self.recipe.clip_high
         clipped = {"clip_low_threshold": 1 - low, "clip_high_threshold": 1 + high}
+        # Every group taken goes to update, which trains the scored ones: the step's row counts
+        # the groups dropped for equal rewards too.
         await self.update(
             self.agent,
-            active,
+            taken,
             substeps=self.recipe.substeps,
             loss="ppo",
             loss_config=clipped,

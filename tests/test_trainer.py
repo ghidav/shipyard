@@ -16,7 +16,7 @@ import pytest
 from typer.testing import CliRunner
 
 from proxies import MODEL, made
-from shipyard import Config, Trainer, Trial, load
+from shipyard import Config, Group, Trainer, Trial, load
 from shipyard.cli import app
 from shipyard.config import ConfigError
 from shipyard.jobs.harnesses import Harness
@@ -778,17 +778,18 @@ def test_resuming_a_finished_run_opens_none_and_one_with_more_steps_goes_on_from
     assert [one["step"] for one in rows(other)] == [2], "the step after the one it went on from"
 
 
-async def test_a_steps_row_counts_the_groups_of_its_training_rollouts_as_they_returned_them(
+async def test_a_steps_row_counts_the_groups_it_passed_to_update_each_once(
     tmp_path: Path, fakes: tuple[FakeProxy, FakeService], harbor: Harbor
 ) -> None:
-    """Each rollout is one job, and a task rolled out twice is a group in each. A rollout
-    for another purpose is not the step's."""
+    """Each rollout is one job, and a task rolled out twice is a group in each. The row counts
+    the groups the step passed to update, whatever their rollout was for, and not a rollout's
+    it left out."""
     harbor(Alternating())
 
-    class Twice(GRPO):
+    class Thrice(GRPO):
         async def step(self) -> None:
             batch = self.draw()
-            for purpose in (None, None, "probe"):
+            first, probe, _ = [
                 await self.rollout(
                     batch,
                     model=self.agent,
@@ -797,13 +798,46 @@ async def test_a_steps_row_counts_the_groups_of_its_training_rollouts_as_they_re
                     modules=None,
                     purpose=purpose,
                 )
+                for purpose in (None, "probe", None)
+            ]
+            await self.update(self.agent, first + probe)
+            await self.update(self.agent, first)  # passed again, counted once
 
-    directory = await train(run_toml(tmp_path, **ONE_STEP), tmp_path / "runs", Twice)
+    directory = await train(run_toml(tmp_path, **ONE_STEP), tmp_path / "runs", Thrice)
     (row,) = rows(directory)
-    assert len(row["jobs"]) == 2 and (row["groups"], row["trials"]) == (4, 4)
+    names = [one["job"] for one in files.read(directory / files.JOBS)]
+    assert row["jobs"] == names[:2] and (row["groups"], row["trials"]) == (4, 4)
     assert "reward_spread" not in row, "a group of one trial spreads nothing"
     jobs = [one["purpose"] for one in files.read(directory / files.JOBS)]
-    assert jobs == ["training", "training", "probe"]
+    assert jobs == ["training", "probe", "training"]
+
+
+async def test_a_step_that_updates_on_the_batch_rolled_out_the_step_before_counts_that_batch(
+    tmp_path: Path, fakes: tuple[FakeProxy, FakeService], harbor: Harbor
+) -> None:
+    """Groups outlive the step that rolled them out: a step's row counts the groups it trained
+    on, not the ones that finished while it ran."""
+    harbor(Alternating())
+
+    class Behind(GRPO):
+        def __init__(self, config: Config, directory: Path) -> None:
+            super().__init__(config, directory)
+            self.held: list[Group] = []
+
+        async def step(self) -> None:
+            rolled = await self.rollout(
+                self.draw(), model=self.agent, harness=self.recipe.harness, attempts=2, modules=None
+            )
+            await self.score(rolled)
+            if self.held:
+                await self.update(self.agent, self.held)
+            self.held = rolled
+
+    directory = await train(run_toml(tmp_path), tmp_path / "runs", Behind)
+    first, second = rows(directory)
+    names = [one["job"] for one in files.read(directory / files.JOBS)]
+    assert (first["groups"], first["jobs"], first["trained"]) == (0, [], False)
+    assert (second["groups"], second["jobs"], second["trained"]) == (2, names[:1], True)
 
 
 async def test_a_recipe_metric_named_like_a_row_key_is_logged_beside_it(
@@ -832,8 +866,15 @@ async def test_the_test_set_is_evaluated_every_few_steps_and_not_again_at_the_en
     base, row, last = rows(directory)
     assert (base["step"], base["eval_tasks"], base["eval_trials"]) == (0, 4, 4), "the base"
     assert (last["step"], last["eval_tasks"], last["eval_trials"]) == (1, 4, 4), "once, not twice"
-    jobs = [(one["purpose"], one["step"]) for one in files.read(directory / files.JOBS)]
-    assert jobs == [("training", 1), ("evaluation", 0), ("evaluation", 1)]
+    jobs = [
+        (one["purpose"], one["step"], [weights.rsplit("/", 1)[-1] for weights in one["weights"]])
+        for one in files.read(directory / files.JOBS)
+    ]
+    assert jobs == [
+        ("training", 1, ["start"]),
+        ("evaluation", 1, ["start"]),
+        ("evaluation", 1, ["sample-1"]),
+    ], "each job under the step it ran in, and an evaluation's named by the weights it measured"
     assert row["groups"] == 2, "an evaluation's groups are not the step's"
 
 

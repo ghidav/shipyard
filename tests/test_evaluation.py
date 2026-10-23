@@ -18,7 +18,7 @@ from shipyard import Config, Group, Trainer
 from shipyard.models.backends import Session
 from shipyard.models.endpoints import LaneEndpoint
 from shipyard.run import files
-from shipyard.trainer import EVALUATING
+from shipyard.trainer import MEASURED
 from tests.fakes import Alternating, FakeProxy, FakeTrials, Harbor
 from tests.runs import GRPO, ONE_STEP, rows, run_toml, train
 from tests.service import FakeService
@@ -27,6 +27,11 @@ from tests.service import FakeService
 TESTED = {'train = "four"': 'train = "four"\ntest = "four"'}
 #: Where the fake service keeps the weights an update publishes.
 SAMPLER = "tinker://fake/sampler_weights"
+
+
+def tag(weights: str | None) -> str | None:
+    """The tag the weights were published as: their path's last part."""
+    return None if weights is None else weights.rsplit("/", 1)[-1]
 
 
 @pytest.fixture(autouse=True)
@@ -62,14 +67,18 @@ async def test_evaluate_rolls_out_for_evaluation_and_its_groups_stay_out_of_the_
 async def test_the_run_evaluates_from_the_start_every_evaluate_every_steps_and_at_its_last(
     tmp_path: Path, fakes: tuple[FakeProxy, FakeService], harbor: Harbor
 ) -> None:
-    harbor(FakeTrials())
+    harbor(Alternating())
     three = {"steps = 2": "steps = 3"}
     home = run_toml(tmp_path, "evaluate_every = 2", **three, **TESTED)
     directory = await train(home, tmp_path / "runs")
     tested = [
-        job["step"] for job in files.read(directory / files.JOBS) if job["purpose"] == "evaluation"
+        [tag(weights) for weights in job["weights"]]
+        for job in files.read(directory / files.JOBS)
+        if job["purpose"] == "evaluation"
     ]
-    assert tested == [0, 2, 3], "the model the run starts from, every second step, and the last"
+    assert tested == [["start"], ["sample-2"], ["sample-3"]], (
+        "the model the run starts from, every second step, and the last"
+    )
     assert [(row["step"], "eval_trials" in row) for row in rows(directory)] == [
         (0, True),
         (1, False),
@@ -117,10 +126,11 @@ async def test_an_evaluation_keeps_measuring_its_weights_while_the_next_update_p
 
     class Watched(GRPO):
         async def evaluate(self, tasks: list[Path]) -> list[Group]:
-            step = EVALUATING.get()
+            measured = MEASURED.get()
+            assert measured is not None, "an evaluation's rollouts know the weights it measures"
             found = await super().evaluate(tasks)
             await asyncio.sleep(0.2)  # longer than the update beside it
-            events.append(f"evaluated {step}")
+            events.append(f"evaluated {tag(measured['agent'].weights)}")
             return found
 
     monkeypatch.setattr(Session, "fit", fitting)
@@ -133,16 +143,23 @@ async def test_an_evaluation_keeps_measuring_its_weights_while_the_next_update_p
         "pinned",  # the weights served after step 0, before the update beside it trains
         "trained",
         "served sample-1",
-        "evaluated 0",
+        "evaluated start",
         "pinned",
-        "evaluated 1",
+        "evaluated sample-1",
     ]
     measured = [weights for name, *_, weights in proxy.opened if name not in proxy.following]
     assert measured == [f"{SAMPLER}/start"] * 4 + [f"{SAMPLER}/sample-1"] * 4, (
         "each evaluation's trials on the weights it measures, published after or not"
     )
-    jobs = [(job["purpose"], job["step"]) for job in files.read(directory / files.JOBS)]
-    assert jobs == [("training", 1), ("evaluation", 0), ("evaluation", 1)]
+    jobs = [
+        (job["purpose"], job["step"], [tag(one) for one in job["weights"]])
+        for job in files.read(directory / files.JOBS)
+    ]
+    assert jobs == [
+        ("training", 1, ["start"]),
+        ("evaluation", 1, ["start"]),  # under the step it ran in, named by what it measured
+        ("evaluation", 1, ["sample-1"]),
+    ]
     assert [(row["step"], "eval_trials" in row) for row in rows(directory)] == [
         (0, True),
         (1, False),

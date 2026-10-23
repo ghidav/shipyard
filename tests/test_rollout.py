@@ -190,6 +190,7 @@ async def test_a_recipe_that_wants_two_harnesses_gathers_two_rollouts_under_the_
                     for one in (self.recipe.harness, self.recipe.second)
                 )
             )
+            await self.update(self.agent, [group for groups in rolled for group in groups])
 
     home = run_toml(
         tmp_path,
@@ -208,7 +209,7 @@ async def test_a_recipe_that_wants_two_harnesses_gathers_two_rollouts_under_the_
         assert [(g.harness, len(g.trials)) for g in groups] == [(harness, 2)] * 2, "one per task"
     assert [g.task for g in rolled[0]] == [g.task for g in rolled[1]]
     (row,) = rows(directory)
-    assert (row["groups"], row["trials"]) == (4, 8), "the row counts every group of the step"
+    assert (row["groups"], row["trials"]) == (4, 8), "the row counts every group it trained"
     assert sorted(row["jobs"]) == sorted(named)
 
 
@@ -230,9 +231,10 @@ async def test_a_trainer_rolls_out_another_model_through_its_own_harness_under_i
             await self.rollout(tasks[:1], harness=own, purpose="critique", **critic)
             with pytest.raises(ValueError, match=r"\[models.critic\] renderers holds none"):
                 await self.rollout(tasks, harness="pi", renderer="low", **critic)
-            await self.rollout(
+            taught = await self.rollout(
                 tasks[:1], model=self.teacher, harness="pi", attempts=1, modules=None
             )
+            await self.update(self.agent, taught)
             stray = Model("stray", ModelTable(model="claude-x", provider="anthropic"))
             with pytest.raises(ValueError, match="roll out a model of self.models"):
                 await self.rollout(tasks, model=stray, harness="pi", attempts=1, modules=None)
@@ -262,7 +264,7 @@ async def test_a_trainer_rolls_out_another_model_through_its_own_harness_under_i
     usage = list(files.read(directory / files.USAGE))
     assert {one["role"] for one in usage if one.get("provider") == "anthropic"} == {"critic"}
     (row,) = rows(directory)
-    assert row["trials"] == 1, "only training rollouts count in the step's row, whoever ran them"
+    assert row["trials"] == 1, "the row counts the groups passed to update, whoever ran them"
 
 
 async def test_a_model_on_tinker_beside_a_providers_agent_is_served_by_the_runs_proxy(

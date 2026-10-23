@@ -124,7 +124,9 @@ class Logs:
         return name
 
     def job(self, job: Job, endpoint: Any) -> None:
-        """Write a judged job's row and its model calls' rows, and add its tokens to the costs."""
+        """Write a judged job's row and its model calls' rows, and add its tokens to the costs.
+        The row names the weights that answered the job's calls, in the order the model
+        published them; none for a base model's calls or a provider's."""
         trials = job.trials
         served = any(one.records.recorded for one in trials)
         provider, model = endpoint.provider or UNKNOWN, endpoint.model or UNKNOWN
@@ -153,6 +155,7 @@ class Logs:
             **({"masked_by": dict(masked)} if masked else {}),
             **({"exceptions": dict(exceptions)} if exceptions else {}),
             "backend": endpoint.kind or UNKNOWN,
+            **({"weights": answered} if (answered := answering(trials, endpoint)) else {}),
             **{key: value for key, value in noted.items() if value},
         }
         files.append(self.directory / files.JOBS, row)
@@ -261,6 +264,20 @@ def tally(groups: Sequence[Group]) -> dict[str, Any]:
         "masked": trials - len(graded),
         "reward_mean": fmean(one.reward or 0.0 for one in graded) if graded else None,
     }
+
+
+def answering(trials: Sequence[Trial], endpoint: Any) -> list[str]:
+    """Return the weights that answered the trials' calls, each once, in the order `endpoint`'s
+    model published them; a base model's calls name none."""
+    found = {
+        item.weights: None
+        for one in trials
+        if one.records.recorded
+        for item in one.records
+        if item.weights is not None
+    }
+    order = {weights: at for at, weights in enumerate(getattr(endpoint, "published", ()))}
+    return sorted(found, key=lambda weights: order.get(weights, len(order)))
 
 
 def request(job: str, trial: Trial, item: Record) -> dict[str, Any]:

@@ -7,7 +7,7 @@ import asyncio
 import json
 import shutil
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol, TypeVar
@@ -291,12 +291,16 @@ class FakeProxy:
         return next((w for named, w, _ in reversed(self.published) if named == lane), None)
 
     async def close(self, trial: str) -> list[Record]:
+        """Close `trial` with the records its task's name answers, each answered by the weights
+        the trial was opened on unless a test's record names others."""
         self.closed.append(trial)
         task = trial.split("__")[0]
         if task in self.failing:
             raise httpx.ConnectError("the proxy went away")
         found = self.answers.get(task, self.default)
-        return list(found if found is not None else [made()])
+        took = next((w for name, *_, w in reversed(self.opened) if name == trial), None)
+        held = found if found is not None else [made()]
+        return [replace(one, weights=one.weights or took) for one in held]
 
     async def ready(self, seconds: float = 30.0) -> dict[str, Served]:
         self.probed += 1
