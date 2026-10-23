@@ -14,6 +14,8 @@ from urllib.parse import quote
 CONTROL_TOKEN_ENV = "HARNESS_PROXY_CONTROL_TOKEN"
 #: Where the run opens a trial, and closes it at `<TRIALS_PATH>/<trial>/close`.
 TRIALS_PATH = "/trials"
+#: Where the run publishes a lane's new weights, at `<LANES_PATH>/<lane>/serve`.
+LANES_PATH = "/lanes"
 #: The only route that needs no token. A run probes it before a sandbox dials the proxy.
 HEALTH_PATH = "/healthz"
 #: Prefix of `error` on a record whose sampling call failed, as `sampler: <type>`.
@@ -278,6 +280,10 @@ class Opening:
     renderer: str | None = None
     #: The weights, under the lane's backend's prefix; None for its base model.
     weights: str | None = None
+    #: Whether each call takes the weights the lane's model published last when the call
+    #: starts, rather than `weights`: as a run's training trials do, while an evaluation's
+    #: stay on the weights it measures.
+    follow: bool = False
 
     def __post_init__(self) -> None:
         """Refuse a trial the close route's path cannot name."""
@@ -296,23 +302,64 @@ class Opening:
         """Read an opening back from a request's JSON body; `ValueError` for one that is not."""
         if not isinstance(body, dict) or not isinstance(body.get("trial"), str):
             raise ValueError("expected a JSON object with the trial's name as 'trial'")
-        foreign = sorted(set(body) - {"trial", "lane", "renderer", "weights"})
+        foreign = sorted(set(body) - {"trial", "lane", "renderer", "weights", "follow"})
         if foreign:
-            raise ValueError(f"an opening takes trial, lane, renderer and weights, not {foreign}")
+            raise ValueError(
+                f"an opening takes trial, lane, renderer, weights and follow, not {foreign}"
+            )
         for key in ("lane", "renderer", "weights"):
             if body.get(key) is not None and not isinstance(body[key], str):
                 raise ValueError(f"'{key}' must be a name or null")
+        if not isinstance(body.get("follow", False), bool):
+            raise ValueError("'follow' must be true or false")
         return cls(
             body["trial"],
             body.get("lane") or None,
             body.get("renderer") or None,
             body.get("weights") or None,
+            bool(body.get("follow", False)),
         )
 
 
 def closing_path(trial: str) -> str:
     """The path the run closes a trial at, the trial percent-encoded."""
     return f"{TRIALS_PATH}/{quote(trial, safe='')}/close"
+
+
+@dataclass(frozen=True)
+class Published:
+    """The run's word that a lane's model published new weights, which `LANES_PATH` takes: the
+    calls of the trials that follow the lane take them from now on."""
+
+    #: The weights, under the lane's backend's prefix; None for its base model.
+    weights: str | None = None
+    #: For a backend that serves only the weights published last, the version it gave them,
+    #: which names the weights that answered each call; None when it gave none.
+    version: int | None = None
+
+    @property
+    def body(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def of(cls, body: Any) -> Published:
+        """Read a publish back from a request's JSON body; `ValueError` for one that is not."""
+        if not isinstance(body, dict):
+            raise ValueError("expected a JSON object with the lane's new 'weights'")
+        foreign = sorted(set(body) - {"weights", "version"})
+        if foreign:
+            raise ValueError(f"a publish takes weights and version, not {foreign}")
+        weights, version = body.get("weights"), body.get("version")
+        if weights is not None and not isinstance(weights, str):
+            raise ValueError("'weights' must be a path or null")
+        if version is not None and (isinstance(version, bool) or not isinstance(version, int)):
+            raise ValueError("'version' must be a whole number or null")
+        return cls(weights or None, version)
+
+
+def serving_path(lane: str) -> str:
+    """The path the run publishes a lane's new weights at, the lane percent-encoded."""
+    return f"{LANES_PATH}/{quote(lane, safe='')}/serve"
 
 
 # --------------------------------------------------------------------------- health

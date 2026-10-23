@@ -5,6 +5,7 @@ import logging
 import time
 from collections.abc import Mapping
 from collections.abc import Sequence as Values
+from contextlib import ExitStack
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,7 +17,7 @@ from pydantic import ValidationError
 from tinker_cookbook.utils.misc_utils import split_list
 
 from shipyard.config import Config, Recipe
-from shipyard.groups import Group, Sequence
+from shipyard.groups import Group, Pinned, Sequence
 from shipyard.jobs.engine import HarborEngine
 from shipyard.jobs.harnesses import Harness
 from shipyard.jobs.hooks import hooks_of
@@ -25,6 +26,7 @@ from shipyard.jobs.secrets import Pool, Secrets
 from shipyard.model import Model, Models
 from shipyard.models.backends import Connected, Session, connect
 from shipyard.models.clients.tinker import check_loss
+from shipyard.models.endpoints import LaneEndpoint
 from shipyard.run import files
 from shipyard.run.checkpoint import Checkpoint
 from shipyard.run.data import Lender
@@ -43,6 +45,9 @@ EVALUATION = "evaluation"
 #: in, which runs beside the next step's update: its rollouts are the test set's and filed under
 #: that step, while the step under way trains. None outside an evaluation.
 EVALUATING: ContextVar[int | None] = ContextVar("evaluating", default=None)
+#: The weights the evaluation under way measures, by role, set in the task it runs in: every
+#: call of its trials takes them, whatever the models publish meanwhile. None outside one.
+MEASURED: ContextVar[Mapping[str, Pinned] | None] = ContextVar("measured", default=None)
 
 
 @dataclass(frozen=True)
@@ -185,10 +190,12 @@ class Trainer:
         """Run `model` on each task `attempts` times through `harness`, carrying `modules`
         (`self.state.modules` for the run's, None for none), as one job, and return one group
         per task, in the order of `tasks`. Its calls are rendered with `renderer`, one of the
-        model's renderers, which a model with several must be given. A rollout `evaluate` makes
-        is the test set's, filed under the step whose weights it measures, and any other's is
-        `training` unless `purpose` names another; only training rollouts count in the step's
-        row. Raise `ValueError` before any trial runs for a rollout no trial could run."""
+        model's renderers, which a model with several must be given. Each call takes the
+        weights the model published last when it starts. A rollout `evaluate` makes is the test
+        set's, its calls all on the weights it measures, filed under the step whose weights they
+        are; any other's is `training` unless `purpose` names another, and only training
+        rollouts count in the step's row. Raise `ValueError` before any trial runs for a rollout
+        no trial could run."""
         if all(one is not model for one in self.models.all):
             raise ValueError(f"rollout(model={model!r}): roll out a model of self.models")
         if model.endpoint is None:
@@ -196,7 +203,7 @@ class Trainer:
                 f"rollout(model={model.role}): {model!r} has nothing a harness could dial: it "
                 "is not connected yet"
             )
-        evaluating = EVALUATING.get()
+        evaluating, measured = EVALUATING.get(), MEASURED.get()
         purpose = purpose or (TRAINING if evaluating is None else EVALUATION)
         found = await self.engine.rollout(
             list(tasks),
@@ -208,6 +215,7 @@ class Trainer:
             purpose=purpose,
             step=self._current if evaluating is None else evaluating,
             role=model.role,
+            pinned=measured.get(model.role) if measured is not None else None,
         )
         for group in found:
             self.lender.complete(group.task)  # its group has completed: the task is out no more
@@ -229,10 +237,11 @@ class Trainer:
         steps without splitting a group, at `learning_rate`, else its table's, and serve its new
         weights. Each sequence's ratio is taken against the logprobs its sampler gave, when
         `model` sampled it, and else against `model`'s own at its current weights. An evaluation
-        due for the weights served until now runs while it trains, and the new weights are
-        served once it has finished. Return None when no group is scored. Raise `ValueError` for
-        a model the recipe does not train, a loss Tinker does not have, or a setting it does not
-        take, before anything is scored or sent."""
+        due for the weights served until now runs while it trains, on the weights it measures
+        whatever is published meanwhile; on Together, which serves one version, the new weights
+        are served once it has finished. Return None when no group is scored. Raise `ValueError`
+        for a model the recipe does not train, a loss Tinker does not have, or a setting it does
+        not take, before anything is scored or sent."""
         check_loss(loss, loss_config)
         role, session = model.role, model.backend
         if not model.training:
@@ -274,7 +283,7 @@ class Trainer:
             self._cancel_evaluation()
             raise
         took = time.monotonic() - began
-        await self._finish_evaluation()
+        await session.publishable()  # on Together, once no evaluation holds the weights before
         made = self.state.updates[role] = self.state.updates.get(role, 0) + 1
         serving = time.monotonic()
         await session.serve(f"sample-{made}")
@@ -380,9 +389,18 @@ class Trainer:
             self._pending = step
 
     def _start_evaluation(self) -> None:
-        """Start evaluating the waiting weights, beside what the caller goes on to do."""
-        if self._pending is not None and self._evaluating is None:
-            self._evaluating = asyncio.create_task(self._evaluate(self._pending))
+        """Start evaluating the waiting weights, beside what the caller goes on to do: the ones
+        each model serves now, which the evaluation holds on the model's lane until it ends, so
+        no update publishes over them first."""
+        if self._pending is None or self._evaluating is not None:
+            return
+        lanes = [one for one in self.models.all if isinstance(one.endpoint, LaneEndpoint)]
+        measured = {one.role: Pinned(one.endpoint.told) for one in lanes}
+        held = ExitStack()
+        for one in lanes:
+            held.enter_context(one.endpoint.pinned())
+        self._evaluating = asyncio.create_task(self._evaluate(self._pending, measured))
+        self._evaluating.add_done_callback(lambda _: held.close())
 
     async def _finish_evaluation(self) -> None:
         """Have the waiting weights evaluated, starting the evaluation if it has not started,
@@ -404,11 +422,13 @@ class Trainer:
             self._evaluating.cancel()
             self._evaluating = None
 
-    async def _evaluate(self, step: int) -> Evaluation:
+    async def _evaluate(self, step: int, measured: Mapping[str, Pinned]) -> Evaluation:
         """Roll the test set out with the recipe's `evaluate` at the weights served after
-        `step`, and return what it came to. It runs as a task of its own, so `EVALUATING` is
-        set for its rollouts alone."""
+        `step`, `measured` by role, and return what it came to. It runs as a task of its own,
+        so `EVALUATING` and `MEASURED` are set for its rollouts alone: their every call takes
+        the weights it measures."""
         EVALUATING.set(step)
+        MEASURED.set(measured)
         found = await self.evaluate(list(self.lender.test))
         return Evaluation(step=step, tasks=len({group.task for group in found}), **tally(found))
 

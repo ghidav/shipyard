@@ -1,12 +1,14 @@
 """Tests for evaluation: `evaluate` is a hook the recipe writes, which rolls the test set out as
 the recipe measures it. The run calls it on schedule from the start, beside the next step's
-update, which serves its new weights once the evaluation has finished, and after the last step;
-each evaluation's row holds what its groups came to as `eval_` fields, at the step whose weights
-it measured, apart from the training rows."""
+update, its every call on the weights it measures whatever the update publishes meanwhile, and
+after the last step; each evaluation's row holds what its groups came to as `eval_` fields, at
+the step whose weights it measured, apart from the training rows."""
 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +16,7 @@ import pytest
 
 from shipyard import Config, Group, Trainer
 from shipyard.models.backends import Session
+from shipyard.models.endpoints import LaneEndpoint
 from shipyard.run import files
 from shipyard.trainer import EVALUATING
 from tests.fakes import Alternating, FakeProxy, FakeTrials, Harbor
@@ -22,6 +25,8 @@ from tests.service import FakeService
 
 #: `[data]` with the four tasks as the test set too.
 TESTED = {'train = "four"': 'train = "four"\ntest = "four"'}
+#: Where the fake service keeps the weights an update publishes.
+SAMPLER = "tinker://fake/sampler_weights"
 
 
 @pytest.fixture(autouse=True)
@@ -82,21 +87,27 @@ async def test_the_run_evaluates_from_the_start_every_evaluate_every_steps_and_a
     ], "with no evaluate_every, the last step alone"
 
 
-async def test_an_evaluation_runs_beside_the_next_update_which_serves_once_it_has_finished(
+async def test_an_evaluation_keeps_measuring_its_weights_while_the_next_update_publishes(
     tmp_path: Path,
     fakes: tuple[FakeProxy, FakeService],
     harbor: Harbor,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The samplers serve a step's weights until the next update serves its own: an evaluation
-    of them runs while that update trains, and the new weights wait for it to finish."""
+    """An evaluation of a step's weights runs while the next update trains, every call of its
+    trials on those weights, which it holds from the moment it starts; on Tinker, which serves
+    several versions at once, the update publishes its own without waiting for it."""
+    proxy, _ = fakes
     harbor(Alternating())
     events: list[str] = []
-    started = asyncio.Event()
-    fit, serve = Session.fit, Session.serve
+    fit, serve, pinned = Session.fit, Session.serve, LaneEndpoint.pinned
+
+    @contextmanager
+    def pinning(self: LaneEndpoint) -> Iterator[None]:
+        events.append("pinned")
+        with pinned(self):
+            yield
 
     async def fitting(self: Session, *args: Any, **kwargs: Any) -> Any:
-        await asyncio.wait_for(started.wait(), 5)  # the evaluation is under way as it trains
         events.append("trained")
         return await fit(self, *args, **kwargs)
 
@@ -107,7 +118,6 @@ async def test_an_evaluation_runs_beside_the_next_update_which_serves_once_it_ha
     class Watched(GRPO):
         async def evaluate(self, tasks: list[Path]) -> list[Group]:
             step = EVALUATING.get()
-            started.set()
             found = await super().evaluate(tasks)
             await asyncio.sleep(0.2)  # longer than the update beside it
             events.append(f"evaluated {step}")
@@ -115,9 +125,22 @@ async def test_an_evaluation_runs_beside_the_next_update_which_serves_once_it_ha
 
     monkeypatch.setattr(Session, "fit", fitting)
     monkeypatch.setattr(Session, "serve", serving)
+    monkeypatch.setattr(LaneEndpoint, "pinned", pinning)
     home = run_toml(tmp_path, "evaluate_every = 1", "test_group_size = 1", **ONE_STEP, **TESTED)
     directory = await train(home, tmp_path / "runs", Watched)
-    assert events == ["served start", "trained", "evaluated 0", "served sample-1", "evaluated 1"]
+    assert events == [
+        "served start",
+        "pinned",  # the weights served after step 0, before the update beside it trains
+        "trained",
+        "served sample-1",
+        "evaluated 0",
+        "pinned",
+        "evaluated 1",
+    ]
+    measured = [weights for name, *_, weights in proxy.opened if name not in proxy.following]
+    assert measured == [f"{SAMPLER}/start"] * 4 + [f"{SAMPLER}/sample-1"] * 4, (
+        "each evaluation's trials on the weights it measures, published after or not"
+    )
     jobs = [(job["purpose"], job["step"]) for job in files.read(directory / files.JOBS)]
     assert jobs == [("training", 1), ("evaluation", 0), ("evaluation", 1)]
     assert [(row["step"], "eval_trials" in row) for row in rows(directory)] == [

@@ -76,7 +76,7 @@ class MyTrainer(Trainer):
 - The recipe writes `step`, and `evaluate(self, tasks) -> list[Group]` when the config has `[data] test`; `score` is the recipe's own method, called from its `step`. The run refuses a trainer missing either.
 - Read every model the config names in `__init__`, as `self.models[role]`, and set `training = True` there on each one the recipe trains: the run refuses a model the recipe never reads, a model in training with no `learning_rate`, and `training` set once the run has opened the model.
 - On the trainer: `self.recipe`, the `[recipe]` table as your `Recipe`; `self.config`, the whole `run.toml`; `self.state`, your `State`; `self.models`; `self.lender.train` and `.test`, every task path.
-- The run does the rest. It opens each model and the proxy, calls `step` `[recipe] steps` times, evaluates the test set every `evaluate_every` steps from step 0 and after the last, checkpoints every `[checkpoints] every` steps and at the end, and writes a row per step, and one per evaluation at the step whose weights it measured, to `metrics.jsonl`. An evaluation runs beside the next step's `update`, which serves its new weights once the evaluation has finished, so `update` is where a recipe's step lets it run.
+- The run does the rest. It opens each model and the proxy, calls `step` `[recipe] steps` times, evaluates the test set every `evaluate_every` steps from step 0 and after the last, checkpoints every `[checkpoints] every` steps and at the end, and writes a row per step, and one per evaluation at the step whose weights it measured, to `metrics.jsonl`. An evaluation runs beside the next step's `update`, every call of its trials on the weights it measures, so `update` is where a recipe's step lets it run; on Together, which serves one version, `update` serves its new weights once the evaluation has finished.
 
 ## The primitives
 
@@ -98,6 +98,8 @@ Override it for a curriculum: return any list of task directories, such as some 
 
 Roll a batch out in one call, or one task a call from a loop of your own: shipyard keeps up to `[rollout] sandboxes` trials alive and `[rollout] concurrency` of them sampling, an evaluation's trials first, and raises once as many trials in a row as sample at once reached no model.
 
+Each model call takes the weights the model published last when the call starts, so a trial that outlives an `update` is answered by the weights before it and after. `seq.weights` names the weights that answered each of a sequence's spans, and `model.lag(group)` counts the times the model published since the oldest weights that answered the group's graded trials: 0 for a group of the weights it serves now. A loop that overlaps rollouts with updates reads it to drop or down-weight stale groups.
+
 A trial offers `reward`, `graded`, `sequences`, `sampled_tokens`, `instruction`, `transcript`, `steps` (Harbor's trajectory), `test_output`, `result` (Harbor's `result.json`, every key of the verifier's rewards under `verifier_result.rewards`) and `dir`. Its `transcript` includes the prompt and skills it carried, and `test_output` can print the tests' expected answers: filter both before a model reads them.
 
 ### score
@@ -112,7 +114,7 @@ Scoring sets the **advantages**: a number per target token of each sequence, whi
 
 ### update
 
-`await self.update(model, groups, loss=..., loss_config=...)` trains `model` on every sequence with advantages, then serves its new weights to the next rollout. It returns what it trained, or None when nothing was scored.
+`await self.update(model, groups, loss=..., loss_config=...)` trains `model` on every sequence with advantages, then serves its new weights, which every call that starts from then on takes, an evaluation's excepted. It returns what it trained, or None when nothing was scored.
 
 - `loss`: `importance_sampling` (the default); `ppo` and `cispo`, which take `clip_low_threshold` and `clip_high_threshold`, bounds on the ratio itself such as 0.8 and 1.2; `dro`, which takes `beta`; `cross_entropy`, which weighs each target by its advantage: supervised fine-tuning, with advantage 1 on what to imitate.
 - `[recipe] substeps`: optimizer steps per update, each on a share of the groups, whole groups each; the model's `learning_rate` and `warmup`; `ADAM = tinker.AdamParams(...)` as a class attribute.

@@ -45,6 +45,7 @@ class Trial:
         name: str,
         client: Any,
         *,
+        lane: Any = None,
         renderer: Any = None,
         weights: str | None = None,
         temperature: float | None = None,
@@ -56,8 +57,12 @@ class Trial:
         fill_context: bool = False,
     ) -> None:
         self.name = name
-        #: The sampling client on its weights, which its lane holds while a trial uses them.
+        #: The sampling client on its weights, which its lane holds while a trial uses them;
+        #: None for a trial that follows its lane.
         self.client = client
+        #: The lane it follows: each call samples the weights the lane's model published last
+        #: when the call starts. None for a trial that stays on `weights`.
+        self.lane = lane
         #: Its own copy of its lane's renderer, over a tokenizer that remembers what it encoded.
         self.renderer = remembering(renderer) if renderer is not None else None
         #: The weights it was opened on, under the backend's prefix; None for the base model.
@@ -135,8 +140,14 @@ class Trial:
         for key in keys:
             self._replies[key] = pending
         started = time.perf_counter()
+        # A trial that follows its lane takes the weights published last as the call starts,
+        # and keeps them until it is answered.
+        client, weights, leased = self.client, self.weights, False
         try:
-            response = await self.client.sample_async(
+            if self.lane is not None:
+                client, weights = await self.lane.lease()
+                leased = True
+            response = await client.sample_async(
                 prompt=prompt.model_input, num_samples=1, sampling_params=pinned
             )
             sequence = response.sequences[0]
@@ -151,8 +162,11 @@ class Trial:
                 # image it cannot take: the request was at fault, and it costs no record.
                 raise
             failure = f"{SAMPLER_FAILED}{type(failed).__name__}"
-            self._add(prompt_ids, params, **stamp, error=failure, images=pictures)
+            self._add(prompt_ids, params, **stamp, error=failure, images=pictures, weights=weights)
             raise
+        finally:
+            if leased:
+                self.lane.release(weights)
         tokens = tuple(int(token) for token in sequence.tokens)
         stop_reason = str(getattr(sequence, "stop_reason", "") or "")
         record = self._add(
@@ -165,6 +179,7 @@ class Trial:
             sample_ms=(time.perf_counter() - started) * 1000.0,
             cached_tokens=int(getattr(response, "prompt_cache_hit_tokens", 0) or 0),
             images=pictures,
+            weights=self.lane.answered(weights, response) if leased else weights,
         )
         self.spoke += len(tokens)
         sampled = Sampled(tokens, stop_reason, record.seq)
@@ -226,8 +241,13 @@ class Trial:
         request_id: str | None = None,
         bridged: bool = False,
         prompt_digests: tuple[str, ...] = (),
+        weights: Any = ...,
     ) -> Record:
-        """Append the trial's next record, numbered from 1, refused and failed calls included."""
+        """Append the trial's next record, numbered from 1, refused and failed calls included,
+        under `weights`, the ones that answered it: unless given, the ones it would have taken,
+        the trial's own or those its lane published last."""
+        if weights is ...:
+            weights = self.lane.served if self.lane is not None else self.weights
         self._seq += 1
         record = Record(
             seq=self._seq,
@@ -239,7 +259,7 @@ class Trial:
             sampling_params=params,
             requested_model=requested_model,
             sample_ms=sample_ms,
-            weights=self.weights,
+            weights=weights,
             cached_tokens=cached_tokens,
             request_id=request_id,
             bridged=bridged,

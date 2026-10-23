@@ -21,6 +21,8 @@ class Chain:
     #: The sampler's logprobs at the targets, as the proxy recorded them; None if a call kept none.
     sampled_logprobs: tuple[float, ...] | None
     images: tuple[Picture, ...]
+    #: The weights that answered each completion, in chain order; None for a base model.
+    weights: tuple[str | None, ...] = ()
 
 
 class Records:
@@ -116,7 +118,8 @@ class Records:
         found: list[Chain] = []
         for chain in _linked(self._held):
             last = chain[-1]
-            spans = tuple(_span(one) for one in chain if one.completion_token_ids)
+            wrote = [one for one in chain if one.completion_token_ids]
+            spans = tuple(_span(one) for one in wrote)
             if not spans:
                 continue
             logprobs = tuple(value for one in chain for value in one.inference_logprobs)
@@ -124,7 +127,8 @@ class Records:
                 len(one.inference_logprobs) == len(one.completion_token_ids) for one in chain
             )
             tokens = (*last.prompt_token_ids, *last.completion_token_ids)
-            found.append(Chain(tokens, spans, logprobs if complete else None, last.images))
+            weights = tuple(one.weights for one in wrote)
+            found.append(Chain(tokens, spans, logprobs if complete else None, last.images, weights))
         return found
 
     @property

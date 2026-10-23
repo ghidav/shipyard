@@ -132,6 +132,15 @@ def test_a_tool_loop_chains_into_one_sequence_with_three_target_spans() -> None:
     assert found.sampled_logprobs == (-1.0, -1.1, -1.2, -1.3, -1.4)
 
 
+def test_a_chain_names_the_weights_that_answered_each_of_its_completions() -> None:
+    """The model published new weights between the second call and the third."""
+    first, second, third = _tool_loop()
+    [found] = _chains(
+        replace(first, weights="w/1"), replace(second, weights="w/1"), replace(third, weights="w/2")
+    )
+    assert found.weights == ("w/1", "w/1", "w/2")
+
+
 def test_a_prompt_that_does_not_extend_opens_a_second_chain() -> None:
     """The fourth call re-sends the history with thinking stripped, so its prompt shares a
     prefix with the chain and then diverges. It starts a new chain, and each completion is

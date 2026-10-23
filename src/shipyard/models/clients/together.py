@@ -36,6 +36,9 @@ PROVISION_SECONDS = 3600.0
 #: waits, where its SDK gives up after five minutes, which an update over long trajectories
 #: outlasts.
 OPERATION_SECONDS: float | None = None
+#: How a publish syncs the generator: queued, so the trainer goes on, and taken by the
+#: generator once its calls in flight end. Together refuses its in-flight `PIPELINE` on LoRA.
+BACKGROUND_PUBLISH = "WEIGHT_SYNC_TYPE_BACKGROUND_PUBLISH"
 
 #: Provisions a model resource for a base model with that many sampler replicas, and returns it
 #: once it is ready.
@@ -80,6 +83,9 @@ class TogetherClient:
         self.session: Any = None
         #: Whether an optimizer step moved the weights since they were last published.
         self.moved = False
+        #: The version Together gave the weights published last, which names the weights that
+        #: answered each call; None for weights published without a sync, as at the start.
+        self.version: int | None = None
         self._provision = provision if provision is not None else provisioned
         self._lock = asyncio.Lock()
 
@@ -159,10 +165,19 @@ class TogetherClient:
         return out, {"train": read_tokens}
 
     async def publish(self, tag: str) -> str:
-        """Point the generator at the weights the updates moved to, and return their name."""
+        """Point the generator at the weights the updates moved to, and return their name. The
+        sync is queued in the background, so the trainer goes on at once; the generator takes
+        the weights once the calls in flight end, holding the calls that come meanwhile. Keep
+        the version Together gave them as `version`."""
         session = await self._session()
+        self.version = None
         if self.moved:
-            await self._one(session.trainer.weights_sync_async(timeout=OPERATION_SECONDS))
+            synced = await self._one(
+                session.trainer.weights_sync_async(
+                    weight_sync_type=BACKGROUND_PUBLISH, timeout=OPERATION_SECONDS
+                )
+            )
+            self.version = int(synced.weights_version)
             self.moved = False
         return f"{PREFIX}{session.session_id}/{tag}"
 

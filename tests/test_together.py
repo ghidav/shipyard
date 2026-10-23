@@ -75,9 +75,18 @@ class FakeTogetherTrainer:
         self.calls.append(("optim_step", adam_params))
         self.waits.append(timeout)
 
-    async def weights_sync_async(self, *, timeout: float | None = SDK_WAIT) -> None:
-        self.calls.append(("weights_sync", None))
+    async def weights_sync_async(
+        self,
+        *,
+        weight_sync_type: str = "WEIGHT_SYNC_TYPE_SYNCHRONOUS",
+        timeout: float | None = SDK_WAIT,
+    ) -> Any:
+        """Sync the generator, answering the version its weights now are, as Together does: the
+        optimizer steps taken, as a string."""
+        self.calls.append(("weights_sync", weight_sync_type))
         self.waits.append(timeout)
+        steps = sum(name == "optim_step" for name, _ in self.calls)
+        return SimpleNamespace(weights_version=str(steps))
 
 
 def _scored(one: Any) -> Any:
@@ -172,6 +181,9 @@ async def test_a_run_on_together_trains_its_session_and_its_proxy_samples_it(
         "optim_step",
         "weights_sync",
     ]
+    # The trainer goes on while the generator takes the new weights.
+    assert resources.trainer.calls[2][1] == "WEIGHT_SYNC_TYPE_BACKGROUND_PUBLISH"
+    assert proxy.published[-1] == ("agent", "together://s1/sample-1", 1), "its version named"
     samples, chosen, outputs = resources.trainer.calls[0][1]
     assert chosen == {"type": "LOSS_TYPE_IMPORTANCE_SAMPLING"} and outputs is True
     inputs = {key for one in samples for key in one["loss_fn_inputs"]}

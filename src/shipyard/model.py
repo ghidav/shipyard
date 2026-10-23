@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
-from shipyard.groups import Sequence
+from shipyard.groups import Group, Sequence
 from shipyard.models.clients import CLIENTS, TOGETHER
 
 if TYPE_CHECKING:
@@ -109,6 +109,13 @@ class Model:
         if not sequences:
             return []
         return [torch.tensor(one) for one in await self._backend.logprobs(sequences)]
+
+    def lag(self, group: Group) -> int:
+        """Return how many times the model published new weights since the oldest that answered
+        a call of `group`: 0 for a group of the weights it serves now, or a model it does not
+        train. A recipe's staleness rule reads it."""
+        endpoint = self.endpoint
+        return endpoint.lag(group) if endpoint is not None else 0
 
 
 class Missing(KeyError):

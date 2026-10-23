@@ -23,7 +23,7 @@ from harbor.models.trial.config import (
     VerifierConfig,
 )
 
-from shipyard.groups import Group, Trial, grouped
+from shipyard.groups import Group, Pinned, Trial, grouped
 from shipyard.jobs.admit import judge
 from shipyard.jobs.harnesses import Harness
 from shipyard.jobs.hooks import hooks_of
@@ -176,6 +176,9 @@ class Job:
     harness: Harness | None = None
     #: The role of the model its trials run, which its spend is filed under.
     role: str = ""
+    #: The weights all its trials' calls take, for an evaluation's job; None when each call
+    #: takes the weights its model published last.
+    pinned: Pinned | None = None
     #: The renderer the proxy renders its trials' calls with; None for the model's own.
     renderer: str | None = None
     #: Grade a trial cut at its timeout by the verifier's reward, rather than mask it.
@@ -225,10 +228,12 @@ class HarborEngine:
         purpose: str = "training",
         step: int | None = None,
         role: str = "",
+        pinned: Pinned | None = None,
     ) -> list[Group]:
         """Run each task `attempts` times through `harness`, as one job, and return one group
         per task, in the order of `tasks`. The trials run the model `role` names, which
-        `endpoint` reaches, its calls rendered with `renderer`, carrying `modules`. The job is
+        `endpoint` reaches, its calls rendered with `renderer`, carrying `modules`; each call
+        takes the weights the model published last as it starts, or `pinned`'s. The job is
         named, judged and logged before this returns or raises. Raise `ValueError` before any
         trial runs for a rollout no trial could run, and `ProxyGone` or `NothingServed` once
         the job has ended, when the endpoint died, or served nothing to the role's last trials,
@@ -248,6 +253,7 @@ class HarborEngine:
             renderer=renderer,
             grade_timeouts=self.grade_timeouts,
             role=role,
+            pinned=pinned,
         )
         await self.run(job, list(tasks), attempts, endpoint=endpoint)
         self.logs.job(job, endpoint)
@@ -297,6 +303,7 @@ class HarborEngine:
                 trials_dir / config.trial_name,
                 renderer=job.renderer,
                 role=job.role,
+                pinned=job.pinned,
             )
             gate = Gate(self._sampling, first)
             async with self._sandboxes.held(first):

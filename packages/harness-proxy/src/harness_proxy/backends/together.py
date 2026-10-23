@@ -70,7 +70,24 @@ class Sampler:
         except ValueError as text_only:
             raise Refused(str(text_only)) from None
         result = await self.generator.sample_async(given, num_samples, wire_params(sampling_params))
-        return response(result)
+        found = response(result)
+        return Answer(found.sequences, found.prompt_cache_hit_tokens, versions_of(result))
+
+
+@dataclass(frozen=True)
+class Answer:
+    """A Together sample as a trial reads it: Tinker's sequences and cached prompt tokens, and
+    the policy versions that wrote it, in order; the lane names the weights from them."""
+
+    sequences: list[Any]
+    prompt_cache_hit_tokens: int
+    versions: tuple[int, ...] = ()
+
+
+def versions_of(result: Any) -> tuple[int, ...]:
+    """Return the policy versions a Together `SampleResult` says wrote it, in order: one for a
+    call the generator answered with one set of weights, as it always does a LoRA session's."""
+    return tuple(int(one.version) for one in getattr(result, "policy_segments", None) or ())
 
 
 def wire_input(model_input: Any) -> dict[str, Any]:

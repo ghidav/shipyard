@@ -22,8 +22,10 @@ from harness_proxy.rendering import complete
 from harness_proxy.trial import Trial
 from harness_proxy.wire import (
     HEALTH_PATH,
+    LANES_PATH,
     TRIALS_PATH,
     Opening,
+    Published,
     Served,
     health,
     new_token,
@@ -76,14 +78,25 @@ class Lane:
     session: str | None = None
     #: Sampling client factory for tests. None uses the backend's service.
     client_factory: ClientFactory | None = field(default=None, repr=False)
+    #: The weights the lane's model published last, which each call of a trial that follows the
+    #: lane takes as it starts; None for its base model.
+    served: str | None = None
 
     #: The backend's service, opened on `open`; a test may pass a fake one.
     _service: Any = field(default=None, repr=False)
     #: The renderers, by the name a trial is opened with; "" for the model's default.
     _renderers: dict[str, Any] = field(default_factory=dict, repr=False)
-    #: The sampling client on each weights open trials use, and how many of them use it.
+    #: The sampling client on each weights open trials and calls in flight use, and how many of
+    #: them use it.
     _clients: dict[str | None, list[Any]] = field(default_factory=dict, repr=False)
     _making: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    #: For a backend that serves only the weights published last: each version it gave, with
+    #: the weights published as it, in order of version.
+    _versions: list[tuple[int, str | None]] = field(default_factory=list, repr=False)
+    #: The weights published last without a version, such as the ones a run starts from: what
+    #: answered a call of a version before every one given. None for the base model, which the
+    #: lane serves until the first publish.
+    _unversioned: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         """Refuse a nameless lane, or an unknown backend."""
@@ -142,18 +155,54 @@ class Lane:
             return held[0]
 
     def release(self, weights: str | None) -> None:
-        """Let go of the sampling client on `weights` once no open trial uses them."""
+        """Let go of the sampling client on `weights` once no open trial or call uses them."""
         held = self._clients.get(weights)
         if held is not None:
             held[1] -= 1
             if held[1] <= 0:
                 del self._clients[weights]
 
+    def publish(self, published: Published) -> None:
+        """Have the calls of the trials that follow the lane take `published`'s weights from
+        now on; a call in flight keeps the weights it started with. `ValueError` for weights
+        under another backend's prefix."""
+        weights, prefix = published.weights, self.sampling.PREFIX
+        if weights is not None and not weights.startswith(prefix):
+            raise ValueError(f"{weights!r} is not a {prefix} path")
+        self.served = weights
+        if published.version is None:
+            self._unversioned = weights
+        else:
+            self._versions.append((published.version, weights))
+            self._versions.sort(key=lambda one: one[0])
+
+    async def lease(self) -> tuple[Any, str | None]:
+        """Return a sampling client on the weights the lane's model published last, held until
+        `release`, and those weights: what a call of a trial that follows the lane samples."""
+        weights = self.served
+        return await self.hold(weights), weights
+
+    def answered(self, weights: str | None, response: Any) -> str | None:
+        """Return the weights that answered a call sampled from `weights`. A backend that
+        serves only the weights published last names the version that wrote the reply, its
+        first when several did; the weights published as it, or as the last version before it,
+        answered it."""
+        versions = tuple(getattr(response, "versions", None) or ())
+        if not versions or not self._versions:
+            return weights
+        named = self._unversioned
+        for given, published in self._versions:
+            if given <= versions[0]:
+                named = published
+        return named
+
     def trial(self, opening: Opening, client: Any) -> Trial:
-        """Return the trial `opening` opens on the lane, which samples through `client`."""
+        """Return the trial `opening` opens on the lane, which samples through `client`, or,
+        when it follows the lane, through the weights it published last as each call starts."""
         return Trial(
             opening.trial,
             client,
+            lane=self if opening.follow else None,
             renderer=self.renderer_for(opening.renderer or ""),
             weights=opening.weights,
             temperature=self.temperature,
@@ -273,6 +322,7 @@ class Server:
             app.router.add_post(f"/v1{dialect.PATH}", self._serving(dialect))
         app.router.add_post(TRIALS_PATH, self._serve_open)
         app.router.add_post(f"{TRIALS_PATH}/{{trial}}/close", self._serve_close)
+        app.router.add_post(f"{LANES_PATH}/{{lane}}/serve", self._serve_publish)
         runner = web.AppRunner(app)
         await runner.setup()
         await web.TCPSite(runner, self.bind, self.bind_port).start()
@@ -327,7 +377,8 @@ class Server:
                 if held.opening == opening:
                     return held.token  # an open whose answer was lost, asked again
                 raise Refused(f"trial {opening.trial} is open already, as {held.opening}")
-            client = await lane.hold(opening.weights)
+            # A trial that follows the lane holds no weights of its own: each call leases them.
+            client = None if opening.follow else await lane.hold(opening.weights)
             token = new_token()
             self._open[opening.trial] = Opened(opening, token, lane.trial(opening, client), lane)
             self._by_token[_digest(token)] = opening.trial
@@ -336,7 +387,7 @@ class Server:
             "opened trial %s in lane %s on %s",
             opening.trial,
             lane.name,
-            opening.weights or lane.model,
+            "the weights published last" if opening.follow else opening.weights or lane.model,
         )
         return token
 
@@ -352,7 +403,8 @@ class Server:
         if held is None:
             return self._closed[name][1]
         self._by_token.pop(_digest(held.token), None)
-        held.lane.release(held.opening.weights)
+        if not held.opening.follow:
+            held.lane.release(held.opening.weights)
         answer = records_answer(held.trial.records)
         self._closed[name] = (now, answer)
         logger.info("closed trial %s with %d records", name, len(held.trial.records))
@@ -426,6 +478,27 @@ class Server:
         response.enable_compression()
         return response
 
+    async def _serve_publish(self, request: Any) -> Any:
+        """Have the trials that follow the lane the path names take the weights the body names
+        from their next call; 400 for a lane the proxy does not serve, or weights it cannot."""
+        try:
+            body = await request.json()
+        except Exception:
+            body = None  # which `Published.of` refuses as it does any body that is not a publish
+        try:
+            published = Published.of(body)
+            lane = self.lane(request.match_info["lane"])
+            lane.publish(published)
+        except (ValueError, Refused) as refused:
+            raise web.HTTPBadRequest(reason=str(refused)) from None
+        logger.info(
+            "lane %s serves %s from now on%s",
+            lane.name,
+            published.weights or lane.model,
+            "" if published.version is None else f", as version {published.version}",
+        )
+        return web.json_response({"lane": lane.name, **published.body})
+
     def _control_middleware(self) -> Any:
         """Return the first middleware: health, then the run's routes behind the control token."""
 
@@ -433,10 +506,14 @@ class Server:
         async def control(request: Any, handler: Any) -> Any:
             if request.path == HEALTH_PATH and request.method == "GET":
                 return web.json_response(health({one.name: one.reported() for one in self.lanes}))
-            if request.path != TRIALS_PATH and not request.path.startswith(f"{TRIALS_PATH}/"):
+            runs = request.path == TRIALS_PATH or request.path.startswith(
+                (f"{TRIALS_PATH}/", f"{LANES_PATH}/")
+            )
+            if not runs:
                 return await handler(request)
             # Every sandbox holds a trial's token, so the model under training must not be able
-            # to open or close trials, or read records: those take the run's own token.
+            # to open or close trials, read records, or move a lane's weights: those take the
+            # run's own token.
             if not _matches(_bearer(request), self.control_token):
                 return web.json_response({"error": "invalid control token"}, status=401)
             # The route's own handler, past the trial token's middleware.

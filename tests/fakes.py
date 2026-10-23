@@ -199,8 +199,13 @@ class FakeProxy:
     default: list[Record] | None = None
     failing: set[str] = field(default_factory=set)
     placed: list[tuple[str, Any, dict[str, Any]]] = field(default_factory=list)
-    #: Each trial opened, in order: its name, lane, renderer and weights.
+    #: Each trial opened, in order: its name, lane, renderer and weights: for a trial that
+    #: follows its lane, the weights the lane served as it opened, which its first call takes.
     opened: list[tuple[str, str | None, str | None, str | None]] = field(default_factory=list)
+    #: The trials opened to follow their lane, by name.
+    following: set[str] = field(default_factory=set)
+    #: Each publish, in order: the lane, its new weights, and the version a backend gave them.
+    published: list[tuple[str, str | None, int | None]] = field(default_factory=list)
     #: The trials closed, in order.
     closed: list[str] = field(default_factory=list)
     #: Lanes reported by `/healthz`: the ones the run started it with, or a test's for a
@@ -270,9 +275,20 @@ class FakeProxy:
         lane: str | None = None,
         renderer: str | None = None,
         weights: str | None = None,
+        follow: bool = False,
     ) -> str:
+        if follow:
+            self.following.add(trial)
+            weights = self.served(lane)
         self.opened.append((trial, lane, renderer, weights))
         return f"token-{trial}"
+
+    async def serve(self, lane: str, weights: str | None, version: int | None = None) -> None:
+        self.published.append((lane, weights, version))
+
+    def served(self, lane: str | None) -> str | None:
+        """The weights `lane` published last; None for its base model."""
+        return next((w for named, w, _ in reversed(self.published) if named == lane), None)
 
     async def close(self, trial: str) -> list[Record]:
         self.closed.append(trial)

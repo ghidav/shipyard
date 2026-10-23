@@ -25,12 +25,14 @@ from harness_proxy.wire import (
     TRIALS_PATH,
     TUNNEL_LINE,
     Opening,
+    Published,
     Record,
     Served,
     closing_path,
     lanes_in,
     new_token,
     records_in,
+    serving_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -223,13 +225,22 @@ class Proxy:
         lane: str | None = None,
         renderer: str | None = None,
         weights: str | None = None,
+        follow: bool = False,
     ) -> str:
         """Open `trial` on `lane`, the only one for None, rendered with `renderer`, the lane's
-        first for None, and sampled from `weights`, its base model for None; return the token
-        its harness calls with. `RuntimeError` if the proxy refuses it."""
-        opening = Opening(trial, lane, renderer, weights)
+        first for None, and sampled from `weights`, its base model for None; or, with `follow`,
+        each call from the weights the lane's model published last when it starts. Return the
+        token its harness calls with. `RuntimeError` if the proxy refuses it."""
+        opening = Opening(trial, lane, renderer, weights, follow)
         answer = await self._control(TRIALS_PATH, opening.body, what=f"open trial {trial}")
         return str(answer["token"])
+
+    async def serve(self, lane: str, weights: str | None, version: int | None = None) -> None:
+        """Have the trials that follow `lane` take `weights`, its model's new ones, from their
+        next call on; `version` is the one a backend that serves only the weights published last
+        gave them. `RuntimeError` if the proxy refuses it."""
+        body = Published(weights, version).body
+        await self._control(serving_path(lane), body, what=f"publish {weights} in lane {lane}")
 
     async def close(self, trial: str) -> list[Record]:
         """Close `trial` and return its records, in request order. `RuntimeError` for a trial

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any
@@ -15,7 +17,7 @@ from shipyard.records import Records, served_nothing
 
 if TYPE_CHECKING:
     from shipyard.config import Config, Rollout
-    from shipyard.groups import Trial
+    from shipyard.groups import Group, Trial
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +152,8 @@ class ProxyEndpoint:
 @dataclass
 class LaneEndpoint:
     """A model the run's proxy serves, in a lane of its own: it opens each trial `rollout` runs
-    of the model, on the weights the model serves then, and closes it for its records."""
+    of the model, whose calls take the weights the model published last as each starts, or an
+    evaluation's the weights it measures, and closes it for its records."""
 
     proxy: ProxyEndpoint
     #: The lane's name, which a trial's address gives.
@@ -170,16 +173,24 @@ class LaneEndpoint:
     #: The proxy's backend settings for the lane beyond Tinker's: for Together, the backend
     #: and the session, which the model's client opens before the proxy starts.
     backend: dict[str, str] = field(default_factory=dict)
-    #: The weights the model serves now, which each trial opened from now on samples; None
-    #: for the base model.
+    #: The weights the model published last, which each call takes as it starts; None for the
+    #: base model.
     told: str | None = None
     #: The trials open on the lane, by name.
     trials: set[str] = field(default_factory=set)
+    #: The weights the model published, in order, the ones the run starts from first: what a
+    #: group's lag is counted in.
+    published: list[str | None] = field(default_factory=list)
+    #: Evaluations under way that hold the weights they measure on the lane.
+    _pins: int = 0
+    #: Set while no evaluation holds weights on the lane.
+    _unpinned: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
 
     def __post_init__(self) -> None:
-        """Open trials on a `tinker://` path from the start."""
+        """Sample a `tinker://` path from the start."""
         if self.told is None and self.load.startswith("tinker://"):
             self.told = self.load
+        self._unpinned.set()
 
     @property
     def provider(self) -> str | None:
@@ -217,35 +228,69 @@ class LaneEndpoint:
         served = proxy.lanes.get(self.name) if proxy is not None else None
         return served.budget if served is not None else None
 
-    def publishing(self) -> None:
-        """Raise `RuntimeError` if the model cannot publish new weights now: Together serves
-        the weights a session published last, so a trial open on the old ones would be
-        answered by the new."""
-        if self.backend.get("backend") == ONE_VERSION and self.trials:
-            raise RuntimeError(
-                f"[models.{self.name}] serves on Together, which samples the weights published "
-                f"last, and {len(self.trials)} of its trials are open on the ones before: "
-                "publish once they close"
-            )
+    async def publishable(self) -> None:
+        """Wait until the model can publish new weights: at once, but on Together, which serves
+        only the weights a session published last, once no evaluation holds the ones it
+        measures. A call in flight keeps the weights it started with either way."""
+        if self.backend.get("backend") == ONE_VERSION:
+            await self._unpinned.wait()
 
-    def serve(self, path: str | None) -> None:
-        """Open the lane's trials from now on at the sampler weights at `path`, or at its base
-        model for None; a trial open already keeps the weights it was opened on."""
+    @contextmanager
+    def pinned(self) -> Iterator[None]:
+        """Hold the weights the model serves now for an evaluation measuring them: on Together,
+        the model publishes no new weights until it lets go."""
+        self._pins += 1
+        self._unpinned.clear()
+        try:
+            yield
+        finally:
+            self._pins -= 1
+            if not self._pins:
+                self._unpinned.set()
+
+    async def serve(self, path: str | None, version: int | None = None) -> None:
+        """Publish the model's new weights at `path`, or its base model for None: every call
+        that starts from now on takes them, but an evaluation's. `version` is the one a backend
+        that serves only the weights published last gave them, which names the weights that
+        answered each call."""
         self.told = path
+        self.published.append(path)
+        self.proxy.alive()
+        await self.proxy.client().serve(self.name, path, version)
 
     async def open(self, trial: Trial) -> Connection:
-        """Open `trial` on the proxy, on the weights the model serves now and rendered with its
-        renderer, and return what its harness dials."""
+        """Open `trial` on the proxy, rendered with its renderer, its every call taking the
+        weights the model published last as it starts, or its pinned ones; return what its
+        harness dials."""
         self.proxy.alive()
+        pinned = trial.pinned
         try:
             token = await self.proxy.client().open(
-                trial.name, lane=self.name, renderer=trial.renderer, weights=self.told
+                trial.name,
+                lane=self.name,
+                renderer=trial.renderer,
+                weights=None if pinned is None else pinned.weights,
+                follow=pinned is None,
             )
         except Exception:
             self.proxy.alive()  # an open that failed because the proxy died says so
             raise
         self.trials.add(trial.name)
         return self.connection(trial, token)
+
+    def lag(self, group: Group) -> int:
+        """Return how many times the model published new weights since the oldest that answered
+        a completion of `group`'s graded trials: 0 for a group of the weights it serves now, or
+        one whose weights it does not know."""
+        places = {weights: at for at, weights in enumerate(self.published)}
+        found = [
+            places[weights]
+            for trial in group.graded
+            for one in trial.sequences
+            for weights in one.weights
+            if weights in places
+        ]
+        return len(self.published) - 1 - min(found) if found else 0
 
     def connection(self, trial: Trial, token: str = PREFLIGHT_TOKEN) -> Connection:
         """Return what a trial's harness dials: the proxy's address, as the harness reaches
@@ -333,6 +378,10 @@ class ProviderEndpoint:
     async def close(self, trial: Trial) -> Records:
         """Return the records of a trial its provider served: none, as it keeps none for the run."""
         return Records.unrecorded()
+
+    def lag(self, group: Group) -> int:
+        """Return 0: a provider's model publishes no weights of the run's."""
+        return 0
 
     def check(self, job: str, trials: Sequence[Trial]) -> None:
         """Do nothing: the run keeps no proxy for a provider's model, so none can fail it."""

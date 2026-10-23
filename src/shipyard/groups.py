@@ -70,11 +70,22 @@ class Sequence:
     trial: Trial = field(repr=False)
     #: One advantage per target token. `update` trains on the sequences that have one.
     advantages: torch.Tensor | None = None
+    #: The weights that answered each completion, one per span; None for a base model.
+    weights: tuple[str | None, ...] = ()
 
     @property
     def targets(self) -> tuple[int, ...]:
         """Positions of every completion token, in chain order."""
         return tuple(at for start, end in self.spans for at in range(start, end))
+
+
+@dataclass(frozen=True)
+class Pinned:
+    """Weights a trial's calls all take, whatever the model publishes meanwhile, as an
+    evaluation's take the weights it measures."""
+
+    #: The weights, under the backend's prefix; None for the base model.
+    weights: str | None
 
 
 @dataclass(eq=False)
@@ -96,6 +107,9 @@ class Trial:
     renderer: str | None = None
     #: The role of the model it ran, whose sampler's logprobs its sequences hold.
     role: str = ""
+    #: The weights all its calls take, for an evaluation's trial; None for one whose every call
+    #: takes the weights its model published last when the call starts.
+    pinned: Pinned | None = None
 
     @property
     def name(self) -> str:
@@ -239,7 +253,9 @@ def _sequences(trial: Trial) -> list[Sequence]:
     if not trial.records.recorded:
         return []
     return [
-        Sequence(one.tokens, one.spans, one.sampled_logprobs, one.images, trial)
+        Sequence(
+            one.tokens, one.spans, one.sampled_logprobs, one.images, trial, weights=one.weights
+        )
         for one in trial.records.chains()
     ]
 

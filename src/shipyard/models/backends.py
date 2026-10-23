@@ -174,14 +174,18 @@ class Session:
             entropy=drift["optim/entropy"],
         )
 
+    async def publishable(self) -> None:
+        """Wait until the model can publish new weights: on Together, once no evaluation holds
+        the ones it measures."""
+        await self.endpoint.publishable()
+
     async def serve(self, tag: str) -> str | None:
-        """Publish the model's weights as `tag`, open its trials from now on at them, and return
-        their path: None for the base model, served as it is. Raise `RuntimeError` before
-        publishing on Together while one of its trials is open, which the new weights would
-        answer."""
-        self.endpoint.publishing()
+        """Publish the model's weights as `tag`, once it can, and have every call that starts
+        from then on take them, but an evaluation's; return their path: None for the base model,
+        served as it is."""
+        await self.publishable()
         path = await self.client.publish(tag)
-        self.endpoint.serve(path)
+        await self.endpoint.serve(path, getattr(self.client, "version", None))
         return path
 
     async def save(self, tag: str, *, keep: bool) -> Saved:

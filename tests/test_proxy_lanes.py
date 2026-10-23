@@ -48,16 +48,18 @@ async def test_the_proxy_starts_with_each_lane_whole_and_a_trial_is_opened_on_it
     assert "weights" not in theirs, "each trial names the weights it is opened on"
     assert ours["metadata"] == theirs["metadata"] == {"shipyard_run": tmp_path.name}
     first, second = trials(tmp_path, "alpha", "beta")
+    assert (lane.provider, lane.model, lane.told) == ("tinker", "Qwen/Qwen3-32B", WEIGHTS)
+    await lane.serve(lane.told)  # the run publishes each model's starting weights once it is up
     dialled = await lane.open(first)
     assert dialled.model == "openai/Qwen/Qwen3-32B"
     assert dialled.env["OPENAI_API_KEY"] == f"token-{first.name}"
-    assert (lane.provider, lane.model, lane.told) == ("tinker", "Qwen/Qwen3-32B", WEIGHTS)
-    lane.serve("tinker://r/sampler_weights/step-2")
+    await lane.serve("tinker://r/sampler_weights/step-2")
     await lane.open(second)
     assert fake.opened == [
         (first.name, "teacher", None, WEIGHTS),
         (second.name, "teacher", None, "tinker://r/sampler_weights/step-2"),
-    ]
+    ], "each opened as its lane served, its calls taking what it publishes"
+    assert fake.following == {first.name, second.name}
     with pytest.raises(ValueError, match="two models would serve in the proxy's lane 'teacher'"):
         held.lane("teacher", WEIGHTS, opened=TEACHER)
 

@@ -4,6 +4,7 @@ with its own credentials."""
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +14,8 @@ import pytest
 from harness_proxy.wire import CONTROL_TOKEN_ENV, Served
 from proxies import MODEL
 from shipyard.config import Config, ModelTable
-from shipyard.groups import Connection, Trial
+from shipyard.groups import Connection, Group, Pinned, Trial, grouped
+from shipyard.jobs.admit import Verdict
 from shipyard.jobs.harnesses import Harness
 from shipyard.models.clients.tinker import TinkerClient
 from shipyard.models.endpoints import (
@@ -248,34 +250,57 @@ async def test_closing_a_trial_takes_its_records(fake: FakeProxy, tmp_path: Path
     assert [len(records) for records in taken] == [2, 1, 1]
 
 
-async def test_a_trial_keeps_the_weights_it_was_opened_on_and_one_opened_later_takes_the_new(
+async def test_a_trial_follows_its_lane_and_an_evaluations_stays_on_the_weights_it_measures(
     fake: FakeProxy, tmp_path: Path
 ) -> None:
     held = agent(served(), tmp_path)
     await held.proxy.open()
-    early, late, last = trials(tmp_path, "alpha", "beta", "gamma")
-    await held.open(early)
-    held.serve("tinker://w/step-2")
-    await held.open(late)
-    held.serve(None)
-    await held.open(last)
-    assert fake.weights == [None, "tinker://w/step-2", None]
-    held.publishing()  # Tinker serves several versions at once: a trial open is no matter
+    training, measuring = trials(tmp_path, "alpha", "beta")
+    measuring.pinned = Pinned("tinker://w/step-1")
+    await held.serve("tinker://w/step-1")
+    await held.open(training)
+    await held.open(measuring)
+    await held.serve("tinker://w/step-2", 7)
+    assert fake.following == {training.name}, "a training trial's calls take what is published"
+    assert fake.weights == ["tinker://w/step-1", "tinker://w/step-1"], "an evaluation's its own"
+    assert fake.published == [(AGENT, "tinker://w/step-1", None), (AGENT, "tinker://w/step-2", 7)]
+    assert held.published == ["tinker://w/step-1", "tinker://w/step-2"]
+    await asyncio.wait_for(held.publishable(), 1)  # Tinker serves several versions at once
 
 
-async def test_together_refuses_to_publish_while_one_of_its_trials_is_open(
+async def test_on_together_publishing_waits_while_an_evaluation_holds_the_weights_it_measures(
     fake: FakeProxy, tmp_path: Path
 ) -> None:
     held = agent(served(), tmp_path)
     held.backend = {"backend": "together", "session": "s1"}
     await held.proxy.open()
     [trial] = trials(tmp_path, "alpha")
-    held.publishing()
     await held.open(trial)
-    with pytest.raises(RuntimeError, match="1 of its trials are open on the ones before"):
-        held.publishing()
-    await held.close(trial)
-    held.publishing()
+    await asyncio.wait_for(held.publishable(), 1)  # a training trial's next call takes the new
+    with held.pinned():
+        waiting = asyncio.create_task(held.publishable())
+        await asyncio.sleep(0.01)
+        assert not waiting.done(), "Together serves one version, and the evaluation holds it"
+    await asyncio.wait_for(waiting, 1)
+
+
+async def test_a_groups_lag_counts_what_the_model_published_since_the_oldest_weights_it_took(
+    fake: FakeProxy, tmp_path: Path
+) -> None:
+    held = agent(served(), tmp_path)
+    await held.proxy.open()
+    for step in ("start", "step-1", "step-2", "step-3"):
+        await held.serve(f"tinker://w/{step}")
+    batch = trials(tmp_path, "alpha", "alpha", "alpha", "beta", "gamma")
+    answered = ["step-2", "step-1", "start", "step-3", "elsewhere"]
+    for trial, step in zip(batch, answered, strict=True):
+        trial.records = Records([made(weights=f"tinker://w/{step}")])
+        trial.verdict = Verdict(1.0, None, None)
+    batch[2].verdict = Verdict(None, "env_error", None)  # a masked trial trains on nothing
+    alpha, beta, gamma = grouped(batch)
+    assert held.lag(alpha) == 2, "step-1 answered it, and the model published twice since"
+    assert held.lag(beta) == 0, "the weights the model serves now answered it"
+    assert held.lag(gamma) == 0, "no weights the model published answered it"
 
 
 async def test_a_close_that_fails_fails_the_run_rather_than_masking_a_trial(
@@ -327,6 +352,7 @@ async def test_a_providers_endpoint_gives_a_trial_the_model_alone_and_records_no
     assert dialled == held.connection(trial) == Connection(model="openrouter/some-model")
     assert held.budget is None and not (await held.close(trial)).recorded
     held.check("j", [trial])
+    assert held.lag(Group(trial.task, [trial])) == 0, "it publishes no weights of the run's"
     named = ProviderEndpoint("claude-x", "anthropic").connection(trial).model
     assert named == "anthropic/claude-x", "Harbor's agents take the model under its provider"
 
