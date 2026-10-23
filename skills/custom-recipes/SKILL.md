@@ -23,7 +23,7 @@ Start from the shipped recipe closest to your algorithm; `shipyard init` copies 
 | `modules` (a top-level key) | a folder of `PROMPT.md` and `skills/<name>/SKILL.md`, relative to the config, that every trial carries |
 | `[models.<role>]` | one table per model the recipe reads, by **role** (`agent`, `teacher`, ...): `model`; `provider`, `tinker` (default) or `together`, which a run can train, or an API such as `anthropic`, which it only calls; `from_checkpoint`; `renderers`; for a model the recipe trains, `learning_rate` (required), `warmup`, `lora_rank`; sampling: `temperature`, `max_tokens`, `max_context`, ... |
 | `[data]` | `train` and `test`, dataset names: folders of Harbor tasks under `./tasks`; `batch_size`, tasks a step; `seed` |
-| `[rollout]` | how trials run: `sandbox` (`docker` on this machine, or a cloud one such as `modal`), `concurrency`, `timeout`, `setup_timeout`, `secrets` |
+| `[rollout]` | how trials run: `sandbox` (`docker` on this machine, or a cloud one such as `modal`), `concurrency` (trials sampling at once), `sandboxes` (trials alive at once, getting ready or running tests while others sample), `timeout`, `setup_timeout`, `secrets` |
 | `[recipe]` | `steps`, `substeps`, `evaluate_every`, `grade_timeouts`, and the trainer's own keys, such as its `harness` and `group_size` |
 | `[checkpoints]` | `every` this many steps; `ttl_hours` a save lives |
 | `[logging.wandb]` | `project`, `entity` |
@@ -96,7 +96,7 @@ Override it for a curriculum: return any list of task directories, such as some 
 - A recipe that wants several harnesses or renderers runs several rollouts, at once with `asyncio.gather`, and puts their groups together as it means them.
 - Any model the run holds can be rolled out, a provider's model through its harness with the harness's own credentials. To ask a model for text, write a Harbor task (`instruction.md`, `task.toml`, `environment/`, `tests/`) whose tests copy what the model wrote into the trial's `verifier/`, roll it out, and read it back from `trial.dir / "verifier"`: gepa's `reflect.py`.
 
-Roll a batch out in one call: shipyard runs up to `[rollout] concurrency` trials at once, and raises only when no trial of the call reached the model, so a one-task call has few trials, and a broken sandbox or two can end the run.
+Roll a batch out in one call, or one task a call from a loop of your own: shipyard keeps up to `[rollout] sandboxes` trials alive and `[rollout] concurrency` of them sampling, an evaluation's trials first, and raises once as many trials in a row as sample at once reached no model.
 
 A trial offers `reward`, `graded`, `sequences`, `sampled_tokens`, `instruction`, `transcript`, `steps` (Harbor's trajectory), `test_output`, `result` (Harbor's `result.json`, every key of the verifier's rewards under `verifier_result.rewards`) and `dir`. Its `transcript` includes the prompt and skills it carried, and `test_output` can print the tests' expected answers: filter both before a model reads them.
 

@@ -71,5 +71,6 @@ async def test_a_trial_that_cannot_be_opened_stops_its_job_and_the_trials_beside
         await _run(engine, "j", batch, 1, endpoint=endpoint)
     (alpha,) = [name for name, *_ in proxy.opened]
     assert alpha.startswith("alpha__") and harbor.cancelled == [alpha], "stopped, not left running"
-    assert proxy.closed == [], "a run that is ending closes nothing more"
+    assert proxy.closed == [alpha], "closed as it stops, or the proxy would keep it open"
+    assert endpoint.trials == set(), "none left open"
     assert [c.trial_name for c in harbor.configs] == [alpha], "beta never started"

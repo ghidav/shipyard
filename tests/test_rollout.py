@@ -136,25 +136,24 @@ async def test_a_rollout_runs_one_job_and_returns_a_group_per_task_in_the_tasks_
     assert (row["trials"], row["tasks"]) == (4, 2)
 
 
-async def test_a_job_the_proxy_served_nothing_fails_its_rollout_though_one_beside_it_was_served(
+async def test_the_proxy_is_judged_on_a_roles_last_trials_as_many_as_sample_at_once(
     tmp_path: Path,
 ) -> None:
-    """Each rollout's job is checked alone: one that reached nothing raises, and the one
-    gathered beside it, which was served, still returns its groups."""
+    """A job served nothing beside trials that were served goes on; once as many trials in a
+    row as sample at once were served nothing, the rollout that ends the row raises."""
     tasks = _tasks(tmp_path, "alpha", "beta")
-    engine, _, run = _engine(tmp_path)
-    answered = Answered("r-0001")  # gather starts the rollouts in order: claude-code's is second
-    served, silent = await asyncio.gather(
-        engine.rollout(tasks, attempts=1, harness=PI, endpoint=answered),
-        engine.rollout(tasks, attempts=1, harness=CLAUDE, endpoint=answered),
-        return_exceptions=True,
+    engine, _, run = _engine(tmp_path)  # four sample at once
+    answered = Answered("r-0001", "r-0002")
+    served = await engine.rollout(tasks, attempts=1, harness=PI, endpoint=answered)
+    unlucky = await engine.rollout(tasks, attempts=1, harness=CLAUDE, endpoint=answered)
+    with pytest.raises(NothingServed, match="job r-0002: no trial reached the proxy"):
+        await engine.rollout(tasks, attempts=1, harness=PI, endpoint=answered)
+    assert [g.task.name for g in served] == [g.task.name for g in unlucky] == ["alpha", "beta"]
+    assert answered.checked == [("r-0000", 0), ("r-0001", 4), ("r-0002", 4)], (
+        "alive after every job; judged once four trials have run, on the last four"
     )
-    assert isinstance(silent, NothingServed)
-    assert str(silent).startswith("job r-0001: no trial reached the proxy")
-    assert isinstance(served, list) and [g.task.name for g in served] == ["alpha", "beta"]
-    assert sorted(answered.checked) == [("r-0000", 2), ("r-0001", 2)], "each over its own trials"
-    jobs = {row["harness"]: row["job"] for row in files.read(run / files.JOBS)}
-    assert jobs == {"pi@0.85.1": "r-0000", "claude-code@2.1.0": "r-0001"}, "both logged"
+    jobs = [row["job"] for row in files.read(run / files.JOBS)]
+    assert jobs == ["r-0000", "r-0001", "r-0002"], "each logged"
 
 
 async def test_a_rollout_no_trial_could_run_is_refused_before_any_runs(tmp_path: Path) -> None:

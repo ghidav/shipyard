@@ -4,7 +4,10 @@ import asyncio
 import copy
 import logging
 import os
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections import deque
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from importlib.util import find_spec
 from pathlib import Path
@@ -59,6 +62,89 @@ PACKAGES = {
 
 #: Runs one trial: Harbor's `Trial` by default, or a stand-in in tests.
 TrialRunner = Callable[[TrialConfig], Awaitable[Any]]
+#: What a rollout's purpose is when its trials are an evaluation's: they take a slot first.
+EVALUATION = "evaluation"
+#: Seconds a trial the run stopped waits to be closed on its endpoint: a dead proxy refuses
+#: at once, and a hung one should not hold the run's end.
+CLOSE_ON_STOP = 10.0
+
+
+class Slots:
+    """A limit on trials at once. A slot that frees goes to a waiting trial of an evaluation
+    before any other, and to the others in the order they asked."""
+
+    def __init__(self, size: int) -> None:
+        self.size = size
+        #: Slots held now.
+        self.used = 0
+        self._waiting: dict[bool, deque[asyncio.Future[None]]] = {True: deque(), False: deque()}
+
+    async def acquire(self, first: bool = False) -> None:
+        """Wait for a slot; `first` for an evaluation's trial."""
+        if self.used < self.size and not any(self._waiting.values()):
+            self.used += 1
+            return
+        waiter: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self._waiting[first].append(waiter)
+        try:
+            await waiter
+        except asyncio.CancelledError:
+            if waiter.done() and not waiter.cancelled():
+                self.release()  # handed a slot as it was cancelled: pass it on
+            else:
+                self._waiting[first].remove(waiter)
+            raise
+
+    def release(self) -> None:
+        """Give a slot back: to the next waiting trial, else to the limit."""
+        for first in (True, False):
+            waiting = self._waiting[first]
+            while waiting:
+                waiter = waiting.popleft()
+                if not waiter.done():
+                    waiter.set_result(None)  # the slot passes on, held still
+                    return
+        self.used -= 1
+
+    @asynccontextmanager
+    async def held(self, first: bool = False) -> AsyncIterator[None]:
+        """Hold a slot for the block."""
+        await self.acquire(first)
+        try:
+            yield
+        finally:
+            self.release()
+
+
+@dataclass
+class Gate:
+    """A trial's turn to sample. At its agent's start it waits for a slot of the sampling limit,
+    and at its agent's end it gives the slot back, before its tests run. The engine sets the gate
+    of the trial a runner runs in `GATE`; Harbor's trial calls it at those events."""
+
+    slots: Slots
+    #: Whether the trial is an evaluation's, which takes a slot first.
+    first: bool = False
+    #: Whether it holds a slot now.
+    held: bool = False
+
+    async def start(self, event: Any = None) -> None:
+        if not self.held:
+            await self.slots.acquire(self.first)
+            self.held = True
+
+    async def end(self, event: Any = None) -> None:
+        self.release()
+
+    def release(self) -> None:
+        """Give the slot back, if held: at the agent's end, or as the trial ends otherwise."""
+        if self.held:
+            self.held = False
+            self.slots.release()
+
+
+#: The gate of the trial the runner in this task runs; None outside one.
+GATE: ContextVar[Gate | None] = ContextVar("gate", default=None)
 
 
 class Endpoint(Protocol):
@@ -119,7 +205,13 @@ class HarborEngine:
         if run_trial is None:  # Harbor's trials start the sandbox; a stand-in starts none
             installed(self.sandbox)
         self.progress = Bars()
-        self._limit = asyncio.Semaphore(rollout.concurrency)
+        #: Trials alive at once, from their sandbox's start to their tests' end.
+        self._sandboxes = Slots(rollout.alive)
+        #: Trials sampling at once, from their agent's start to its end.
+        self._sampling = Slots(rollout.concurrency)
+        #: The last trials of each role, as many as sample at once, which its endpoint checks
+        #: it served.
+        self._recent: dict[str, deque[Trial]] = {}
 
     async def rollout(
         self,
@@ -139,7 +231,8 @@ class HarborEngine:
         `endpoint` reaches, its calls rendered with `renderer`, carrying `modules`. The job is
         named, judged and logged before this returns or raises. Raise `ValueError` before any
         trial runs for a rollout no trial could run, and `ProxyGone` or `NothingServed` once
-        the job has ended, when the endpoint died or served it nothing."""
+        the job has ended, when the endpoint died, or served nothing to the role's last trials,
+        as many as sample at once."""
         if self.logs is None:
             raise RuntimeError("a rollout writes its job's rows: build the engine with `logs`")
         if attempts < 1:
@@ -158,7 +251,11 @@ class HarborEngine:
         )
         await self.run(job, list(tasks), attempts, endpoint=endpoint)
         self.logs.job(job, endpoint)
-        endpoint.check(job.name, job.trials)
+        recent = self._recent.setdefault(role, deque(maxlen=self._sampling.size))
+        recent.extend(job.trials)
+        # The endpoint checks it is alive after every job, and that it served something once
+        # as many trials in a row as sample at once have run: one silent trial goes on.
+        endpoint.check(job.name, list(recent) if len(recent) == recent.maxlen else [])
         return grouped(job.trials)
 
     async def run(
@@ -189,6 +286,7 @@ class HarborEngine:
         if self.sandbox == "modal":
             os.environ.setdefault(MODAL_IMAGE_BUILDER, MODAL_IMAGE_BUILDER_VERSION)
         run_one = self.run_trial if self.run_trial is not None else _run_trial
+        first = job.purpose == EVALUATION  # an evaluation's trials take a slot that frees first
 
         async def one(task: Path) -> Trial:
             config = _trial_config(task, trials_dir=trials_dir, agent=agent, sandbox=self.sandbox)
@@ -200,7 +298,8 @@ class HarborEngine:
                 renderer=job.renderer,
                 role=job.role,
             )
-            async with self._limit:
+            gate = Gate(self._sampling, first)
+            async with self._sandboxes.held(first):
                 held = await self.secrets.acquire(trial)
                 for name in held:  # Harbor fills the task's `${NAME}` from here first
                     os.environ.setdefault(name, "")
@@ -208,18 +307,23 @@ class HarborEngine:
                     # An open that fails stops the run: the proxy is gone, or cannot serve
                     # the weights.
                     dialled = connected(config, await endpoint.open(trial))
+                    entered = GATE.set(gate)
                     try:
                         await run_one(holding(dialled, held))
                     except asyncio.CancelledError:
                         current = asyncio.current_task()
                         if current is None or current.cancelling():
-                            raise  # ours: the run is stopping, and its proxy with it
+                            await _closed(endpoint, trial)  # ours: the run is stopping
+                            raise
                         # A cancellation not ours fails only this trial.
                         logger.warning(
                             "trial %s ended in a cancellation it did not own", trial.name
                         )
                     except Exception:
                         logger.exception("trial %s could not run", trial.name)
+                    finally:
+                        gate.release()
+                        GATE.reset(entered)
                     trial.records = await endpoint.close(trial)
                 finally:
                     if held:
@@ -291,14 +395,31 @@ def preflight(config: TrialConfig, endpoint: Endpoint, harness: Harness, job: st
 
 
 async def _run_trial(config: TrialConfig) -> Any:
-    """Create and run a Harbor trial, with its task's hooks."""
+    """Create and run a Harbor trial, with its task's hooks, and its gate: its agent waits for
+    its turn to sample once its sandbox and harness are ready, and gives it back before its
+    tests run."""
+    from harbor.trial.hooks import TrialEvent
     from harbor.trial.trial import Trial as HarborTrial
 
     quiet_litellm()
     trial = await HarborTrial.create(config)
     for event, hook in hooks_of(Path(str(config.task.path))).items():
         trial.add_hook(event, hook)
+    gate = GATE.get()
+    if gate is not None:
+        trial.add_hook(TrialEvent.AGENT_START, gate.start)
+        trial.add_hook(TrialEvent.AGENT_END, gate.end)
     return await trial.run()
+
+
+async def _closed(endpoint: Endpoint, trial: Trial) -> None:
+    """Close a trial its run stopped on the endpoint, which would keep it open otherwise; one
+    that will not close within `CLOSE_ON_STOP` seconds is let be, as the run is stopping."""
+    try:
+        async with asyncio.timeout(CLOSE_ON_STOP):
+            trial.records = await asyncio.shield(endpoint.close(trial))
+    except BaseException:  # noqa: BLE001 - the run is stopping: say so and go on
+        logger.warning("trial %s could not be closed as its run stopped", trial.name)
 
 
 def _trial_config(task: Path, *, trials_dir: Path, agent: AgentConfig, sandbox: str) -> TrialConfig:

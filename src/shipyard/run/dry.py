@@ -93,9 +93,11 @@ async def models(found: Sequence[Model]) -> Checked:
 
 
 def rollout(config: Config, tasks: Sequence[Path]) -> Resolved:
-    """The values `[rollout]` leaves to Harbor: each task's own agent timeout, and each
-    harness's setup timeout."""
+    """The values `[rollout]` leaves to the run: as many sandboxes as trials sampling, each
+    task's own agent timeout, and each harness's setup timeout."""
     values: Resolved = {}
+    if config.rollout.sandboxes is None:
+        values[("rollout", "sandboxes")] = config.rollout.concurrency
     if config.rollout.timeout is None:
         values[("rollout", "timeout")] = timeout(tasks)
     if config.rollout.setup_timeout is None:

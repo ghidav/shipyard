@@ -14,6 +14,7 @@ from pydantic import (
     PrivateAttr,
     ValidationError,
     field_validator,
+    model_validator,
 )
 
 from shipyard.run import files
@@ -146,7 +147,11 @@ class Rollout(_Table):
     """The `[rollout]` table: how trials run, and where the proxy the models are served in is."""
 
     sandbox: str = "docker"
+    #: Trials sampling at once: from their agent's start to its end, while the model answers.
     concurrency: int = Field(default=4, ge=1)
+    #: Trials alive at once, from their sandbox's start to their tests' end; unset, as many as
+    #: sample. The ones beyond `concurrency` get ready and run their tests while others sample.
+    sandboxes: int | None = Field(default=None, ge=1)
     timeout: float | None = None
     setup_timeout: float | None = None
     endpoint_url: str = ""
@@ -159,6 +164,21 @@ class Rollout(_Table):
     #: Each trial in flight holds one value alone, so no more trials run at once than there
     #: are values. Several pools pair by position.
     secrets: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _sandboxes_hold_the_samplers(self) -> Rollout:
+        if self.sandboxes is not None and self.sandboxes < self.concurrency:
+            raise ValueError(
+                f"[rollout] sandboxes = {self.sandboxes} is below concurrency = "
+                f"{self.concurrency}: a trial samples in a sandbox, so no more than "
+                f"{self.sandboxes} could sample at once"
+            )
+        return self
+
+    @property
+    def alive(self) -> int:
+        """Trials alive at once: `sandboxes`, else `concurrency`."""
+        return self.concurrency if self.sandboxes is None else self.sandboxes
 
 
 class Recipe(_Table):
