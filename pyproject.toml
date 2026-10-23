@@ -60,7 +60,8 @@ docs = ["mkdocs>=1.6", "mkdocs-material>=9.5"]
 wandb = ["wandb>=0.21"]
 # Together: a model on its post-training, `provider = "together"` in its `[models.<role>]`,
 # and trials in its sandboxes, `[rollout] sandbox = "together"`.
-together = ["harness-proxy[together]", "together-sandbox>=4.1,<5"]
+# dockerfile-parse: Harbor reads a task's WORKDIR with it, and lists it only under its own sandboxes.
+together = ["harness-proxy[together]", "together-sandbox>=4.1,<5", "dockerfile-parse>=2.0.1"]
 gepa = [
     "gepa>=0.1.4",
 ]
