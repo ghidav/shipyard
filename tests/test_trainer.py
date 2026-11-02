@@ -1110,7 +1110,7 @@ def test_a_run_keeps_its_recipes_place_and_a_resume_runs_the_code_as_it_is(
         reopened(directory)
 
 
-@pytest.mark.parametrize("recipe", ["grpo", "dapo", "opd", "gepa"])
+@pytest.mark.parametrize("recipe", ["grpo", "dapo", "dapo-async", "opd", "gepa"])
 def test_each_recipes_run_toml_sets_exactly_the_keys_its_trainer_declares(
     recipe: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

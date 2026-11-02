@@ -6,6 +6,7 @@ Each folder is a recipe: a `run.toml` with every setting, and a `trainer.py` who
 | --- | --- | --- | --- |
 | [`grpo`](grpo/) | GRPO: each reward less its group's mean, groups of equal rewards skipped | `agent`, trained | `importance_sampling` |
 | [`dapo`](dapo/) | DAPO: an overlong penalty, rewards normalized in the group, every prompt weighing the same, dynamic sampling | `agent`, trained | `ppo`, clipped asymmetrically |
+| [`dapo-async`](dapo-async/) | `dapo`'s algorithm with its rollouts overlapping its updates: workers keep groups rolling out, and each step takes them in the order they finished | `agent`, trained | `ppo`, clipped asymmetrically |
 | [`opd`](opd/) | On-policy distillation: each token's advantage is the teacher's logprob minus the agent's | `agent`, trained; `teacher` | `importance_sampling` |
 | [`gepa`](gepa/) | GEPA: a search over the prompt and skills, with no weight update; needs `shipyard[gepa]` | `agent`; `reflector` | none |
 

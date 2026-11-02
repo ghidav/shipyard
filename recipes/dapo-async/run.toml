@@ -1,0 +1,34 @@
+# DAPO on Reasoning Gym's easy split, its rollouts overlapping its updates: 16 groups a step, 8
+# trials each, the next ones rolling out while a step updates. Run it with trainer.py.
+[models.agent]
+model = "Qwen/Qwen3-8B"
+learning_rate = 2e-5
+lora_rank = 32
+max_tokens = 8192
+
+[data]
+train = "reasoning-gym-easy"
+batch_size = 16
+
+[rollout]
+sandbox = "together"
+concurrency = 32
+# Trials alive at once: the 16 beyond concurrency get ready and run their tests while others
+# sample. The recipe keeps half again the groups they hold rolling out: 9.
+sandboxes = 48
+setup_timeout = 900
+
+[recipe]
+steps = 100
+harness = "pi@0.85.1"
+group_size = 8
+# The paper's 16 mini-batches a step, and its clip-higher: 0.2 below 1, 0.28 above.
+substeps = 16
+clip_low = 0.2
+clip_high = 0.28
+# Eq. 13's -1 on Harbor's 0 to 1 scale, over the last fifth of the token budget.
+overlong_penalty = 0.5
+overlong_buffer = 0.2
+
+[checkpoints]
+every = 10

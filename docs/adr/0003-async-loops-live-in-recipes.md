@@ -8,7 +8,7 @@ A recipe that overlaps its rollouts with its updates, or streams trials, writes 
 - `update`;
 - `spawn`, for tasks the run owns.
 
-A FlashREINFORCE recipe carries the reference loop, for others to copy. Decided 23 Oct 2026, while designing asynchronous training.
+The `dapo-async` recipe carries the reference loop, for others to copy. Decided 23 Oct 2026, while designing asynchronous training; the reference was to be a FlashREINFORCE recipe, which stayed an experiment, and became `dapo-async` on 2 Nov 2026, the loop the long runs had used.
 
 ## Considered Options
 

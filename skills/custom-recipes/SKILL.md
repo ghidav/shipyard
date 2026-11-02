@@ -13,6 +13,7 @@ Start from the shipped recipe closest to your algorithm; `shipyard init` copies 
 | --- | --- | --- |
 | `grpo` | RL on the tests' rewards: each reward less its group's mean | the plain `step` and `score` |
 | `dapo` | RL with rewards normalized per group, every prompt weighing the same | `substeps`, a clipped loss, scaling advantages per group |
+| `dapo-async` | `dapo` with its rollouts overlapping its updates | an asynchronous loop: workers under `spawn`, a queue, groups taken in the order they finished, a staleness rule on `lag` |
 | `opd` | on-policy distillation: each token's advantage is the teacher's logprob less the agent's | a second model, scored with `logprobs` |
 | `gepa` | a search over the prompt and skills, no weight update | modules, a model asked for text through a Harbor task (`reflect.py`) |
 
@@ -123,7 +124,7 @@ Update each model in training once a step: each call takes its optimizer steps, 
 
 ### spawn
 
-`self.spawn(coroutine)` runs a coroutine as a task the run owns, beside the steps, and returns it: a worker that keeps rolling tasks out while the steps update, as an asynchronous loop needs, or any work a step awaits later. Spawn from `step`, once the run has started.
+`self.spawn(coroutine)` runs a coroutine as a task the run owns, beside the steps, and returns it: a worker that keeps rolling tasks out while the steps update, as an asynchronous loop needs, or any work a step awaits later. Spawn from `step`, once the run has started. `dapo-async` is the loop to copy: its first step spawns the workers, which hand their groups to the steps through a queue.
 
 - If it raises, the run fails at once with its error, even while a step waits on what it would have handed over.
 - When the run ends, it cancels the ones still running before the final checkpoint: their trials close, and the tasks they drew stay out, for a resume to give out first. A group a worker finished that no step passed to `update` is lost; its task comes back in a later pass.
