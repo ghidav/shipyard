@@ -11,14 +11,18 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 import tinker
+from together import APIConnectionError
 
 from proxies import MODEL
 from shipyard import Config
 from shipyard.config import ModelTable
 from shipyard.model import Model
 from shipyard.models.clients.together import (
+    UPLOAD_RETRIES,
+    SessionStopped,
     TogetherClient,
     adam_params,
     loss,
@@ -96,13 +100,25 @@ def _scored(one: Any) -> Any:
 
 @dataclass
 class FakeTogetherSession:
-    """Fake Together session; a `busy` one is still running an operation, so it will not stop."""
+    """Fake Together session; a `busy` one is still running an operation, so it will not stop.
+    Looked at, it answers its `status`, but the first `unreachable` looks lose their connection;
+    `looks` counts them."""
 
     session_id: str
     trainer: FakeTogetherTrainer
     saved: list[str] = field(default_factory=list)
     stopped: bool = False
     busy: bool = False
+    status: str = "TRAINING_SESSION_STATUS_RUNNING"
+    unreachable: int = 0
+    looks: int = 0
+
+    async def retrieve_async(self) -> Any:
+        self.looks += 1
+        if self.unreachable:
+            self.unreachable -= 1
+            raise APIConnectionError(request=httpx.Request("GET", SESSION))
+        return SimpleNamespace(status=self.status)
 
     async def create_training_checkpoint_async(self, *, timeout: float | None = SDK_WAIT) -> Any:
         self.saved.append("training")
@@ -283,6 +299,150 @@ async def test_a_resumed_together_run_opens_its_session_on_the_checkpoint() -> N
     assert [asked for asked, _ in resources.sessions] == [
         {"display_name": "r", "resume_from_checkpoint_id": "training-7", "load_optimizer": True}
     ]
+
+
+async def test_a_publishs_version_counts_the_syncs_as_replies_do_not_the_optimizer_steps() -> None:
+    """Together stamps each reply with the syncs its generator took, where a sync answers the
+    optimizer steps taken: with two steps an update, the two part from the first update on."""
+    resources = FakeResources(MODEL)
+
+    async def provide(model: str, sampler_replicas: int) -> FakeResources:
+        return resources
+
+    client = TogetherClient(MODEL, run="r", provision=provide)
+    await client.open()
+    session = await client._session()
+    versions = []
+    for _ in range(2):
+        for _ in range(2):  # an update of two substeps
+            await session.trainer.optim_step_async(adam_params=None)
+        client.moved = True
+        await client.publish("sample")
+        versions.append(client.version)
+    assert versions == [1, 2], "replies say 1 and 2, where the syncs answered 2 and 4"
+    await client.publish("again")
+    assert client.version is None, "nothing moved: no sync, no version"
+
+
+#: The requests Together's SDK makes for a training pass that carries data: the upload's, before
+#: it sends the pass; the pass's own; and the download of its result's, after the pass ran.
+SESSION = "https://api.together.xyz/v1/rl/training-sessions/s1"
+UPLOAD_URL = ("POST", f"{SESSION}/payloads/upload-url")
+UPLOAD = ("PUT", "https://together-rl.r2.cloudflarestorage.com/prod/payloads/s1/p1")
+OPERATION = ("POST", f"{SESSION}/operations/forward-backward")
+POLL = ("GET", f"{SESSION}/operations/forward-backward/o1")
+DOWNLOAD_URL = ("POST", f"{SESSION}/payloads/p2/download-url")
+DOWNLOAD = ("GET", "https://together-rl.r2.cloudflarestorage.com/prod/payloads/s1/p2")
+
+
+@dataclass
+class Dropping(FakeTogetherTrainer):
+    """A trainer whose first `drops` training passes lose their connection at `request`, as
+    Together's SDK raises it; `tried` counts the passes sent, dropped or not."""
+
+    drops: int = 1
+    request: tuple[str, str] = UPLOAD
+    tried: int = 0
+
+    async def forward_backward_async(
+        self,
+        *,
+        samples: Any,
+        loss: Any,
+        return_loss_fn_outputs: bool,
+        timeout: float | None = SDK_WAIT,
+    ) -> Any:
+        self.tried += 1
+        if self.drops:
+            self.drops -= 1
+            raise APIConnectionError(request=httpx.Request(*self.request))
+        return await super().forward_backward_async(
+            samples=samples,
+            loss=loss,
+            return_loss_fn_outputs=return_loss_fn_outputs,
+            timeout=timeout,
+        )
+
+
+async def _fit(client: TogetherClient) -> list[list[float]]:
+    """Train `client` on one datum with PPO."""
+    datum = tinker.Datum(
+        model_input=tinker.ModelInput.from_ints([1, 2]),
+        loss_fn_inputs={
+            "target_tokens": tinker.TensorData(data=[2, 3], dtype="int64"),
+            "logprobs": tinker.TensorData(data=[0.0, -0.5], dtype="float32"),
+            "advantages": tinker.TensorData(data=[0.0, 1.0], dtype="float32"),
+        },
+    )
+    adam = tinker.AdamParams(beta1=0.9, beta2=0.95, eps=1e-8)
+    return await client.fit([[datum]], adam, 1e-4, "ppo", None)
+
+
+@pytest.mark.parametrize("dropped", [UPLOAD_URL, UPLOAD])
+async def test_a_training_pass_whose_data_did_not_upload_is_sent_again_after_a_pause(
+    together_exit: list[Any], monkeypatch: pytest.MonkeyPatch, dropped: tuple[str, str]
+) -> None:
+    """The SDK uploads a pass's data before it sends the pass, so a pass whose upload dropped
+    never reached Together: the client sends it again, `UPLOAD_RETRIES` times at most."""
+    monkeypatch.setattr("shipyard.models.clients.together.UPLOAD_RETRY_SECONDS", 0.0)
+    trainer = Dropping(drops=UPLOAD_RETRIES, request=dropped)
+    client = await _opened(FakeResources(MODEL, trainer=trainer))
+    assert await _fit(client) == [[-0.3, -0.3]]
+    assert trainer.tried == UPLOAD_RETRIES + 1
+    assert [name for name, _ in trainer.calls] == ["forward_backward", "optim_step"]
+    trainer.drops, trainer.tried = UPLOAD_RETRIES + 1, 0
+    with pytest.raises(APIConnectionError):
+        await _fit(client)
+    assert trainer.tried == UPLOAD_RETRIES + 1, "one drop more than it retries fails the update"
+
+
+@pytest.mark.parametrize("dropped", [OPERATION, POLL, DOWNLOAD_URL, DOWNLOAD])
+async def test_a_training_pass_that_may_have_reached_together_is_not_sent_again(
+    together_exit: list[Any], monkeypatch: pytest.MonkeyPatch, dropped: tuple[str, str]
+) -> None:
+    """A pass whose own request, or its result's download, lost the connection may have run:
+    sent again, its gradients would count twice."""
+    monkeypatch.setattr("shipyard.models.clients.together.UPLOAD_RETRY_SECONDS", 0.0)
+    trainer = Dropping(drops=1, request=dropped)
+    client = await _opened(FakeResources(MODEL, trainer=trainer))
+    with pytest.raises(APIConnectionError):
+        await _fit(client)
+    assert trainer.tried == 1 and trainer.calls == []
+
+
+@dataclass
+class Held(FakeTogetherTrainer):
+    """A trainer whose training passes run until `released`, as one never ends on a session
+    Together stopped."""
+
+    released: asyncio.Event = field(default_factory=asyncio.Event)
+
+    async def forward_backward_async(self, **sent: Any) -> Any:
+        await self.released.wait()
+        return await super().forward_backward_async(**sent)
+
+
+async def test_an_operation_fails_once_together_stops_its_session_and_goes_on_while_it_runs(
+    together_exit: list[Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Together stops a session, recording no error, when the project's balance runs out, and an
+    operation on it never ends (27 Oct: a run waited 6.5 h on one). An operation on a session
+    that runs goes on as long as it takes, though a look at the session fails."""
+    monkeypatch.setattr("shipyard.models.clients.together.SESSION_CHECK_SECONDS", 0.01)
+    stopped = FakeResources(MODEL, trainer=Held())
+    client = await _opened(stopped)
+    ((_, session),) = stopped.sessions
+    session.status = "TRAINING_SESSION_STATUS_STOPPED"
+    with pytest.raises(SessionStopped, match="s1 is TRAINING_SESSION_STATUS_STOPPED"):
+        await asyncio.wait_for(_fit(client), 5)
+    held = Held()
+    running = FakeResources(MODEL, trainer=held)
+    client = await _opened(running)
+    ((_, session),) = running.sessions
+    session.unreachable = 2
+    asyncio.get_running_loop().call_later(0.2, held.released.set)
+    assert await asyncio.wait_for(_fit(client), 5) == [[-0.3, -0.3]]
+    assert session.looks > 2, "it looked on, past the looks that failed"
 
 
 def test_together_takes_tinkers_losses_and_adam_settings_as_its_own() -> None:

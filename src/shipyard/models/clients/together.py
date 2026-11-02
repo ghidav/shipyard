@@ -7,6 +7,7 @@ import sys
 import threading
 from collections.abc import Awaitable, Callable, Mapping
 from collections.abc import Sequence as Values
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 import tinker
@@ -16,6 +17,8 @@ from harness_proxy.backends.together import PREFIX, wire_input
 from shipyard.models.clients.tinker import lora_rank, sent, shifted
 
 if TYPE_CHECKING:
+    import httpx
+
     from shipyard.groups import Sequence
 
 logger = logging.getLogger(__name__)
@@ -36,6 +39,26 @@ PROVISION_SECONDS = 3600.0
 #: waits, where its SDK gives up after five minutes, which an update over long trajectories
 #: outlasts.
 OPERATION_SECONDS: float | None = None
+#: Seconds between looks at the session while an operation runs, which fails once Together has
+#: stopped the session: it stops one, recording no error, when the project's balance runs out,
+#: and an operation on a stopped session never ends (27 Oct: a run waited 6.5 h on one).
+SESSION_CHECK_SECONDS = 60.0
+#: A session's statuses once it has ended or is ending, as Together's SDK counts them.
+ENDED = frozenset(
+    {
+        "TRAINING_SESSION_STATUS_STOPPING",
+        "TRAINING_SESSION_STATUS_STOPPED",
+        "TRAINING_SESSION_STATUS_ERROR",
+        "TRAINING_SESSION_STATUS_EXPIRED",
+    }
+)
+#: How many times an operation whose data lost its connection as it uploaded is sent again, and
+#: the seconds before each. Together's SDK uploads a large operation's data from this machine
+#: before it sends the operation, and its own five retries come within seconds, which a congested
+#: uplink outlasts (24 Oct: every upload of an update's second training pass dropped, and the run
+#: failed).
+UPLOAD_RETRIES = 3
+UPLOAD_RETRY_SECONDS = 60.0
 #: How a publish syncs the generator: in the background, so the trainer goes on at once.
 #: Together refuses `PIPELINE`, which would switch a call in flight, on LoRA.
 BACKGROUND_PUBLISH = "WEIGHT_SYNC_TYPE_BACKGROUND_PUBLISH"
@@ -43,6 +66,10 @@ BACKGROUND_PUBLISH = "WEIGHT_SYNC_TYPE_BACKGROUND_PUBLISH"
 #: Provisions a model resource for a base model with that many sampler replicas, and returns it
 #: once it is ready.
 Provision = Callable[[str, int], Awaitable[Any]]
+
+
+class SessionStopped(RuntimeError):
+    """Together stopped the session an operation ran on, so the operation would never end."""
 
 
 class TogetherClient:
@@ -83,9 +110,13 @@ class TogetherClient:
         self.session: Any = None
         #: Whether an optimizer step moved the weights since they were last published.
         self.moved = False
-        #: The version Together gave the weights published last, which names the weights that
-        #: answered each call; None for weights published without a sync, as at the start.
+        #: The version of the weights published last, which names the weights that answered each
+        #: call; None for weights published without a sync, as at the start.
         self.version: int | None = None
+        #: The syncs the session's generator took: the version it stamps each reply with. Together
+        #: counts syncs there, where `weights_sync` answers the optimizer steps taken (measured 24
+        #: Oct: after 10 updates of 2 optimizer steps, a reply said 10 and the last sync 20).
+        self.syncs = 0
         self._provision = provision if provision is not None else provisioned
         self._lock = asyncio.Lock()
 
@@ -122,8 +153,9 @@ class TogetherClient:
         chosen, params = loss(loss_fn, loss_config), adam_params(adam, rate)
         trained: list[list[float]] = []
         for part in parts:
-            result = await self._one(
-                session.trainer.forward_backward_async(
+            result = await self._one_with_data(
+                partial(
+                    session.trainer.forward_backward_async,
                     samples=[sample(one, loss_fn) for one in part],
                     loss=chosen,
                     return_loss_fn_outputs=True,
@@ -150,8 +182,9 @@ class TogetherClient:
             inputs = {"target_tokens": tensor(target_tokens), "weights": tensor(ones)}
             samples.append({"model_input": wire_input(read), "loss_fn_inputs": inputs})
         session = await self._session()
-        result = await self._one(
-            session.trainer.forward_async(
+        result = await self._one_with_data(
+            partial(
+                session.trainer.forward_async,
                 samples=samples,
                 loss={"type": "LOSS_TYPE_CROSS_ENTROPY"},
                 return_loss_fn_outputs=True,
@@ -166,17 +199,20 @@ class TogetherClient:
 
     async def publish(self, tag: str) -> str:
         """Point the generator at the weights the updates moved to, and return their name. The
-        sync runs in the background, so the trainer goes on at once, and each reply names the
-        version that wrote it. Keep the version Together gave the new weights as `version`."""
+        sync runs in the background, so the trainer goes on at once. The calls in flight end on
+        the weights they began with, and the calls that come meanwhile wait until the last of them
+        ends, then take the new ones (measured 24 Oct). Each reply names the version that wrote
+        it, counting syncs: keep the new weights' as `version`."""
         session = await self._session()
         self.version = None
         if self.moved:
-            synced = await self._one(
+            await self._one(
                 session.trainer.weights_sync_async(
                     weight_sync_type=BACKGROUND_PUBLISH, timeout=OPERATION_SECONDS
                 )
             )
-            self.version = int(synced.weights_version)
+            self.syncs += 1
+            self.version = self.syncs
             self.moved = False
         return f"{PREFIX}{session.session_id}/{tag}"
 
@@ -199,6 +235,7 @@ class TogetherClient:
         self.session = await self.resources.create_session_async(
             display_name=self.run, resume_from_checkpoint_id=path, load_optimizer=True
         )
+        self.syncs = 0  # a new session's generator counts its syncs anew (unmeasured on a resume)
 
     async def close(self, status: str = "success", detail: str | None = None) -> None:
         """Stop the session and the GPU resource, which bills until it stops: the resource by
@@ -238,9 +275,40 @@ class TogetherClient:
         return self.session
 
     async def _one[T](self, work: Awaitable[T]) -> T:
-        """Await one training operation, after the one before it."""
+        """Await one training operation, after the one before it, looking at the session every
+        `SESSION_CHECK_SECONDS`: SessionStopped once Together has stopped it."""
         async with self._lock:
-            return await work
+            session, running = self.session, asyncio.ensure_future(work)
+            try:
+                while not (await asyncio.wait({running}, timeout=SESSION_CHECK_SECONDS))[0]:
+                    await check_session(session)
+                return running.result()
+            finally:
+                running.cancel()
+
+    async def _one_with_data[T](self, operation: Callable[[], Awaitable[T]]) -> T:
+        """Run one training operation whose data the SDK uploads before it sends the operation,
+        after the one before it; again, `UPLOAD_RETRIES` times at most, `UPLOAD_RETRY_SECONDS`
+        after each upload that loses its connection. Such an operation was never sent, so it
+        never runs twice."""
+        from together import APIConnectionError
+
+        retries = 0
+        while True:
+            try:
+                return await self._one(operation())
+            except APIConnectionError as error:
+                if retries == UPLOAD_RETRIES or not unsent(error.request):
+                    raise
+            retries += 1
+            logger.warning(
+                "an operation's data lost its connection as it uploaded: sending it again in "
+                "%.0f s (%d of %d)",
+                UPLOAD_RETRY_SECONDS,
+                retries,
+                UPLOAD_RETRIES,
+            )
+            await asyncio.sleep(UPLOAD_RETRY_SECONDS)
 
 
 #: Together clients whose session or GPU resource may still run: the interpreter stops each when
@@ -307,6 +375,32 @@ async def provisioned(model: str, sampler_replicas: int = 1) -> Any:
         compute_config={"num_generator_replicas": sampler_replicas},
         timeout=PROVISION_SECONDS,
     )
+
+
+async def check_session(session: Any) -> None:
+    """Raise SessionStopped if Together has stopped `session`. A look that fails tells nothing:
+    the operation's own polling fails too if Together stays out of reach."""
+    from together import APIError
+
+    try:
+        status = (await session.retrieve_async()).status
+    except APIError:
+        logger.warning("could not look at the Together session: waiting on", exc_info=True)
+        return
+    if status in ENDED:
+        raise SessionStopped(
+            f"Together's session {session.session_id} is {status}: the operation it ran will "
+            "never end. Together stops a session when the project's balance runs out."
+        )
+
+
+def unsent(request: httpx.Request) -> bool:
+    """Whether a request that lost its connection left its operation unsent: the SDK uploads an
+    operation's data, asking for an upload URL and then putting the data there, before it sends
+    the operation, and downloads a result's data only after the operation ran."""
+    path = request.url.path
+    putting = request.method == "PUT" and "/payloads/" in path
+    return putting or path.endswith("/payloads/upload-url")
 
 
 def sample(datum: tinker.Datum, loss: str) -> dict[str, Any]:
