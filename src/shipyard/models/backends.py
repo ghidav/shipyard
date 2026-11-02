@@ -30,12 +30,12 @@ SECONDS_PER_HOUR = 3600
 @dataclass(frozen=True)
 class Trained:
     """What one `Session.fit` read, and how far the trained logprobs drifted from the ones
-    the ratio was taken against."""
+    the ratio was taken against: None when no sequence had any."""
 
     tokens: int
-    kl_v1: float
-    kl_v2: float
-    entropy: float
+    kl_v1: float | None
+    kl_v2: float | None
+    entropy: float | None
 
 
 @dataclass(frozen=True)
@@ -143,14 +143,15 @@ class Session:
         self,
         parts: Values[Values[Sequence]],
         *,
-        logprobs: Mapping[Sequence, Values[float]],
+        logprobs: Mapping[Sequence, Values[float] | None],
         adam: tinker.AdamParams,
         rate: float,
         loss: str,
         loss_config: Mapping[str, float] | None,
     ) -> Trained:
         """Train the model on each part in turn, a pass and an optimizer step each: every
-        sequence at its advantages, its ratio taken against its `logprobs`."""
+        sequence at its advantages, its ratio taken against its `logprobs`, None for a loss that
+        takes no ratio. The drift is measured on the sequences that have logprobs."""
         datums = [
             [
                 datum(
@@ -166,12 +167,19 @@ class Session:
         trained = await self.client.fit(datums, adam, rate, loss, loss_config)
         tokens = sum(int(one.model_input.length) for one in flat)
         self.count(train=tokens)
-        drift = compute_kl_sample_train(flat, [torch.tensor(row) for row in trained])
+        measured = [
+            (made, torch.tensor(row))
+            for made, row, one in zip(
+                flat, trained, [one for part in parts for one in part], strict=True
+            )
+            if logprobs[one] is not None
+        ]
+        drift = compute_kl_sample_train(*map(list, zip(*measured, strict=True))) if measured else {}
         return Trained(
             tokens=tokens,
-            kl_v1=drift["optim/kl_sample_train_v1"],
-            kl_v2=drift["optim/kl_sample_train_v2"],
-            entropy=drift["optim/entropy"],
+            kl_v1=drift.get("optim/kl_sample_train_v1"),
+            kl_v2=drift.get("optim/kl_sample_train_v2"),
+            entropy=drift.get("optim/entropy"),
         )
 
     async def publishable(self) -> None:

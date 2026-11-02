@@ -252,8 +252,11 @@ def _known(about: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _fields(update: Any) -> dict[str, Any]:
-    """Return an update's fields as a step's row holds them: all but its role."""
-    return {key: value for key, value in vars(update).items() if key != "role"}
+    """Return an update's fields as a step's row holds them: all but its role, and those with a
+    value."""
+    return {
+        key: value for key, value in vars(update).items() if key != "role" and value is not None
+    }
 
 
 def tally(groups: Sequence[Group]) -> dict[str, Any]:

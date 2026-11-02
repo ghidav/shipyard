@@ -25,7 +25,7 @@ from shipyard.jobs.modules import Modules, carried, keep
 from shipyard.jobs.secrets import Pool, Secrets
 from shipyard.model import Model, Models
 from shipyard.models.backends import Connected, Session, connect
-from shipyard.models.clients.tinker import check_loss
+from shipyard.models.clients.tinker import LOSSES, check_loss
 from shipyard.models.endpoints import LaneEndpoint
 from shipyard.run import files
 from shipyard.run.checkpoint import Checkpoint
@@ -60,9 +60,11 @@ class Update:
     loss: str
     #: How long the update took.
     update_seconds: float
-    kl_v1: float
-    kl_v2: float
-    entropy: float
+    #: How far the trained logprobs drifted from the sampled ones, and the sampled entropy;
+    #: None when no sequence was `model`'s own sample.
+    kl_v1: float | None
+    kl_v2: float | None
+    entropy: float | None
 
 
 @dataclass(frozen=True)
@@ -239,7 +241,9 @@ class Trainer:
         """Train `model` on every sequence with advantages in `groups`, in `substeps` optimizer
         steps without splitting a group, at `learning_rate`, else its table's, and serve its new
         weights. Each sequence's ratio is taken against the logprobs its sampler gave, when
-        `model` sampled it, and else against `model`'s own at its current weights. An evaluation
+        `model` sampled it, and else against `model`'s own at its current weights; a loss that
+        takes no ratio, `cross_entropy`, scores nothing first, and the update's drift and entropy
+        then cover only the sequences `model` sampled, or are None. An evaluation
         due for the weights served until now runs while it trains, on the weights it measures
         whatever is published meanwhile; on Together, which serves one version, the new weights
         are served once it has finished. The step's row counts every group passed, scored or
@@ -266,13 +270,17 @@ class Trainer:
         self._start_evaluation()
         try:
             flat = [one for part in kept for one in part]
-            # Each ratio is taken against the sampler's logprobs, else the current weights' own.
-            logprobs: dict[Sequence, Values[float]] = {
+            # Each ratio is taken against the sampler's logprobs, else the current weights' own;
+            # a loss that takes none reads neither, so the rest go unscored.
+            logprobs: dict[Sequence, Values[float] | None] = {
                 one: one.sampled_logprobs
                 for one in flat
                 if one.trial.role == role and one.sampled_logprobs is not None
             }
             rest = [one for one in flat if one not in logprobs]
+            if "logprobs" not in LOSSES[loss].reads:
+                logprobs.update(dict.fromkeys(rest))
+                rest = []
             for one, scored in zip(rest, await model.logprobs(rest), strict=True):
                 logprobs[one] = scored.tolist()
             # The papers' mini-batches are sets of prompts, so a group is not split across parts.

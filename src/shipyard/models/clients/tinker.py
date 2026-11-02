@@ -317,12 +317,15 @@ def shifted(
 
 
 def datum(
-    sequence: Sequence, *, logprobs: Values[float], advantages: Values[float]
+    sequence: Sequence, *, logprobs: Values[float] | None, advantages: Values[float]
 ) -> tinker.Datum:
-    """Build a Tinker datum from a sequence, with an advantage per target token; reproduced from
-    tinker-cookbook's rl/data_processing.py (Apache-2.0)."""
+    """Build a Tinker datum from a sequence, with an advantage per target token and the logprob
+    its ratio is taken against, zero for None, which a loss that takes no ratio never reads;
+    reproduced from tinker-cookbook's rl/data_processing.py (Apache-2.0)."""
     read, target_tokens = shifted(sequence.tokens, sequence.images)
     positions = sequence.targets
+    if logprobs is None:
+        logprobs = [0.0] * len(positions)
     if len(logprobs) != len(positions) or len(advantages) != len(positions):
         raise ValueError(
             f"{len(positions)} target(s) take {len(positions)} logprobs and advantages; got "

@@ -219,6 +219,40 @@ async def test_an_update_on_another_models_groups_takes_their_ratio_at_its_own_c
     assert teacher.asked == [], "nor the teacher's scores"
 
 
+class Imitating(Borrowing):
+    """Trains the agent on the teacher's rollouts alone, every target token weighing 1, by
+    cross-entropy."""
+
+    async def step(self) -> None:
+        groups = await self.rollout(
+            self.draw(),
+            model=self.teacher,
+            harness=self.recipe.harness,
+            attempts=self.recipe.group_size,
+            modules=None,
+        )
+        for group in groups:
+            for trial in group.graded:
+                trial.set_advantage(1.0)
+        await self.update(self.agent, groups, loss="cross_entropy")
+
+
+async def test_an_update_whose_loss_takes_no_ratio_scores_nothing_first(
+    tmp_path: Path, fakes: tuple[FakeProxy, FakeService], harbor: Harbor
+) -> None:
+    """Cross-entropy on the teacher's rollouts: no forward pass before the training pass, and no
+    drift in the row, since none of the sequences is the agent's own sample."""
+    _, service = fakes
+    harbor(Alternating())
+    home = run_toml(tmp_path, **ONE_STEP, **_table("teacher", f'model = "{TEACHER}"'))
+    directory = await train(home, tmp_path / "runs", Imitating)
+    steps = [c[0] for c in service.client.calls if c[0] in ("forward", "forward_backward")]
+    assert steps == ["forward_backward"], "nothing scored before the training pass"
+    (row,) = rows(directory)
+    assert row["trained"] and row["loss"] == "cross_entropy" and row["sequences"] == 4
+    assert not {"kl_v1", "kl_v2", "entropy"} & row.keys()
+
+
 async def test_a_step_with_nothing_to_teach_takes_no_gradient(
     tmp_path: Path, fakes: tuple[FakeProxy, FakeService], harbor: Harbor
 ) -> None:
