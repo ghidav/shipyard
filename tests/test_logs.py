@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -14,6 +15,7 @@ from shipyard.jobs.harnesses import Harness
 from shipyard.records import Records
 from shipyard.run import files
 from shipyard.run.costs import Costs
+from shipyard.run.directory import open_run
 from shipyard.run.logs import Logs
 from shipyard.trainer import Evaluation, Update
 from tests.fakes import Alternating, FakeProxy, Harbor, made
@@ -204,3 +206,21 @@ async def test_a_steps_row_counts_the_groups_as_its_rollouts_returned_them(
     directory = await train(run_toml(tmp_path, **ONE_STEP), tmp_path / "runs", Twice)
     (row,) = rows(directory)
     assert (row["groups"], row["trials"], len(row["jobs"])) == (2, 4, 2)
+
+
+def test_the_wandb_run_records_no_system_metrics_of_the_machine_it_starts_from(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wandb = pytest.importorskip("wandb")
+    given: dict[str, Any] = {}
+
+    def init(**named: Any) -> Any:
+        given.update(named)
+        return SimpleNamespace(log=lambda *a, **k: None, summary={}, finish=lambda **k: None)
+
+    monkeypatch.setattr(wandb, "init", init)
+    home = run_toml(tmp_path, **{"[recipe]": '[logging.wandb]\nproject = "p"\n\n[recipe]'})
+    directory, config = open_run(home, root=tmp_path / "runs", trainer=GRPO)
+    Logs(config, directory)
+    assert given["settings"].x_disable_stats is True
+    assert (given["project"], given["id"]) == ("p", directory.name)

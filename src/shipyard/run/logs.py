@@ -55,7 +55,8 @@ EVAL = "eval_"
 
 
 class Wandb:
-    """The wandb run the rows and costs are mirrored to, grouped with the runs of its chain."""
+    """The wandb run the rows and costs are mirrored to, grouped with the runs of its chain. It
+    records no system metrics of the machine the run starts from."""
 
     def __init__(self, config: Config, directory: Path) -> None:
         try:
@@ -73,6 +74,8 @@ class Wandb:
             reinit="create_new",
             dir=directory,
             config=config.model_dump(mode="json"),
+            # The machine the run starts from is someone's own: its metrics are not the run's.
+            settings=wandb.Settings(x_disable_stats=True),
         )
 
     def log(self, row: Mapping[str, Any]) -> None:
