@@ -9,14 +9,13 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from harbor.models.trial.config import TrialConfig
 
 from shipyard.groups import Group, Trial
 from shipyard.jobs.admit import Verdict
 from shipyard.jobs.harnesses import Harness
 from shipyard.run.data import Lender, tasks
 from shipyard.run.directory import open_run, trainer_class
-from tests.fakes import FakeProxy, Harbor, write_result
+from tests.fakes import FakeProxy, Harbor, Scripted
 from tests.runs import ONE_STEP, rows, run_toml, train
 from tests.service import FakeService
 
@@ -29,22 +28,6 @@ KEYS = (
     "overlong_penalty = 0",
     "overlong_buffer = 0.2",
 )
-
-
-class Scripted:
-    """Fake Harbor trial runner: a task's trials score the rewards `script` lists for it, in call
-    order and round again; 1 for a task it does not name."""
-
-    def __init__(self, script: dict[str, list[float]]) -> None:
-        self.script = script
-        self.seen: dict[str, int] = {}
-
-    async def __call__(self, config: TrialConfig) -> None:
-        task = Path(str(config.task.path)).name
-        made = self.seen[task] = self.seen.get(task, 0) + 1
-        rewards = self.script.get(task, [1.0])
-        reward = rewards[(made - 1) % len(rewards)]
-        write_result(Path(config.trials_dir) / config.trial_name, reward=reward)
 
 
 def config(tmp_path: Path, *keys: str, **replacements: str) -> Path:

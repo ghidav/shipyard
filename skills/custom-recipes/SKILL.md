@@ -14,6 +14,7 @@ Start from the shipped recipe closest to your algorithm; `shipyard init` copies 
 | `grpo` | RL on the tests' rewards: each reward less its group's mean | the plain `step` and `score` |
 | `dapo` | RL with rewards normalized per group, every prompt weighing the same | `substeps`, a clipped loss, scaling advantages per group |
 | `dapo-async` | `dapo` with its rollouts overlapping its updates | an asynchronous loop: workers under `spawn`, a queue, groups taken in the order they finished, a staleness rule on `lag` |
+| `rft-async` | rejection-sampling fine-tuning: cross-entropy on correct rollouts, the agent's own or a teacher's | `loss="cross_entropy"`, one model sampling for another, weights as a mean over the kept tokens |
 | `opd` | on-policy distillation: each token's advantage is the teacher's logprob less the agent's | a second model, scored with `logprobs` |
 | `gepa` | a search over the prompt and skills, no weight update | modules, a model asked for text through a Harbor task (`reflect.py`) |
 
@@ -120,7 +121,7 @@ Scoring sets the **advantages**: a number per target token of each sequence, whi
 - `loss`: `importance_sampling` (the default); `ppo` and `cispo`, which take `clip_low_threshold` and `clip_high_threshold`, bounds on the ratio itself such as 0.8 and 1.2; `dro`, which takes `beta`; `cross_entropy`, which weighs each target by its advantage: supervised fine-tuning, with advantage 1 on what to imitate.
 - `[recipe] substeps`: optimizer steps per update, each on a share of the groups, whole groups each; the model's `learning_rate` and `warmup`; `ADAM = tinker.AdamParams(...)` as a class attribute.
 
-Update each model in training once a step: each call takes its optimizer steps, serves new weights and advances the warmup. The loss sums over tokens, so a long sequence weighs more than a short one; to weigh every group the same, scale its advantages, as dapo's `step` does. The ratio is taken against the sampler's logprobs, which the proxy recorded as the model sampled.
+Update each model in training once a step: each call takes its optimizer steps, serves new weights and advances the warmup. The loss sums over tokens, so a long sequence weighs more than a short one; to weigh every group the same, scale its advantages, as dapo's `step` does. The ratio is taken against the sampler's logprobs, which the proxy recorded as the model sampled. `cross_entropy` takes no ratio, so nothing is scored first: a model trains on another's sequences at the cost of the training pass alone, as `rft-async` does with a teacher's.
 
 ### spawn
 

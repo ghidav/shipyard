@@ -1,0 +1,40 @@
+# Rejection-sampling fine-tuning on Reasoning Gym's easy split: Qwen3.6-35B-A3B samples, and
+# Qwen3.5-9B is trained on its correct rollouts by cross-entropy, the next ones sampling while a
+# step updates. Leave [models.teacher] out for the agent to learn from its own. The agent trains on
+# the teacher's token ids, so the two share a tokenizer and a renderer, as these do (`qwen3_5`).
+# Run it with trainer.py.
+[models.agent]
+model = "Qwen/Qwen3.5-9B"
+# tinker-cookbook's get_lr for a LoRA on Qwen3.5-9B: a fine-tuning rate, since the loss is the
+# mean negative log-likelihood of the kept tokens.
+learning_rate = 4.7e-4
+lora_rank = 32
+max_tokens = 8192
+
+[models.teacher]
+model = "Qwen/Qwen3.6-35B-A3B"
+max_tokens = 8192
+
+[data]
+train = "reasoning-gym-easy"
+batch_size = 16
+
+[rollout]
+sandbox = "together"
+concurrency = 32
+# Trials alive at once: the 16 beyond concurrency get ready and run their tests while others
+# sample. The recipe keeps half again the groups they hold rolling out: 9.
+sandboxes = 48
+setup_timeout = 900
+
+[recipe]
+steps = 100
+harness = "pi@0.85.1"
+group_size = 8
+# The reward a trial must reach to be trained on: solved.
+threshold = 1.0
+# Unset: keep_per_group, every correct trial a group has; in_flight, half again the groups the
+# sandboxes hold.
+
+[checkpoints]
+every = 10
