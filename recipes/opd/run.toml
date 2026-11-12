@@ -1,13 +1,14 @@
-# On-policy distillation: Qwen3-32B teaches Qwen3-8B on Reasoning Gym's easy split. Run it with
-# trainer.py. The teacher reads the agent's token ids, so it shares its tokenizer.
+# On-policy distillation: Qwen3.6-35B-A3B teaches Qwen3.5-9B on Reasoning Gym's easy split. Run it
+# with trainer.py. The teacher reads the agent's token ids, so the two share a tokenizer, as these
+# do.
 [models.agent]
-model = "Qwen/Qwen3-8B"
+model = "Qwen/Qwen3.5-9B"
 learning_rate = 2e-5
 lora_rank = 32
 max_tokens = 8192
 
 [models.teacher]
-model = "Qwen/Qwen3-32B"
+model = "Qwen/Qwen3.6-35B-A3B"
 
 [data]
 train = "reasoning-gym-easy"
