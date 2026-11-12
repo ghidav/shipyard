@@ -25,6 +25,9 @@ shipyard run recipes/dapo                                        # the run write
 > [!IMPORTANT]
 > Add `--dry` to see every setting the run would use, with each default `run.toml` leaves marked, and to check the run without starting it.
 
+> [!TIP]
+> For anything longer than a smoke test, start the run on a cloud VM rather than a laptop, for example in US East, and inside `tmux` so it outlives your SSH session. Every model call passes through the proxy on the machine that started the run, and that machine uploads each update's training data, so a laptop's distance, uplink and sleep slow or stall the whole run.
+
 ## Customizing
 
 
