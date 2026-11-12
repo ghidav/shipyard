@@ -38,8 +38,10 @@ dependencies = [
     "rich>=14.1",
     "shortuuid>=1.0.13",
     "python-dotenv>=1.0",
-    "harbor>=0.23,<0.25",
-    "tinker>=0.27",
+    # harbor[modal]: the recipes run their trials in Modal's sandboxes.
+    "harbor[modal]>=0.23,<0.25",
+    # tinker: below 0.33, the first minor no run has used, since a minor can change its API.
+    "tinker>=0.27,<0.33",
     "tinker-cookbook>=0.5.5,<0.6",
     "harness-proxy",
     "litellm>=1.103",

@@ -7,12 +7,12 @@ Rejection-sampling fine-tuning ([Yuan et al., 2023](https://arxiv.org/abs/2308.0
 | **Agent** | `[models.agent]`: `Qwen/Qwen3.5-9B` on Tinker, trained |
 | **Teacher** | `[models.teacher]` (optional): `Qwen/Qwen3.6-35B-A3B` on Tinker, sampling. It must be served through the proxy, on Tinker or Together, and share the agent's tokenizer and renderer, since the agent trains on its token ids; these two do, with the `qwen3_5` renderer |
 | **Data** | `reasoning-gym-easy`: 16 groups a step that hold a correct trial, 8 trials each, through `pi`, `[recipe] harness`; 9 groups rolling out |
-| **Sandbox** | Together (set `[rollout] sandbox = "docker"` to run trials on this machine) |
-| **Needs** | `TINKER_API_KEY`; `TOGETHER_API_KEY` for the sandboxes, and the `together` extra (`uv tool install "shipyard[together]"`) |
+| **Sandbox** | Modal (set `[rollout] sandbox = "docker"` to run trials on this machine) |
+| **Needs** | `TINKER_API_KEY`; a Modal login for the sandboxes (`uvx modal setup`), and `cloudflared` or a running Docker for the tunnel that carries their calls to this machine |
 | **`[recipe]`** | `harness`, `group_size`; `threshold` (optional: unset, 1, solved), `keep_per_group` (optional: unset, every correct trial), `in_flight` (optional: unset, half again the groups `[rollout] sandboxes` holds) |
 
 ```sh
-uvx harbor datasets download reasoning-gym-easy -o tasks
+uvx harbor@0.24.0 datasets download reasoning-gym-easy -o tasks
 shipyard run recipes/rft-async
 ```
 

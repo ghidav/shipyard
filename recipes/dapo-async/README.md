@@ -6,12 +6,12 @@
 | --- | --- |
 | **Agent** | `[models.agent]`: `Qwen/Qwen3-8B` on Tinker, trained; through `pi`, `[recipe] harness` |
 | **Data** | `reasoning-gym-easy`: 16 groups a step, 8 trials each, in 16 substeps; 9 groups rolling out |
-| **Sandbox** | Together (set `[rollout] sandbox = "docker"` to run trials on this machine) |
-| **Needs** | `TINKER_API_KEY`; `TOGETHER_API_KEY` for the sandboxes, and the `together` extra (`uv tool install "shipyard[together]"`) |
+| **Sandbox** | Modal (set `[rollout] sandbox = "docker"` to run trials on this machine) |
+| **Needs** | `TINKER_API_KEY`; a Modal login for the sandboxes (`uvx modal setup`), and `cloudflared` or a running Docker for the tunnel that carries their calls to this machine |
 | **`[recipe]`** | `harness`, `group_size`, `substeps`, `clip_low`, `clip_high`, `overlong_penalty`, `overlong_buffer`; `overlong_budget` (optional: unset, the model's context), `in_flight` (optional: unset, half again the groups `[rollout] sandboxes` holds), `max_lag` (optional: unset, any lag) |
 
 ```sh
-uvx harbor datasets download reasoning-gym-easy -o tasks
+uvx harbor@0.24.0 datasets download reasoning-gym-easy -o tasks
 shipyard run recipes/dapo-async
 ```
 

@@ -14,7 +14,7 @@ train = "reasoning-gym-easy"
 batch_size = 16
 
 [rollout]
-sandbox = "together"
+sandbox = "modal"
 concurrency = 32
 setup_timeout = 900
 

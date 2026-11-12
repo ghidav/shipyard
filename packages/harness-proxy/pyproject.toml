@@ -21,7 +21,8 @@ requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.9",
     "httpx>=0.27",
-    "tinker>=0.27",
+    # tinker: below 0.33, the first minor no run has used, since a minor can change its API.
+    "tinker>=0.27,<0.33",
     "tinker-cookbook>=0.5.5,<0.6",
     "pypdfium2>=4.30",
     "pillow>=10",
@@ -32,8 +33,9 @@ harness-proxy = "harness_proxy.serve:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.3", "pytest-asyncio>=0.24"]
-# The `together` backend, which samples a Together post-training session.
-together = ["together>=2.42"]
+# The `together` backend, which samples a Together post-training session; below 3, a major no
+# run has used.
+together = ["together>=2.42,<3"]
 
 [build-system]
 requires = ["hatchling"]

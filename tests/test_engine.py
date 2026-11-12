@@ -713,7 +713,7 @@ def test_a_sandbox_whose_package_is_missing_is_refused_when_the_engine_is_made(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("shipyard.jobs.engine.find_spec", lambda name: None)
-    with pytest.raises(ValueError, match=r'sandbox = "modal" needs the modal package'):
-        HarborEngine(Rollout(sandbox="modal"))
+    with pytest.raises(ValueError, match=r'"together" needs the together_sandbox package'):
+        HarborEngine(Rollout(sandbox="together"))
     HarborEngine(Rollout(sandbox="docker"))  # nothing beyond Harbor itself
-    HarborEngine(Rollout(sandbox="modal"), run_trial=FakeTrials())  # a stand-in starts none
+    HarborEngine(Rollout(sandbox="together"), run_trial=FakeTrials())  # a stand-in starts none

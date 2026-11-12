@@ -50,10 +50,6 @@ ENVIRONMENTS = {"together": "shipyard.jobs.together:TogetherEnvironment"}
 #: The package a sandbox's environment starts it with, by sandbox, and the install that brings
 #: it: an extra installs it, and the environment imports it only as a trial starts.
 PACKAGES = {
-    "modal": (
-        "modal",
-        'uv pip install "harbor[modal]", or uv tool install shipyard --with "harbor[modal]"',
-    ),
     "together": (
         "together_sandbox",
         'uv pip install "shipyard[together]", or uv tool install "shipyard[together]"',

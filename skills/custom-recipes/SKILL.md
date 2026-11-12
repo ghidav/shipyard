@@ -174,6 +174,6 @@ A task can carry a `hooks.py` beside its `task.toml`: code the run executes on t
 ### Checking a recipe
 
 1. `shipyard run recipes/mine` refuses a wrong config, trainer or model before anything opens, listing every problem. Fix each until the run starts.
-2. Run one small step on this machine: `shipyard run recipes/mine --recipe.steps 1 --data.batch_size 2 --recipe.group_size 4 --rollout.sandbox docker`.
+2. Run one small step, in the recipe's own sandboxes: `shipyard run recipes/mine --recipe.steps 1 --data.batch_size 2 --recipe.group_size 4`.
 
 The recipe is checked when that run's `metrics.jsonl` holds one row with `graded` above 0 and `trained: true`. A row with `trained: false` and `uniform` equal to `groups` had nothing to learn, every group's rewards being equal: raise `group_size` or pick harder tasks, and run it again.

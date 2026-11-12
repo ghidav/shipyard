@@ -11,7 +11,7 @@ train = "reasoning-gym-easy"
 batch_size = 16
 
 [rollout]
-sandbox = "together"
+sandbox = "modal"
 concurrency = 32
 # Trials alive at once: the 16 beyond concurrency get ready and run their tests while others
 # sample. The recipe keeps half again the groups they hold rolling out: 9.

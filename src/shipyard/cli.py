@@ -32,7 +32,8 @@ ENV_EXAMPLE = ".env.example"
 NEXT = """
 next:
   cp .env.example .env                              # your keys
-  uvx harbor datasets download <dataset> -o tasks   # the dataset a recipe's run.toml names
+  uvx modal setup                                   # your Modal login, for the recipes' sandboxes
+  uvx harbor@0.24.0 datasets download reasoning-gym-easy -o tasks
   shipyard run recipes/dapo                         # each recipe's README.md says what it needs"""
 
 #: Where `run` keeps the config keys given as `--table.key VALUE`, in Click's context.

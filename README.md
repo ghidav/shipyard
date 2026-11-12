@@ -12,11 +12,14 @@ uv tool install shipyard
 
 ## Quickstart
 
+The recipes train on [Tinker](https://thinkingmachines.ai/tinker/) and run their trials in [Modal](https://modal.com)'s sandboxes, whose calls reach the model through a Cloudflare tunnel this machine opens: install [`cloudflared`](https://github.com/cloudflare/cloudflared), or keep Docker running.
+
 ```sh
-shipyard init                                     # copy the recipes and .env.example here
-cp .env.example .env                              # then set your keys in .env
-uvx harbor datasets download <dataset> -o tasks   # tasks land in tasks/<dataset>/<task>/
-shipyard run recipes/dapo --data.train <dataset>  # the run writes runs/dapo__<id>/
+shipyard init                                                    # copy the recipes and .env.example here
+cp .env.example .env                                             # then set TINKER_API_KEY in .env
+uvx modal setup                                                  # log in to Modal, or set its keys in .env
+uvx harbor@0.24.0 datasets download reasoning-gym-easy -o tasks  # the recipes' tasks, in tasks/reasoning-gym-easy/
+shipyard run recipes/dapo                                        # the run writes runs/dapo__<id>/
 ```
 
 > [!IMPORTANT]
