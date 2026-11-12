@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -97,7 +97,7 @@ async def complete(call: Call, caller: Caller, trial: Trial, default_max_tokens:
         raise
     tokens = list(sampled.tokens)
     message, termination = renderer.parse_response(tokens)
-    message = with_call_ids(message, tokens, caller, prompt.digests)
+    message = with_call_ids(message, tokens, caller, prompt.digests, _ids_in(call.messages))
     parsed = get_text_content(message)
     made = list(message.get("tool_calls") or [])
     text, calls = parsed, [] if call.no_tools else made
@@ -153,16 +153,31 @@ def render(messages: Sequence[Message], renderer: Any, index: Index) -> Prompt:
     return Prompt(renderer.build_generation_prompt(messages), digests)
 
 
-def with_call_ids(message: Any, tokens: Any, caller: Caller, digests: Sequence[str]) -> Any:
-    """Give every tool call without an id one, derived so a replayed retry gets the same ids."""
+def with_call_ids(
+    message: Any,
+    tokens: Any,
+    caller: Caller,
+    digests: Sequence[str],
+    taken: Collection[str] = (),
+) -> Any:
+    """Give every tool call an id no other call of its conversation has: the renderer's, unless
+    `taken` or an earlier call of the reply holds it, else one derived so a replayed retry gets
+    the same ids. A renderer may name calls by their place in a reply, as tml-renderers does,
+    and a harness drops a call whose id it has seen."""
     calls = list(message.get("tool_calls") or [])
-    if all(_call_id(call) for call in calls):
+    held, kept = set(taken), []
+    for call in calls:
+        given = _call_id(call)
+        kept.append(bool(given) and given not in held)
+        if given:
+            held.add(given)
+    if all(kept):
         return message
     prefix = "toolu_" if caller.wire == "anthropic" else "call_"
     seed = "|".join([caller.trial, chain(digests), ",".join(str(int(token)) for token in tokens)])
     named = []
     for at, call in enumerate(calls):
-        if _call_id(call):
+        if kept[at]:
             named.append(call)
             continue
         minted = prefix + hashlib.sha256(f"{seed}|{at}".encode()).hexdigest()[:32]
@@ -176,3 +191,12 @@ def with_call_ids(message: Any, tokens: Any, caller: Caller, digests: Sequence[s
 
 def _call_id(call: Any) -> str | None:
     return call.get("id") if isinstance(call, dict) else getattr(call, "id", None)
+
+
+def _ids_in(messages: Sequence[Message]) -> set[str]:
+    """Return the call ids `messages` name, in their calls and in their results."""
+    named = {str(one) for message in messages if (one := message.get("tool_call_id"))}
+    for message in messages:
+        calls = message.get("tool_calls") or []
+        named.update(str(one) for call in calls if (one := _call_id(call)))
+    return named
