@@ -1175,8 +1175,8 @@ requires-dist = [
     { name = "pypdfium2", specifier = ">=4.30" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
-    { name = "tinker", specifier = ">=0.27,<0.33" },
-    { name = "tinker-cookbook", specifier = ">=0.5.5,<0.6" },
+    { name = "tinker", specifier = ">=0.38,<0.39" },
+    { name = "tinker-cookbook", specifier = ">=0.6,<0.7" },
     { name = "together", marker = "extra == 'together'", specifier = ">=2.42,<3" },
 ]
 provides-extras = ["dev", "together"]
@@ -3037,6 +3037,18 @@ wheels = [
 ]
 
 [[package]]
+name = "pyrage"
+version = "1.4.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/15/a4/612910dbedf7d9fb24ec58474849438b6f88e078e1a100f73a54a605d228/pyrage-1.4.0.tar.gz", hash = "sha256:545bf188e8d217ec88c32bc8e8bf56026c8c0b1b1f96d2688cedf1427ab0e827", size = 32198, upload-time = "2026-08-23T22:48:59.906Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/13/bb/6b167a449e95ecf0eaf4277c949a89a29dfc08cc533f710a9e6f12bef513/pyrage-1.4.0-cp310-abi3-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl", hash = "sha256:bcf4177aea91a9f48951db8001c1385baafbae62cc15d691ef43efebaab6b8db", size = 1701313, upload-time = "2026-08-23T22:48:53.835Z" },
+    { url = "https://files.pythonhosted.org/packages/5a/cb/d88aaab0b89141802473f6139fe8e05519d1b6ac06bff8231a1378a5674f/pyrage-1.4.0-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:f868b360ccd3f836326d42b532fae3e8eb8340a88cca0a39c0ae10fce68f6cc5", size = 882978, upload-time = "2026-08-23T22:48:55.525Z" },
+    { url = "https://files.pythonhosted.org/packages/d9/f0/41da7d88cfdad2eba492f3275ec50a65916ccd3a78140fb15875569ad1ff/pyrage-1.4.0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:7f4eb0cbc2b4aee5deac9862c47b3895866df5554153951af822e9c581e68558", size = 924673, upload-time = "2026-08-23T22:48:57.1Z" },
+    { url = "https://files.pythonhosted.org/packages/d3/8c/354fdb9ee7b45a2060272c623536b2cf9f0996de2242eaac177cff3f8003/pyrage-1.4.0-cp310-abi3-win_amd64.whl", hash = "sha256:c4a5dcd24a14b5e0d4cccff13649a2b8f1609ad45d6438bb85f35d84b0c8155e", size = 848219, upload-time = "2026-08-23T22:48:58.702Z" },
+]
+
+[[package]]
 name = "pytest"
 version = "9.1.1"
 source = { registry = "https://pypi.org/simple" }
@@ -3583,8 +3595,8 @@ requires-dist = [
     { name = "rich", specifier = ">=14.1" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
     { name = "shortuuid", specifier = ">=1.0.13" },
-    { name = "tinker", specifier = ">=0.27,<0.33" },
-    { name = "tinker-cookbook", specifier = ">=0.5.5,<0.6" },
+    { name = "tinker", specifier = ">=0.38,<0.39" },
+    { name = "tinker-cookbook", specifier = ">=0.6,<0.7" },
     { name = "together-sandbox", marker = "extra == 'together'", specifier = ">=4.1,<5" },
     { name = "tomli-w", specifier = ">=1.0" },
     { name = "typer", specifier = ">=0.16" },
@@ -3800,7 +3812,7 @@ wheels = [
 
 [[package]]
 name = "tinker"
-version = "0.32.0"
+version = "0.38.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -3818,14 +3830,14 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "zstandard" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4a/87/9c3614892ef89e64d6365f54b065ab2d2fdf90b8aadacc56e435e91e9bf1/tinker-0.32.0.tar.gz", hash = "sha256:42d1a6720aeef89382144050f1d27f8acfb0b9f29bce1b8421861f1a589e4db9", size = 299677, upload-time = "2026-10-02T18:02:56.225Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d9/7c/971e8443d499b1a8700f60fb755a6f5ef791a8d47b079d3a77349c12c784/tinker-0.38.0.tar.gz", hash = "sha256:6cf91957fa4e75f2a5e480ecc12436f2dce3305000f2034efc3c31ec5fe1e322", size = 340130, upload-time = "2026-11-05T14:01:24.652Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/32/59/74de82c92e124583f71503b850a66103dfa8f941156d88cce4afc4ab62f3/tinker-0.32.0-py3-none-any.whl", hash = "sha256:8c2d3818ae2dcc3cbc56f5484139f4ae8d1fef3d90ff47375a4501d0a2f48e1d", size = 285718, upload-time = "2026-10-02T18:02:54.395Z" },
+    { url = "https://files.pythonhosted.org/packages/74/4d/36a83b014fa59136cd927f9e142ced6838d9d9004b35154813d76949572e/tinker-0.38.0-py3-none-any.whl", hash = "sha256:7685b29f467a717972fc4104cd944a25226ed357f57595adbe0abec44bada5d0", size = 331686, upload-time = "2026-11-05T14:01:22.672Z" },
 ]
 
 [[package]]
 name = "tinker-cookbook"
-version = "0.5.7"
+version = "0.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -3838,6 +3850,7 @@ dependencies = [
     { name = "numpy" },
     { name = "pillow" },
     { name = "pydantic" },
+    { name = "pyrage" },
     { name = "rich" },
     { name = "safetensors" },
     { name = "termcolor" },
@@ -3848,19 +3861,19 @@ dependencies = [
     { name = "tqdm" },
     { name = "transformers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4e/22/976c12fc8a884a09559dc84a7ebb57cd9d90feba59fae4829c20e9605950/tinker_cookbook-0.5.7.tar.gz", hash = "sha256:e4199b59bcf9f567aace776336ea8015db63fb465156af95c1d39c27c5941238", size = 4877347, upload-time = "2026-09-03T20:43:03.75Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/21/71/a665885c2d8d5b9443536926d044bbf22efe165ef30efc54e8f5a4b7cb1d/tinker_cookbook-0.6.0.tar.gz", hash = "sha256:eeb64ca92c58e53167af52a4189df4d31ac90695442472d3b448199020bc675f", size = 5114219, upload-time = "2026-11-05T22:56:03.574Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a4/be/2571457e60162043b1c119965de4a795fccbcdb3678fe6805950b9f42372/tinker_cookbook-0.5.7-py3-none-any.whl", hash = "sha256:7d2490c5c4c4e1b5cf6a86be4a73e020a80e44cbbb4b071acf314d38fcd25f7f", size = 1145190, upload-time = "2026-09-03T20:43:01.51Z" },
+    { url = "https://files.pythonhosted.org/packages/8c/f6/05f6132651f19745f50976e9c81378d33fc71a2e6d1ca017e8344ad6cdbe/tinker_cookbook-0.6.0-py3-none-any.whl", hash = "sha256:f0192bdff871e44a6dd81045292eb6f4d83cf4a52e35ff5d7d345e16ef49be21", size = 1305932, upload-time = "2026-11-05T22:56:01.382Z" },
 ]
 
 [[package]]
 name = "tml-renderers"
-version = "0.1.0"
+version = "0.4.0"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0d/b3/12b182a39effd1021263451e6eff0ff47c310f2957706a903ce838935dd5/tml_renderers-0.1.0-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:f484e983fe42df95c5c69108c7ec4046340f416566f726bd76e211736db29391", size = 4387718, upload-time = "2026-07-15T17:24:15.468Z" },
-    { url = "https://files.pythonhosted.org/packages/d6/dd/c31bb2e874cb11a175f8f14967cee128b2d159507a602b3740152be6a8d6/tml_renderers-0.1.0-cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:52cf4c1b4d1ab2664903f0438e661544546b4d7f0378fe245f53bafc01368014", size = 4545354, upload-time = "2026-07-15T17:24:17.956Z" },
-    { url = "https://files.pythonhosted.org/packages/26/e1/e4f8e7acfafaff35b59031b9af308aa059a845a4b094a43bd49dbb729508/tml_renderers-0.1.0-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:6f5ff0b08ba5ffe92071cb32215d65cda88d92205850f9f4dd1823f5d0dc2aeb", size = 4686701, upload-time = "2026-07-15T17:24:20.486Z" },
+    { url = "https://files.pythonhosted.org/packages/b7/aa/853491d748114e65e07bb7441cf1bf133e0b3fd44de99dfd4ba420cbb2ec/tml_renderers-0.4.0-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:8454112aab667407e6d8d203b038f35f2db58e448ae7f4bd35ddfb8dfb98d511", size = 15591702, upload-time = "2026-11-05T22:12:53.782Z" },
+    { url = "https://files.pythonhosted.org/packages/a3/a4/e156a7e58984190680823b4af6f0e87d6647e21a28c504de0ff33ef8f5e7/tml_renderers-0.4.0-cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:34317c809e18d7fa11a8ca79c0233afc7c41f9a5467fe00dc427d73b7734f892", size = 15790871, upload-time = "2026-11-05T22:12:57.332Z" },
+    { url = "https://files.pythonhosted.org/packages/b3/5d/c5f12f4e21aa745f7eb8c5d9a4293ecf23788f75834035224b1faf302320/tml_renderers-0.4.0-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:d3d5425865a0354be01d9c3fcc28406313bbb32afcc20ca6f70ceece76f6d9f1", size = 16006009, upload-time = "2026-11-05T22:13:00.915Z" },
 ]
 
 [[package]]

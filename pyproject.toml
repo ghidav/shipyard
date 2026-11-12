@@ -40,9 +40,10 @@ dependencies = [
     "python-dotenv>=1.0",
     # harbor[modal]: the recipes run their trials in Modal's sandboxes.
     "harbor[modal]>=0.23,<0.25",
-    # tinker: below 0.33, the first minor no run has used, since a minor can change its API.
-    "tinker>=0.27,<0.33",
-    "tinker-cookbook>=0.5.5,<0.6",
+    # tinker: below 0.39, the first minor no run has used, since a minor can change its API.
+    "tinker>=0.38,<0.39",
+    # tinker-cookbook: 0.6 is the first to tokenize Inkling 2 Small with its own tokenizer.
+    "tinker-cookbook>=0.6,<0.7",
     "harness-proxy",
     "litellm>=1.103",
     "tomli-w>=1.0",
