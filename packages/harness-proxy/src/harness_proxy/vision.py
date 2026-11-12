@@ -29,6 +29,13 @@ NOT_FETCHED = "an image given by URL is not fetched by this proxy; send its byte
 #: What an image in the system prompt becomes: a system prompt is rendered as text.
 IN_SYSTEM = "[an image was here; images in the system prompt are not shown to the model]"
 _DATA_URI = re.compile(r"^data:([^;,]+)(;base64)?,(.*)$", re.DOTALL)
+#: Cookbook renderers that tokenize images themselves, so are built with no image processor:
+#: `tml_v0`, which hands them to tml-renderers. Every model it renders reads images.
+OWN_IMAGES = frozenset({"tml_v0"})
+#: Side, in pixels, of the patches tml-renderers cuts an image into, a token each. For a width
+#: that is a multiple of it, tml-renderers 0.4 expects one more column of tokens than Inkling 2
+#: Small's server counts, which refuses the call; Inkling and Inkling-Small count as it does.
+TML_PATCH = 40
 #: pdfium is not thread-safe, and requests are read on worker threads.
 _PDFIUM = threading.Lock()
 
@@ -197,8 +204,40 @@ def has_images(messages: Sequence[Any]) -> bool:
 
 
 def takes_images(renderer: Any) -> bool:
-    """Return whether the renderer was built with an image processor."""
-    return bool(getattr(renderer, "_has_image_processor", False))
+    """Return whether the renderer renders an image: it was built with an image processor, or
+    is one that tokenizes images itself."""
+    if getattr(renderer, "_has_image_processor", False):
+        return True
+    return getattr(renderer, "_renderer_name", None) in OWN_IMAGES
+
+
+def suited(messages: Sequence[Any], renderer: Any) -> list[Any]:
+    """Return `messages` with each image as `renderer`'s model counts its tokens. For a renderer
+    that tokenizes images itself, an image whose width is a multiple of `TML_PATCH` loses its
+    last column of pixels, after which every Inkling model counts what tml-renderers expects.
+    The messages given are left as they are."""
+    if getattr(renderer, "_renderer_name", None) not in OWN_IMAGES:
+        return list(messages)
+    return [_narrowed(message) for message in messages]
+
+
+def _narrowed(message: Any) -> Any:
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, list):
+        return message
+    parts = [_narrow(part) for part in content]
+    if all(new is old for new, old in zip(parts, content, strict=True)):
+        return message
+    return {**message, "content": parts}
+
+
+def _narrow(part: Any) -> Any:
+    if not isinstance(part, dict) or part.get("type") != "image":
+        return part
+    size = getattr(part.get("image"), "size", None)
+    if not size or size[0] % TML_PATCH or size[0] <= 1:
+        return part
+    return {**part, "image": part["image"].crop((0, 0, size[0] - 1, size[1]))}
 
 
 def image_key(part: dict[str, Any]) -> str:

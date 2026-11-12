@@ -11,7 +11,7 @@ import tinker
 from harness_proxy.bridge import Index, bridge, chain, digest, digests_of, int_stops
 from harness_proxy.chat import Call, Caller, Refused, Reply, thinking_of
 from harness_proxy.cookbook import Message, get_text_content
-from harness_proxy.vision import has_images, takes_images
+from harness_proxy.vision import has_images, suited, takes_images
 from harness_proxy.wire import model_input
 
 if TYPE_CHECKING:
@@ -140,12 +140,14 @@ def render(messages: Sequence[Message], renderer: Any, index: Index) -> Prompt:
     """Render `messages`, from the tokens of a sampled reply in `index` they quote when the bridge
     can splice them; `Refused` for an image the model takes none of."""
     messages = list(messages)
-    if has_images(messages) and not takes_images(renderer):
-        # Answer with a 400 so the harness sees the request was the problem.
-        raise Refused(
-            "this request carries an image and the model this endpoint serves takes "
-            "none: its renderer was built without an image processor"
-        )
+    if has_images(messages):
+        if not takes_images(renderer):
+            # Answer with a 400 so the harness sees the request was the problem.
+            raise Refused(
+                "this request carries an image and the model this endpoint serves takes "
+                "none: its renderer renders no images"
+            )
+        messages = suited(messages, renderer)
     digests = digests_of(messages)
     built = bridge(messages, renderer, index, digests)
     if built is not None:

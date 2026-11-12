@@ -12,6 +12,7 @@ from PIL import Image
 
 from harness_proxy import vision
 from harness_proxy.chat import Refused
+from harness_proxy.cookbook import AtEffort
 from harness_proxy.dialects import anthropic, openai
 from proxies import FakeSampler, ask, ask_anthropic, recorded, server
 
@@ -253,6 +254,31 @@ def test_takes_images_reads_the_renderers_flag() -> None:
     assert vision.takes_images(SimpleNamespace(_has_image_processor=True))
     assert not vision.takes_images(SimpleNamespace(_has_image_processor=False))
     assert not vision.takes_images(SimpleNamespace())
+
+
+def test_a_renderer_that_tokenizes_images_itself_takes_them_with_no_image_processor() -> None:
+    """The cookbook builds `tml_v0` with no image processor: tml-renderers tokenizes the image."""
+    inkling = SimpleNamespace(_has_image_processor=False, _renderer_name="tml_v0")
+    assert vision.takes_images(inkling)
+    assert vision.takes_images(AtEffort(inkling, 0.9)), "a fixed effort wraps the same renderer"
+    assert not vision.takes_images(SimpleNamespace(_renderer_name="qwen3"))
+
+
+def test_an_image_a_patch_multiple_wide_loses_a_column_for_a_renderer_that_tokenizes_it() -> None:
+    """tml-renderers expects a column of tokens more than Inkling 2 Small counts for such a
+    width, and the call is refused; a pixel narrower, they agree."""
+    inkling = SimpleNamespace(_has_image_processor=False, _renderer_name="tml_v0")
+    wide, odd = Image.new("RGB", (640, 320), "red"), Image.new("RGB", (333, 320), "red")
+    said = {"role": "user", "content": [vision.image_part(wide), vision.image_part(odd)]}
+    plain = {"role": "assistant", "content": "ok"}
+
+    suited = vision.suited([said, plain], AtEffort(inkling, 0.9))
+
+    assert [part["image"].size for part in suited[0]["content"]] == [(639, 320), (333, 320)]
+    assert suited[0]["content"][1] is said["content"][1] and suited[1] is plain
+    assert said["content"][0]["image"].size == (640, 320), "the request's own image is kept"
+    qwen = SimpleNamespace(_has_image_processor=True, _renderer_name="qwen3_5")
+    assert vision.suited([said], qwen)[0] is said, "an image processor sizes its own images"
 
 
 async def test_a_text_only_model_refuses_an_image_with_a_400_on_both_wires() -> None:
