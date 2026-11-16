@@ -22,6 +22,8 @@ uvx harbor@0.24.0 datasets download reasoning-gym-easy -o tasks  # the recipes' 
 shipyard run recipes/dapo                                        # the run writes runs/dapo__<id>/
 ```
 
+As shipped, the run takes about 1 h 45 min and costs about $20: $15 of Tinker and $5 of Modal, measured in November 2026. Add `--recipe.steps 1` to stop after the first step, about 10 minutes and under $2.
+
 > [!IMPORTANT]
 > Add `--dry` to see every setting the run would use, with each default `run.toml` leaves marked, and to check the run without starting it.
 
