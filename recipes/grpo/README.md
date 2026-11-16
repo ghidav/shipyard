@@ -4,8 +4,8 @@ GRPO ([Shao et al., 2024](https://arxiv.org/abs/2402.03300)) on the tasks' verif
 
 | | |
 | --- | --- |
-| **Agent** | `[models.agent]`: `Qwen/Qwen3-8B` on Tinker, trained; through `pi`, `[recipe] harness` |
-| **Data** | `reasoning-gym-easy`: 16 tasks a step, 8 trials each |
+| **Agent** | `[models.agent]`: `Qwen/Qwen3.5-9B` on Tinker, trained; through `pi`, `[recipe] harness` |
+| **Data** | `reasoning-gym-easy`: 10 steps of 8 tasks, 8 trials each |
 | **Sandbox** | Modal (set `[rollout] sandbox = "docker"` to run trials on this machine) |
 | **Needs** | `TINKER_API_KEY`; a Modal login for the sandboxes (`uvx modal setup`), and `cloudflared` or a running Docker for the tunnel that carries their calls to this machine |
 | **`[recipe]`** | `harness`, `group_size`; `test_group_size` (optional: unset, `group_size`) |

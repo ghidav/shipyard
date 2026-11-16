@@ -1,14 +1,15 @@
-# DAPO on Reasoning Gym's easy split, its rollouts overlapping its updates: 16 groups a step, 8
-# trials each, the next ones rolling out while a step updates. Run it with trainer.py.
+# DAPO on Reasoning Gym's easy split, its rollouts overlapping its updates: 10 steps of 8 groups,
+# 8 trials each, the next ones rolling out while a step updates; a short run to raise `steps`
+# from. Run it with trainer.py.
 [models.agent]
-model = "Qwen/Qwen3-8B"
+model = "Qwen/Qwen3.5-9B"
 learning_rate = 2e-5
 lora_rank = 32
 max_tokens = 8192
 
 [data]
 train = "reasoning-gym-easy"
-batch_size = 16
+batch_size = 8
 
 [rollout]
 sandbox = "modal"
@@ -19,10 +20,11 @@ sandboxes = 48
 setup_timeout = 900
 
 [recipe]
-steps = 100
+steps = 10
 harness = "pi@0.85.1"
 group_size = 8
-# The paper's 16 mini-batches a step, and its clip-higher: 0.2 below 1, 0.28 above.
+# The paper's 16 mini-batches a step, at most one for each group a step keeps, and its
+# clip-higher: 0.2 below 1, 0.28 above.
 substeps = 16
 clip_low = 0.2
 clip_high = 0.28

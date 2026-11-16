@@ -4,8 +4,8 @@
 
 | | |
 | --- | --- |
-| **Agent** | `[models.agent]`: `Qwen/Qwen3-8B` on Tinker, trained; through `pi`, `[recipe] harness` |
-| **Data** | `reasoning-gym-easy`: 16 groups a step, 8 trials each, in 16 substeps; 9 groups rolling out |
+| **Agent** | `[models.agent]`: `Qwen/Qwen3.5-9B` on Tinker, trained; through `pi`, `[recipe] harness` |
+| **Data** | `reasoning-gym-easy`: 10 steps of 8 groups, 8 trials each, in a substep for each group kept; 9 groups rolling out |
 | **Sandbox** | Modal (set `[rollout] sandbox = "docker"` to run trials on this machine) |
 | **Needs** | `TINKER_API_KEY`; a Modal login for the sandboxes (`uvx modal setup`), and `cloudflared` or a running Docker for the tunnel that carries their calls to this machine |
 | **`[recipe]`** | `harness`, `group_size`, `substeps`, `clip_low`, `clip_high`, `overlong_penalty`, `overlong_buffer`; `overlong_budget` (optional: unset, the model's context), `in_flight` (optional: unset, half again the groups `[rollout] sandboxes` holds), `max_lag` (optional: unset, any lag) |

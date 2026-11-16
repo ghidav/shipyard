@@ -12,7 +12,7 @@ model = "Qwen/Qwen3.6-35B-A3B"
 
 [data]
 train = "reasoning-gym-easy"
-batch_size = 16
+batch_size = 8
 
 [rollout]
 sandbox = "modal"
@@ -20,7 +20,7 @@ concurrency = 32
 setup_timeout = 900
 
 [recipe]
-steps = 100
+steps = 10
 harness = "pi@0.85.1"
 group_size = 4
 

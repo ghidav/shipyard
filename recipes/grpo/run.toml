@@ -1,13 +1,14 @@
-# GRPO on Reasoning Gym's easy split: 16 tasks a step, 8 trials each. Run it with trainer.py.
+# GRPO on Reasoning Gym's easy split: 10 steps of 8 tasks, 8 trials each, a short run to raise
+# `steps` from. Run it with trainer.py.
 [models.agent]
-model = "Qwen/Qwen3-8B"
+model = "Qwen/Qwen3.5-9B"
 learning_rate = 2e-5
 lora_rank = 32
 max_tokens = 8192
 
 [data]
 train = "reasoning-gym-easy"
-batch_size = 16
+batch_size = 8
 
 [rollout]
 sandbox = "modal"
@@ -15,7 +16,7 @@ concurrency = 32
 setup_timeout = 900
 
 [recipe]
-steps = 100
+steps = 10
 harness = "pi@0.85.1"
 group_size = 8
 

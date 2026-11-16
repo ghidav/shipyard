@@ -5,7 +5,7 @@
 modules = "modules"
 
 [models.agent]
-model = "Qwen/Qwen3-8B"
+model = "Qwen/Qwen3.5-9B"
 max_tokens = 8192
 
 # The reflector, rolled out through `reflector_harness` at a task written for each module it

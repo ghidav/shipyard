@@ -4,7 +4,7 @@ GEPA ([Agrawal et al., 2025](https://arxiv.org/abs/2507.19457)), through the `ge
 
 | | |
 | --- | --- |
-| **Models** | `[models.agent]`: `Qwen/Qwen3-8B` on Tinker, through `pi`, which it never trains (for a provider's agent, set `provider = "anthropic"`, a Claude model, and `[recipe] harness = "claude-code"`); `[models.reflector]`: the model that rewrites the modules |
+| **Models** | `[models.agent]`: `Qwen/Qwen3.5-9B` on Tinker, through `pi`, which it never trains (for a provider's agent, set `provider = "anthropic"`, a Claude model, and `[recipe] harness = "claude-code"`); `[models.reflector]`: the model that rewrites the modules |
 | **Data** | `reasoning-gym-easy`: 2 trials a task; one step, the whole search |
 | **Sandbox** | Modal (set `[rollout] sandbox = "docker"` to run trials on this machine) |
 | **Needs** | `TINKER_API_KEY`, `ANTHROPIC_API_KEY` (the reflector's harness); a Modal login for the sandboxes (`uvx modal setup`), and `cloudflared` or a running Docker for the tunnel that carries their calls to this machine; the `gepa` extra: `uv tool install "shipyard[gepa]"` |

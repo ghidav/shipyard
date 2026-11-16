@@ -4,8 +4,8 @@ DAPO ([Yu et al., 2025](https://arxiv.org/abs/2503.14476)): each trial's reward,
 
 | | |
 | --- | --- |
-| **Agent** | `[models.agent]`: `Qwen/Qwen3-8B` on Tinker, trained; through `pi`, `[recipe] harness` |
-| **Data** | `reasoning-gym-easy`: 16 tasks a step, 8 trials each, in 16 substeps |
+| **Agent** | `[models.agent]`: `Qwen/Qwen3.5-9B` on Tinker, trained; through `pi`, `[recipe] harness` |
+| **Data** | `reasoning-gym-easy`: 10 steps of 8 tasks, 8 trials each, in a substep for each task kept |
 | **Sandbox** | Modal (set `[rollout] sandbox = "docker"` to run trials on this machine) |
 | **Needs** | `TINKER_API_KEY`; a Modal login for the sandboxes (`uvx modal setup`), and `cloudflared` or a running Docker for the tunnel that carries their calls to this machine |
 | **`[recipe]`** | `harness`, `group_size`, `clip_low`, `clip_high`, `overlong_penalty`, `overlong_buffer`; `overlong_budget` (optional: unset, the model's context) |

@@ -17,7 +17,7 @@ max_tokens = 8192
 
 [data]
 train = "reasoning-gym-easy"
-batch_size = 16
+batch_size = 8
 
 [rollout]
 sandbox = "modal"
@@ -28,7 +28,7 @@ sandboxes = 48
 setup_timeout = 900
 
 [recipe]
-steps = 100
+steps = 10
 harness = "pi@0.85.1"
 group_size = 8
 # The reward a trial must reach to be trained on: solved.
