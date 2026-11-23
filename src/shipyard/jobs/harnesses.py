@@ -45,9 +45,15 @@ def litellm_options(address: str, token: str) -> dict:
     return {"api_base": address, "llm_call_kwargs": {"api_key": token}}
 
 
+#: What pi logs as the error of a call it aborted itself.
+PI_ABORTED = "This operation was aborted"
+
+
 def last_assistant_failed(text: str) -> bool:
-    """Return whether the last assistant `message_end` in pi's JSON log stopped on `error`."""
-    stop = None
+    """Return whether the last assistant `message_end` in pi's JSON log stopped on `error`. A
+    call pi aborted itself did not fail: Harbor's `max_turns` ends a trial that has used its
+    turns by aborting the call after them, which never leaves pi, and the trial is graded."""
+    stop = error = None
     for line in text.splitlines():
         if '"message_end"' not in line:
             continue
@@ -59,8 +65,8 @@ def last_assistant_failed(text: str) -> bool:
             continue
         message = event.get("message")
         if isinstance(message, dict) and message.get("role") == "assistant":
-            stop = message.get("stopReason")
-    return stop == "error"
+            stop, error = message.get("stopReason"), message.get("errorMessage")
+    return stop == "error" and error != PI_ABORTED
 
 
 PROFILES: dict[str, Profile] = {
