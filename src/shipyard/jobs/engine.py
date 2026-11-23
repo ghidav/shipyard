@@ -25,7 +25,7 @@ from harbor.models.trial.config import (
 
 from shipyard.groups import Group, Pinned, Trial, grouped
 from shipyard.jobs.admit import judge
-from shipyard.jobs.harnesses import Harness
+from shipyard.jobs.harnesses import Harness, unrunnable
 from shipyard.jobs.hooks import hooks_of
 from shipyard.jobs.modules import Modules, deliver
 from shipyard.jobs.progress import Bars
@@ -271,6 +271,9 @@ class HarborEngine:
             raise ValueError(f"job {job.name} names no task")
         if attempts < 1:
             raise ValueError(f"attempts must be at least 1; got {attempts}")
+        refused = unrunnable(harness.file) if harness.file is not None else None
+        if refused:  # a file that cannot run would fail every trial, each graded as it stood
+            raise ValueError(f"job {job.name}: {refused}")
         trials_dir = self.jobs_dir / job.name
         delivered = deliver(job.modules, trials_dir / DELIVERED) if job.modules is not None else {}
         agent = self._agent_config(harness, delivered, job)
@@ -359,10 +362,15 @@ class HarborEngine:
         self, harness: Harness, delivered: Mapping[str, Any], job: Job
     ) -> AgentConfig:
         version = harness.version
+        kwargs = {**({"version": version} if version else {}), **harness.kwargs}
+        if harness.file is not None:
+            # What `file.py` runs, and the limit the run gives every trial, which Harbor does
+            # not tell an agent.
+            kwargs |= {"file": str(harness.file), "timeout": self.timeout}
         fields: dict[str, Any] = {
-            "name": harness.bare,
+            "name": harness.agent,
             "env": dict(harness.env),
-            "kwargs": {**({"version": version} if version else {}), **harness.kwargs},
+            "kwargs": kwargs,
             "override_setup_timeout_sec": self.setup_timeout,
             "override_timeout_sec": self.timeout,
         }

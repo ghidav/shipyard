@@ -38,15 +38,18 @@ def open_run(
     trainer: Path | type[Trainer] | None = None,
     origin: Mapping[str, Any] | None = None,
     overrides: Mapping[str, str] | None = None,
+    home: Path | None = None,
 ) -> tuple[Path, Config]:
     """Create a config's run directory, noting its recipe and any `origin` in `run.json`. The
     recipe is `trainer`: its trainer file, the config folder's `trainer.py` by default, or a
-    `Trainer` subclass, which a run made from Python passes and a resume cannot find again."""
+    `Trainer` subclass, which a run made from Python passes and a resume cannot find again.
+    `home` is the folder the config was written in, when `path` is a run's copy of it."""
     source = config_file(path)
     if trainer is None:
         trainer = recipe_of(source)
     made = trainer if isinstance(trainer, type) else trainer_in(trainer)
-    config = load(path, made.Recipe, overrides)
+    home = Path(home) if home is not None else source.parent.resolve()
+    config = load(path, made.Recipe, overrides, origin=home)
     # A run that goes on from another is named as that one is, without its id.
     named = source.parent.name.rsplit("__", 1)[0] if origin else source.parent.name
     stem = named[:32].rstrip("_-") or "run"
@@ -60,7 +63,8 @@ def open_run(
         (directory / files.CONFIG).write_text(f"{header}\n{written}", encoding="utf-8")
     else:
         shutil.copyfile(source, directory / files.CONFIG)
-    noted: dict[str, Any] = {}
+    # Where the config was written: a harness it gives as a file is found from there again.
+    noted: dict[str, Any] = {"home": str(home)}
     if not isinstance(trainer, type):
         trainer = Path(trainer).resolve()
         noted["recipe"] = {"trainer": str(trainer), "fingerprint": fingerprint(trainer.parent)}
@@ -106,6 +110,7 @@ def continued(origin: Path, checkpoint: Checkpoint) -> tuple[Path, Config]:
         root=origin.parent,
         trainer=Path(trainer) if trainer else None,
         origin={"run": str(origin), "tag": checkpoint.tag, "first": first},
+        home=_home(noted),
     )
     carried = origin / files.MODULES / files.CARRIED
     if carried.is_dir():
@@ -129,7 +134,14 @@ def reopened(directory: Path, *, tag: str = "last") -> tuple[Config, Checkpoint]
                 Path(recipe["trainer"]).parent,
             )
     checkpoint = found(directory, tag)
-    return load(directory, trainer_class(directory).Recipe), checkpoint
+    home = _home(files.read_json(directory / files.RUN))
+    return load(directory, trainer_class(directory).Recipe, origin=home), checkpoint
+
+
+def _home(noted: Mapping[str, Any]) -> Path | None:
+    """The folder a run's config was written in, as its `run.json` notes it; None for a run
+    that noted none."""
+    return Path(noted["home"]) if noted.get("home") else None
 
 
 def trainer_class(directory: Path) -> type[Trainer]:

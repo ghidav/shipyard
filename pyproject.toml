@@ -102,3 +102,7 @@ src = ["src", "tests", "packages/harness-proxy/src", "packages/harness-proxy/tes
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# It runs in a trial's sandbox, on whatever Python is there, 3.8 or later: no newer syntax.
+"src/shipyard/jobs/runner.py" = ["UP"]

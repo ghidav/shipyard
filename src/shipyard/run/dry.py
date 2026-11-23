@@ -167,7 +167,7 @@ def setup_timeout(harness: Harness) -> float | None:
     from harbor.models.trial.config import AgentConfig
 
     try:
-        made = AgentFactory.get_agent_class_from_config(AgentConfig(name=harness.bare))
+        made = AgentFactory.get_agent_class_from_config(AgentConfig(name=harness.agent))
     except Exception:  # noqa: BLE001 - a harness Harbor does not know is refused as it runs
         return None
     return getattr(made, "DEFAULT_SETUP_TIMEOUT_SEC", None)

@@ -346,13 +346,20 @@ def config_file(path: Path) -> Path:
 
 
 def load(
-    path: Path, recipe: type[Recipe] = Recipe, overrides: Mapping[str, str] | None = None
+    path: Path,
+    recipe: type[Recipe] = Recipe,
+    overrides: Mapping[str, str] | None = None,
+    *,
+    origin: Path | None = None,
 ) -> Config:
-    """Load and validate the config at `path`, raising `ConfigError` with every problem."""
+    """Load and validate the config at `path`, raising `ConfigError` with every problem. A
+    harness it gives as a Python file is found from `origin`, the folder the config was written
+    in, which a run's copy of it is no longer in; by default the folder it is in now."""
     file = config_file(path)
     raw = parsed(file, overrides)
+    context = {"home": Path(origin) if origin is not None else file.parent}
     try:
-        loaded = Config[recipe].model_validate(raw)  # type: ignore[valid-type]
+        loaded = Config[recipe].model_validate(raw, context=context)  # type: ignore[valid-type]
     except ValidationError as error:
         raise ConfigError([_problem(one) for one in error.errors()]) from error
     loaded._home = file.parent

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import ast
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from shipyard.groups import Connection, Where
 
@@ -101,17 +102,24 @@ PROFILES: dict[str, Profile] = {
 }
 
 
+#: The Harbor agent that runs a harness given as a Python file (`file.py`).
+FILE_AGENT = "shipyard.jobs.file:FileHarness"
+#: What a harness file defines, which a trial calls.
+RUN = "run"
+
+
 class Harness(BaseModel):
     """The agent program a trial runs, at an optional pinned version, with the environment and
     keyword arguments Harbor starts it with: what it dials to reach the model, whether it can run
     with no network, and whether its log says its last model call failed. A recipe declares the
     harnesses it runs as keys of its own; `run.toml` gives one as a name, `"pi@0.85.1"`, or as a
-    table with `name`, `env` and `kwargs`."""
+    table with `name`, `env` and `kwargs`. A name that ends in `.py` is a harness given as a
+    Python file, which defines `run(task, model)` as `runner.py` states it."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     #: The Harbor agent to install: a name with an optional version, such as `pi@0.85.1`, or an
-    #: import path.
+    #: import path. Or a Python file that is the harness: run.toml names it from its own folder.
     name: str
     env: dict[str, str] = Field(default_factory=dict)
     kwargs: dict[str, Any] = Field(default_factory=dict)
@@ -124,17 +132,37 @@ class Harness(BaseModel):
 
     @field_validator("name")
     @classmethod
-    def _unblank(cls, value: str) -> str:
+    def _read(cls, value: str, info: ValidationInfo) -> str:
         """Refuse a blank name: Harbor reads an unnamed agent as its oracle, which runs the
-        task's reference solution instead of the agent."""
-        if not value.strip():
+        task's reference solution instead of the agent. A file a config names is found from the
+        config's folder, and refused when it cannot run as a harness."""
+        value = value.strip()
+        if not value:
             raise ValueError("a harness needs its name, such as `pi@0.85.1`")
-        return value.strip()
+        home = (info.context or {}).get("home")
+        if home is None or not is_file(value):
+            return value
+        file = Path(home) / Path(value).expanduser()
+        refused = unrunnable(file)
+        if refused:
+            raise ValueError(refused)
+        return str(file)
 
     @property
     def bare(self) -> str:
-        """Its name without the version: the Harbor agent, such as `pi` of `pi@0.85.1`."""
+        """Its name without the version: the Harbor agent, such as `pi` of `pi@0.85.1`; a file
+        or an import path whole."""
         return bare_name(self.name)
+
+    @property
+    def file(self) -> Path | None:
+        """The Python file it is, for a harness given as one; None for any other."""
+        return Path(self.name) if is_file(self.name) else None
+
+    @property
+    def agent(self) -> str:
+        """What Harbor runs it as: its bare name, or `FILE_AGENT` for one given as a file."""
+        return FILE_AGENT if is_file(self.name) else self.bare
 
     @property
     def version(self) -> str | None:
@@ -188,8 +216,31 @@ class Harness(BaseModel):
 
 
 def bare_name(harness: str) -> str:
-    """Return the name without its version: `pi@0.85.1` is `pi`, an import path stays whole."""
-    return harness if ":" in harness else harness.partition("@")[0]
+    """Return the name without its version: `pi@0.85.1` is `pi`; an import path or a file stays
+    whole."""
+    return harness if ":" in harness or is_file(harness) else harness.partition("@")[0]
+
+
+def is_file(harness: str) -> bool:
+    """Return whether `harness` names a harness given as a Python file."""
+    return harness.strip().endswith(".py")
+
+
+def unrunnable(file: Path) -> str | None:
+    """Return why the Python file at `file` cannot run as a harness, or None. The file is read
+    and parsed, never run."""
+    try:
+        text = Path(file).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        reason = error.strerror if isinstance(error, OSError) else "it is not UTF-8 text"
+        return f"no harness file to read at {file}: {reason}"
+    try:
+        tree = ast.parse(text)
+    except SyntaxError as error:
+        return f"{file} is not Python: {error.msg}, at line {error.lineno}"
+    if not any(isinstance(one, ast.FunctionDef) and one.name == RUN for one in tree.body):
+        return f"{file} defines no `{RUN}(task, model)`, which a trial calls"
+    return None
 
 
 def profile_for(harness: str) -> Profile:
