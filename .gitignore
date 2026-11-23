@@ -22,3 +22,5 @@ docs/*
 mkdocs.yml
 skills-lock.json
 uv.lock
+reports/
+research_notes/
