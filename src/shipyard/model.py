@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 from shipyard.groups import Group, Sequence
-from shipyard.models.clients import CLIENTS, TOGETHER
+from shipyard.models.clients import CLIENTS, TINKER, TOGETHER
 
 if TYPE_CHECKING:
     from shipyard.config import ModelTable
@@ -23,8 +23,9 @@ class Model:
     all run."""
 
     def __init__(self, role: str, table: ModelTable) -> None:
-        """Raise `ValueError` for renderers of a model a provider serves to its harnesses, and
-        for sampler replicas of a model off Together."""
+        """Raise `ValueError` for renderers of a model a provider serves to its harnesses, for
+        sampler replicas of a model off Together, and for a server of a model off Tinker, or
+        one with no key of its own."""
         if table.renderers and table.provider not in CLIENTS:
             raise ValueError(
                 f"[models.{role}] renderers: the proxy renders the calls of a model on Tinker or "
@@ -34,6 +35,17 @@ class Model:
             raise ValueError(
                 f"[models.{role}] sampler_replicas: the run sets how many replicas the sampler of "
                 f"a model on Together has, and {table.provider} runs {table.model}'s itself"
+            )
+        if (table.base_url or table.api_key_env) and table.provider != TINKER:
+            raise ValueError(
+                f"[models.{role}] base_url and api_key_env name a server that speaks Tinker's "
+                f"API, for a model on tinker, and {table.model} is on {table.provider}"
+            )
+        if table.base_url and not table.api_key_env:
+            raise ValueError(
+                f"[models.{role}] base_url: name the variable that holds the key of "
+                f"{table.base_url} as api_key_env. TINKER_API_KEY is Tinker's own key, and goes "
+                "to no other server"
             )
         #: The name run.toml gives it, which its lane, spend and saves are filed under.
         self.role = role

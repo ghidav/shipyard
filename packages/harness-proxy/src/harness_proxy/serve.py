@@ -258,7 +258,8 @@ def parser(prog: str = "harness-proxy") -> argparse.ArgumentParser:
         metavar="JSON",
         help="the run's document, as a JSON object: its lanes, each a name, a model and its "
         "own settings (renderer, temperature, top_p, top_k, max_tokens, max_context, "
-        "fill_context, metadata, backend, session); and keepalive_grace, keepalive_every",
+        "fill_context, metadata, backend, session, base_url, api_key_env); and "
+        "keepalive_grace, keepalive_every",
     )
     return made
 

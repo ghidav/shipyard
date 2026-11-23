@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -8,11 +9,38 @@ logger = logging.getLogger(__name__)
 PREFIX = "tinker://"
 
 
-async def connect(*, metadata: dict[str, str] | None, session: str | None) -> Any:
-    """Return Tinker's service client, its session tagged with `metadata`."""
+async def connect(
+    *,
+    metadata: dict[str, str] | None,
+    session: str | None,
+    base_url: str | None = None,
+    api_key_env: str | None = None,
+) -> Any:
+    """Return Tinker's service client, its session tagged with `metadata`: on the server at
+    `base_url`, with the key the variable `api_key_env` holds, or on the one the environment
+    names. `ValueError` if that variable is not set."""
     import tinker
 
-    return tinker.ServiceClient(user_metadata=metadata)
+    return tinker.ServiceClient(user_metadata=metadata, **reaching(base_url, api_key_env))
+
+
+def reaching(base_url: str | None, api_key_env: str | None) -> dict[str, str]:
+    """Return what `tinker.ServiceClient` takes to reach the server at `base_url` with the key
+    the variable `api_key_env` holds; nothing for a None, which leaves it to the environment
+    (TINKER_BASE_URL, TINKER_API_KEY). `ValueError` if the variable is not set: the SDK would
+    send that server TINKER_API_KEY, Tinker's own key."""
+    found: dict[str, str] = {}
+    if base_url:
+        found["base_url"] = base_url
+    if api_key_env:
+        key = os.environ.get(api_key_env)
+        if not key:
+            raise ValueError(
+                f"{api_key_env} is not set: it holds the key of the Tinker server "
+                f"{base_url or 'the run reaches'}"
+            )
+        found["api_key"] = key
+    return found
 
 
 async def sampler(service: Any, base_model: str, weights: str | None) -> Any:

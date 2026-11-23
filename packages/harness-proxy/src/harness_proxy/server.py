@@ -76,6 +76,11 @@ class Lane:
     backend: str = "tinker"
     #: The training session a `together` backend samples from, which the run opened.
     session: str | None = None
+    #: The server a `tinker` backend samples, one that speaks Tinker's API, and the variable
+    #: that holds its key; None for each the environment names (TINKER_BASE_URL,
+    #: TINKER_API_KEY).
+    base_url: str | None = None
+    api_key_env: str | None = None
     #: Sampling client factory for tests. None uses the backend's service.
     client_factory: ClientFactory | None = field(default=None, repr=False)
     #: The weights the lane's model published last, which each call of a trial that follows the
@@ -103,10 +108,15 @@ class Lane:
     _unversioned: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
-        """Refuse a nameless lane, or an unknown backend."""
+        """Refuse a nameless lane, an unknown backend, or a server for a backend but Tinker's."""
         if not self.name:
             raise ValueError("a lane is named, since a trial is opened on it by name")
         backends.named(self.backend)
+        if (self.base_url or self.api_key_env) and self.backend != "tinker":
+            raise ValueError(
+                f"lane {self.name}: base_url and api_key_env name a server that speaks Tinker's "
+                f"API, and the lane samples through the {self.backend} backend"
+            )
 
     @property
     def sampling(self) -> ModuleType:
@@ -124,8 +134,11 @@ class Lane:
         budget nor the context could be enforced."""
         renderers = self._built()
         if self.client_factory is None and self._service is None:
+            server = {"base_url": self.base_url, "api_key_env": self.api_key_env}
             self._service = await self.sampling.connect(
-                metadata=self.metadata, session=self.session
+                metadata=self.metadata,
+                session=self.session,
+                **{key: value for key, value in server.items() if value},
             )
         if self.max_context is None and self._service is not None:
             self.max_context = await self.sampling.context_of(self._service, self.model)

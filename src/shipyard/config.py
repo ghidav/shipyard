@@ -66,6 +66,13 @@ class ModelTable(_Table):
     #: Who serves the model: `tinker` or `together`, which the run can train, or another
     #: provider, such as `anthropic`, whose API it only calls.
     provider: str = "tinker"
+    #: The server the model is on, for a model on `tinker`: one that speaks Tinker's API, such
+    #: as a SkyRL server or a Modal Spindle deployment. Unset: the one TINKER_BASE_URL names,
+    #: else Thinking Machines' Tinker.
+    base_url: str | None = None
+    #: The variable of this process's environment that holds that server's key, which a
+    #: `base_url` needs: TINKER_API_KEY is Tinker's own, and goes to no other server.
+    api_key_env: str | None = None
     #: The checkpoint the model starts from: on Tinker, a training state (`.../weights/...`)
     #: for a model the recipe trains, weights saved for sampling (`.../sampler_weights/...`)
     #: for one it does not.

@@ -16,6 +16,7 @@ from tinker_cookbook.supervised.common import (
     create_rightshifted_model_input_and_leftshifted_targets,
 )
 
+from harness_proxy.backends.tinker import reaching
 from harness_proxy.wire import Picture, model_input
 
 if TYPE_CHECKING:
@@ -37,9 +38,10 @@ def lora_rank(rank: int | None) -> int:
     return DEFAULT_LORA_RANK if rank is None else int(rank)
 
 
-#: What names weights saved for sampling in a `tinker://` path: a run samples and scores them,
-#: and trains only from a training state (`tinker://.../weights/...`).
-SAMPLER_WEIGHTS = "/sampler_weights/"
+#: What names a training state in a `tinker://` path, the one thing a run trains from. Any other
+#: path holds weights saved for sampling, which a run samples and scores: Tinker names them
+#: `.../sampler_weights/...`, and a SkyRL server `tinker://<model>/<name>`.
+TRAINING_STATE = "/weights/"
 #: Most scoring requests sent to one sampling client at once.
 LOGPROB_CONCURRENCY = 16
 
@@ -82,22 +84,24 @@ def starts_from(checkpoint: str | None, *, trains: bool) -> None:
     a model the recipe trains, weights saved for sampling for one it only serves."""
     if checkpoint is None:
         return
-    sampled = SAMPLER_WEIGHTS in checkpoint
-    if trains and sampled:
+    state = TRAINING_STATE in checkpoint
+    if trains and not state:
         raise ValueError(
             f"from_checkpoint: {checkpoint} holds weights saved for sampling, and training goes "
             "on from a training state: name the checkpoint's `weights` path"
         )
-    if not trains and not sampled:
+    if not trains and state:
         raise ValueError(
             f"from_checkpoint: a model the recipe does not train is served from weights saved "
-            f"for sampling, and {checkpoint} is none: name a kept checkpoint's `sampler` path"
+            f"for sampling, and {checkpoint} is a training state: name a kept checkpoint's "
+            "`sampler` path"
         )
 
 
-def backend() -> str:
-    """Return the provider Tinker's tokens are billed to: `tinker`, or `tinker@<host>`."""
-    host = urlsplit(os.environ.get("TINKER_BASE_URL") or "").hostname
+def backend(base_url: str | None = None) -> str:
+    """Return the provider a Tinker server's tokens are billed to: `tinker` for Thinking
+    Machines' own, `tinker@<host>` for the one at `base_url`, or at TINKER_BASE_URL for None."""
+    host = urlsplit(base_url or os.environ.get("TINKER_BASE_URL") or "").hostname
     return f"{TINKER}@{host}" if host else TINKER
 
 
@@ -106,9 +110,10 @@ def tagged(run: str) -> dict[str, str]:
     return {"shipyard_run": run}
 
 
-def service_client(metadata: dict[str, str] | None = None) -> Any:
-    """Return a `tinker.ServiceClient` configured from the environment, tagged `metadata`."""
-    return tinker.ServiceClient(user_metadata=metadata)
+def service_client(metadata: dict[str, str] | None = None, **server: str) -> Any:
+    """Return a `tinker.ServiceClient` tagged `metadata`, on the `server` named, as `reaching`
+    gives it, or on the one the environment names."""
+    return tinker.ServiceClient(user_metadata=metadata, **server)
 
 
 class TinkerClient:
@@ -129,20 +134,30 @@ class TinkerClient:
         lora_rank: int | None = None,
         restore_optimizer: bool = False,
         trains: bool = True,
+        base_url: str | None = None,
+        api_key_env: str | None = None,
         service: Any = None,
     ) -> None:
-        """Raise `ValueError` for a `from_checkpoint` the run cannot start from."""
+        """Raise `ValueError` for a `from_checkpoint` the run cannot start from, and for an
+        `api_key_env` that names a variable not set."""
         starts_from(from_checkpoint, trains=trains)
         self.model = model
+        #: The server it is on, one that speaks Tinker's API, and the variable that holds its
+        #: key; None for each the environment names (TINKER_BASE_URL, TINKER_API_KEY).
+        self.base_url, self.api_key_env = base_url, api_key_env
         #: Who its tokens are billed to: `tinker`, or `tinker@<host>`.
-        self.provider = backend()
+        self.provider = backend(base_url)
         self.from_checkpoint = from_checkpoint
         self.lora_rank = lora_rank
         self.restore_optimizer = restore_optimizer
         #: Whether the run trains the model, so `open` creates a training client.
         self.trains = trains
         self.metadata = tagged(run) if run else None
-        self.service = service if service is not None else service_client(self.metadata)
+        self.service = (
+            service
+            if service is not None
+            else service_client(self.metadata, **reaching(base_url, api_key_env))
+        )
         self.client: Any = None
         #: What scores the model when no training client holds it: a sampling client on its
         #: weights, `from_checkpoint`'s or the base model's.
@@ -233,8 +248,10 @@ class TinkerClient:
         return out, {"train": sum(int(one.model_input.length) for one in data)}
 
     async def serving(self) -> dict[str, str]:
-        """Return what the proxy samples through beyond its default: nothing, as it is Tinker."""
-        return {}
+        """Return what the proxy samples through beyond its default: the server the model is on
+        and the variable that holds its key, where its table names them."""
+        named = {"base_url": self.base_url, "api_key_env": self.api_key_env}
+        return {key: value for key, value in named.items() if value}
 
     async def publish(self, tag: str) -> str | None:
         """Save the weights for sampling as `tag`, kept `SERVE_TTL`, and return their path. With
@@ -293,6 +310,12 @@ async def sampled(
         took["cache"] += cache
         took["sample"] += sum(len(drawn.tokens) for drawn in reply.sequences)
         scored = list(reply.prompt_logprobs or [])
+        if len(scored) != prompt.length:
+            raise RuntimeError(
+                f"the server scored {len(scored)} of a prompt's {prompt.length} tokens: Tinker "
+                "gives a logprob per prompt token, the first None, and these could not be told "
+                "apart from ones a token off"
+            )
         return [float(scored[at] or 0.0) for at in sequence.targets]
 
     found = list(await asyncio.gather(*(one(sequence) for sequence in sequences)))
