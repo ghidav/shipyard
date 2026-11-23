@@ -11,12 +11,59 @@ from tinker_cookbook.renderers import ToolCall as ToolCall
 from tinker_cookbook.renderers import ToolSpec as ToolSpec
 from tinker_cookbook.renderers import get_renderer as get_renderer
 from tinker_cookbook.renderers import get_text_content as get_text_content
+from tinker_cookbook.renderers.base import UNTERMINATED_TOOL_BLOCK_ERROR
+from tinker_cookbook.renderers.gpt_oss import GptOssRenderer
 from tinker_cookbook.tokenizer_utils import get_tokenizer
 
 #: Renderer names that fix a thinking effort. Inkling's renderer takes the effort when it
 #: builds each prompt, so the levels are named here, as the cookbook names Qwen3.8's:
 #: `tml_v0_effort_0.7` is `tml_v0` at 0.7. Plain `tml_v0` uses the renderer's default.
 EFFORT_RENDERER = re.compile(r"^(tml_v0)_effort_(\d*\.?\d+)$")
+
+
+#: The function a Harmony message is addressed to, as its header names it.
+HARMONY_RECIPIENT = re.compile(r"to=functions\.([^\s<]+)")
+#: What opens a Harmony message's body, and what may end it.
+HARMONY_BODY = "<|message|>"
+HARMONY_ENDS = ("<|end|>", "<|call|>", "<|return|>")
+
+
+def as_written(renderer: Any, message: Message) -> Message:
+    """Return a reply GPT-OSS's renderer parsed as a server of the model hands it to a harness:
+    with every tool call the model wrote, and no text when it wrote calls alone. Any other
+    renderer's reply is returned as it is.
+
+    The cookbook's parser sets aside, as unparsed, a call whose arguments are not JSON, and a
+    reply holding nothing else then reads as an empty final answer. The call is the harness's
+    to answer, so it is given with its arguments as sampled. The parser also falls back on a
+    reply's raw markup as its text when it holds calls alone, which the harness would send back
+    to the model as something it said."""
+    if not isinstance(renderer, GptOssRenderer):
+        return message
+    calls = list(message.get("tool_calls") or [])
+    unread = []
+    for one in message.get("unparsed_tool_calls") or []:
+        header, _, body = one.raw_text.partition(HARMONY_BODY)
+        named = HARMONY_RECIPIENT.search(header)
+        # A header the parser found no call under names a message of its own guess, not a call.
+        if named is None or UNTERMINATED_TOOL_BLOCK_ERROR in one.error:
+            unread.append(one)
+            continue
+        for end in HARMONY_ENDS:
+            body = body.removesuffix(end)
+        calls.append(ToolCall(function=ToolCall.FunctionBody(name=named.group(1), arguments=body)))
+    if not calls:
+        return message
+    content = message.get("content")
+    found: Any = {
+        **message,
+        "tool_calls": calls,
+        "content": "" if isinstance(content, str) else content,
+    }
+    found.pop("unparsed_tool_calls", None)
+    if unread:
+        found["unparsed_tool_calls"] = unread
+    return found
 
 
 class AtEffort:

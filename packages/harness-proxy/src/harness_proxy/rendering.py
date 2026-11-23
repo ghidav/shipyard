@@ -10,7 +10,7 @@ import tinker
 
 from harness_proxy.bridge import Index, bridge, chain, digest, digests_of, int_stops
 from harness_proxy.chat import Call, Caller, Refused, Reply, thinking_of
-from harness_proxy.cookbook import Message, get_text_content
+from harness_proxy.cookbook import Message, as_written, get_text_content
 from harness_proxy.vision import has_images, suited, takes_images
 from harness_proxy.wire import model_input
 
@@ -97,6 +97,7 @@ async def complete(call: Call, caller: Caller, trial: Trial, default_max_tokens:
         raise
     tokens = list(sampled.tokens)
     message, termination = renderer.parse_response(tokens)
+    message = as_written(renderer, message)
     message = with_call_ids(message, tokens, caller, prompt.digests, _ids_in(call.messages))
     parsed = get_text_content(message)
     made = list(message.get("tool_calls") or [])
