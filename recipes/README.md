@@ -9,7 +9,7 @@ Each folder is a recipe: a `run.toml` with every setting, and a `trainer.py` who
 | [`dapo-async`](dapo-async/) | `dapo`'s algorithm with its rollouts overlapping its updates: workers keep groups rolling out, and each step takes them in the order they finished | `agent`, trained | `ppo`, clipped asymmetrically |
 | [`rft-async`](rft-async/) | Rejection-sampling fine-tuning, its sampling overlapping its updates: the agent learns the correct rollouts, a teacher's or its own, every kept token weighing the same | `agent`, trained; `teacher` (optional) | `cross_entropy` |
 | [`opd`](opd/) | On-policy distillation: each token's advantage is the teacher's logprob minus the agent's | `agent`, trained; `teacher` | `importance_sampling` |
-| [`gepa`](gepa/) | GEPA: a search over the prompt and skills, with no weight update; needs `shipyard[gepa]` | `agent`; `reflector` | none |
+| [`gepa`](gepa/) | GEPA: a search over the prompt and skills, with no weight update; needs `shipyard-rl[gepa]` | `agent`; `reflector` | none |
 
 Each folder's `README.md` says what its recipe needs. A recipe is its `run.toml` and its `trainer.py` together: the core holds no algorithm of its own.
 

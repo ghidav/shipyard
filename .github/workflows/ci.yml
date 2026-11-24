@@ -15,7 +15,7 @@ jobs:
       matrix:
         python-version: ["3.12", "3.13"]
         # locked: uv.lock's versions; highest: the newest pyproject.toml allows, which a fresh
-        # `uv tool install shipyard` gets.
+        # `uv tool install shipyard-rl` gets.
         resolution: ["locked", "highest"]
     steps:
       - uses: actions/checkout@v5

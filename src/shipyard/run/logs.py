@@ -62,7 +62,7 @@ class Wandb:
         try:
             import wandb
         except ImportError:
-            raise ImportError("[logging.wandb] needs wandb: install shipyard[wandb]") from None
+            raise ImportError("[logging.wandb] needs wandb: install shipyard-rl[wandb]") from None
         table = config.logging.wandb
         origin = files.read_json(directory / files.RUN).get("origin") or {}
         self.run = wandb.init(

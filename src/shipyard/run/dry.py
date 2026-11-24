@@ -43,7 +43,7 @@ def checked(made: type[Trainer], config: Config) -> Checked:
     elsewhere. Wandb would start a run as the trainer is made, so the check makes it without,
     once wandb is found."""
     if config.logging.wandb is not None and importlib.util.find_spec("wandb") is None:
-        raise ValueError("[logging.wandb] needs wandb: install shipyard[wandb]")
+        raise ValueError("[logging.wandb] needs wandb: install shipyard-rl[wandb]")
     quiet = config.model_copy(update={"logging": Logging()})
     with tempfile.TemporaryDirectory(prefix="shipyard-dry-") as scratch:
         with made(quiet, Path(scratch) / "dry") as trainer:
