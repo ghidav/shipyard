@@ -52,7 +52,7 @@ ENVIRONMENTS = {"together": "shipyard.jobs.together:TogetherEnvironment"}
 PACKAGES = {
     "together": (
         "together_sandbox",
-        'uv pip install "shipyard[together]", or uv tool install "shipyard[together]"',
+        'uv pip install "shipyard-rl[together]", or uv tool install "shipyard-rl[together]"',
     ),
 }
 

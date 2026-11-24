@@ -709,7 +709,7 @@ def test_a_together_run_without_the_package_is_refused_with_its_install(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(engine, "find_spec", lambda name: None)
-    needs = r"needs the together_sandbox package: .*shipyard\[together\]"
+    needs = r"needs the together_sandbox package: .*shipyard-rl\[together\]"
     with pytest.raises(ValueError, match=needs):
         engine.installed("together")
     engine.installed("docker")  # Harbor's own, with nothing to install

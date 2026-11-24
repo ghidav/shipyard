@@ -16,7 +16,7 @@ resolution-markers = [
 [manifest]
 members = [
     "harness-proxy",
-    "shipyard",
+    "shipyard-rl",
 ]
 
 [[package]]
@@ -3539,7 +3539,7 @@ wheels = [
 ]
 
 [[package]]
-name = "shipyard"
+name = "shipyard-rl"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

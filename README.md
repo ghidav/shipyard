@@ -7,7 +7,7 @@ Post-training framework for AI agents on Harbor tasks.
 Requires **Python 3.12+** and [uv](https://github.com/astral-sh/uv):
 
 ```sh
-uv tool install shipyard
+uv tool install shipyard-rl
 ```
 
 ## Quickstart
