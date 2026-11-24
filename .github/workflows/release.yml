@@ -1,11 +1,14 @@
 name: Release
 
+# A package is released by a tag of its own: `harness-proxy-v0.1.0` publishes harness-proxy at
+# the version its pyproject.toml holds. Each package is published by a step of its own, since
+# PyPI's token for a trusted publisher covers the projects of that publisher alone.
 on:
   push:
-    tags: ["v*"]
+    tags: ["harness-proxy-v*"]
 
 jobs:
-  publish:
+  harness-proxy:
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -14,6 +17,5 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v7
-      # Both packages: shipyard depends on harness-proxy, so a release publishes the two.
-      - run: uv build --all-packages
+      - run: uv build --package harness-proxy --out-dir dist
       - uses: pypa/gh-action-pypi-publish@release/v1
