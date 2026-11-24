@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
-from harness_proxy.bridge import Index, Reply
+from harness_proxy.bridge import Index, Reply, render_digest
 from harness_proxy.chat import Caller, Refused
 from harness_proxy.cookbook import remembering
 from harness_proxy.wire import (
@@ -277,12 +277,13 @@ class Trial:
         reply_digest: str,
         *,
         ended_with_stop: bool,
-        rendered: tuple[int, ...] | None = None,
+        rendered: str | None = None,
         call_ids: tuple[str, ...] = (),
         bridgeable: bool = True,
     ) -> None:
         """Set the parsed reply's digest on record `seq` and, unless the harness got the reply
-        changed, index it for the bridge."""
+        changed, index it for the bridge. `rendered` is the digest of the fresh render of a
+        prompt the bridge built; any other prompt is its own fresh render."""
         for at in range(len(self.records) - 1, -1, -1):
             if self.records[at].seq != seq:
                 continue
@@ -292,7 +293,9 @@ class Trial:
                     prompt_ids=record.prompt_token_ids,
                     completion_ids=record.completion_token_ids,
                     ended_with_stop=ended_with_stop,
-                    rendered=record.prompt_token_ids if rendered is None else rendered,
+                    rendered=render_digest(record.prompt_token_ids)
+                    if rendered is None
+                    else rendered,
                     pictures=record.images,
                 )
                 self.index.add(record.prompt_digests, reply_digest, reply, call_ids)

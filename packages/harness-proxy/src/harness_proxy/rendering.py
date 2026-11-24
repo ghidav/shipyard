@@ -29,12 +29,12 @@ _OVERFLOW = (
 @dataclass(frozen=True)
 class Prompt:
     """A call's prompt as rendered: what is sampled, the digests of its messages, and for a
-    prompt the bridge built, the fresh render that a later prompt's head must equal to extend
-    it."""
+    prompt the bridge built, the digest of the fresh render that a later prompt's head must have
+    to extend it."""
 
     model_input: Any
     digests: tuple[str, ...] = ()
-    rendered: tuple[int, ...] | None = None
+    rendered: str | None = None
 
     @property
     def bridged(self) -> bool:
