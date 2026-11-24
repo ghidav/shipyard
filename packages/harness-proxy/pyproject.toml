@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "OpenAI- and Anthropic-compatible model server for agent harnesses, backed by Tinker, that records every call as token ids."
 readme = "README.md"
 license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [{ name = "Davide Ghilardi" }]
 keywords = ["reinforcement-learning", "llm", "agents", "tinker", "proxy"]
 classifiers = [
@@ -28,6 +29,10 @@ dependencies = [
     "pypdfium2>=4.30",
     "pillow>=10",
 ]
+
+[project.urls]
+Repository = "https://github.com/ghidav/shipyard"
+Issues = "https://github.com/ghidav/shipyard/issues"
 
 [project.scripts]
 harness-proxy = "harness_proxy.serve:main"
