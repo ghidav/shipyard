@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from array import array
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -61,6 +62,12 @@ def digest(message: Any) -> str:
     return hashlib.sha256(canon(normalize(message)).encode("utf-8")).hexdigest()[:16]
 
 
+def render_digest(ids: Sequence[int]) -> str:
+    """Return a digest of a rendered prompt's token ids, which two renders share only if they
+    are the same tokens: what a reply keeps of the render its prompt would have had."""
+    return hashlib.blake2b(array("q", ids).tobytes(), digest_size=16).hexdigest()
+
+
 def digests_of(messages: Sequence[Any]) -> tuple[str, ...]:
     return tuple(digest(message) for message in messages)
 
@@ -84,12 +91,15 @@ def chain(digests: Sequence[str]) -> str:
 
 @dataclass(frozen=True)
 class Reply:
-    """A sampled reply, stored for the bridge: its prompt, completion, stop, render and pictures."""
+    """A sampled reply, stored for the bridge: its prompt, completion, stop and pictures, and the
+    digest of the fresh render of its prompt's messages."""
 
-    prompt_ids: tuple[int, ...]
+    prompt_ids: Sequence[int]
     completion_ids: tuple[int, ...]
     ended_with_stop: bool
-    rendered: tuple[int, ...]
+    #: `render_digest` of the fresh render, which a later prompt's head must have to extend this
+    #: reply. The render itself is as long as the prompt, so a trial keeps none of them.
+    rendered: str
     pictures: tuple[Picture, ...] = ()
 
 
@@ -141,9 +151,9 @@ class Index:
 @dataclass(frozen=True)
 class Bridged:
     ids: tuple[int, ...]
-    #: Fresh render of the messages, which the head of a later prompt must equal to
-    #: extend this one.
-    rendered: tuple[int, ...]
+    #: `render_digest` of the fresh render of the messages, which the head of a later prompt
+    #: must have to extend this one.
+    rendered: str
     #: Pictures behind the image tokens in `ids`: the reply's first, then the tail's.
     pictures: tuple[Picture, ...] = ()
 
@@ -166,7 +176,7 @@ def bridge(
     if not stops:
         return None
     head = ids_of(renderer.build_generation_prompt(list(messages[:at])))
-    if head != reply.rendered:
+    if render_digest(head) != reply.rendered:
         return None
     fresh = renderer.build_generation_prompt(list(messages))
     full = ids_of(fresh)
@@ -184,7 +194,7 @@ def bridge(
         for one in pictures_of(fresh)
         if one.offset > end
     )
-    return Bridged(spliced, full, (*reply.pictures, *tail))
+    return Bridged(spliced, render_digest(full), (*reply.pictures, *tail))
 
 
 def _ends_reply(

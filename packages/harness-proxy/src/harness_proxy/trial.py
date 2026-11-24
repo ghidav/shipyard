@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
-from harness_proxy.bridge import Index, Reply
+from harness_proxy.bridge import Index, Reply, render_digest
 from harness_proxy.chat import Caller, Refused
 from harness_proxy.cookbook import remembering
 from harness_proxy.wire import (
@@ -15,6 +15,7 @@ from harness_proxy.wire import (
     SAMPLER_FAILED,
     Picture,
     Record,
+    extending,
     ids_of,
     pictured,
     pictures_of,
@@ -121,7 +122,8 @@ class Trial:
         # Keyed on the params as pinned, before the budget cut, so a retry arriving after
         # the trial's count moved still matches its reply.
         asked = json.dumps(_params_dict(pinned), sort_keys=True, default=str)
-        keys: list[tuple[Any, ...]] = [(prompt_ids, asked)]
+        # The prompt's digest, not the prompt: a key is kept as long as the trial is open.
+        keys: list[tuple[Any, ...]] = [(render_digest(prompt_ids), asked)]
         if caller.idempotency_key:
             keys.append((caller.idempotency_key,))
         # A retry replays by either key. A fresh request with an idempotency key replays
@@ -245,7 +247,8 @@ class Trial:
     ) -> Record:
         """Append the trial's next record, numbered from 1, refused and failed calls included,
         under `weights`, the ones that answered it: unless given, the ones it would have taken,
-        the trial's own or those its lane published last."""
+        the trial's own or those its lane published last. A prompt that extends an earlier
+        record's is kept as its extension, so the trial holds each token of a conversation once."""
         if weights is ...:
             weights = self.lane.served if self.lane is not None else self.weights
         self._seq += 1
@@ -268,6 +271,7 @@ class Trial:
             error=error,
             images=images,
         )
+        record = extending(record, self.records)
         self.records.append(record)
         return record
 
@@ -277,12 +281,13 @@ class Trial:
         reply_digest: str,
         *,
         ended_with_stop: bool,
-        rendered: tuple[int, ...] | None = None,
+        rendered: str | None = None,
         call_ids: tuple[str, ...] = (),
         bridgeable: bool = True,
     ) -> None:
         """Set the parsed reply's digest on record `seq` and, unless the harness got the reply
-        changed, index it for the bridge."""
+        changed, index it for the bridge. `rendered` is the digest of the fresh render of a
+        prompt the bridge built; any other prompt is its own fresh render."""
         for at in range(len(self.records) - 1, -1, -1):
             if self.records[at].seq != seq:
                 continue
@@ -292,7 +297,9 @@ class Trial:
                     prompt_ids=record.prompt_token_ids,
                     completion_ids=record.completion_token_ids,
                     ended_with_stop=ended_with_stop,
-                    rendered=record.prompt_token_ids if rendered is None else rendered,
+                    rendered=render_digest(record.prompt_token_ids)
+                    if rendered is None
+                    else rendered,
                     pictures=record.images,
                 )
                 self.index.add(record.prompt_digests, reply_digest, reply, call_ids)

@@ -5,13 +5,24 @@ the proxy served a job anything."""
 from __future__ import annotations
 
 import base64
+import json
+import random
 from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
 
 import pytest
 
-from harness_proxy.wire import BUDGET, CONTEXT, IMAGE_TOKEN, Picture, Record
+from harness_proxy.wire import (
+    BUDGET,
+    CONTEXT,
+    IMAGE_TOKEN,
+    Extension,
+    Picture,
+    Record,
+    delta_encoded,
+    records_of,
+)
 from shipyard.records import Chain, Records, served_nothing
 from tests.fakes import made
 
@@ -173,6 +184,49 @@ def test_a_side_question_is_filed_under_its_own_chain_and_the_longest_match_wins
     assert _chains() == []
     shorter = _record((1, 2, 3), (4, 5), 1), _record((1, 2, 3, 4), (6,), 2)
     assert _tokens(*shorter) == [(1, 2, 3, 4, 5), (1, 2, 3, 4, 6)]
+
+
+def _conversations(rng: random.Random, calls: int) -> list[Record]:
+    """Return a trial's records with whole prompts: conversations that go on, fork, restart,
+    are sampled twice and fail, over so few token ids that prompts match by chance too."""
+
+    def some(most: int, least: int = 0) -> tuple[int, ...]:
+        return tuple(rng.randrange(3) for _ in range(rng.randint(least, most)))
+
+    records: list[Record] = []
+    for seq in range(1, calls + 1):
+        kind = rng.random()
+        if records and kind < 0.6:
+            before = rng.choice(records[-3:]) if rng.random() < 0.7 else rng.choice(records)
+            prompt = (*before.prompt_token_ids, *before.completion_token_ids, *some(4))
+        elif records and kind < 0.75:
+            prompt = tuple(rng.choice(records).prompt_token_ids)  # the same prompt, sampled again
+        else:
+            prompt = some(5, least=1)
+        error = FAILED if rng.random() < 0.1 else None
+        records.append(_record(prompt, some(3), seq, error=error, cached=rng.randrange(4)))
+    return records
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_records_off_the_wire_chain_and_bill_as_their_whole_prompts_do(seed: int) -> None:
+    """A run is handed a prompt that extends an earlier call's as an `Extension` of it, which
+    holds no copy of the conversation. The chains a trial trains on, what its calls cost and
+    the facts a verdict reads are those of the whole prompts."""
+    rng = random.Random(seed)
+    whole = _conversations(rng, calls=rng.randint(1, 30))
+    handed = records_of(json.loads(json.dumps(delta_encoded(whole))))
+    assert handed == whole
+    assert any(isinstance(one.prompt_token_ids, Extension) for one in handed) or len(whole) < 4
+    was, now = Records(whole), Records(handed)
+    assert now.chains() == was.chains()
+    assert all(isinstance(one.tokens, tuple) for one in now.chains())
+    assert (now.billed, now.sampled_tokens) == (was.billed, was.sampled_tokens)
+    assert (now.lost_an_image, now.last_failed, now.last_answered) == (
+        was.lost_an_image,
+        was.last_failed,
+        was.last_answered,
+    )
 
 
 def test_refused_and_failed_calls_and_images_without_their_picture_never_chain() -> None:

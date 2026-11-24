@@ -19,6 +19,7 @@ from harness_proxy.bridge import (
     chain,
     digest,
     digests_of,
+    render_digest,
     tail_extends,
 )
 from harness_proxy.trial import Trial
@@ -107,8 +108,8 @@ def test_the_chain_of_a_prefix_is_its_own_and_the_index_finds_the_longest_reply(
     digests = digests_of([{"role": "user", "content": c} for c in ("a", "b", "c", "d")])
     assert chain(digests[:2]) != chain(digests[:3]) and chain(()) == ""
     index = Index()
-    first = Reply((1,), (2,), True, (1,))
-    second = Reply((1, 2, 3), (4,), False, (1, 2, 3))
+    first = Reply((1,), (2,), True, render_digest((1,)))
+    second = Reply((1, 2, 3), (4,), False, render_digest((1, 2, 3)))
     index.add(digests[:1], digests[1], first)
     index.add(digests[:3], digests[3], second)
     assert index.find(digests) == (3, second)
@@ -121,10 +122,12 @@ def test_the_chain_of_a_prefix_is_its_own_and_the_index_finds_the_longest_reply(
 def test_two_different_replies_under_one_history_leave_it_ambiguous() -> None:
     digests = digests_of([{"role": "user", "content": c} for c in ("a", "b")])
     index = Index()
-    index.add(digests[:1], digests[1], Reply((1,), (2,), True, (1,)))
-    index.add(digests[:1], digests[1], Reply((1,), (2,), True, (1,)))
-    assert index.find(digests) == (1, Reply((1,), (2,), True, (1,))), "the same reply twice"
-    index.add(digests[:1], digests[1], Reply((1,), (3,), True, (1,)))
+    index.add(digests[:1], digests[1], Reply((1,), (2,), True, render_digest((1,))))
+    index.add(digests[:1], digests[1], Reply((1,), (2,), True, render_digest((1,))))
+    assert index.find(digests) == (1, Reply((1,), (2,), True, render_digest((1,)))), (
+        "the same reply twice"
+    )
+    index.add(digests[:1], digests[1], Reply((1,), (3,), True, render_digest((1,))))
     assert index.find(digests) is None
 
 
@@ -133,7 +136,10 @@ def test_two_different_replies_to_one_history_sharing_a_call_id_are_both_passed_
     If the harness trims the reply it kept (dropping its thinking or a call), its echo can
     match the other reply's digest, so the index returns neither."""
     user = digests_of([{"role": "user", "content": "look"}])
-    kept, other = Reply((1,), (2,), True, (1,)), Reply((1,), (3,), True, (1,))
+    kept, other = (
+        Reply((1,), (2,), True, render_digest((1,))),
+        Reply((1,), (3,), True, render_digest((1,))),
+    )
     index = Index()
     index.add(user, "with-thinking", kept, ["functions.ls:0"])
     index.add(user, "without", other, ["functions.ls:0"])
@@ -163,7 +169,9 @@ def _indexed(
     prompt = tuple(renderer.build_generation_prompt(history[:-1]).to_ints())
     index = Index()
     index.add(
-        digests_of(history[:-1]), digest(history[-1]), Reply(prompt, ids(completion), ended, prompt)
+        digests_of(history[:-1]),
+        digest(history[-1]),
+        Reply(prompt, ids(completion), ended, render_digest(prompt)),
     )
     return index
 
@@ -281,7 +289,9 @@ def test_an_image_in_the_head_and_one_in_the_tail_bridge_with_their_pictures() -
     assert head == (*ids("user:"), *[IMAGE_TOKEN] * 3, *ids("go\n>")) and len(shots) == 1
     index = Index()
     index.add(
-        digests_of(history[:-1]), digest(history[-1]), Reply(head, ids("hi"), False, head, shots)
+        digests_of(history[:-1]),
+        digest(history[-1]),
+        Reply(head, ids("hi"), False, render_digest(head), shots),
     )
     more = {"type": "image", "image": "dog.png"}
     messages = [*history, {"role": "user", "content": [more, {"type": "text", "text": "more"}]}]
@@ -294,7 +304,7 @@ def test_an_image_in_the_head_and_one_in_the_tail_bridge_with_their_pictures() -
         shots[0],
         Picture(dog_at, 3, "png", base64.b64encode(b"dog.png").decode()),
     )
-    assert built.rendered == ids_of(renderer.build_generation_prompt(messages))
+    assert built.rendered == render_digest(ids_of(renderer.build_generation_prompt(messages)))
     rebuilt = model_input(built.ids, built.pictures)
     kinds = [(type(c).__name__, c.length) for c in rebuilt.chunks]
     assert kinds == [
@@ -677,3 +687,26 @@ async def test_a_reply_whose_text_renders_a_stop_token_is_rendered_afresh_not_sp
     assert not two.bridged and shown.upper().count("OK") == 1
     assert shown == "user:go\n>SAY \x00 OK\x00\nuser:more\n>", "the fresh render"
     assert sampler.prompts[1].to_ints() == list(two.prompt_token_ids)
+
+
+def test_a_reply_keeps_a_digest_of_its_render_and_the_bridge_matches_heads_by_it() -> None:
+    """A fresh render is as long as its prompt, so a trial that kept one a call would hold its
+    whole conversation once per call. The digest tells the same renders apart."""
+    assert render_digest((1, 2, 3)) == render_digest([1, 2, 3]) != render_digest((1, 2, 4))
+    assert render_digest((1, 2)) != render_digest((1, 2, 0)) and render_digest(()) != ""
+    assert render_digest((IMAGE_TOKEN, 7)) != render_digest((7, IMAGE_TOKEN))
+    renderer = BridgeRenderer()
+    history = [{"role": "user", "content": "go"}, {"role": "assistant", "content": "hi"}]
+    index = _indexed(renderer, history, "hi", ended=False)
+    more = [*history, {"role": "user", "content": "more"}]
+    built = bridge(more, renderer, index)
+    assert built is not None and isinstance(built.rendered, str)
+    assert built.rendered == render_digest(ids_of(renderer.build_generation_prompt(more)))
+    (reply,) = index._replies.values()
+    stale = Index()
+    stale.add(
+        digests_of(history[:-1]),
+        digest(history[-1]),
+        Reply(reply.prompt_ids, reply.completion_ids, False, render_digest((0, *reply.prompt_ids))),
+    )
+    assert bridge(more, renderer, stale) is None, "a head that renders otherwise is not extended"
