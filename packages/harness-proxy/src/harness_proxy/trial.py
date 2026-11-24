@@ -15,6 +15,7 @@ from harness_proxy.wire import (
     SAMPLER_FAILED,
     Picture,
     Record,
+    extending,
     ids_of,
     pictured,
     pictures_of,
@@ -121,7 +122,8 @@ class Trial:
         # Keyed on the params as pinned, before the budget cut, so a retry arriving after
         # the trial's count moved still matches its reply.
         asked = json.dumps(_params_dict(pinned), sort_keys=True, default=str)
-        keys: list[tuple[Any, ...]] = [(prompt_ids, asked)]
+        # The prompt's digest, not the prompt: a key is kept as long as the trial is open.
+        keys: list[tuple[Any, ...]] = [(render_digest(prompt_ids), asked)]
         if caller.idempotency_key:
             keys.append((caller.idempotency_key,))
         # A retry replays by either key. A fresh request with an idempotency key replays
@@ -245,7 +247,8 @@ class Trial:
     ) -> Record:
         """Append the trial's next record, numbered from 1, refused and failed calls included,
         under `weights`, the ones that answered it: unless given, the ones it would have taken,
-        the trial's own or those its lane published last."""
+        the trial's own or those its lane published last. A prompt that extends an earlier
+        record's is kept as its extension, so the trial holds each token of a conversation once."""
         if weights is ...:
             weights = self.lane.served if self.lane is not None else self.weights
         self._seq += 1
@@ -268,6 +271,7 @@ class Trial:
             error=error,
             images=images,
         )
+        record = extending(record, self.records)
         self.records.append(record)
         return record
 

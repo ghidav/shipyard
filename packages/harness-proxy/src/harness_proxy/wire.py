@@ -6,6 +6,7 @@ import secrets
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, fields, replace
 from functools import lru_cache
+from itertools import chain
 from typing import Any
 from urllib.parse import quote
 
@@ -44,13 +45,97 @@ class Picture:
     data: str
 
 
+class Extension(Sequence[int]):
+    """A prompt that extends an earlier call's: that call's prompt and completion, held by
+    reference, and the tokens this one adds after them. It reads as the tuple of all its tokens
+    and equals that tuple, and holds only its own: a conversation's prompts then cost each
+    token once, where a tuple a call costs the whole conversation once a call."""
+
+    __slots__ = ("_length", "base", "completion", "tail")
+
+    def __init__(
+        self, base: Sequence[int], completion: tuple[int, ...], tail: Sequence[int]
+    ) -> None:
+        self.base = base
+        self.completion = completion
+        self.tail = tuple(tail)
+        self._length = len(base) + len(completion) + len(self.tail)
+
+    def __len__(self) -> int:
+        return self._length
+
+    def span(self, start: int, stop: int) -> tuple[int, ...]:
+        """Return its tokens from `start` up to `stop`, reading only the calls they sit in."""
+        pieces: list[Sequence[int]] = []  # last piece first
+        node: Sequence[int] = self
+        while isinstance(node, Extension) and start < stop:
+            head = len(node.base)
+            middle = head + len(node.completion)
+            if stop > middle:
+                pieces.append(node.tail[max(start, middle) - middle : stop - middle])
+                stop = middle
+            if start < stop and stop > head:
+                pieces.append(node.completion[max(start, head) - head : stop - head])
+                stop = head
+            node = node.base
+        if start < stop:
+            pieces.append(node[start:stop])
+        return tuple(chain.from_iterable(reversed(pieces)))
+
+    def __getitem__(self, at: Any) -> Any:
+        if isinstance(at, slice):
+            start, stop, step = at.indices(self._length)
+            return self.span(start, stop) if step == 1 else self.span(0, self._length)[at]
+        index = at + self._length if at < 0 else at
+        if not 0 <= index < self._length:
+            raise IndexError("prompt index out of range")
+        return self.span(index, index + 1)[0]
+
+    def __iter__(self) -> Any:
+        return iter(self.span(0, self._length))
+
+    def __contains__(self, token: object) -> bool:
+        node: Sequence[int] = self
+        while isinstance(node, Extension):
+            if token in node.tail or token in node.completion:
+                return True
+            node = node.base
+        return token in node
+
+    def __eq__(self, other: object) -> bool:
+        if other is self:
+            return True
+        if not isinstance(other, tuple | Extension):
+            return NotImplemented
+        if len(other) != self._length:
+            return False
+        if isinstance(other, Extension):
+            if other.base is self.base and other.completion is self.completion:
+                return other.tail == self.tail
+            other = other.span(0, other._length)
+        return self.span(0, self._length) == other
+
+    def __hash__(self) -> int:
+        return hash(self.span(0, self._length))
+
+    def __repr__(self) -> str:
+        return f"Extension({self._length} tokens, {len(self.tail)} of them its own)"
+
+    def __copy__(self) -> Extension:
+        return self
+
+    def __deepcopy__(self, memo: Any) -> Extension:
+        return self  # it is never changed, and `asdict` copies a record's every value
+
+
 @dataclass(frozen=True)
 class Record:
     """A trial's model call, as token ids, a failed call kept with its `error`."""
 
     seq: int
     at: float
-    prompt_token_ids: tuple[int, ...]
+    #: Its prompt's tokens: a tuple, or the `Extension` of the earlier call it extends.
+    prompt_token_ids: Sequence[int]
     completion_token_ids: tuple[int, ...]
     inference_logprobs: tuple[float, ...]
     stop_reason: str
@@ -86,8 +171,10 @@ def pictured(record: Record) -> bool:
     """Return whether every image in the record's prompt was kept."""
     if IMAGE_TOKEN in record.completion_token_ids:
         return False
+    if IMAGE_TOKEN not in record.prompt_token_ids:
+        return True
     kept = {(one.offset, one.length) for one in record.images}
-    return all(run in kept for run in image_runs(record.prompt_token_ids))
+    return all(run in kept for run in image_runs(tuple(record.prompt_token_ids)))
 
 
 def extends(record: Record, earlier: Record) -> bool:
@@ -95,12 +182,54 @@ def extends(record: Record, earlier: Record) -> bool:
     head = len(earlier.prompt_token_ids)
     end = head + len(earlier.completion_token_ids)
     prompt = record.prompt_token_ids
-    return (
-        len(prompt) >= end
-        and prompt[head:end] == earlier.completion_token_ids
-        and prompt[:head] == earlier.prompt_token_ids
-        and tuple(one for one in record.images if one.offset < end) == earlier.images
+    if len(prompt) < end:
+        return False
+    if not _built_on(prompt, earlier, end) and (
+        prompt[head:end] != earlier.completion_token_ids
+        or prompt[:head] != earlier.prompt_token_ids
+    ):
+        return False
+    return tuple(one for one in record.images if one.offset < end) == earlier.images
+
+
+def _built_on(prompt: Sequence[int], earlier: Record, end: int) -> bool:
+    """Return whether `prompt` is an `Extension` built, however many calls back, on `earlier`'s
+    own prompt and completion: it then holds their tokens, with none to compare."""
+    node = prompt
+    while isinstance(node, Extension) and len(node) >= end:
+        if (
+            node.base is earlier.prompt_token_ids
+            and node.completion is earlier.completion_token_ids
+        ):
+            return True
+        node = node.base
+    return False
+
+
+def extended(record: Record, earlier: Sequence[Record]) -> int | None:
+    """Return where in `earlier` the record sits whose prompt and completion `record`'s prompt
+    extends, the longest of them, or None when it extends none."""
+    best, best_end = None, 0
+    for at in range(len(earlier) - 1, -1, -1):
+        before = earlier[at]
+        end = len(before.prompt_token_ids) + len(before.completion_token_ids)
+        if end > best_end and extends(record, before):
+            best, best_end = at, end
+    return best
+
+
+def extending(record: Record, earlier: Sequence[Record]) -> Record:
+    """Return `record` with its prompt held as an `Extension` of the record in `earlier` it
+    extends, or as it is when it extends none: what a trial keeps of each call."""
+    at = extended(record, earlier)
+    if at is None:
+        return record
+    before = earlier[at]
+    end = len(before.prompt_token_ids) + len(before.completion_token_ids)
+    held = Extension(
+        before.prompt_token_ids, before.completion_token_ids, record.prompt_token_ids[end:]
     )
+    return replace(record, prompt_token_ids=held)
 
 
 def ids_of(prompt: Any) -> tuple[int, ...]:
@@ -180,24 +309,24 @@ def delta_encoded(records: Sequence[Record]) -> list[dict[str, Any]]:
     for index, record in enumerate(records):
         row = {one.name: getattr(record, one.name) for one in fields(Record)}
         row["images"] = [asdict(one) for one in record.images]
-        best, best_end = None, 0
-        for earlier in range(index - 1, -1, -1):
-            before = records[earlier]
-            end = len(before.prompt_token_ids) + len(before.completion_token_ids)
-            if end > best_end and extends(record, before):
-                best, best_end = earlier, end
+        best = extended(record, records[:index])
         prompt = record.prompt_token_ids
         if best is not None:
+            before = records[best]
+            best_end = len(before.prompt_token_ids) + len(before.completion_token_ids)
             row["prompt_from"] = best
             row["prompt_token_ids"] = list(prompt[best_end:])
             # The pictures inside the prefix travel with the record it extends.
             row["images"] = [one for one in row["images"] if int(one["offset"]) >= best_end]
+        elif isinstance(prompt, Extension):
+            row["prompt_token_ids"] = list(prompt)  # the record it extends is not among these
         out.append(row)
     return out
 
 
 def records_of(items: Sequence[Mapping[str, Any]]) -> list[Record]:
-    """Decode a trial's records from the wire, in either form the records route sends."""
+    """Decode a trial's records from the wire, in either form the records route sends. A record
+    sent as a delta is kept as one, its prompt an `Extension` of the record it extends."""
     made: list[Record] = []
     for item in items:
         record = record_of(item)
@@ -211,10 +340,8 @@ def records_of(items: Sequence[Mapping[str, Any]]) -> list[Record]:
             before = made[int(base)]
             record = replace(
                 record,
-                prompt_token_ids=(
-                    *before.prompt_token_ids,
-                    *before.completion_token_ids,
-                    *record.prompt_token_ids,
+                prompt_token_ids=Extension(
+                    before.prompt_token_ids, before.completion_token_ids, record.prompt_token_ids
                 ),
                 images=(*before.images, *record.images),
             )
