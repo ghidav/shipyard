@@ -189,9 +189,10 @@ def capable(*models: tuple[str, bool]) -> GetServerCapabilitiesResponse:
 @dataclass
 class FakeService:
     """Fake `tinker.ServiceClient` covering what a run uses: the three training client
-    factories (each `user_metadata` is kept in `metadata`), sampling clients (a model or path
-    in `teachers` gets its own, any other the anchor), the server capabilities (None makes the
-    call raise, which a run must survive), and `close`, which records its status."""
+    factories (each `user_metadata` is kept in `metadata`, each new adapter's seed in `seeded`),
+    sampling clients (a model or path in `teachers` gets its own, any other the anchor), the
+    server capabilities (None makes the call raise, which a run must survive), and `close`,
+    which records its status."""
 
     client: FakeTrainingClient = field(default_factory=FakeTrainingClient)
     capabilities: GetServerCapabilitiesResponse | None = None
@@ -201,6 +202,8 @@ class FakeService:
     calls: list[tuple[Any, ...]] = field(default_factory=list)
     metadata: list[dict[str, str] | None] = field(default_factory=list)
     closed: list[tuple[str, str | None]] = field(default_factory=list)
+    #: What each new adapter was asked for beyond its model and rank: its seed, if it had one.
+    seeded: list[dict[str, int]] = field(default_factory=list)
 
     async def get_server_capabilities_async(self) -> GetServerCapabilitiesResponse:
         if self.capabilities is None:
@@ -214,9 +217,14 @@ class FakeService:
         return self.client
 
     async def create_lora_training_client_async(
-        self, base_model: str, rank: int = 32, user_metadata: dict[str, str] | None = None
+        self,
+        base_model: str,
+        rank: int = 32,
+        user_metadata: dict[str, str] | None = None,
+        **seeded: int,
     ) -> FakeTrainingClient:
         self.calls.append(("lora", base_model, rank))
+        self.seeded.append(seeded)
         return self._opened(user_metadata)
 
     async def create_training_client_from_state_async(

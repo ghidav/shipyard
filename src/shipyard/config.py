@@ -90,7 +90,15 @@ class ModelTable(_Table):
     restore_optimizer: bool = False
     #: How many replicas of its sampler answer its calls, for a model on Together: each a copy
     #: of it on GPUs of its own, so that more answer a crowded rollout faster, and bill more.
-    sampler_replicas: int = Field(default=1, ge=1)
+    #: They are this model's own: the models that share a model resource each bring theirs to
+    #: it, so one is answered as fast beside the others as alone. 0 for a model the run scores
+    #: and never samples, such as the one a KL penalty is measured against.
+    sampler_replicas: int = Field(default=1, ge=0)
+    #: The seed of a new adapter's first weights, for a model the recipe trains; unset, the
+    #: provider's own. A list starts a run for each seed, together: `shipyard run` trains them
+    #: in one process, and the lists of several models pair by position. A model that goes on
+    #: from a checkpoint keeps its weights, whatever its seed.
+    seed: int | list[int] | None = None
     #: Most tokens one trial may sample across its calls; 0 for the model's context.
     max_context: int = Field(default=0, ge=0)
     temperature: float = 1.0
@@ -113,6 +121,16 @@ class ModelTable(_Table):
         if len(set(found)) < len(found):
             raise ValueError("each renderer is named once")
         return found
+
+    @field_validator("seed", mode="before")
+    @classmethod
+    def _seed(cls, value: Any) -> Any:
+        """Accept a seed or a list of them, a run for each: a whole number each."""
+        found = value if isinstance(value, list) else [value]
+        whole = all(isinstance(one, int) and not isinstance(one, bool) for one in found)
+        if value is not None and not (found and whole):
+            raise ValueError("a whole number, or a list of them, a run for each")
+        return value
 
     @property
     def sampling(self) -> dict[str, Any]:
@@ -384,6 +402,61 @@ def parsed(path: Path, overrides: Mapping[str, str] | None = None) -> dict[str, 
                 raise ConfigError([f"--{name}: {one} is a key, not a table"])
         table[key] = value_of(text)
     return raw
+
+
+def runs(
+    path: Path, recipe: type[Recipe] = Recipe, overrides: Mapping[str, str] | None = None
+) -> list[dict[str, str]]:
+    """Return what each run the config at `path` starts sets over the file: `overrides`, and,
+    when a model's `seed` is a list, the run's own seed for it. Raise `ConfigError` for a
+    config no run could take, and for several runs of a `[rollout]` that holds one proxy: each
+    run starts a proxy of its own."""
+    config = load(path, recipe, overrides)
+    each = seeded(parsed(path, overrides))
+    if len(each) > 1 and config.rollout.endpoint_url.strip():
+        raise ConfigError(
+            [
+                f"[rollout] endpoint_url: the {len(each)} runs the seeds start each serve their "
+                "models in a proxy of their own, and this names one proxy for them all: leave "
+                "it out, or start a run for each seed"
+            ]
+        )
+    if len(each) > 1 and config.rollout.bind_port:
+        raise ConfigError(
+            [
+                f"[rollout] bind_port: the {len(each)} runs the seeds start each bind a proxy "
+                f"of their own, and cannot all bind port {config.rollout.bind_port}: leave it out"
+            ]
+        )
+    return [{**(overrides or {}), **one} for one in each]
+
+
+def seeded(raw: Mapping[str, Any]) -> list[dict[str, str]]:
+    """Return what each run a config starts sets over it, as overrides: one run, which sets
+    nothing, unless a model's `seed` is a list, which starts a run for each seed. The lists of
+    several models pair by position: run k takes the k-th seed of each. Raise `ConfigError` for
+    lists of different lengths."""
+    models = raw.get("models")
+    lists = {
+        role: table["seed"]
+        for role, table in (models.items() if isinstance(models, dict) else ())
+        if isinstance(table, dict) and isinstance(table.get("seed"), list)
+    }
+    if not lists:
+        return [{}]
+    lengths = {len(one) for one in lists.values()}
+    if len(lengths) > 1 or 0 in lengths:
+        said = ", ".join(f"[models.{role}] names {len(one)}" for role, one in lists.items())
+        raise ConfigError(
+            [
+                "seed: the lists of seeds pair by position, a run for each place, so each "
+                f"names as many, and one at least: {said}"
+            ]
+        )
+    return [
+        {f"models.{role}.seed": str(one[at]) for role, one in lists.items()}
+        for at in range(lengths.pop())
+    ]
 
 
 def value_of(text: str) -> Any:

@@ -134,6 +134,7 @@ class TinkerClient:
         lora_rank: int | None = None,
         restore_optimizer: bool = False,
         trains: bool = True,
+        seed: int | None = None,
         base_url: str | None = None,
         api_key_env: str | None = None,
         service: Any = None,
@@ -142,6 +143,8 @@ class TinkerClient:
         `api_key_env` that names a variable not set."""
         starts_from(from_checkpoint, trains=trains)
         self.model = model
+        #: The seed of a new adapter's first weights; None for the server's own.
+        self.seed = seed
         #: The server it is on, one that speaks Tinker's API, and the variable that holds its
         #: key; None for each the environment names (TINKER_BASE_URL, TINKER_API_KEY).
         self.base_url, self.api_key_env = base_url, api_key_env
@@ -187,8 +190,14 @@ class TinkerClient:
                 )
                 self.client = await resume(self.from_checkpoint, user_metadata=metadata)
             else:
+                # A seed is sent only when the model names one, as a server that speaks
+                # Tinker's API may not take the key.
+                seeded = {} if self.seed is None else {"seed": self.seed}
                 self.client = await service.create_lora_training_client_async(
-                    base_model=self.model, rank=lora_rank(self.lora_rank), user_metadata=metadata
+                    base_model=self.model,
+                    rank=lora_rank(self.lora_rank),
+                    user_metadata=metadata,
+                    **seeded,
                 )
         except BaseException as failed:
             self.service = None

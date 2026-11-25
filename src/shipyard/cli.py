@@ -6,6 +6,8 @@ import shlex
 import shutil
 import signal
 from collections.abc import Coroutine, Mapping, Sequence
+from contextvars import ContextVar
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -13,17 +15,20 @@ import typer
 from dotenv import load_dotenv
 from typer.core import TyperCommand
 
-from shipyard.config import Config, ConfigError, config_file, load, shown
+from shipyard.config import Config, ConfigError, config_file, load, runs, shown
+from shipyard.models.backends import Connected, share
 from shipyard.run.checkpoint import Checkpoint
 from shipyard.run.directory import (
-    open_run,
+    open_runs,
     recipe_of,
-    resumed,
+    resumed_together,
     running,
     trainer_class,
     trainer_in,
 )
 from shipyard.run.dry import checked
+
+logger = logging.getLogger(__name__)
 
 #: Where `init` copies the recipes, and the env template it writes, in the directory it runs in.
 RECIPES = "recipes"
@@ -44,6 +49,18 @@ SETTABLE = (
     "--data.train swe-bench."
 )
 
+#: The run the lines logged now are of, when several train in this process: the console names it.
+RUN: ContextVar[str | None] = ContextVar("run", default=None)
+
+
+class Named(logging.Formatter):
+    """The console's lines, each led by its run's name when several runs train together."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        text, run = super().format(record), RUN.get()
+        return f"{run}: {text}" if run else text
+
+
 app = typer.Typer(
     help="Train with a recipe: a run.toml, and a trainer.py whose step it writes.",
     no_args_is_help=True,
@@ -57,7 +74,8 @@ def main() -> None:
     # root's handlers whatever the root's level, so the console filters by its own.
     console = logging.StreamHandler()
     console.setLevel(logging.INFO)
-    logging.basicConfig(level=logging.INFO, format="%(message)s", handlers=[console])
+    console.setFormatter(Named("%(message)s"))
+    logging.basicConfig(level=logging.INFO, handlers=[console])
 
 
 @app.command()
@@ -108,18 +126,20 @@ def run(
         ),
     ] = False,
 ) -> None:
-    """Run CONFIG, trained by TRAINER, by default the trainer.py beside it."""
+    """Run CONFIG, trained by TRAINER, by default the trainer.py beside it. A config whose
+    model names a list of seeds starts a run for each, trained together in this process."""
     overrides = ctx.meta.get(OVERRIDES)
     if dry:
         _dry(config, trainer, overrides)
         return
     try:
-        directory, loaded = open_run(config, root=root, trainer=trainer, overrides=overrides)
+        opened = open_runs(config, root=root, trainer=trainer, overrides=overrides)
     except (ConfigError, ValueError) as refused:
         _refuse(refused)
-    made = trainer_class(directory).__name__
-    typer.echo(f"run {directory.name} in {directory.parent}, trained by {made}")
-    _train(directory, loaded)
+    for directory, _ in opened:
+        made = trainer_class(directory).__name__
+        typer.echo(f"run {directory.name} in {directory.parent}, trained by {made}")
+    _train([Going(directory, loaded) for directory, loaded in opened])
 
 
 @app.command()
@@ -127,18 +147,19 @@ def resume(
     directory: Annotated[Path, typer.Argument(help="The run directory.")],
     tag: Annotated[str, typer.Option(help="The checkpoint to go on from.")] = "last",
 ) -> None:
-    """Go on from checkpoint TAG of the run in DIRECTORY, the last by default, in a new run."""
+    """Go on from checkpoint TAG of the run in DIRECTORY, the last by default, in a new run.
+    The runs it started with that have steps left go on with it, each from its own."""
     origin = Path(directory)
     try:
-        going = resumed(origin, tag=tag)
+        found = resumed_together(origin, tag=tag)
     except (ConfigError, ValueError) as refused:
         _refuse(refused)
-    if going is None:
+    if not found:
         typer.echo(f"run {origin.name} finished at checkpoint {tag}: nothing is left to run")
         return
-    directory, config, checkpoint = going
-    typer.echo(f"run {directory.name} goes on from {origin.name} at {checkpoint.tag}")
-    _train(directory, config, origin, checkpoint)
+    for made, _, checkpoint, source in found:
+        typer.echo(f"run {made.name} goes on from {source.name} at {checkpoint.tag}")
+    _train([Going(made, config, source, checkpoint) for made, config, checkpoint, source in found])
 
 
 def _dry(path: Path, trainer: Path | None, overrides: Mapping[str, str] | None) -> None:
@@ -148,17 +169,21 @@ def _dry(path: Path, trainer: Path | None, overrides: Mapping[str, str] | None) 
     try:
         made = trainer_in(recipe_of(path, trainer))
         loaded = load(path, made.Recipe, overrides)
+        # Each run the config starts, with its own seed: the check makes them all.
+        started = [load(path, made.Recipe, one) for one in runs(path, made.Recipe, overrides)]
     except (ConfigError, ValueError) as refused:
         _refuse(refused)
     given = " ".join(shlex.join([f"--{name}", text]) for name, text in (overrides or {}).items())
     read = f"{config_file(path)}" + (f" with {given}" if given else "")
     header = f"# {read}, as {made.__name__} reads it\n\n"
     try:
-        found = checked(made, loaded)
+        found = checked(made, *started)
     except (ValueError, KeyError, OSError) as refused:  # KeyError: a model the recipe reads
         typer.echo(header + shown(loaded), nl=False)
         _refuse(refused)
     typer.echo(header + shown(loaded, found.values), nl=False)
+    for one in found.starts:
+        typer.echo(f"\n{one}", err=True)
     # Nothing opened: each model's backend was only asked its context length.
     for one in found.warnings:
         typer.echo(f"\n{one}", err=True)
@@ -168,24 +193,82 @@ def _dry(path: Path, trainer: Path | None, overrides: Mapping[str, str] | None) 
     typer.echo("\nchecked: no run was made; the sandbox's credentials are not checked", err=True)
 
 
-def _train(
-    directory: Path,
-    config: Config,
-    origin: Path | None = None,
-    checkpoint: Checkpoint | None = None,
-) -> None:
-    """Train the run, from `checkpoint` of `origin` if given; exit 130 if a signal stops it."""
-    made = trainer_class(directory)
+@dataclass(frozen=True)
+class Going:
+    """A run the command trains: its directory and config, and, when it goes on from another
+    run, that run and its checkpoint."""
+
+    directory: Path
+    config: Config
+    origin: Path | None = None
+    checkpoint: Checkpoint | None = None
+
+
+def _train(going: Sequence[Going]) -> None:
+    """Train the runs, side by side when there are several, each from its checkpoint if it
+    goes on from one. A run alone that fails raises its error; of several, each that fails is
+    said, the others go on, and the command exits 1. Exit 130 if a signal stops them."""
     try:
-        # The trainer is made inside the process note, so a recipe's `__init__` that fails,
-        # such as on a missing [recipe] key, is recorded as the run's error.
-        with running(directory, trainer=made.__name__), made(config, directory) as trainer:
-            if origin is not None and checkpoint is not None:
-                trainer.restore(origin, checkpoint)
-            _until_stopped(trainer.run())
+        errors = _until_stopped(together(going))
     except KeyboardInterrupt as stopped:
-        typer.echo(f"run {directory.name} stopped: {str(stopped) or 'SIGINT'}", err=True)
+        named = ", ".join(one.directory.name for one in going)
+        typer.echo(f"run {named} stopped: {str(stopped) or 'SIGINT'}", err=True)
         raise typer.Exit(130) from None
+    failed = [(one, error) for one, error in zip(going, errors, strict=True) if error is not None]
+    if failed and len(going) == 1:
+        raise failed[0][1]
+    for one, error in failed:
+        logger.error("run %s failed", one.directory.name, exc_info=error)
+    if failed:
+        raise typer.Exit(1)
+
+
+async def together(going: Sequence[Going]) -> list[BaseException | None]:
+    """Train the runs side by side, and return what failed each, None for one that ended well.
+    Every run is checked before any opens, so that the models of them all are placed together:
+    the ones on the same base model on Together share its model resources. A run that fails,
+    in its check or after, leaves the others going."""
+    checked_runs: list[Connected] = []
+    waited = len(going)
+    everyone = asyncio.Event()
+
+    def arrive(connected: Connected | None) -> None:
+        nonlocal waited
+        waited -= 1
+        if connected is not None:
+            checked_runs.append(connected)
+        if not waited:
+            share(checked_runs)
+            everyone.set()
+
+    async def one(run: Going) -> None:
+        arrived = False
+        if len(going) > 1:
+            RUN.set(run.directory.name)  # this run's task alone, and the tasks it starts
+        try:
+            made = trainer_class(run.directory)
+            # The trainer is made inside the process note, so a recipe's `__init__` that
+            # fails, such as on a missing [recipe] key, is recorded as the run's error.
+            with (
+                running(run.directory, trainer=made.__name__),
+                made(run.config, run.directory) as trainer,
+            ):
+                if run.origin is not None and run.checkpoint is not None:
+                    trainer.restore(run.origin, run.checkpoint)
+                connected = trainer.check()
+                arrive(connected)
+                arrived = True
+                await everyone.wait()
+                try:
+                    await trainer.run(connected)
+                finally:
+                    await connected.forgo()
+        finally:
+            if not arrived:
+                arrive(None)
+
+    found = await asyncio.gather(*(one(run) for run in going), return_exceptions=True)
+    return [error if isinstance(error, BaseException) else None for error in found]
 
 
 def initialized(into: Path) -> tuple[list[str], list[str], bool]:
@@ -226,11 +309,11 @@ def shipped() -> tuple[Path, Path]:
     )
 
 
-def _until_stopped(work: Coroutine[Any, Any, None]) -> None:
-    """Run `work`, which SIGTERM and SIGHUP stop as Ctrl-C does."""
+def _until_stopped[T](work: Coroutine[Any, Any, T]) -> T:
+    """Run `work`, which SIGTERM and SIGHUP stop as Ctrl-C does, and return what it returns."""
     caught: list[str] = []
 
-    async def main() -> None:
+    async def main() -> T:
         loop, task = asyncio.get_running_loop(), asyncio.current_task()
         previous: dict[int, Any] = {}
         for name in ("SIGTERM", "SIGHUP"):
@@ -244,14 +327,14 @@ def _until_stopped(work: Coroutine[Any, Any, None]) -> None:
                 continue  # not the main thread, or a loop that cannot take signals
             previous[number] = handler
         try:
-            await work
+            return await work
         finally:
             for number, handler in previous.items():
                 loop.remove_signal_handler(number)
                 signal.signal(number, handler)
 
     try:
-        asyncio.run(main())
+        return asyncio.run(main())
     except asyncio.CancelledError:
         if caught:
             raise KeyboardInterrupt(caught[0]) from None
@@ -260,7 +343,7 @@ def _until_stopped(work: Coroutine[Any, Any, None]) -> None:
 
 def _stop(task: asyncio.Task[Any], caught: list[str], name: str) -> None:
     caught.append(name)
-    task.cancel()
+    task.cancel(name)  # each run notes the signal that stopped it
 
 
 def overrides_in(args: Sequence[str]) -> tuple[dict[str, str], list[str]]:

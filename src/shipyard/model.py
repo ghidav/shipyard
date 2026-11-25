@@ -24,8 +24,8 @@ class Model:
 
     def __init__(self, role: str, table: ModelTable) -> None:
         """Raise `ValueError` for renderers of a model a provider serves to its harnesses, for
-        sampler replicas of a model off Together, and for a server of a model off Tinker, or
-        one with no key of its own."""
+        sampler replicas of a model off Together, for a server of a model off Tinker, or one
+        with no key of its own, and for a seed of a model no run trains, or a list of them."""
         if table.renderers and table.provider not in CLIENTS:
             raise ValueError(
                 f"[models.{role}] renderers: the proxy renders the calls of a model on Tinker or "
@@ -46,6 +46,16 @@ class Model:
                 f"[models.{role}] base_url: name the variable that holds the key of "
                 f"{table.base_url} as api_key_env. TINKER_API_KEY is Tinker's own key, and goes "
                 "to no other server"
+            )
+        if table.seed is not None and table.provider not in CLIENTS:
+            raise ValueError(
+                f"[models.{role}] seed: it seeds the adapter of a model the run trains, on "
+                f"Tinker or Together, and {table.provider} serves {table.model} as it is"
+            )
+        if isinstance(table.seed, list):
+            raise ValueError(
+                f"[models.{role}] seed: a run has one seed for a model, and this names "
+                f"{len(table.seed)}: `shipyard run` starts a run for each"
             )
         #: The name run.toml gives it, which its lane, spend and saves are filed under.
         self.role = role

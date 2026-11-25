@@ -358,12 +358,14 @@ class Trainer:
 
     # ------------------------------------------------------------------ the run
 
-    async def run(self) -> None:
+    async def run(self, connected: Connected | None = None) -> None:
         """Open the models, take `[recipe] steps` steps, evaluating on schedule, then save
         `final`. A task the recipe spawned that fails fails the run with its error, and the
         run's end stops the ones still running. Raise `ValueError`, before anything opens, for a
-        recipe the run cannot take, or a model it cannot train or open."""
-        connected = self.check()
+        recipe the run cannot take, or a model it cannot train or open. `connected` is what
+        `check` returned, for a run checked already, as one started beside others is."""
+        if connected is None:
+            connected = self.check()
         self._current = self.state.steps
         async with connected:
             self._running = running = asyncio.current_task()

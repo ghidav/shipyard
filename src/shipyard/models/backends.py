@@ -15,7 +15,7 @@ import torch
 from tinker_cookbook.rl.metrics import compute_kl_sample_train
 
 from shipyard.groups import Sequence
-from shipyard.models.clients import CLIENTS, Client, client_for
+from shipyard.models.clients import CLIENTS, Client, client_for, forgo, place
 from shipyard.models.clients.tinker import datum
 from shipyard.models.endpoints import LaneEndpoint, ProviderEndpoint, ProxyEndpoint
 from shipyard.run.costs import Spend
@@ -228,8 +228,9 @@ def ended(failed: BaseException | None) -> tuple[str, str | None]:
 
 class Connected:
     """The backends of the run's models, which open when the run starts and close when it
-    ends: each model on Tinker or Together in a session of its own, then the run's proxy, with a
-    lane for each of them."""
+    ends: each model on Tinker or Together in a session, then the run's proxy, with a lane for
+    each of them. The models on the same base model on Together share its model resources, and
+    with the runs `share` places beside this one."""
 
     def __init__(self, sessions: Values[Session], proxy: ProxyEndpoint | None) -> None:
         #: Each model's session on Tinker or Together; none for a provider's.
@@ -244,14 +245,19 @@ class Connected:
         proxy, which needs every lane's base model and session; then serve each model's
         starting weights. A failure closes what opened, the proxy first."""
         ordered = sorted(self.sessions, key=lambda one: one.trains)
-        async with AsyncExitStack() as stack:
-            for one in ordered:
-                await stack.enter_async_context(one)
-            if self.proxy is not None:
-                await stack.enter_async_context(self.proxy)
-            for one in ordered:
-                await one.serve("start")
-            self._open = stack.pop_all()
+        place(one.client for one in self.sessions)  # alone, unless `share` placed it already
+        try:
+            async with AsyncExitStack() as stack:
+                for one in ordered:
+                    await stack.enter_async_context(one)
+                if self.proxy is not None:
+                    await stack.enter_async_context(self.proxy)
+                for one in ordered:
+                    await one.serve("start")
+                self._open = stack.pop_all()
+        except BaseException:
+            await self.forgo()
+            raise
         return self
 
     async def __aexit__(
@@ -262,8 +268,22 @@ class Connected:
     ) -> None:
         """Close every session, each finished with how the run ended."""
         stack, self._open = self._open, None
-        if stack is not None:
-            await stack.__aexit__(kind, failed, tb)
+        try:
+            if stack is not None:
+                await stack.__aexit__(kind, failed, tb)
+        finally:
+            await self.forgo()
+
+    async def forgo(self) -> None:
+        """Give up the place of each model that will not open, as when the run fails before it
+        does, so that nothing waits for it. The ones that opened and closed have left theirs."""
+        await forgo(one.client for one in self.sessions)
+
+
+def share(runs: Values[Connected]) -> None:
+    """Place the models of runs that start together, before any opens: the ones on the same
+    base model on Together share its model resources, whichever run each is of."""
+    place(one.client for run in runs for one in run.sessions)
 
 
 def connect(
@@ -276,14 +296,19 @@ def connect(
 ) -> Connected:
     """Give each model its backend, by its provider, each filing its spend under its role, and
     each one the recipe trains opening on its training state in `training_states`, when a
-    resume gives one. Raise `ValueError` for a model the run cannot train or open, before
-    anything opens."""
+    resume gives one. Raise `ValueError` for a model the run cannot train or open, and for a
+    seed of one the recipe does not train, before anything opens."""
     states = dict(training_states or {})
     for one in models:
         if one.training and not one.trainable:
             raise ValueError(
                 f"[models.{one.role}]: the recipe trains {one.name}, and {one.provider} serves "
                 "it, so no run can train it"
+            )
+        if one.table.seed is not None and not one.training:
+            raise ValueError(
+                f"[models.{one.role}] seed: it seeds the adapter of a model the recipe trains, "
+                f"and the recipe does not train {one.name}"
             )
     run = Path(directory).name
     served = any(one.provider in CLIENTS for one in models)

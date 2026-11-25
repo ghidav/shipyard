@@ -63,6 +63,11 @@ UPLOAD_RETRY_SECONDS = 60.0
 #: Together refuses `PIPELINE`, which would switch a call in flight, on LoRA.
 BACKGROUND_PUBLISH = "WEIGHT_SYNC_TYPE_BACKGROUND_PUBLISH"
 
+#: The adapters one model resource holds, a session each. Together refuses the sixth ("is at
+#: capacity (5/5 adapter slots in use)", measured 25 Nov on Qwen/Qwen3.5-9B) and publishes the
+#: number nowhere, so the run plans with this one.
+ADAPTER_SLOTS = 5
+
 #: Provisions a model resource for a base model with that many sampler replicas, and returns it
 #: once it is ready.
 Provision = Callable[[str, int], Awaitable[Any]]
@@ -72,9 +77,142 @@ class SessionStopped(RuntimeError):
     """Together stopped the session an operation ran on, so the operation would never end."""
 
 
+class Resource:
+    """A Together model resource: the GPUs a base model is trained and sampled on, which the
+    clients placed on it share, each with a session of its own or a share of the untrained one.
+    The first of them to open provisions it, with the sampler replicas they ask for between
+    them, and it stops, by force, once the last of them has closed."""
+
+    def __init__(self, model: str) -> None:
+        self.model = model
+        #: The clients placed on it, until each closes.
+        self.clients: list[TogetherClient] = []
+        #: The model resources of its base model, itself among them, which start together.
+        self.group: list[Resource] = [self]
+        #: Together's handle on it, once it is provisioned and until it stops.
+        self.handle: Any = None
+        self._starting = asyncio.Lock()
+
+    @property
+    def sampler_replicas(self) -> int:
+        """The sampler replicas it holds: the ones each client placed on it asks for."""
+        return sum(one.sampler_replicas for one in self.clients)
+
+    async def join(self, client: TogetherClient) -> Any:
+        """Return its handle, provisioned first if it has none, with the others of its group, so
+        that the wait for GPUs is one for them all. A failure of another's is left to the
+        clients placed on that one, which meet it as they join."""
+        started = [one._started(client._provision) for one in self.group]
+        found = await asyncio.gather(*started, return_exceptions=True)
+        mine = found[self.group.index(self)]
+        if isinstance(mine, BaseException):
+            raise mine
+        return mine
+
+    async def leave(self, client: TogetherClient) -> None:
+        """Take `client` off it, and stop it once no client is left on it."""
+        if client in self.clients:
+            self.clients.remove(client)
+        if not self.clients:
+            await self.stop()
+
+    async def stop(self) -> None:
+        """Stop it by force, which Together otherwise refuses while a session still runs an
+        operation, as when a run fails in an update. One that will not stop stays held, and the
+        interpreter tries it again when it exits."""
+        if self.handle is None:
+            return
+        try:
+            await self.handle.stop_async(force=True)
+        except Exception:  # noqa: BLE001 - a resource that will not stop is not a run failure
+            logger.warning(
+                "could not stop the Together model resource: the interpreter tries again when "
+                "it exits",
+                exc_info=True,
+            )
+            return
+        self.handle = None
+        HELD.discard(self)
+
+    async def _started(self, provision: Provision) -> Any:
+        """Return its handle, provisioned first if it has none and a client is still placed on
+        it; one whose clients all closed as it started stops at once."""
+        async with self._starting:
+            if self.handle is None and self.clients:
+                self.handle = await provision(self.model, self.sampler_replicas)
+                HELD.add(self)
+                hooked()
+        if not self.clients:
+            await self.stop()
+        return self.handle
+
+
+class Seat:
+    """The session the clients of an untrained model share on a model resource: an adapter no
+    one trains scores and samples as the base model does, whoever asks (measured 25 Nov: two
+    fresh sessions scored a sequence alike), so the runs of a process open one between them.
+    The first of them to need it opens it, and the last to close stops it."""
+
+    def __init__(self) -> None:
+        self.session: Any = None
+        #: The clients that share it, until each closes.
+        self.clients: list[TogetherClient] = []
+        #: Held for each training operation on it: Together runs one at a time on a session.
+        self.lock = asyncio.Lock()
+        self._opening = asyncio.Lock()
+
+    async def open(self, client: TogetherClient) -> Any:
+        """Return the session, opened by `client` if no one has yet."""
+        async with self._opening:
+            if self.session is None:
+                self.session = await client.resources.create_session_async(
+                    display_name=client.run, lora_config={"rank": lora_rank(client.lora_rank)}
+                )
+            return self.session
+
+    async def leave(self, client: TogetherClient) -> None:
+        """Take `client` off it, and stop the session once no client is left on it."""
+        if client in self.clients:
+            self.clients.remove(client)
+        if not self.clients and self.session is not None:
+            await self.session.stop_async()
+            self.session = None
+
+
+def plan(clients: Values[TogetherClient]) -> list[Resource]:
+    """Place each client that has no place yet on a model resource, and return the resources
+    made for them. The clients of a base model share its resources: each one the run trains,
+    or serves from a checkpoint, is an adapter of its own, and the untrained ones are one
+    between them. A resource holds `ADAPTER_SLOTS` adapters, so more are spread evenly over as
+    many resources as they need, the untrained one on the first."""
+    made: list[Resource] = []
+    by_model: dict[str, list[TogetherClient]] = {}
+    for one in clients:
+        if one.place is None:
+            by_model.setdefault(one.model, []).append(one)
+    for model, found in by_model.items():
+        untrained = [one for one in found if one.shares]
+        adapters = ([untrained] if untrained else []) + [[one] for one in found if not one.shares]
+        group = [Resource(model) for _ in range(-(-len(adapters) // ADAPTER_SLOTS))]
+        for resource in group:
+            resource.group = group
+        seat = Seat() if untrained else None
+        for at, sharing in enumerate(adapters):
+            resource = group[at % len(group)]
+            for one in sharing:
+                one.place = resource
+                resource.clients.append(one)
+                if one.shares and seat is not None:
+                    one.seat = seat
+                    seat.clients.append(one)
+        made += group
+    return made
+
+
 class TogetherClient:
-    """A model's Together session, on a model resource provisioned on `open`. It opens the same
-    whether the recipe trains the model or not: the proxy samples it through the session."""
+    """A model's Together session, on a model resource it shares with the clients placed with
+    it, provisioned as the first of them opens. It opens the same whether the recipe trains the
+    model or not: the proxy samples it through the session."""
 
     #: The backend it reaches, as a job's row names it.
     kind = TOGETHER
@@ -91,6 +229,7 @@ class TogetherClient:
         lora_rank: int | None = None,
         restore_optimizer: bool = False,
         trains: bool = True,
+        seed: int | None = None,
         sampler_replicas: int = 1,
         provision: Provision | None = None,
     ) -> None:
@@ -103,8 +242,17 @@ class TogetherClient:
         self.from_checkpoint = from_checkpoint
         self.lora_rank = lora_rank
         self.restore_optimizer = restore_optimizer
-        #: How many replicas of the sampler its resource holds: Together's generator replicas.
+        #: The seed of a new adapter's first weights; None for Together's own.
+        self.seed = seed
+        #: How many replicas of the sampler it brings to its resource: Together's generator
+        #: replicas, which the resource holds for all the clients placed on it.
         self.sampler_replicas = sampler_replicas
+        #: The model resource it is placed on, which `plan` gives it, alone or with the clients
+        #: that open with it; None until then, and `open` places a client that has none alone.
+        self.place: Resource | None = None
+        #: The session it shares with the other untrained clients of its base model, if any.
+        self.seat: Seat | None = None
+        #: Together's handle on its resource, from when it opens until it closes.
         self.resources: Any = None
         #: The training session, opened when first needed: a resume opens it on its checkpoint.
         self.session: Any = None
@@ -128,10 +276,19 @@ class TogetherClient:
 
         return await context_of(None, self.model)
 
+    @property
+    def shares(self) -> bool:
+        """Whether it serves the base model's own weights, untrained, so that one session does
+        for every client that does."""
+        return not self.trains and not self.from_checkpoint
+
     async def open(self) -> None:
-        """Provision a model resource for the model, with the sampler replicas the proxy samples,
-        and have the interpreter stop it when it exits, if the run has not."""
-        self.resources = await self._provision(self.model, self.sampler_replicas)
+        """Join its model resource, provisioned now if this is the first client on it to open,
+        and have the interpreter stop what is left when it exits, if the run has not."""
+        if self.place is None:
+            plan([self])
+        assert self.place is not None
+        self.resources = await self.place.join(self)
         hold(self)
 
     async def serving(self) -> dict[str, str]:
@@ -238,46 +395,54 @@ class TogetherClient:
         self.syncs = 0  # a new session's generator counts its syncs anew (unmeasured on a resume)
 
     async def close(self, status: str = "success", detail: str | None = None) -> None:
-        """Stop the session and the GPU resource, which bills until it stops: the resource by
-        force, which Together otherwise refuses while a session still runs an operation, as
-        when the run fails in an update. One that will not stop stays held, and the
-        interpreter tries it again when it exits; once both have stopped, do nothing."""
-        for name, what in (("session", "session"), ("resources", "model resource")):
-            one = getattr(self, name)
-            if one is None:
-                continue
-            try:
-                await (one.stop_async(force=True) if name == "resources" else one.stop_async())
-            except Exception:  # noqa: BLE001 - a resource that will not stop is not a run failure
-                logger.warning(
-                    "could not stop the Together %s: the interpreter tries again when it exits",
-                    what,
-                    exc_info=True,
-                )
-                continue
-            setattr(self, name, None)
-        if self.session is None and self.resources is None:
+        """Stop the session, or leave the one it shares, which stops with the last client on
+        it; then leave the model resource, which bills until it stops, and stops, by force,
+        with the last client placed on it. A session that will not stop stays held, as a
+        resource does, and the interpreter tries again when it exits. A client that never
+        opened gives up its place; one that closed already does nothing."""
+        try:
+            if self.seat is not None:
+                await self.seat.leave(self)
+            elif self.session is not None:
+                await self.session.stop_async()
+        except Exception:  # noqa: BLE001 - a session that will not stop is not a run failure
+            logger.warning(
+                "could not stop the Together session: the interpreter tries again when it exits",
+                exc_info=True,
+            )
+        else:
+            self.session = None
+        if self.place is not None:
+            await self.place.leave(self)
+        self.resources = None
+        if self.session is None:
             RUNNING.discard(self)
 
     async def _session(self) -> Any:
-        """Return the session, opened on first use: a new adapter, or `from_checkpoint`'s."""
+        """Return the session, opened on first use: the one it shares, a new adapter, from its
+        seed if it has one, or `from_checkpoint`'s."""
         if self.session is None:
-            if self.from_checkpoint:
+            if self.seat is not None:
+                self.session = await self.seat.open(self)
+            elif self.from_checkpoint:
                 self.session = await self.resources.create_session_async(
                     display_name=self.run,
                     resume_from_checkpoint_id=self.from_checkpoint,
                     load_optimizer=self.restore_optimizer,
                 )
             else:
+                seeded = {} if self.seed is None else {"seed": self.seed}
                 self.session = await self.resources.create_session_async(
-                    display_name=self.run, lora_config={"rank": lora_rank(self.lora_rank)}
+                    display_name=self.run,
+                    lora_config={"rank": lora_rank(self.lora_rank), **seeded},
                 )
         return self.session
 
     async def _one[T](self, work: Awaitable[T]) -> T:
-        """Await one training operation, after the one before it, looking at the session every
-        `SESSION_CHECK_SECONDS`: SessionStopped once Together has stopped it."""
-        async with self._lock:
+        """Await one training operation, after the one before it on its session, its own or the
+        one it shares, looking at the session every `SESSION_CHECK_SECONDS`: SessionStopped once
+        Together has stopped it."""
+        async with self.seat.lock if self.seat is not None else self._lock:
             session, running = self.session, asyncio.ensure_future(work)
             try:
                 while not (await asyncio.wait({running}, timeout=SESSION_CHECK_SECONDS))[0]:
@@ -311,18 +476,26 @@ class TogetherClient:
             await asyncio.sleep(UPLOAD_RETRY_SECONDS)
 
 
-#: Together clients whose session or GPU resource may still run: the interpreter stops each when
-#: it exits, if the run has not, as a crash or a second interrupt can leave them billing.
+#: Together clients whose session may still run: the interpreter closes each when it exits, if
+#: the run has not, as a crash or a second interrupt can leave them billing.
 RUNNING: set[TogetherClient] = set()
-#: Whether the interpreter's exit stops `RUNNING`.
+#: The model resources that are up: the interpreter stops each still up when it exits, as one
+#: that would not stop is, and one whose clients never opened to close.
+HELD: set[Resource] = set()
+#: Whether the interpreter's exit stops `RUNNING` and `HELD`.
 _hooked = False
 
 
 def hold(client: TogetherClient) -> None:
-    """Hold `client` until it closes: the interpreter stops it when it exits, and SIGTERM, when
-    nothing handles it, exits the interpreter so that it does."""
-    global _hooked
+    """Hold `client` until it closes: the interpreter closes it when it exits."""
     RUNNING.add(client)
+    hooked()
+
+
+def hooked() -> None:
+    """Have the interpreter stop what Together still runs when it exits, and SIGTERM, when
+    nothing handles it, exit the interpreter so that it does."""
+    global _hooked
     if not _hooked:
         at_exit(stop_running)
         _hooked = True
@@ -337,12 +510,15 @@ def at_exit(stop: Callable[[], None]) -> None:
 
 
 def stop_running() -> None:
-    """Stop the session and GPU resource of every Together client the run left open."""
+    """Close every Together client the run left open, which stops its session and, with the
+    last client on it, its model resource; then stop every model resource still up."""
     for client in list(RUNNING):
         try:
             asyncio.run(client.close("interrupted", "the process exited before the run closed it"))
         except Exception:  # noqa: BLE001 - the interpreter is exiting; say so and go on
             logger.warning("could not stop a Together client as the process exited", exc_info=True)
+    for one in list(HELD):
+        asyncio.run(one.stop())
 
 
 def exit_on_sigterm() -> None:

@@ -38,6 +38,7 @@ def together_exit(monkeypatch: pytest.MonkeyPatch) -> Any:
     hooks: list[Any] = []
     monkeypatch.setattr(together, "at_exit", hooks.append)
     monkeypatch.setattr(together, "RUNNING", set())
+    monkeypatch.setattr(together, "HELD", set())
     monkeypatch.setattr(together, "_hooked", False)
     yield hooks
     signal.signal(signal.SIGTERM, before)

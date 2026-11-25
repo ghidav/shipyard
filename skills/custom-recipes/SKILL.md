@@ -23,7 +23,7 @@ Start from the shipped recipe closest to your algorithm; `shipyard init` copies 
 | Table | Holds |
 | --- | --- |
 | `modules` (a top-level key) | a folder of `PROMPT.md` and `skills/<name>/SKILL.md`, relative to the config, that every trial carries |
-| `[models.<role>]` | one table per model the recipe reads, by **role** (`agent`, `teacher`, ...): `model`; `provider`, `tinker` (default) or `together`, which a run can train, or an API such as `anthropic`, which it only calls; `from_checkpoint`; `renderers`; for a model the recipe trains, `learning_rate` (required), `warmup`, `lora_rank`; sampling: `temperature`, `max_tokens`, `max_context`, ... |
+| `[models.<role>]` | one table per model the recipe reads, by **role** (`agent`, `teacher`, ...): `model`; `provider`, `tinker` (default) or `together`, which a run can train, or an API such as `anthropic`, which it only calls; `from_checkpoint`; `renderers`; for a model the recipe trains, `learning_rate` (required), `warmup`, `lora_rank`, and `seed`, its adapter's, or a list of them, which starts a run for each, together; on Together, `sampler_replicas`, the model's own (0 for one only scored); sampling: `temperature`, `max_tokens`, `max_context`, ... |
 | `[data]` | `train` and `test`, dataset names: folders of Harbor tasks under `./tasks`; `batch_size`, tasks a step; `seed` |
 | `[rollout]` | how trials run: `sandbox` (`docker` on this machine, or a cloud one such as `modal`), `concurrency` (trials sampling at once), `sandboxes` (trials alive at once, getting ready or running tests while others sample), `timeout`, `setup_timeout`, `secrets` |
 | `[recipe]` | `steps`, `substeps`, `evaluate_every`, `grade_timeouts`, and the trainer's own keys, such as its `harness` and `group_size` |

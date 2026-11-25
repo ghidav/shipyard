@@ -1,6 +1,7 @@
-"""Tests for models on Together post-training: the run provisions a model resource for each,
-opens a session on it, which trains the model when the recipe does, and its proxy samples that
-session's generator."""
+"""Tests for models on Together post-training: the run provisions a model resource for each
+base model, opens a session on it for each model, which trains the model when the recipe does,
+and its proxy samples that session's generator. The models of one base model share its
+resources, across the runs that start together, and the untrained ones share a session."""
 
 from __future__ import annotations
 
@@ -19,13 +20,16 @@ from together import APIConnectionError
 from proxies import MODEL
 from shipyard import Config
 from shipyard.config import ModelTable
+from shipyard.groups import Sequence
 from shipyard.model import Model
 from shipyard.models.clients.together import (
+    ADAPTER_SLOTS,
     UPLOAD_RETRIES,
     SessionStopped,
     TogetherClient,
     adam_params,
     loss,
+    plan,
     sample,
     stop_running,
 )
@@ -556,3 +560,130 @@ async def test_sigterm_exits_the_interpreter_unless_something_already_handles_it
     signal.signal(signal.SIGTERM, own)
     await _opened(FakeResources(MODEL))
     assert signal.getsignal(signal.SIGTERM) is own, "a handler already set, as the CLI's, is kept"
+
+
+def _seeds(count: int) -> tuple[list[TogetherClient], list[TogetherClient]]:
+    """The clients of `count` runs that start together: each run's agent, trained from its own
+    seed, and its untrained base, which the run scores and never samples."""
+    agents = [TogetherClient(MODEL, run=f"r{at}", seed=at) for at in range(count)]
+    bases = [
+        TogetherClient(MODEL, run=f"r{at}", trains=False, sampler_replicas=0) for at in range(count)
+    ]
+    return agents, bases
+
+
+async def test_the_models_of_a_run_on_one_base_model_share_a_model_resource(
+    tmp_path: Path, fakes: tuple[FakeProxy, FakeService], provisioned: list[FakeResources]
+) -> None:
+    """The agent and the model its KL penalty is measured against are sessions on one
+    resource, which holds the agent's sampler replica alone: the base brings none."""
+    proxy, _ = fakes
+    base = table("base", MODEL, provider="together", sampler_replicas=0)
+    made, _ = connected(tmp_path, base, **ON_TOGETHER)
+    async with made:
+        (resources,) = provisioned
+        assert resources.sampler_replicas == 1, "the agent's one, and none for the base"
+        assert [asked.get("lora_config") for asked, _ in resources.sessions] == [{"rank": 32}] * 2
+        ((_, settings, _),) = proxy.placed
+        assert [(one["name"], one["session"]) for one in settings["lanes"]] == [
+            ("agent", "s2"),
+            ("base", "s1"),
+        ], "a session each, the untrained model's opened first"
+    assert resources.stopped and all(session.stopped for _, session in resources.sessions)
+
+
+async def test_runs_placed_together_share_a_model_resource_and_one_untrained_session(
+    provisioned: list[FakeResources],
+) -> None:
+    """Three seeds are four sessions on one resource: an adapter each, from its seed, and one
+    untrained session between their bases. The resource holds each agent's sampler replica,
+    and stops when the last of the runs has closed."""
+    agents, bases = _seeds(3)
+    (resource,) = plan([*agents, *bases])
+    for one in (*bases, *agents):
+        await one.open()
+        await one.serving()
+    (made,) = provisioned
+    assert made.sampler_replicas == 3, "each agent's own, so one is sampled as fast as alone"
+    assert [asked for asked, _ in made.sessions] == [
+        {"display_name": "r0", "lora_config": {"rank": 32}},
+        *({"display_name": f"r{at}", "lora_config": {"rank": 32, "seed": at}} for at in range(3)),
+    ]
+    assert {(await one.serving())["session"] for one in bases} == {"s1"}, "one for the three"
+    (_, shared), (_, first), *_ = made.sessions
+    await agents[0].close()
+    await bases[0].close()
+    assert first.stopped and not shared.stopped and not made.stopped, "the others go on"
+    for one in (*agents[1:], *bases[1:]):
+        assert not made.stopped
+        await one.close()
+    assert shared.stopped and made.stopped, "the last to close stops what they shared"
+    assert resource.handle is None and all(one.resources is None for one in (*agents, *bases))
+
+
+async def test_more_adapters_than_a_resource_holds_are_spread_over_as_many_as_they_need(
+    provisioned: list[FakeResources],
+) -> None:
+    """Six seeds and their base are seven adapters, two more than a resource holds: two
+    resources, which start together, the adapters spread evenly and the base on the first."""
+    agents, bases = _seeds(ADAPTER_SLOTS - 1)
+    assert len(plan([*agents, *bases])) == 1, "as many as one holds: four agents and a base"
+    agents, bases = _seeds(6)
+    first, second = plan([*agents, *bases])
+    assert all(one.place is first for one in bases), "one untrained session, on the first"
+    assert [sum(one.trains for one in found.clients) for found in (first, second)] == [3, 3]
+    assert (first.sampler_replicas, second.sampler_replicas) == (3, 3), "each its own agents'"
+    await bases[0].open()
+    assert [(one.model, one.sampler_replicas) for one in provisioned] == [(MODEL, 3)] * 2, (
+        "both are provisioned as the first client opens, so the wait for GPUs is one"
+    )
+    for one in list(second.clients):
+        await one.close()  # the agents on the second never open: each gives up its place
+    assert provisioned[1].stopped and not provisioned[0].stopped, "nothing waits for them"
+    for one in list(first.clients):
+        await one.close()
+    assert provisioned[0].stopped
+
+
+async def test_a_resource_whose_clients_never_closed_is_stopped_as_the_interpreter_exits(
+    together_exit: list[Any], provisioned: list[FakeResources]
+) -> None:
+    agents, bases = _seeds(6)
+    plan([*agents, *bases])
+    await agents[0].open()
+    assert together_exit == [stop_running] and len(provisioned) == 2
+    await asyncio.to_thread(stop_running)
+    assert all(one.stopped for one in provisioned), "the one no client opened on too"
+
+
+@dataclass
+class Counting(FakeTogetherTrainer):
+    """A trainer that counts the forward passes it runs at once."""
+
+    running: int = 0
+    most: int = 0
+
+    async def forward_async(self, **sent: Any) -> Any:
+        self.running += 1
+        self.most = max(self.most, self.running)
+        await asyncio.sleep(0.01)
+        self.running -= 1
+        return await super().forward_async(**sent)
+
+
+async def test_the_runs_that_share_a_session_score_on_it_one_at_a_time() -> None:
+    """Together runs one training operation at a time on a session, so the runs that share
+    the untrained one wait for each other."""
+    resources = FakeResources(MODEL, trainer=Counting())
+
+    async def provide(model: str, sampler_replicas: int) -> FakeResources:
+        return resources
+
+    bases = [TogetherClient(MODEL, run=f"r{at}", trains=False, provision=provide) for at in "ab"]
+    plan(bases)
+    for one in bases:
+        await one.open()
+    scored = Sequence((1, 2, 3, 4), ((2, 4),), None, (), SimpleNamespace())  # type: ignore[arg-type]
+    found = await asyncio.gather(*(one.compute_logprobs([scored]) for one in bases))
+    assert [logprobs for logprobs, _ in found] == [[[-0.3, -0.3]]] * 2
+    assert resources.trainer.most == 1 and len(resources.sessions) == 1
