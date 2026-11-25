@@ -48,3 +48,5 @@ shipyard run recipes/opd                                  # the folder: its run.
 shipyard run my.toml recipes/dapo/trainer.py --root runs  # or both, named
 shipyard resume runs/opd__a1b2c3d --tag step-100          # a new run from that checkpoint
 ```
+
+A model the recipe trains may name a list of seeds, `seed = [0, 1, 2]` in its `[models.<role>]`: `shipyard run` then starts a run for each, in one process, each with its own run directory, and `shipyard resume` of one brings back the others that have steps left. The lists of several models pair by position. On Together the runs share one model resource, which each brings its own `sampler_replicas` to; `shipyard run --dry` says what would start.

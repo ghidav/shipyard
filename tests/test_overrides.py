@@ -37,7 +37,9 @@ class Mine(Trainer):
 def _trained(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
     """Stand in for training, and return the config each run would have trained with."""
     trained: list[Any] = []
-    monkeypatch.setattr("shipyard.cli._train", lambda directory, config: trained.append(config))
+    monkeypatch.setattr(
+        "shipyard.cli._train", lambda going: trained.extend(one.config for one in going)
+    )
     return trained
 
 

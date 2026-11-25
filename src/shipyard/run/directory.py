@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import logging
 import os
 import shlex
 import shutil
 import sys
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from hashlib import sha256
 from pathlib import Path
@@ -15,7 +16,7 @@ from typing import Any
 import tomli_w
 from shortuuid import ShortUUID
 
-from shipyard.config import Config, config_file, load, parsed
+from shipyard.config import Config, config_file, load, parsed, runs
 from shipyard.run import files
 from shipyard.run.checkpoint import Checkpoint, found
 from shipyard.trainer import Trainer
@@ -74,6 +75,39 @@ def open_run(
     return directory, config
 
 
+def open_runs(
+    path: Path,
+    *,
+    root: Path | None = None,
+    trainer: Path | type[Trainer] | None = None,
+    overrides: Mapping[str, str] | None = None,
+) -> list[tuple[Path, Config]]:
+    """Create the run directory of each run a config starts, as `open_run` does: one, or one
+    for each seed when a model's `seed` is a list, each run's copy of the config holding its
+    own seed. Runs that start together note each other in `run.json`, so that a resume of one
+    brings the others back with it. Raise `ConfigError` for a config no run could take, or
+    one whose runs could not start together, before any directory is made."""
+    source = config_file(path)
+    made = trainer if isinstance(trainer, type) else trainer_in(recipe_of(source, trainer))
+    opened = [
+        open_run(path, root=root, trainer=trainer, overrides=one)
+        for one in runs(path, made.Recipe, overrides)
+    ]
+    together([directory for directory, _ in opened])
+    return opened
+
+
+def together(directories: Sequence[Path]) -> None:
+    """Note in the `run.json` of each of several runs the runs it started with, itself among
+    them, in the order they started."""
+    if len(directories) < 2:
+        return
+    names = [one.name for one in directories]
+    for one in directories:
+        noted = files.read_json(one / files.RUN)
+        files.write_json(one / files.RUN, {**noted, "together": names})
+
+
 def recipe_of(path: Path, trainer: Path | None = None) -> Path:
     """Return the trainer file a config runs with: `trainer`, else the `trainer.py` beside the
     config's run.toml. Raise `ValueError` when there is none."""
@@ -97,6 +131,64 @@ def resumed(origin: Path, *, tag: str = "last") -> tuple[Path, Config, Checkpoin
         return None
     directory, config = continued(origin, checkpoint)
     return directory, config, checkpoint
+
+
+def resumed_together(
+    origin: Path, *, tag: str = "last"
+) -> list[tuple[Path, Config, Checkpoint, Path]]:
+    """Open, for `origin` and each run it started with, a run beside it that goes on from its
+    checkpoint `tag`, its own last by default; return each new run's directory, config and
+    checkpoint, and the run it goes on from, in the order those started. The new runs note
+    each other in turn. A run with nothing left to run is left out; so is one started with
+    `origin` that is gone, whose process still runs, or that has no checkpoint yet. Raise
+    `ValueError` for a `tag` one of them lacks, before any run is opened."""
+    origin = Path(origin)
+    own = origin.resolve().name
+    names = files.read_json(origin / files.RUN).get("together") or []
+    names = names if own in names else [own, *names]
+    going: list[tuple[Path, Checkpoint]] = []
+    for name in names:
+        run = origin if name == own else origin.resolve().parent / name
+        if run is not origin:
+            why = _left(run, tag)
+            if why:
+                logger.warning(
+                    "%s, started with %s, %s: it is left as it is", name, origin.name, why
+                )
+                continue
+        config, checkpoint = reopened(run, tag=tag)
+        if checkpoint.step < config.recipe.steps:
+            going.append((run, checkpoint))
+    opened = [(*continued(run, checkpoint), checkpoint, run) for run, checkpoint in going]
+    together([directory for directory, *_ in opened])
+    return opened
+
+
+def _left(run: Path, tag: str) -> str | None:
+    """Why a resume leaves alone a run started with the one it was asked for; None to take it."""
+    if not (run / files.CONFIG).is_file():
+        return "is gone"
+    if alive(run):
+        return "still runs"
+    if tag == "last" and not list(files.read(run / files.CHECKPOINTS)):
+        return "has no checkpoint to go on from"
+    return None
+
+
+def alive(directory: Path) -> bool:
+    """Whether the process that runs the run in `directory` is still up, as its `run.json`
+    notes it: one that noted no end, under a process id that still answers."""
+    note = files.read_json(Path(directory) / files.RUN).get("process") or {}
+    pid = note.get("pid")
+    if not pid or note.get("finished_at"):
+        return False
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # another user's process answers
+    return True
 
 
 def continued(origin: Path, checkpoint: Checkpoint) -> tuple[Path, Config]:
@@ -225,7 +317,9 @@ def running(directory: Path, **about: Any) -> Iterator[None]:
     error: str | None = None
     try:
         yield
-    except KeyboardInterrupt as stopped:
+    except (KeyboardInterrupt, asyncio.CancelledError) as stopped:
+        # `shipyard run` cancels the task a run trains in, where a run made from Python is
+        # interrupted; the cancellation carries the signal's name.
         error = f"stopped: {str(stopped) or 'SIGINT'}"
         raise
     except BaseException as failed:

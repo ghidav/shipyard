@@ -1,7 +1,8 @@
 """A dry run, for `shipyard run --dry`: the checks a run makes before it opens anything, and the
 value it takes for each key it decides elsewhere, such as an unset LoRA rank or timeout. Nothing
 opens, and nothing is left behind. The only calls out are each model's backend saying the model's
-context length, which its lane reads the same way as it opens."""
+context length, which its lane reads the same way as it opens. It also says what the command
+would start: the runs, when a model names several seeds, and the model resources on Together."""
 
 from __future__ import annotations
 
@@ -10,7 +11,7 @@ import importlib.util
 import logging
 import tempfile
 from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -20,8 +21,9 @@ from harbor.models.task.config import TaskConfig as TaskToml
 from shipyard.config import Config, Logging, Resolved, Said
 from shipyard.jobs.harnesses import Harness
 from shipyard.model import Model
-from shipyard.models.backends import Session
+from shipyard.models.backends import Connected, Session, share
 from shipyard.models.clients.tinker import lora_rank
+from shipyard.models.clients.together import Resource, TogetherClient
 from shipyard.trainer import Trainer
 
 #: The logger of the proxy's backends, which warns, with the error, of a context it cannot read.
@@ -35,23 +37,75 @@ class Checked:
 
     values: Resolved = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    #: What the command would start beyond one run on servers that are always up: the runs,
+    #: when there are several, and each model resource on Together, a line each.
+    starts: list[str] = field(default_factory=list)
 
 
-def checked(made: type[Trainer], config: Config) -> Checked:
+def checked(made: type[Trainer], config: Config, *beside: Config) -> Checked:
     """Make the trainer in a scratch directory and run every check the run makes before it opens
     anything, raising what it would; then find the value the run takes for each key it decides
-    elsewhere. Wandb would start a run as the trainer is made, so the check makes it without,
-    once wandb is found."""
+    elsewhere. `beside` are the other runs the command starts with it, one for each seed more,
+    which are checked as it is, so that what they would start between them is said. Wandb would
+    start a run as the trainer is made, so the check makes it without, once wandb is found."""
     if config.logging.wandb is not None and importlib.util.find_spec("wandb") is None:
         raise ValueError("[logging.wandb] needs wandb: install shipyard-rl[wandb]")
-    quiet = config.model_copy(update={"logging": Logging()})
-    with tempfile.TemporaryDirectory(prefix="shipyard-dry-") as scratch:
-        with made(quiet, Path(scratch) / "dry") as trainer:
-            trainer.check()  # the backends it builds are bound to the models, and never opened
-            tasks = [*trainer.lender.train, *trainer.lender.test]
-            found = asyncio.run(models(trainer.models.all))
-            found.values.update(rollout(config, tasks))
-            return found
+    with tempfile.TemporaryDirectory(prefix="shipyard-dry-") as scratch, ExitStack() as stack:
+        trainers = [
+            stack.enter_context(
+                made(one.model_copy(update={"logging": Logging()}), Path(scratch) / f"dry-{at}")
+            )
+            for at, one in enumerate((config, *beside))
+        ]
+        # The backends each builds are bound to its models, and never opened.
+        connected = [one.check() for one in trainers]
+        share(connected)
+        trainer = trainers[0]
+        tasks = [*trainer.lender.train, *trainer.lender.test]
+        found = asyncio.run(models(trainer.models.all))
+        found.values.update(rollout(config, tasks))
+        found.starts = starts(connected)
+        return found
+
+
+def starts(runs: Sequence[Connected]) -> list[str]:
+    """Say what runs that start together would start: how many they are, when several, and
+    each model resource on Together, with its sampler replicas and the session of each model
+    placed on it. The untrained models of a base model share one session."""
+    several = len(runs) > 1
+    said = [f"{len(runs)} runs start together, in one process"] if several else []
+    resources: dict[int, Resource] = {}
+    sessions: dict[int, list[str]] = {}
+    shared: dict[int, list[str]] = {}
+    for at, run in enumerate(runs, 1):
+        for one in run.sessions:
+            client = one.client
+            if not isinstance(client, TogetherClient) or client.place is None:
+                continue
+            resources[id(client.place)] = client.place
+            name = one.endpoint.name + (f" of run {at}" if several else "")
+            if client.seat is not None:
+                shared.setdefault(id(client.place), []).append(name)
+            else:
+                seed = "" if client.seed is None else f" (seed {client.seed})"
+                sessions.setdefault(id(client.place), []).append(name + seed)
+    # In the order the plan made them: the untrained models' session is on a base model's first.
+    models = list(dict.fromkeys(one.model for one in resources.values()))
+    ordered = sorted(
+        resources.items(),
+        key=lambda found: (models.index(found[1].model), found[1].group.index(found[1])),
+    )
+    for key, resource in ordered:
+        held = list(sessions.get(key, []))
+        if key in shared:
+            held.append("one untrained, for " + ", ".join(shared[key]))
+        replicas = resource.sampler_replicas
+        said.append(
+            f"together: a model resource for {resource.model}, with {replicas} sampler "
+            f"replica{'' if replicas == 1 else 's'} and {len(held)} "
+            f"session{'' if len(held) == 1 else 's'}: {'; '.join(held)}"
+        )
+    return said
 
 
 async def models(found: Sequence[Model]) -> Checked:
