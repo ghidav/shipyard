@@ -1,6 +1,6 @@
 [project]
 name = "shipyard-rl"
-version = "0.1.0"
+version = "0.2.0"
 description = "Post-training on Harbor jobs: a config sets up a run, and a run is its record."
 readme = "README.md"
 license = "Apache-2.0"
